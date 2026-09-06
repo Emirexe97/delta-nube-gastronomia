@@ -320,14 +320,29 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           )
           .run(...method);
       }
-      const categories = ["Pizzas", "Empanadas", "Bebidas", "Otros"];
-      categories.forEach((name, index) => {
-        this.db
-          .prepare(
-            "INSERT OR IGNORE INTO categories(id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-          )
-          .run(`category-${index + 1}`, name, index + 1, timestamp, timestamp);
-      });
+      const categoryCount = Number(
+        (
+          this.db
+            .prepare("SELECT COUNT(*) AS count FROM categories")
+            .get() as Row
+        ).count,
+      );
+      if (categoryCount === 0) {
+        const categories = ["Pizzas", "Empanadas", "Bebidas", "Otros"];
+        categories.forEach((name, index) => {
+          this.db
+            .prepare(
+              "INSERT OR IGNORE INTO categories(id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            )
+            .run(
+              `category-${index + 1}`,
+              name,
+              index + 1,
+              timestamp,
+              timestamp,
+            );
+        });
+      }
       for (let number = 1; number <= 10; number += 1) {
         this.db
           .prepare(
@@ -1152,6 +1167,31 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       ),
       active: flag(row.active),
     }));
+  }
+
+  private nextAvailableStaffNumber(): number {
+    const used = this.db
+      .prepare(
+        "SELECT staff_number FROM users WHERE staff_number > 0 ORDER BY staff_number",
+      )
+      .all() as Row[];
+    let candidate = 1;
+    for (const row of used) {
+      const value = Number(row.staff_number);
+      if (value === candidate) candidate += 1;
+      else if (value > candidate) break;
+    }
+    return candidate;
+  }
+
+  private assertStaffNumberAvailable(staffNumber: number, userId?: Id) {
+    const duplicate = this.db
+      .prepare(
+        "SELECT id FROM users WHERE staff_number = ? AND (? IS NULL OR id <> ?)",
+      )
+      .get(staffNumber, userId ?? null, userId ?? null) as Row | undefined;
+    if (duplicate)
+      throw new Error(`El número de usuario ${staffNumber} ya está ocupado.`);
   }
 
   private listDeliveryLedger(): DeliveryLedgerDto[] {
@@ -4138,6 +4178,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   createUser(input: {
+    staffNumber?: number;
     fullName: string;
     roleCode: "ADMIN" | "MANAGER" | "CASHIER" | "WAITER" | "DELIVERY_DRIVER";
     pin: string;
@@ -4153,13 +4194,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
       const id = randomUUID();
       const timestamp = nowIso();
+      const staffNumber = input.staffNumber ?? this.nextAvailableStaffNumber();
+      this.assertStaffNumberAvailable(staffNumber);
       this.db
         .prepare(
           `INSERT INTO users(id, staff_number, full_name, role_id, pin_hash, must_change_pin, active, created_at, updated_at)
-        VALUES (?, (SELECT COALESCE(MAX(staff_number), 0) + 1 FROM users), ?, ?, ?, 0, 1, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)`,
         )
         .run(
           id,
+          staffNumber,
           input.fullName.trim(),
           role.id,
           bcrypt.hashSync(input.pin, 12),
@@ -4171,7 +4215,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         entityId: id,
         action: "USER_CREATED",
         permission: "users.manage",
-        after: { roleCode: input.roleCode },
+        after: { roleCode: input.roleCode, staffNumber },
         authorizerUserId: String(authorizer.id),
       });
       return requireRow(
@@ -4193,15 +4237,17 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
       const id = randomUUID();
       const timestamp = nowIso();
+      const staffNumber = this.nextAvailableStaffNumber();
       // El hash usa un secreto no numérico e irrecuperable: este registro es una
       // identidad operativa para asignaciones, no una cuenta con acceso al POS.
       this.db
         .prepare(
           `INSERT INTO users(id, staff_number, full_name, role_id, pin_hash, must_change_pin, active, created_at, updated_at)
-           VALUES (?, (SELECT COALESCE(MAX(staff_number), 0) + 1 FROM users), ?, ?, ?, 0, 1, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)`,
         )
         .run(
           id,
+          staffNumber,
           input.fullName.trim(),
           role.id,
           bcrypt.hashSync(randomUUID(), 12),
@@ -4226,6 +4272,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   updateUser(input: {
     userId: Id;
+    staffNumber?: number;
     roleCode: "ADMIN" | "MANAGER" | "CASHIER" | "WAITER" | "DELIVERY_DRIVER";
     active: boolean;
     newPin?: string | null;
@@ -4269,12 +4316,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           .get(input.roleCode) as Row | undefined,
         "El rol no existe.",
       );
+      const staffNumber = input.staffNumber ?? before.staffNumber;
+      this.assertStaffNumberAvailable(staffNumber, input.userId);
       if (input.newPin) {
         this.db
           .prepare(
-            "UPDATE users SET role_id = ?, active = ?, pin_hash = ?, must_change_pin = 0, updated_at = ? WHERE id = ?",
+            "UPDATE users SET staff_number = ?, role_id = ?, active = ?, pin_hash = ?, must_change_pin = 0, updated_at = ? WHERE id = ?",
           )
           .run(
+            staffNumber,
             role.id,
             input.active ? 1 : 0,
             bcrypt.hashSync(input.newPin, 12),
@@ -4284,9 +4334,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       } else {
         this.db
           .prepare(
-            "UPDATE users SET role_id = ?, active = ?, updated_at = ? WHERE id = ?",
+            "UPDATE users SET staff_number = ?, role_id = ?, active = ?, updated_at = ? WHERE id = ?",
           )
-          .run(role.id, input.active ? 1 : 0, nowIso(), input.userId);
+          .run(
+            staffNumber,
+            role.id,
+            input.active ? 1 : 0,
+            nowIso(),
+            input.userId,
+          );
       }
       const after = requireRow(
         this.listUsers().find((user) => user.id === input.userId),
@@ -4298,8 +4354,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         action: "USER_UPDATED",
         permission: "users.manage",
         reason: input.reason,
-        before: { roleCode: before.roleCode, active: before.active },
+        before: {
+          staffNumber: before.staffNumber,
+          roleCode: before.roleCode,
+          active: before.active,
+        },
         after: {
+          staffNumber: after.staffNumber,
           roleCode: after.roleCode,
           active: after.active,
           pinChanged: Boolean(input.newPin),
@@ -4307,6 +4368,64 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         authorizerUserId: String(authorizer.id),
       });
       return after;
+    });
+    return run();
+  }
+
+  deleteUser(input: { userId: Id; reason: string; authorizerPin: string }): {
+    deleted: true;
+  } {
+    const run = this.db.transaction(() => {
+      const authorizer = this.authorizePin(input.authorizerPin, "users.manage");
+      const before = requireRow(
+        this.listUsers().find((user) => user.id === input.userId),
+        "El usuario no existe.",
+      );
+      if (input.userId === this.adminUserId)
+        throw new Error(
+          "El administrador operativo inicial no puede eliminarse.",
+        );
+      if (String(authorizer.id) === input.userId)
+        throw new Error(
+          "No podés eliminar el usuario que autoriza la operación.",
+        );
+      const references = [
+        ["cash_sessions", "opened_by_user_id"],
+        ["cash_sessions", "closed_by_user_id"],
+        ["cash_movements", "user_id"],
+        ["orders", "waiter_user_id"],
+        ["orders", "driver_user_id"],
+        ["payments", "created_by_user_id"],
+        ["audit_log", "operator_user_id"],
+        ["audit_log", "authorizer_user_id"],
+        ["delivery_ledger", "driver_user_id"],
+        ["delivery_ledger", "settled_by_user_id"],
+        ["payment_refunds", "created_by_user_id"],
+        ["payment_refunds", "authorized_by_user_id"],
+      ] as const;
+      const hasHistory = references.some(([table, column]) =>
+        this.db
+          .prepare(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`)
+          .get(input.userId),
+      );
+      if (hasHistory)
+        throw new Error(
+          "El usuario tiene actividad o historial asociado. Podés marcarlo inactivo desde Editar.",
+        );
+      const result = this.db
+        .prepare("DELETE FROM users WHERE id = ?")
+        .run(input.userId);
+      if (!result.changes) throw new Error("El usuario no existe.");
+      this.audit({
+        entityType: "USER",
+        entityId: input.userId,
+        action: "USER_DELETED",
+        permission: "users.manage",
+        reason: input.reason.trim(),
+        before,
+        authorizerUserId: String(authorizer.id),
+      });
+      return { deleted: true as const };
     });
     return run();
   }

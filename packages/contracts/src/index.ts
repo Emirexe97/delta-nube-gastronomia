@@ -749,6 +749,7 @@ export interface DesktopApi {
     authorizerPin: string;
   }): Promise<ProductDto>;
   createUser(input: {
+    staffNumber?: number;
     fullName: string;
     roleCode: "ADMIN" | "MANAGER" | "CASHIER" | "WAITER" | "DELIVERY_DRIVER";
     pin: string;
@@ -760,12 +761,18 @@ export interface DesktopApi {
   }): Promise<UserDto>;
   updateUser(input: {
     userId: Id;
+    staffNumber?: number;
     roleCode: "ADMIN" | "MANAGER" | "CASHIER" | "WAITER" | "DELIVERY_DRIVER";
     active: boolean;
     newPin?: string | null;
     reason: string;
     authorizerPin: string;
   }): Promise<UserDto>;
+  deleteUser(input: {
+    userId: Id;
+    reason: string;
+    authorizerPin: string;
+  }): Promise<{ deleted: true }>;
   settleDelivery(input: SettleDeliveryInput): Promise<DeliveryLedgerDto[]>;
 
   configureTables(input: { count: number }): Promise<RestaurantTableDto[]>;

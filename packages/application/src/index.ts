@@ -177,6 +177,7 @@ export interface GastronomyRepository {
     authorizerPin: string;
   }): ProductDto;
   createUser(input: {
+    staffNumber?: number;
     fullName: string;
     roleCode: "ADMIN" | "MANAGER" | "CASHIER" | "WAITER" | "DELIVERY_DRIVER";
     pin: string;
@@ -188,12 +189,16 @@ export interface GastronomyRepository {
   }): import("@gastronomy/contracts").UserDto;
   updateUser(input: {
     userId: Id;
+    staffNumber?: number;
     roleCode: "ADMIN" | "MANAGER" | "CASHIER" | "WAITER" | "DELIVERY_DRIVER";
     active: boolean;
     newPin?: string | null;
     reason: string;
     authorizerPin: string;
   }): import("@gastronomy/contracts").UserDto;
+  deleteUser(input: { userId: Id; reason: string; authorizerPin: string }): {
+    deleted: true;
+  };
   settleDelivery(input: SettleDeliveryInput): DeliveryLedgerDto[];
   reverseCashMovement(
     input: import("@gastronomy/contracts").ReverseCashMovementInput,
@@ -709,6 +714,13 @@ export class GastronomyApplication {
   }
 
   createUser(input: Parameters<GastronomyRepository["createUser"]>[0]) {
+    if (
+      input.staffNumber !== undefined &&
+      (!Number.isSafeInteger(input.staffNumber) || input.staffNumber <= 0)
+    )
+      throw new Error(
+        "El número de usuario debe ser un entero mayor que cero.",
+      );
     if (!input.fullName.trim())
       throw new Error("Ingresá el nombre del usuario.");
     if (!/^\d{4,8}$/.test(input.pin))
@@ -727,12 +739,31 @@ export class GastronomyApplication {
   }
 
   updateUser(input: Parameters<GastronomyRepository["updateUser"]>[0]) {
+    if (
+      input.staffNumber !== undefined &&
+      (!Number.isSafeInteger(input.staffNumber) || input.staffNumber <= 0)
+    )
+      throw new Error(
+        "El número de usuario debe ser un entero mayor que cero.",
+      );
     if (!input.reason.trim()) throw new Error("El cambio requiere un motivo.");
     if (input.newPin && !/^\d{4,8}$/.test(input.newPin))
       throw new Error("El nuevo PIN debe tener entre 4 y 8 dígitos.");
     if (!/^\d{4,8}$/.test(input.authorizerPin))
       throw new Error("El PIN de autorización no es válido.");
     return this.repository.updateUser({
+      ...input,
+      reason: input.reason.trim(),
+    });
+  }
+
+  deleteUser(input: Parameters<GastronomyRepository["deleteUser"]>[0]) {
+    if (!input?.userId) throw new Error("El usuario no es válido.");
+    if (!input.reason.trim())
+      throw new Error("La eliminación requiere un motivo.");
+    if (!/^\d{4,8}$/.test(input.authorizerPin))
+      throw new Error("El PIN de autorización no es válido.");
+    return this.repository.deleteUser({
       ...input,
       reason: input.reason.trim(),
     });

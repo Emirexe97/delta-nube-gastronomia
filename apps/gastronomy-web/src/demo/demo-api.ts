@@ -267,6 +267,13 @@ function roleName(role: UserDto["roleCode"]) {
   )[role];
 }
 
+function nextAvailableStaffNumber(users: UserDto[]) {
+  const used = new Set(users.map((user) => user.staffNumber));
+  let candidate = 1;
+  while (used.has(candidate)) candidate += 1;
+  return candidate;
+}
+
 function methodName(data: BootstrapDto, code: string) {
   return (
     data.paymentMethods.find((method) => method.code === code)?.name ?? code
@@ -2060,13 +2067,17 @@ export function createDemoApi(
       requirePin(input.authorizerPin);
       if (!/^\d{4,6}$/.test(input.pin))
         throw new Error("El PIN debe tener entre 4 y 6 dígitos.");
+      const staffNumber =
+        input.staffNumber ?? nextAvailableStaffNumber(state.data.users);
+      if (
+        state.data.users.some(
+          (candidate) => candidate.staffNumber === staffNumber,
+        )
+      )
+        throw new Error(`El número de usuario ${staffNumber} ya está ocupado.`);
       const user: UserDto = {
         id: uid("user", state),
-        staffNumber:
-          Math.max(
-            0,
-            ...state.data.users.map((candidate) => candidate.staffNumber),
-          ) + 1,
+        staffNumber,
         fullName: input.fullName.trim(),
         roleCode: input.roleCode,
         roleName: roleName(input.roleCode),
@@ -2085,11 +2096,7 @@ export function createDemoApi(
         throw new Error("Ingresá el nombre del repartidor.");
       const user: UserDto = {
         id: uid("driver", state),
-        staffNumber:
-          Math.max(
-            0,
-            ...state.data.users.map((candidate) => candidate.staffNumber),
-          ) + 1,
+        staffNumber: nextAvailableStaffNumber(state.data.users),
         fullName: input.fullName.trim(),
         roleCode: "DELIVERY_DRIVER",
         roleName: "Repartidor",
@@ -2108,6 +2115,15 @@ export function createDemoApi(
         (candidate) => candidate.id === input.userId,
       );
       if (!user) throw new Error("No se encontró el usuario.");
+      const staffNumber = input.staffNumber ?? user.staffNumber;
+      if (
+        state.data.users.some(
+          (candidate) =>
+            candidate.id !== input.userId &&
+            candidate.staffNumber === staffNumber,
+        )
+      )
+        throw new Error(`El número de usuario ${staffNumber} ya está ocupado.`);
       if (
         user.roleCode === "DELIVERY_DRIVER" &&
         (!input.active || input.roleCode !== "DELIVERY_DRIVER")
@@ -2125,6 +2141,7 @@ export function createDemoApi(
       }
       user.roleCode = input.roleCode;
       user.roleName = roleName(input.roleCode);
+      user.staffNumber = staffNumber;
       user.active = input.active;
       audit(
         state,
@@ -2136,6 +2153,38 @@ export function createDemoApi(
       );
       save();
       return output(user);
+    },
+
+    async deleteUser(input) {
+      requirePin(input.authorizerPin);
+      const index = state.data.users.findIndex(
+        (candidate) => candidate.id === input.userId,
+      );
+      if (index < 0) throw new Error("No se encontró el usuario.");
+      if (state.data.users[index]?.id === "user-admin")
+        throw new Error(
+          "El administrador operativo inicial no puede eliminarse.",
+        );
+      const hasHistory = state.data.orders.some(
+        (order) =>
+          order.waiterUserId === input.userId ||
+          order.driverUserId === input.userId,
+      );
+      if (hasHistory)
+        throw new Error(
+          "El usuario tiene actividad o historial asociado. Podés marcarlo inactivo desde Editar.",
+        );
+      const [deleted] = state.data.users.splice(index, 1);
+      audit(
+        state,
+        "USER",
+        input.userId,
+        "USER_DELETED",
+        input.reason,
+        "users.manage",
+      );
+      save();
+      return output({ deleted: Boolean(deleted) as true });
     },
 
     async settleDelivery(input) {

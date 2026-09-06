@@ -3,6 +3,7 @@ import type {
   BootstrapDto,
   OrderDto,
   OrderOperationalStatus,
+  ProductDto,
 } from "@gastronomy/contracts";
 import {
   Check,
@@ -77,7 +78,13 @@ export function OrderEditor({
   const [printConfirmKind, setPrintConfirmKind] = useState<
     "KITCHEN_ORDER" | "CUSTOMER_BILL" | null
   >(null);
+  const [addingProduct, setAddingProduct] = useState<ProductDto | null>(null);
+  const [addingQuantity, setAddingQuantity] = useState("1");
+  const [addingPrice, setAddingPrice] = useState("");
+  const [addingPin, setAddingPin] = useState("");
+  const [addingError, setAddingError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const addingPriceRef = useRef<HTMLInputElement>(null);
   const addItemLockRef = useRef(false);
   useEffect(() => {
     if (orderId) window.setTimeout(() => searchRef.current?.focus(), 80);
@@ -88,20 +95,79 @@ export function OrderEditor({
     [data.products, search, categoryId],
   );
   const addItem = useApiMutation(
-    (input: { orderId: string; productId: string }) =>
+    (input: Parameters<typeof window.gastronomy.addOrderItem>[0]) =>
       window.gastronomy.addOrderItem(input),
     {
-      onError: (value) => setError(humanError(value)),
+      onSuccess: () => {
+        setAddingProduct(null);
+        setAddingError(null);
+        setSearch("");
+        window.setTimeout(() => searchRef.current?.focus(), 50);
+      },
+      onError: (value) => {
+        const message = humanError(value);
+        setAddingError(message);
+        setError(message);
+      },
       onSettled: () => {
         addItemLockRef.current = false;
       },
     },
   );
-  const addProduct = (productId: string) => {
+  const productPrice = (product: ProductDto) => {
+    if (!order) return null;
+    const code = order.type === "DINE_IN" ? "SALON" : order.type;
+    return (
+      product.prices.find((price) => price.priceListCode === code)
+        ?.amountMinor ?? null
+    );
+  };
+  const openProduct = (product: ProductDto) => {
+    const price = productPrice(product);
+    if (price == null) {
+      setError("El producto no tiene un precio configurado para este canal.");
+      return;
+    }
+    setAddingProduct(product);
+    setAddingQuantity("1");
+    setAddingPrice(String(price / 100).replace(".", ","));
+    setAddingPin("");
+    setAddingError(null);
+    window.setTimeout(() => {
+      addingPriceRef.current?.focus();
+      addingPriceRef.current?.select();
+    }, 50);
+  };
+  const addProduct = () => {
     if (!order || addItemLockRef.current || addItem.isPending) return;
+    if (!addingProduct) return;
+    const quantity = Number(addingQuantity);
+    const price = parseMoneyInput(addingPrice);
+    const catalogPrice = productPrice(addingProduct);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      setAddingError("Ingresá una cantidad entera mayor que cero.");
+      return;
+    }
+    if (price == null || catalogPrice == null) {
+      setAddingError("Ingresá un precio válido.");
+      return;
+    }
+    const changed = price !== catalogPrice;
+    if (changed && !/^\d{4,8}$/.test(addingPin)) {
+      setAddingError("Ingresá un PIN válido para autorizar el precio manual.");
+      return;
+    }
     addItemLockRef.current = true;
     setError(null);
-    addItem.mutate({ orderId: order.id, productId });
+    setAddingError(null);
+    addItem.mutate({
+      orderId: order.id,
+      productId: addingProduct.id,
+      quantity,
+      ...(changed
+        ? { unitPriceMinorOverride: price, authorizerPin: addingPin }
+        : {}),
+    });
   };
   const removeItem = useApiMutation(
     (input: { orderId: string; itemId: string }) =>
@@ -189,6 +255,8 @@ export function OrderEditor({
     setPrintFeedback(null);
     setPrintConfirmKind(null);
     setSkippedPrintKind(null);
+    setAddingProduct(null);
+    setAddingError(null);
   }, [orderId]);
 
   useEffect(() => {
@@ -203,6 +271,7 @@ export function OrderEditor({
         discountOpen ||
         discardConfirmOpen ||
         driverOpen ||
+        Boolean(addingProduct) ||
         Boolean(modifierItemId);
       const canOpenPayment =
         order.lifecycleStatus !== "DRAFT" &&
@@ -219,6 +288,7 @@ export function OrderEditor({
     return () => window.removeEventListener("keydown", handler);
   }, [
     cancelOpen,
+    addingProduct,
     discardConfirmOpen,
     discountOpen,
     driverOpen,
@@ -233,6 +303,12 @@ export function OrderEditor({
   if (!order) return null;
   const locked = ["DELIVERED", "CANCELLED"].includes(order.operationalStatus);
   const isDraft = order.lifecycleStatus === "DRAFT";
+  const addingCatalogPrice = addingProduct ? productPrice(addingProduct) : null;
+  const addingParsedPrice = parseMoneyInput(addingPrice);
+  const addingPriceChanged =
+    addingCatalogPrice != null &&
+    addingParsedPrice != null &&
+    addingParsedPrice !== addingCatalogPrice;
   const canConfirm = guardOrderAction(order, "CONFIRM");
   const canDeliver = guardOrderAction(order, "DELIVER");
   const pendingPrint = data.printJobs.find(
@@ -326,7 +402,7 @@ export function OrderEditor({
                   !addItem.isPending
                 ) {
                   event.preventDefault();
-                  addProduct(products[0].id);
+                  openProduct(products[0]);
                 }
               }}
               placeholder="Código, nombre, categoría… · Enter agrega"
@@ -374,7 +450,7 @@ export function OrderEditor({
                   key={product.id}
                   disabled={locked || addItem.isPending || price == null}
                   onClick={() => {
-                    addProduct(product.id);
+                    openProduct(product);
                   }}
                   className="focus-ring min-h-[76px] rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-300 hover:shadow-sm disabled:opacity-50"
                 >
@@ -825,6 +901,114 @@ export function OrderEditor({
           </footer>
         </section>
       </div>
+      <Modal
+        open={Boolean(addingProduct)}
+        onClose={() => {
+          setAddingProduct(null);
+          setAddingError(null);
+        }}
+        closeDisabled={addItem.isPending}
+        title={
+          addingProduct ? `Agregar · ${addingProduct.name}` : "Agregar producto"
+        }
+        description="Confirmá cantidad y precio antes de incorporarlo a la mesa"
+      >
+        <form
+          className="grid gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            addProduct();
+          }}
+        >
+          <div className="grid gap-3 sm:grid-cols-[120px_1fr]">
+            <Field label="Cantidad">
+              <Input
+                inputMode="numeric"
+                value={addingQuantity}
+                disabled={addItem.isPending}
+                onChange={(event) => {
+                  setAddingQuantity(event.target.value.replace(/\D/g, ""));
+                  setAddingError(null);
+                }}
+              />
+            </Field>
+            <Field
+              label="Precio unitario"
+              hint={
+                addingPriceChanged
+                  ? "Precio manual · requiere PIN"
+                  : addingCatalogPrice == null
+                    ? undefined
+                    : `Precio de lista: ${formatMoney(addingCatalogPrice)}`
+              }
+            >
+              <Input
+                ref={addingPriceRef}
+                autoFocus
+                inputMode="decimal"
+                value={addingPrice}
+                disabled={addItem.isPending}
+                onFocus={(event) => event.currentTarget.select()}
+                onChange={(event) => {
+                  setAddingPrice(event.target.value);
+                  setAddingError(null);
+                }}
+                className={
+                  addingPriceChanged
+                    ? "border-amber-300 bg-amber-50 font-extrabold text-amber-800"
+                    : "font-bold"
+                }
+              />
+            </Field>
+          </div>
+          {addingPriceChanged ? (
+            <Field label="PIN para autorizar el precio manual">
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={8}
+                value={addingPin}
+                disabled={addItem.isPending}
+                onChange={(event) => {
+                  setAddingPin(event.target.value.replace(/\D/g, ""));
+                  setAddingError(null);
+                }}
+                placeholder="••••"
+              />
+            </Field>
+          ) : null}
+          {addingError ? (
+            <p
+              role="alert"
+              className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs font-semibold text-rose-700"
+            >
+              {addingError}
+            </p>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={addItem.isPending}
+              onClick={() => setAddingProduct(null)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="submit"
+              disabled={
+                addItem.isPending ||
+                !addingQuantity ||
+                addingParsedPrice == null ||
+                (addingPriceChanged && addingPin.length < 4)
+              }
+            >
+              <Plus size={16} />
+              {addItem.isPending ? "Agregando…" : "Agregar a la mesa"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
       <HalfAndHalfModal
         open={halfOpen}
         order={order}

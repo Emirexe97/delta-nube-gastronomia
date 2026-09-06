@@ -46,6 +46,7 @@ const api: DesktopApi = {
   createUser: (input) => invoke("createUser", input),
   createDriver: (input) => invoke("createDriver", input),
   updateUser: (input) => invoke("updateUser", input),
+  deleteUser: (input) => invoke("deleteUser", input),
   settleDelivery: (input) => invoke("settleDelivery", input),
   reverseCashMovement: (input) => invoke("reverseCashMovement", input),
   reverseDeliverySettlement: (input) =>

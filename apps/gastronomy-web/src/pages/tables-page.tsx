@@ -657,15 +657,10 @@ function QuickEntry({
         setOrder(currentOrder);
         setStatus(`Mesa ${number} abierta · pedido #${currentOrder.number}`);
         setStep("WAITER");
-        focus(waiterRef);
         return;
       }
       setStatus(existed ? `Mesa ${number} lista` : `Mesa ${number} creada`);
       setStep("WAITER");
-      focus(
-        preferredWaiterFocusRef.current === "name" ? waiterNameRef : waiterRef,
-      );
-      preferredWaiterFocusRef.current = "number";
     } catch (value) {
       fail(humanError(value), tableRef);
     } finally {
@@ -919,6 +914,13 @@ function QuickEntry({
     ensureTable.isPending || createOrder.isPending || addItem.isPending;
   const waiterFieldsEnabled =
     !busy && (step === "WAITER" || (step === "TABLE" && tableNumberIsValid));
+  useEffect(() => {
+    if (step !== "WAITER" || busy || !table) return;
+    focus(
+      preferredWaiterFocusRef.current === "name" ? waiterNameRef : waiterRef,
+    );
+    preferredWaiterFocusRef.current = "number";
+  }, [busy, step, table?.id]);
 
   return (
     <>
@@ -1280,7 +1282,7 @@ function QuickEntry({
                               onClick={() => {
                                 chooseProduct(product);
                                 setProductListOpen(false);
-                                focus(productNameRef);
+                                focus(priceRef);
                               }}
                               className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-xs transition ${active ? "bg-brand-50 text-brand-800" : "text-slate-700 hover:bg-slate-50"}`}
                             >
@@ -1331,6 +1333,7 @@ function QuickEntry({
                     inputMode="decimal"
                     disabled={!selectedProduct || busy}
                     value={unitPrice}
+                    onFocus={(event) => event.currentTarget.select()}
                     onChange={(event) => {
                       setUnitPrice(event.target.value);
                       setError(null);

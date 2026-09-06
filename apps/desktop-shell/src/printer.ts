@@ -12,16 +12,29 @@ export type PrintOutcome = "PRINTED" | "SKIPPED";
 
 const previewWindows = new Set<BrowserWindow>();
 const previewPreload = join(__dirname, "print-preview-preload.js");
-
-function printSettings(profile: PrinterProfileDto) {
+function printSettings(profile: PrinterProfileDto, height = 297_000) {
   return {
     copies: Math.max(1, profile.copies || 1),
     printBackground: false,
     pageSize: {
-      width: profile.paperWidth === "58mm" ? 58_000 : 80_000,
-      height: 297_000,
+      // An 80 mm roll has a 72 mm printable area on common thermal drivers
+      // (including LR2000). Asking Chromium for an unsupported 80 mm imageable
+      // area can make silent printing fail before the job reaches Windows.
+      width: profile.paperWidth === "58mm" ? 58_000 : 72_000,
+      height,
     },
   };
+}
+
+async function contentHeightMicrons(contents: Electron.WebContents) {
+  const heightPx = Number(
+    await contents.executeJavaScript(`(() => {
+      const ticket = document.querySelector("#print-preview-ticket") ?? document.body;
+      return Math.ceil(ticket.getBoundingClientRect().height);
+    })()`),
+  );
+  const measured = Math.ceil((heightPx * 25_400) / 96) + 4_000;
+  return Math.max(40_000, Math.min(500_000, measured));
 }
 
 export function resolvePrinterTarget(
@@ -100,12 +113,13 @@ async function showPreview(
     else resolveResult(outcome);
     if (!window.isDestroyed()) window.destroy();
   };
-  const print = () => {
+  const print = async () => {
     if (!isPreviewWindow(window) || printing) return;
     printing = true;
     try {
+      const height = await contentHeightMicrons(window.webContents);
       window.webContents.print(
-        { ...printSettings(profile), silent: false },
+        { ...printSettings(profile, height), silent: false },
         (success, reason) => {
           printing = false;
           if (settled || window.isDestroyed()) return;
@@ -196,13 +210,19 @@ export async function printHtml(
   } catch {
     target = null;
   }
-  if (!target)
+  if (!target) {
+    if (profile.deviceName) {
+      throw new Error(
+        `No se encontró la impresora configurada: ${profile.deviceName}.`,
+      );
+    }
     return showPreview(
       html,
       profile,
       options.parent,
       "No se encontró una impresora disponible.",
     );
+  }
 
   const window = new BrowserWindow({
     show: false,
@@ -216,9 +236,10 @@ export async function printHtml(
     await window.loadURL(
       `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
     );
+    const height = await contentHeightMicrons(window.webContents);
     await new Promise<void>((resolve, reject) => {
       window.webContents.print(
-        { ...printSettings(profile), silent: true, deviceName: target },
+        { ...printSettings(profile, height), silent: true, deviceName: target },
         (success, reason) =>
           success
             ? resolve()
@@ -226,16 +247,11 @@ export async function printHtml(
       );
     });
   } catch (error) {
+    throw error instanceof Error
+      ? error
+      : new Error("Falló la impresión directa; revise la impresora y reintente.");
+  } finally {
     if (!window.isDestroyed()) window.destroy();
-    return showPreview(
-      html,
-      profile,
-      options.parent,
-      error instanceof Error
-        ? error.message
-        : "Falló la impresión directa; revise la impresora y reintente.",
-    );
   }
-  if (!window.isDestroyed()) window.destroy();
   return "PRINTED";
 }

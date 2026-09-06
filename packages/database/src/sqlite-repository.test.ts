@@ -1794,6 +1794,94 @@ test("alta y cambios de usuario requieren users.manage y quedan auditados", () =
   });
 });
 
+test("usuario usa el primer número libre, permite editarlo y elimina sólo sin historial", () => {
+  withRepository((repository) => {
+    const third = repository.createUser({
+      staffNumber: 3,
+      fullName: "Mozo tres",
+      roleCode: "WAITER",
+      pin: "3456",
+      authorizerPin: "2468",
+    });
+    const second = repository.createUser({
+      fullName: "Mozo dos",
+      roleCode: "WAITER",
+      pin: "2345",
+      authorizerPin: "2468",
+    });
+    assert.equal(third.staffNumber, 3);
+    assert.equal(second.staffNumber, 2);
+    assert.throws(
+      () =>
+        repository.createUser({
+          staffNumber: 3,
+          fullName: "Número repetido",
+          roleCode: "WAITER",
+          pin: "4567",
+          authorizerPin: "2468",
+        }),
+      /número.*ocupado/i,
+    );
+    const updated = repository.updateUser({
+      userId: second.id,
+      staffNumber: 4,
+      roleCode: "WAITER",
+      active: true,
+      reason: "Reordenar números",
+      authorizerPin: "2468",
+    });
+    assert.equal(updated.staffNumber, 4);
+    assert.throws(
+      () =>
+        repository.updateUser({
+          userId: updated.id,
+          staffNumber: 3,
+          roleCode: "WAITER",
+          active: true,
+          reason: "Número duplicado",
+          authorizerPin: "2468",
+        }),
+      /número.*ocupado/i,
+    );
+    assert.deepEqual(
+      repository.deleteUser({
+        userId: updated.id,
+        reason: "Alta incorrecta",
+        authorizerPin: "2468",
+      }),
+      { deleted: true },
+    );
+    assert.equal(
+      repository.bootstrap().users.some((user) => user.id === updated.id),
+      false,
+    );
+    repository.db
+      .prepare(
+        `INSERT INTO audit_log(id, timestamp, operator_user_id, entity_type, entity_id, action)
+         VALUES (?, ?, ?, 'USER', ?, 'USED')`,
+      )
+      .run(randomUUID(), new Date().toISOString(), third.id, third.id);
+    assert.throws(
+      () =>
+        repository.deleteUser({
+          userId: third.id,
+          reason: "Tiene historial",
+          authorizerPin: "2468",
+        }),
+      /historial/i,
+    );
+    assert.throws(
+      () =>
+        repository.deleteUser({
+          userId: "user-admin",
+          reason: "No permitido",
+          authorizerPin: "2468",
+        }),
+      /administrador.*no puede eliminarse/i,
+    );
+  });
+});
+
 test("alta de repartidor crea una identidad operativa sin PIN administrado", () => {
   withRepository((repository) => {
     assert.throws(

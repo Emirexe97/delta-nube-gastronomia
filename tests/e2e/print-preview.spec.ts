@@ -23,12 +23,14 @@ async function launch(printers: unknown[], failDirect = false) {
   await app.evaluate(
     ({ app: electronApp, BrowserWindow }, { available, fail }) => {
       (electronApp as any).__printCount = 0;
+      (electronApp as any).__lastPrintOptions = null;
       const install = (window: any) => {
         window.webContents.getPrintersAsync = async () => available;
         window.webContents.print = (
-          _options: unknown,
+          options: unknown,
           callback: (ok: boolean, reason?: string) => void,
         ) => {
+          (electronApp as any).__lastPrintOptions = options;
           (electronApp as any).__printCount += 1;
           const count = (electronApp as any).__printCount;
           callback(
@@ -165,20 +167,33 @@ test("SYSTEM_DIRECT con default válido imprime sin preview", async () => {
   ).toBe(1);
 });
 
-test("fallo directo cae en preview y reintento exitoso imprime", async () => {
+test("fallo directo no abre preview y queda disponible para reintentar", async () => {
   await launch([{ name: "Mock Printer", isDefault: true }], true);
   await startTest(await settingsFor("SYSTEM_DIRECT"));
-  const preview = await previewWindow();
-  await expect(preview.getByText("offline")).toBeVisible();
-  await preview.getByRole("button", { name: "Imprimir" }).click();
+  await result();
   await expect
-    .poll(() => page.evaluate(() => (window as any).__printResult?.printed))
-    .toBe(true);
+    .poll(
+      () =>
+        app
+          .windows()
+          .filter((candidate) =>
+            candidate.url().includes("print-preview-controls"),
+          ).length,
+    )
+    .toBe(0);
+  expect(
+    (await page.evaluate(() => (window as any).__printResult)).error,
+  ).toContain("offline");
   expect(
     await app.evaluate(
       ({ app: electronApp }) => (electronApp as any).__printCount,
     ),
-  ).toBe(2);
+  ).toBe(1);
+  const options = await app.evaluate(
+    ({ app: electronApp }) => (electronApp as any).__lastPrintOptions,
+  );
+  expect(options.pageSize.width).toBe(72_000);
+  expect(options.pageSize.height).toBeLessThan(297_000);
 });
 
 test("cancelar un job real libera la mesa y permite imprimir después", async () => {

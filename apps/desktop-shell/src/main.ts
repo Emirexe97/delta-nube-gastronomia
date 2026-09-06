@@ -41,67 +41,75 @@ function orderTicketHtml(
     ? settings.printing.kitchen
     : settings.printing.bill;
   const template = settings.printing.receiptTemplate;
-  const paperMm = profile.paperWidth === "58mm" ? 58 : 80;
-  const contentMm = paperMm - 8;
-  const fontSizePx = Math.max(
-    9,
-    Math.min(15, (contentMm / profile.charsPerLine) * 6.2),
-  ).toFixed(1);
-  const feedHeightMm = Math.max(0, profile.feedLinesBeforeCut) * 3.5;
+  const paperMm = profile.paperWidth === "58mm" ? 58 : 72;
+  const marginMm = profile.paperWidth === "58mm" ? 2 : 1.5;
+  const contentMm = paperMm - marginMm * 2;
+  const fontSizePx = profile.paperWidth === "58mm" ? 11.5 : 12.8;
+  const feedHeightMm = Math.max(0, profile.feedLinesBeforeCut) * 2.5;
+  const printedAt = new Date();
+  const dateLabel = printedAt.toLocaleDateString("es-AR");
+  const timeLabel = printedAt.toLocaleTimeString("es-AR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
   const typeLabel =
     order.type === "DINE_IN"
       ? `SALÓN · MESA ${order.tableNumber ?? "-"}`
       : order.type === "TAKEAWAY"
         ? "PARA RETIRAR"
         : "ENVÍO";
+  const lineBreaks = (value: string) =>
+    escapeHtml(value).replaceAll("\n", "<br>");
   const itemRows = order.items
     .map((item) => {
       const halves = item.halves.length
-        ? `<div class="indent">½ ${escapeHtml(item.halves[0]?.nameSnapshot)}<br>½ ${escapeHtml(item.halves[1]?.nameSnapshot)}</div>`
+        ? `<div class="detail">½ ${escapeHtml(item.halves[0]?.nameSnapshot)} · ½ ${escapeHtml(item.halves[1]?.nameSnapshot)}</div>`
         : "";
       const notes = item.notes
-        ? `<div class="indent">SIN / OBS: ${escapeHtml(item.notes)}</div>`
+        ? `<span class="modifier"><strong>OBS:</strong> ${escapeHtml(item.notes)}</span>`
         : "";
       const modifiers = item.modifiers
         .map(
           (modifier) =>
-            `<div class="indent">+ ${escapeHtml(modifier.nameSnapshot)} (${escapeHtml(modifier.scope === "FULL_PIZZA" ? "completo" : modifier.scope === "FIRST_HALF" ? "1ª mitad" : "2ª mitad")})</div>`,
+            `<span class="modifier">+ ${escapeHtml(modifier.nameSnapshot)} (${escapeHtml(modifier.scope === "FULL_PIZZA" ? "completo" : modifier.scope === "FIRST_HALF" ? "1ª mitad" : "2ª mitad")})</span>`,
         )
         .join("");
       const price =
         isKitchen || !template.showItemTotal
           ? ""
-          : `<span>${escapeHtml(formatMoney(item.lineTotalMinor))}</span>`;
+          : `<strong class="amount">${escapeHtml(formatMoney(item.lineTotalMinor))}</strong>`;
       const quantity =
-        template.showItemQuantity || isKitchen ? `${item.quantity} × ` : "";
-      const unitPrice =
-        !isKitchen && template.showItemUnitPrice
-          ? `<div class="indent">Unitario: ${escapeHtml(formatMoney(item.unitPriceMinorSnapshot))}</div>`
+        template.showItemQuantity || isKitchen
+          ? `<strong class="quantity">${item.quantity}×</strong>`
           : "";
-      return `<div class="row"><strong>${quantity}${escapeHtml(item.productNameSnapshot)}</strong>${price}</div>${unitPrice}${halves}${modifiers}${notes}`;
+      const unitPrice =
+        !isKitchen && template.showItemUnitPrice && item.quantity !== 1
+          ? `<span class="unit-price">@ ${escapeHtml(formatMoney(item.unitPriceMinorSnapshot))} c/u</span>`
+          : "";
+      return `<div class="item"><div class="item-main"><span class="product">${quantity}<strong>${escapeHtml(item.productNameSnapshot)}</strong>${unitPrice}</span>${price}</div>${halves}${modifiers || notes ? `<div class="detail">${modifiers}${notes}</div>` : ""}</div>`;
     })
     .join("");
+  const showBreakdown = order.discountMinor > 0 || order.deliveryFeeMinor > 0;
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    @page{size:${paperMm}mm auto;margin:3mm}body{font-family:"Courier New",monospace;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;overflow-wrap:anywhere}.row>span{white-space:nowrap;flex-shrink:0}
-    h1,h2,p{margin:0}.center{text-align:center}.divider{border-top:1px dashed #000;margin:8px 0}.row{display:flex;justify-content:space-between;gap:8px;margin:5px 0}.indent{padding-left:12px;line-height:1.4}.promised{font-size:18px;font-weight:800;margin:8px 0}.total{font-size:18px;font-weight:800}
-  </style></head><body><div class="center"><h1>${escapeHtml(isKitchen ? template.kitchenHeader || "COMANDA" : template.title || settings.businessName)}</h1><p>${escapeHtml(settings.printing.terminalLabel)}</p>${!isKitchen && template.subtitle ? `<p>${escapeHtml(template.subtitle)}</p>` : ""}${template.showOrderNumber || isKitchen ? `<h2>PEDIDO #${order.number}</h2>` : ""}${template.showTable || isKitchen ? `<h2>${escapeHtml(typeLabel)}</h2>` : ""}</div>
-  <div class="divider"></div>${order.promisedAt ? `<p class="center promised">HORA DE ENTREGA ${escapeHtml(new Date(order.promisedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }))}</p>` : ""}
-  ${itemRows}<div class="divider"></div>${order.notes ? `<p><strong>OBS:</strong> ${escapeHtml(order.notes)}</p>` : ""}
-  ${template.showCustomer && order.customerNameSnapshot ? `<p>Cliente: ${escapeHtml(order.customerNameSnapshot)}</p>` : ""}${template.showCustomer && order.customerPhoneSnapshot ? `<p>Tel: ${escapeHtml(order.customerPhoneSnapshot)}</p>` : ""}${template.showCustomer && order.deliveryAddressSnapshot ? `<p>Dirección: ${escapeHtml(order.deliveryAddressSnapshot)}</p>` : ""}
-  ${isKitchen ? "" : `<div class="divider"></div><div class="row"><span>Subtotal</span><span>${escapeHtml(formatMoney(order.subtotalMinor))}</span></div>${order.discountMinor ? `<div class="row"><span>Descuento</span><span>-${escapeHtml(formatMoney(order.discountMinor))}</span></div>` : ""}${order.deliveryFeeMinor ? `<div class="row"><span>Delivery</span><span>${escapeHtml(formatMoney(order.deliveryFeeMinor))}</span></div>` : ""}<div class="row total"><span>TOTAL</span><span>${escapeHtml(formatMoney(order.totalMinor))}</span></div>`}
-  ${template.showWaiter && order.waiterName ? `<p>Tomado por: ${escapeHtml(order.waiterName)}</p>` : ""}
+    @page{size:${paperMm}mm auto;margin:${marginMm}mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;line-height:1.16;overflow-wrap:anywhere}h1,h2,p{margin:0}.center{text-align:center}.title{font-size:18px;line-height:1.05;font-weight:900}.subtitle{font-size:11px;margin-top:1px}.meta{border-top:1px solid #000;border-bottom:1px solid #000;margin:3px 0;padding:2px 0}.meta-line,.row,.item-main,.columns{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px;align-items:baseline}.meta-line+.meta-line{margin-top:1px}.columns{font-size:10px;text-transform:uppercase;border-bottom:1px dashed #000;padding:1px 0}.item{padding:2px 0;border-bottom:1px dotted #999}.product{display:flex;min-width:0;gap:3px;align-items:baseline}.quantity{flex:0 0 27px}.amount{white-space:nowrap;font-variant-numeric:tabular-nums}.unit-price{font-size:9px;font-weight:400;white-space:nowrap}.detail{padding-left:30px;font-size:10px;line-height:1.15}.modifier{display:block}.info{font-size:11px;padding:2px 0;border-bottom:1px dashed #000}.promised{font-size:15px;font-weight:900;text-align:center;padding:2px 0;border-bottom:1px dashed #000}.totals{margin-top:3px}.row{margin:1px 0}.total{border-top:3px double #000;margin-top:2px;padding-top:2px;font-size:19px;font-weight:900}.payments{border-top:1px dashed #000;margin-top:3px;padding-top:2px;font-size:11px}.order-note{font-size:11px;padding-top:2px}.footer{border-top:1px dashed #000;margin-top:4px;padding-top:3px;text-align:center;font-size:11px}.reprint{font-weight:900;border:1px solid #000;padding:1px 4px}
+  </style></head><body><header class="center"><h1 class="title">${escapeHtml(isKitchen ? template.kitchenHeader || "COMANDA" : template.title || settings.businessName)}</h1>${!isKitchen && template.subtitle ? `<p class="subtitle">${escapeHtml(template.subtitle)}</p>` : ""}</header><section class="meta"><div class="meta-line"><strong>${dateLabel} · ${timeLabel}</strong>${template.showOrderNumber || isKitchen ? `<strong>PEDIDO #${order.number}</strong>` : ""}</div><div class="meta-line">${template.showTable || isKitchen ? `<strong>${escapeHtml(typeLabel)}</strong>` : "<span></span>"}${template.showWaiter && order.waiterName ? `<span>Mozo: <strong>${escapeHtml(order.waiterName)}</strong></span>` : `<span>${escapeHtml(settings.printing.terminalLabel)}</span>`}</div>${order.printCount > 0 ? `<div class="center"><span class="reprint">REIMPRESIÓN</span></div>` : ""}</section>
+  ${order.promisedAt ? `<p class="promised">ENTREGA ${escapeHtml(new Date(order.promisedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }))}</p>` : ""}
+  ${template.showCustomer && (order.customerNameSnapshot || order.customerPhoneSnapshot || order.deliveryAddressSnapshot) ? `<section class="info">${order.customerNameSnapshot ? `<strong>${escapeHtml(order.customerNameSnapshot)}</strong>` : ""}${order.customerPhoneSnapshot ? ` · ${escapeHtml(order.customerPhoneSnapshot)}` : ""}${order.deliveryAddressSnapshot ? `<br>${escapeHtml(order.deliveryAddressSnapshot)}` : ""}</section>` : ""}
+  <div class="columns"><strong>Cant. · Producto</strong>${isKitchen || !template.showItemTotal ? "" : "<strong>Total</strong>"}</div>${itemRows}
+  ${order.notes ? `<p class="order-note"><strong>OBS:</strong> ${escapeHtml(order.notes)}</p>` : ""}
+  ${isKitchen ? "" : `<section class="totals">${showBreakdown ? `<div class="row"><span>Subtotal</span><strong>${escapeHtml(formatMoney(order.subtotalMinor))}</strong></div>` : ""}${order.discountMinor ? `<div class="row"><span>Descuento</span><strong>-${escapeHtml(formatMoney(order.discountMinor))}</strong></div>` : ""}${order.deliveryFeeMinor ? `<div class="row"><span>Delivery</span><strong>${escapeHtml(formatMoney(order.deliveryFeeMinor))}</strong></div>` : ""}<div class="row total"><span>TOTAL</span><span>${escapeHtml(formatMoney(order.totalMinor))}</span></div></section>`}
   ${
     !isKitchen && template.showPaymentSummary && order.payments.length
-      ? `<div class="divider"></div>${order.payments
+      ? `<section class="payments">${order.payments
           .filter((payment) => payment.refundableMinor > 0)
           .map(
             (payment) =>
               `<div class="row"><span>${escapeHtml(payment.methodName)}</span><span>${escapeHtml(formatMoney(payment.refundableMinor))}</span></div>`,
           )
-          .join("")}`
+          .join("")}</section>`
       : ""
   }
-  <div class="divider"></div>${template.showDate || isKitchen ? `<p class="center">${escapeHtml(new Date().toLocaleString("es-AR"))}${order.printCount > 0 ? " · REIMPRESIÓN" : ""}</p>` : ""}${isKitchen && template.kitchenFooter ? `<p class="center">${escapeHtml(template.kitchenFooter)}</p>` : ""}${!isKitchen && template.footer ? `<p class="center">${escapeHtml(template.footer)}</p>` : ""}${!isKitchen && template.nonFiscalLegend ? `<p class="center"><small>${escapeHtml(template.nonFiscalLegend)}</small></p>` : ""}<div aria-hidden="true" style="height:${feedHeightMm}mm"></div></body></html>`;
+  ${(isKitchen && template.kitchenFooter) || (!isKitchen && (template.footer || template.nonFiscalLegend)) ? `<footer class="footer">${isKitchen && template.kitchenFooter ? lineBreaks(template.kitchenFooter) : ""}${!isKitchen && template.footer ? `<strong>${lineBreaks(template.footer)}</strong>` : ""}${!isKitchen && template.nonFiscalLegend ? `<br>${lineBreaks(template.nonFiscalLegend)}` : ""}</footer>` : ""}<div aria-hidden="true" style="height:${feedHeightMm}mm"></div></body></html>`;
 }
 
 async function printOrder(
@@ -284,6 +292,7 @@ function registerIpcHandlers() {
     "createUser",
     "createDriver",
     "updateUser",
+    "deleteUser",
     "settleDelivery",
     "reverseCashMovement",
     "reverseDeliverySettlement",

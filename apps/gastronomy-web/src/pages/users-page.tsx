@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { BootstrapDto, UserDto } from "@gastronomy/contracts";
-import { PencilSimple, Plus, UsersThree } from "@phosphor-icons/react";
+import { PencilSimple, Plus, Trash, UsersThree } from "@phosphor-icons/react";
 import {
   Badge,
   Button,
@@ -20,6 +20,13 @@ const roles = [
   ["WAITER", "Mozo"],
 ] as const;
 type RoleCode = (typeof roles)[number][0];
+
+function firstAvailableStaffNumber(users: UserDto[]) {
+  const used = new Set(users.map((user) => user.staffNumber));
+  let candidate = 1;
+  while (used.has(candidate)) candidate += 1;
+  return candidate;
+}
 
 export function UsersPage({ data }: { data: BootstrapDto }) {
   const [createOpen, setCreateOpen] = useState(false);
@@ -51,44 +58,50 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
             </tr>
           </thead>
           <tbody>
-            {data.users.filter((user) => user.roleCode !== "DELIVERY_DRIVER").map((user) => (
-              <tr key={user.id}>
-                <td className="font-mono text-xs font-extrabold text-brand-700">
-                  #{user.staffNumber}
-                </td>
-                <td className="font-bold text-slate-900">{user.fullName}</td>
-                <td>
-                  <Badge tone="orange">{user.roleName}</Badge>
-                </td>
-                <td>
-                  <span className="text-xs font-semibold">
-                    {user.permissions.length}
-                  </span>
-                  <p className="max-w-[420px] truncate text-[10px] text-slate-400">
-                    {user.permissions.join(" · ") ||
-                      "Sin capacidades operativas"}
-                  </p>
-                </td>
-                <td>
-                  <Badge tone={user.active ? "green" : "slate"}>
-                    {user.active ? "Activo" : "Inactivo"}
-                  </Badge>
-                </td>
-                <td className="text-right">
-                  <button
-                    onClick={() => setEditing(user)}
-                    className="rounded-lg p-2 text-slate-400 hover:bg-brand-50 hover:text-brand-700"
-                    aria-label={`Editar ${user.fullName}`}
-                  >
-                    <PencilSimple />
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {data.users
+              .filter((user) => user.roleCode !== "DELIVERY_DRIVER")
+              .map((user) => (
+                <tr key={user.id}>
+                  <td className="font-mono text-xs font-extrabold text-brand-700">
+                    #{user.staffNumber}
+                  </td>
+                  <td className="font-bold text-slate-900">{user.fullName}</td>
+                  <td>
+                    <Badge tone="orange">{user.roleName}</Badge>
+                  </td>
+                  <td>
+                    <span className="text-xs font-semibold">
+                      {user.permissions.length}
+                    </span>
+                    <p className="max-w-[420px] truncate text-[10px] text-slate-400">
+                      {user.permissions.join(" · ") ||
+                        "Sin capacidades operativas"}
+                    </p>
+                  </td>
+                  <td>
+                    <Badge tone={user.active ? "green" : "slate"}>
+                      {user.active ? "Activo" : "Inactivo"}
+                    </Badge>
+                  </td>
+                  <td className="text-right">
+                    <button
+                      onClick={() => setEditing(user)}
+                      className="rounded-lg p-2 text-slate-400 hover:bg-brand-50 hover:text-brand-700"
+                      aria-label={`Editar ${user.fullName}`}
+                    >
+                      <PencilSimple />
+                    </button>
+                  </td>
+                </tr>
+              ))}
           </tbody>
         </table>
       </Card>
-      <CreateUserModal open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateUserModal
+        open={createOpen}
+        users={data.users}
+        onClose={() => setCreateOpen(false)}
+      />
       <EditUserModal user={editing} onClose={() => setEditing(null)} />
     </div>
   );
@@ -96,21 +109,31 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
 
 function CreateUserModal({
   open,
+  users,
   onClose,
 }: {
   open: boolean;
+  users: UserDto[];
   onClose(): void;
 }) {
+  const [staffNumber, setStaffNumber] = useState("");
   const [name, setName] = useState("");
   const [roleCode, setRoleCode] = useState<RoleCode>("WAITER");
   const [pin, setPin] = useState("");
   const [authorizerPin, setAuthorizerPin] = useState("");
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (open) {
+      setStaffNumber(String(firstAvailableStaffNumber(users)));
+      setError(null);
+    }
+  }, [open, users]);
   const mutation = useApiMutation(
     (input: Parameters<typeof window.gastronomy.createUser>[0]) =>
       window.gastronomy.createUser(input),
     {
       onSuccess: () => {
+        setStaffNumber("");
         setName("");
         setPin("");
         setAuthorizerPin("");
@@ -127,6 +150,15 @@ function CreateUserModal({
       description="El autorizante debe poseer users.manage"
     >
       <div className="grid gap-4">
+        <Field label="Número de usuario">
+          <Input
+            inputMode="numeric"
+            value={staffNumber}
+            onChange={(event) =>
+              setStaffNumber(event.target.value.replace(/\D/g, ""))
+            }
+          />
+        </Field>
         <Field label="Nombre completo">
           <Input
             autoFocus
@@ -182,12 +214,20 @@ function CreateUserModal({
           <Button
             disabled={
               !name.trim() ||
+              !Number.isSafeInteger(Number(staffNumber)) ||
+              Number(staffNumber) <= 0 ||
               pin.length < 4 ||
               authorizerPin.length < 4 ||
               mutation.isPending
             }
             onClick={() =>
-              mutation.mutate({ fullName: name, roleCode, pin, authorizerPin })
+              mutation.mutate({
+                staffNumber: Number(staffNumber),
+                fullName: name,
+                roleCode,
+                pin,
+                authorizerPin,
+              })
             }
           >
             <UsersThree />
@@ -207,24 +247,35 @@ function EditUserModal({
   onClose(): void;
 }) {
   const [roleCode, setRoleCode] = useState<RoleCode>("WAITER");
+  const [staffNumber, setStaffNumber] = useState("");
   const [active, setActive] = useState(true);
   const [newPin, setNewPin] = useState("");
   const [reason, setReason] = useState("");
   const [authorizerPin, setAuthorizerPin] = useState("");
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (user) {
       setRoleCode(user.roleCode as RoleCode);
+      setStaffNumber(String(user.staffNumber));
       setActive(user.active);
       setNewPin("");
       setReason("");
       setAuthorizerPin("");
+      setDeleteConfirmation("");
+      setDeleteOpen(false);
       setError(null);
     }
   }, [user]);
   const mutation = useApiMutation(
     (input: Parameters<typeof window.gastronomy.updateUser>[0]) =>
       window.gastronomy.updateUser(input),
+    { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
+  );
+  const deleteMutation = useApiMutation(
+    (input: Parameters<typeof window.gastronomy.deleteUser>[0]) =>
+      window.gastronomy.deleteUser(input),
     { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
   );
   return (
@@ -235,6 +286,15 @@ function EditUserModal({
       description="Los cambios quedan auditados"
     >
       <div className="grid gap-4">
+        <Field label="Número de usuario">
+          <Input
+            inputMode="numeric"
+            value={staffNumber}
+            onChange={(event) =>
+              setStaffNumber(event.target.value.replace(/\D/g, ""))
+            }
+          />
+        </Field>
         <Field label="Rol">
           <Select
             value={roleCode}
@@ -290,13 +350,61 @@ function EditUserModal({
             {error}
           </p>
         ) : null}
+        {deleteOpen && user?.id !== "user-admin" ? (
+          <div className="grid gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
+            <p className="text-xs font-semibold text-rose-700">
+              Escribí el número {user?.staffNumber} para confirmar la
+              eliminación. Si tiene historial, se bloqueará y podrás marcarlo
+              inactivo.
+            </p>
+            <Input
+              value={deleteConfirmation}
+              inputMode="numeric"
+              onChange={(event) =>
+                setDeleteConfirmation(event.target.value.replace(/\D/g, ""))
+              }
+              aria-label="Confirmación número de usuario"
+            />
+          </div>
+        ) : null}
         <div className="flex justify-end gap-2">
+          {user?.id !== "user-admin" ? (
+            <Button
+              variant="danger"
+              disabled={
+                deleteMutation.isPending ||
+                (deleteOpen &&
+                  (deleteConfirmation !== String(user?.staffNumber) ||
+                    !reason.trim() ||
+                    authorizerPin.length < 4))
+              }
+              onClick={() => {
+                if (!deleteOpen) {
+                  setDeleteOpen(true);
+                  setDeleteConfirmation("");
+                  setError(null);
+                  return;
+                }
+                deleteMutation.mutate({
+                  userId: user!.id,
+                  reason,
+                  authorizerPin,
+                });
+              }}
+            >
+              <Trash />
+              {deleteOpen ? "Confirmar eliminación" : "Eliminar usuario"}
+            </Button>
+          ) : null}
+          <div className="flex-1" />
           <Button variant="secondary" onClick={onClose}>
             Cancelar
           </Button>
           <Button
             disabled={
               !user ||
+              !Number.isSafeInteger(Number(staffNumber)) ||
+              Number(staffNumber) <= 0 ||
               !reason.trim() ||
               authorizerPin.length < 4 ||
               (newPin.length > 0 && newPin.length < 4) ||
@@ -305,6 +413,7 @@ function EditUserModal({
             onClick={() =>
               mutation.mutate({
                 userId: user!.id,
+                staffNumber: Number(staffNumber),
                 roleCode,
                 active,
                 newPin: newPin || null,
@@ -320,4 +429,3 @@ function EditUserModal({
     </Modal>
   );
 }
-

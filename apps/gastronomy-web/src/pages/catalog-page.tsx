@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AuditEntryDto,
   BootstrapDto,
@@ -63,6 +63,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     null,
   );
   const [editingProduct, setEditingProduct] = useState<ProductDto | null>(null);
+  const [newProductCategoryId, setNewProductCategoryId] = useState<
+    string | null
+  >(null);
   const [modifierOpen, setModifierOpen] = useState(false);
   const [stockProduct, setStockProduct] = useState<ProductDto | null>(null);
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(
@@ -85,6 +88,12 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const closeProduct = () => {
     setProductOpen(false);
     setEditingProduct(null);
+    setNewProductCategoryId(null);
+  };
+  const openNewProduct = (categoryId?: string) => {
+    setEditingProduct(null);
+    setNewProductCategoryId(categoryId ?? null);
+    setProductOpen(true);
   };
   useEffect(() => {
     const available = new Set(data.products.map((product) => product.id));
@@ -114,9 +123,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           {tab !== "CATEGORIES" ? (
             <Button
               onClick={() =>
-                tab === "PRODUCTS"
-                  ? setProductOpen(true)
-                  : setModifierOpen(true)
+                tab === "PRODUCTS" ? openNewProduct() : setModifierOpen(true)
               }
             >
               <Plus size={17} />{" "}
@@ -353,7 +360,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
               </table>
             </div>
           ) : (
-            <EmptyProducts onCreate={() => setProductOpen(true)} />
+            <EmptyProducts onCreate={() => openNewProduct()} />
           )}
         </Card>
       ) : tab === "CATEGORIES" ? (
@@ -365,6 +372,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           onEdit={setEditingCategory}
           onDelete={setDeletingCategory}
           onCreate={() => setCategoryOpen(true)}
+          onCreateProduct={(category) => openNewProduct(category.id)}
         />
       ) : (
         <Card className="overflow-hidden">
@@ -423,6 +431,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         open={productOpen || Boolean(editingProduct)}
         product={editingProduct}
         categories={data.categories}
+        initialCategoryId={newProductCategoryId}
         onClose={closeProduct}
       />
       <CategoryModal
@@ -1076,6 +1085,7 @@ function CategoryTable({
   onEdit,
   onDelete,
   onCreate,
+  onCreateProduct,
 }: {
   categories: CategoryDto[];
   products: ProductDto[];
@@ -1084,6 +1094,7 @@ function CategoryTable({
   onEdit(category: CategoryDto): void;
   onDelete(category: CategoryDto): void;
   onCreate(): void;
+  onCreateProduct(category: CategoryDto): void;
 }) {
   const rows = categories
     .filter((category) =>
@@ -1139,6 +1150,14 @@ function CategoryTable({
                     </td>
                     <td className="text-right">
                       <div className="flex justify-end gap-2">
+                        <Button
+                          variant="secondary"
+                          className="h-8 px-2.5 text-[11px]"
+                          disabled={!category.active}
+                          onClick={() => onCreateProduct(category)}
+                        >
+                          <Plus size={14} /> Producto
+                        </Button>
                         <Button
                           variant="secondary"
                           className="h-8 px-2.5 text-[11px]"
@@ -1290,11 +1309,13 @@ function ProductModal({
   open,
   product,
   categories,
+  initialCategoryId,
   onClose,
 }: {
   open: boolean;
   product: ProductDto | null;
   categories: CategoryDto[];
+  initialCategoryId: string | null;
   onClose(): void;
 }) {
   const editing = Boolean(product);
@@ -1312,11 +1333,23 @@ function ProductModal({
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<AuditEntryDto[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const initializedFormKeyRef = useRef("");
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      initializedFormKeyRef.current = "";
+      return;
+    }
+    const formKey = product
+      ? `edit:${product.id}`
+      : `new:${initialCategoryId ?? "default"}`;
+    if (initializedFormKeyRef.current === formKey) return;
+    initializedFormKeyRef.current = formKey;
     setCategoryId(
-      product?.categoryId ?? categories.find((item) => item.active)?.id ?? "",
+      product?.categoryId ??
+        initialCategoryId ??
+        categories.find((item) => item.active)?.id ??
+        "",
     );
     setName(product?.name ?? "");
     setCode(product?.code ?? "");
@@ -1345,7 +1378,7 @@ function ProductModal({
     setReason("");
     setPin("");
     setError(null);
-  }, [categories, open, product]);
+  }, [categories, initialCategoryId, open, product]);
 
   useEffect(() => {
     if (!open || !product) {
@@ -1447,6 +1480,7 @@ function ProductModal({
     <Modal
       open={open}
       onClose={onClose}
+      closeDisabled={mutation.isPending}
       width="max-w-3xl"
       title={
         editing ? `Editar · ${product?.name ?? "producto"}` : "Nuevo producto"
