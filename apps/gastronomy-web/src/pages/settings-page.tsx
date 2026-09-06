@@ -557,14 +557,19 @@ function PrinterProfileEditor({
             onChange={(event) => update("profileName", event.target.value)}
           />
         </Field>
-        <Field label="Modo">
+        <Field
+          label="Modo"
+          hint="Sin impresora disponible se abrirá una vista previa."
+        >
           <Select
             value={profile.mode}
             onChange={(event) =>
               update("mode", event.target.value as PrinterProfileDto["mode"])
             }
           >
-            <option value="SYSTEM_DIALOG">Diálogo del sistema</option>
+            <option value="SYSTEM_DIALOG">
+              Vista previa y diálogo del sistema
+            </option>
             <option value="SYSTEM_DIRECT">Impresión directa</option>
           </Select>
         </Field>

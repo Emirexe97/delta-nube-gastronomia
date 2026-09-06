@@ -34,6 +34,97 @@ function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
   }
 }
 
+test("elimina mesa libre conservando historial y permite reactivar el mismo id", () => {
+  withRepository((repository) => {
+    const table = repository.ensureTable(51);
+    assert.deepEqual(repository.deleteTable({ tableId: table.id }), {
+      deleted: true,
+    });
+    assert.equal(
+      repository.bootstrap().tables.find((t) => t.id === table.id)?.active,
+      false,
+    );
+    const reactivated = repository.ensureTable(51);
+    assert.equal(reactivated.id, table.id);
+    assert.deepEqual(repository.deleteTable({ tableId: table.id }), {
+      deleted: true,
+    });
+  });
+});
+
+test("cancela pedido vacío y desactiva mesa en una operación", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const table = repository.ensureTable(52);
+    const order = repository.createOrder({
+      type: "DINE_IN",
+      tableId: table.id,
+    });
+    repository.deleteTable({ tableId: table.id });
+    assert.equal(
+      repository.bootstrap().orders.find((o) => o.id === order.id)
+        ?.operationalStatus,
+      "CANCELLED",
+    );
+    assert.equal(
+      repository.bootstrap().tables.find((t) => t.id === table.id)?.active,
+      false,
+    );
+  });
+});
+
+test("rechaza mesa con consumo o impresión y conserva pedido", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const table = repository.ensureTable(53);
+    const order = repository.createOrder({
+      type: "DINE_IN",
+      tableId: table.id,
+    });
+    repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+    assert.throws(
+      () => repository.deleteTable({ tableId: table.id }),
+      /consumo/,
+    );
+    assert.equal(
+      repository.bootstrap().tables.find((t) => t.id === table.id)?.active,
+      true,
+    );
+  });
+});
+
+test("bloquea print_job queued y permiso ausente", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const table = repository.ensureTable(54);
+    const order = repository.createOrder({
+      type: "DINE_IN",
+      tableId: table.id,
+    });
+    repository.db
+      .prepare(
+        "INSERT INTO print_jobs(id, order_id, kind, status, created_at) VALUES (?, ?, 'KITCHEN_ORDER', 'QUEUED', ?)",
+      )
+      .run(randomUUID(), order.id, new Date().toISOString());
+    assert.throws(
+      () => repository.deleteTable({ tableId: table.id }),
+      /impresiones/,
+    );
+    repository.db
+      .prepare(
+        "DELETE FROM role_permissions WHERE permission_code = 'tables.manage'",
+      )
+      .run();
+    assert.throws(
+      () => repository.deleteTable({ tableId: table.id }),
+      /permiso/,
+    );
+  });
+});
+
 function createPendingDeliveryLedger(
   repository: SqliteGastronomyRepository,
   suffix: string,
@@ -370,6 +461,32 @@ test("sólo una impresión física exitosa incrementa el contador", () => {
       () => repository.markPrintJob(second.jobId, "PRINTED"),
       /resuelto/i,
     );
+  });
+});
+
+test("cancelar la vista previa descarta el job sin registrar un intento", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const order = repository.createOrder(takeawayOrder());
+    repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: order.id });
+    const job = repository.queuePrint(order.id, "KITCHEN_ORDER");
+
+    repository.discardPrintJob(job.jobId);
+
+    const persisted = repository.getOrder(order.id);
+    assert.equal(persisted.printCount, 0);
+    assert.equal(persisted.printAttemptCount, 0);
+    assert.equal(persisted.printedAt, null);
+    assert.equal(
+      repository.bootstrap().printJobs.some((item) => item.id === job.jobId),
+      false,
+    );
+    assert.doesNotThrow(() => repository.queuePrint(order.id, "KITCHEN_ORDER"));
+    assert.throws(() => repository.discardPrintJob(job.jobId), /resuelto/i);
   });
 });
 

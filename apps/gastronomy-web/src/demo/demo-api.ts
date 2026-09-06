@@ -2232,6 +2232,42 @@ export function createDemoApi(
       return output(table);
     },
 
+    async deleteTable({ tableId }) {
+      if (
+        !state.data.currentUser.permissions.includes("tables.manage") &&
+        !state.data.currentUser.permissions.includes("*")
+      )
+        throw new Error("El usuario no tiene permiso para esta operación.");
+      const table = state.data.tables.find(
+        (candidate) => candidate.id === tableId,
+      );
+      if (!table) throw new Error("La mesa no existe.");
+      const order = table.currentOrderId
+        ? orderById(table.currentOrderId)
+        : null;
+      if (order) {
+        const hasPrintHistory = state.data.printJobs.some(
+          (job) => job.orderId === order.id,
+        );
+        if (
+          order.items.length > 0 ||
+          order.payments.length > 0 ||
+          order.printCount > 0 ||
+          order.printAttemptCount ||
+          hasPrintHistory
+        )
+          throw new Error(
+            "No se puede eliminar una mesa con consumo, pagos o impresiones.",
+          );
+        order.operationalStatus = "CANCELLED";
+        audit(state, "ORDER", order.id, "PEDIDO_VACIO_CANCELADO");
+      }
+      table.active = false;
+      audit(state, "RESTAURANT_TABLE", table.id, "MESA_ELIMINADA");
+      save();
+      return { deleted: true } as const;
+    },
+
     async exportSalesCsv() {
       return {
         path: "Demostración: exportación simulada (no se creó ningún archivo)",

@@ -108,6 +108,7 @@ export interface GastronomyRepository {
     status: string;
   };
   markPrintJob(jobId: Id, status: "PRINTED" | "FAILED", error?: string): void;
+  discardPrintJob(jobId: Id): void;
   searchCustomers(query: string): CustomerDto[];
   searchCustomersPage(input: SearchCustomersPageInput): CustomerSearchPageDto;
   getCustomerProfile(input: {
@@ -211,6 +212,7 @@ export interface GastronomyRepository {
     active: boolean;
     sortOrder?: number;
   }): import("@gastronomy/contracts").RestaurantTableDto;
+  deleteTable(input: { tableId: Id }): { deleted: true };
   exportSalesCsv(): string;
   getDetailedReport(filters: ReportFilters): DetailedReportDto;
   getAuditLog(input: {
@@ -771,6 +773,10 @@ export class GastronomyApplication {
   }
   updateTable(input: Parameters<GastronomyRepository["updateTable"]>[0]) {
     return this.repository.updateTable(input);
+  }
+  deleteTable(input: { tableId: Id }) {
+    if (!input?.tableId) throw new Error("La mesa no es válida.");
+    return this.repository.deleteTable(input);
   }
 
   exportSalesCsv() {

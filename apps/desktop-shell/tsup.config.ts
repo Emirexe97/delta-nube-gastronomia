@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/main.ts", "src/preload.ts"],
+  entry: ["src/main.ts", "src/preload.ts", "src/print-preview-preload.ts"],
   format: ["cjs"],
   platform: "node",
   target: "node20",

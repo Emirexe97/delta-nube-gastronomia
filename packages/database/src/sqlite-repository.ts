@@ -63,6 +63,7 @@ import {
   calculateLineTotal,
   paymentStatusFor,
   nonNegativeMoney,
+  assertPermission,
 } from "@gastronomy/domain";
 import { migrations } from "./migrations";
 
@@ -2848,6 +2849,17 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     run();
   }
 
+  discardPrintJob(jobId: Id) {
+    const result = this.db
+      .prepare(
+        `DELETE FROM print_jobs
+         WHERE id = ? AND status IN ('QUEUED','RECOVERING')`,
+      )
+      .run(jobId);
+    if (result.changes !== 1)
+      throw new Error("El intento de impresión ya fue resuelto.");
+  }
+
   preparePrintRetry(jobId: Id) {
     const run = this.db.transaction(() => {
       const job = requireRow(
@@ -4637,6 +4649,90 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         this.listTables().find((table) => table.id === input.tableId),
         "No se pudo leer la mesa.",
       );
+    });
+    return run();
+  }
+
+  deleteTable(input: { tableId: Id }): { deleted: true } {
+    const run = this.db.transaction(() => {
+      const table = requireRow(
+        this.listTables().find((candidate) => candidate.id === input.tableId),
+        "La mesa no existe.",
+      );
+      assertPermission(this.currentUser().permissions, "tables.manage");
+      const order = table.currentOrderId
+        ? (this.db
+            .prepare("SELECT * FROM orders WHERE id = ?")
+            .get(table.currentOrderId) as Row | undefined)
+        : undefined;
+      if (order) {
+        const itemCount = Number(
+          (
+            this.db
+              .prepare(
+                "SELECT COUNT(*) AS count FROM order_items WHERE order_id = ?",
+              )
+              .get(order.id) as Row
+          ).count,
+        );
+        const paymentCount = Number(
+          (
+            this.db
+              .prepare(
+                "SELECT COUNT(*) AS count FROM payments WHERE order_id = ?",
+              )
+              .get(order.id) as Row
+          ).count,
+        );
+        const printCount = Number(
+          (
+            this.db
+              .prepare(
+                "SELECT COUNT(*) AS count FROM print_jobs WHERE order_id = ?",
+              )
+              .get(order.id) as Row
+          ).count,
+        );
+        if (
+          itemCount > 0 ||
+          paymentCount > 0 ||
+          printCount > 0 ||
+          Number(order.paid_minor) > 0
+        )
+          throw new Error(
+            "No se puede eliminar una mesa con consumo, pagos o impresiones. Cerrá el pedido y conservá su historial.",
+          );
+        const timestamp = nowIso();
+        this.db
+          .prepare(
+            "UPDATE orders SET operational_status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ?, version = version + 1, updated_at = ? WHERE id = ?",
+          )
+          .run(timestamp, "Mesa eliminada sin consumo", timestamp, order.id);
+        this.audit({
+          entityType: "ORDER",
+          entityId: String(order.id),
+          action: "ORDER_EMPTY_CANCELLED",
+          permission: "tables.manage",
+          reason: "Mesa eliminada sin consumo",
+          before: { status: order.operational_status },
+          after: { status: "CANCELLED" },
+        });
+      }
+      this.db
+        .prepare("UPDATE restaurant_tables SET active = 0 WHERE id = ?")
+        .run(input.tableId);
+      this.audit({
+        entityType: "RESTAURANT_TABLE",
+        entityId: input.tableId,
+        action: "TABLE_DELETED",
+        permission: "tables.manage",
+        before: table,
+        after: { active: false },
+      });
+      this.event("RestaurantTable", input.tableId, "RestaurantTableDeleted", {
+        active: false,
+      });
+      return { deleted: true as const };
     });
     return run();
   }

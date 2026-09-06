@@ -6,10 +6,10 @@ import type {
   AppSettingsDto,
   DesktopApi,
   OrderDto,
-  PrinterProfileDto,
 } from "@gastronomy/contracts";
 import { formatMoney } from "@gastronomy/domain";
 import { SqliteGastronomyRepository } from "@gastronomy/database";
+import { printHtml } from "./printer";
 
 let mainWindow: BrowserWindow | null = null;
 let repository: SqliteGastronomyRepository | null = null;
@@ -82,7 +82,7 @@ function orderTicketHtml(
     })
     .join("");
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    @page{size:${paperMm}mm auto;margin:3mm}body{font-family:"Courier New",monospace;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;overflow-wrap:anywhere}
+    @page{size:${paperMm}mm auto;margin:3mm}body{font-family:"Courier New",monospace;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;overflow-wrap:anywhere}.row>span{white-space:nowrap;flex-shrink:0}
     h1,h2,p{margin:0}.center{text-align:center}.divider{border-top:1px dashed #000;margin:8px 0}.row{display:flex;justify-content:space-between;gap:8px;margin:5px 0}.indent{padding-left:12px;line-height:1.4}.promised{font-size:18px;font-weight:800;margin:8px 0}.total{font-size:18px;font-weight:800}
   </style></head><body><div class="center"><h1>${escapeHtml(isKitchen ? template.kitchenHeader || "COMANDA" : template.title || settings.businessName)}</h1><p>${escapeHtml(settings.printing.terminalLabel)}</p>${!isKitchen && template.subtitle ? `<p>${escapeHtml(template.subtitle)}</p>` : ""}${template.showOrderNumber || isKitchen ? `<h2>PEDIDO #${order.number}</h2>` : ""}${template.showTable || isKitchen ? `<h2>${escapeHtml(typeLabel)}</h2>` : ""}</div>
   <div class="divider"></div>${order.promisedAt ? `<p class="center promised">HORA DE ENTREGA ${escapeHtml(new Date(order.promisedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }))}</p>` : ""}
@@ -104,42 +104,6 @@ function orderTicketHtml(
   <div class="divider"></div>${template.showDate || isKitchen ? `<p class="center">${escapeHtml(new Date().toLocaleString("es-AR"))}${order.printCount > 0 ? " · REIMPRESIÓN" : ""}</p>` : ""}${isKitchen && template.kitchenFooter ? `<p class="center">${escapeHtml(template.kitchenFooter)}</p>` : ""}${!isKitchen && template.footer ? `<p class="center">${escapeHtml(template.footer)}</p>` : ""}${!isKitchen && template.nonFiscalLegend ? `<p class="center"><small>${escapeHtml(template.nonFiscalLegend)}</small></p>` : ""}<div aria-hidden="true" style="height:${feedHeightMm}mm"></div></body></html>`;
 }
 
-async function printHtml(html: string, profile: PrinterProfileDto) {
-  const printWindow = new BrowserWindow({
-    show: profile.mode === "SYSTEM_DIALOG",
-    width: 520,
-    height: 720,
-    webPreferences: { sandbox: true },
-  });
-  try {
-    await printWindow.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
-    );
-    await new Promise<void>((resolve, reject) => {
-      printWindow.webContents.print(
-        {
-          silent: profile.mode === "SYSTEM_DIRECT",
-          ...(profile.mode === "SYSTEM_DIRECT" && profile.deviceName
-            ? { deviceName: profile.deviceName }
-            : {}),
-          copies: profile.copies,
-          printBackground: false,
-          pageSize: {
-            width: profile.paperWidth === "58mm" ? 58_000 : 80_000,
-            height: 297_000,
-          },
-        },
-        (success, failureReason) =>
-          success
-            ? resolve()
-            : reject(new Error(failureReason || "Falló la impresión.")),
-      );
-    });
-  } finally {
-    printWindow.destroy();
-  }
-}
-
 async function printOrder(
   order: OrderDto,
   kind: "KITCHEN_ORDER" | "CUSTOMER_BILL",
@@ -149,7 +113,9 @@ async function printOrder(
     kind === "KITCHEN_ORDER"
       ? settings.printing.kitchen
       : settings.printing.bill;
-  await printHtml(orderTicketHtml(order, kind, settings), profile);
+  return printHtml(orderTicketHtml(order, kind, settings), profile, {
+    parent: mainWindow,
+  });
 }
 
 function printerTestHtml(
@@ -247,7 +213,15 @@ async function executePrintJob(
   const { appService, localRepository } = services();
   const order = localRepository.getOrder(orderId);
   try {
-    await printOrder(order, kind, appService.bootstrap().settings);
+    const outcome = await printOrder(
+      order,
+      kind,
+      appService.bootstrap().settings,
+    );
+    if (outcome === "SKIPPED") {
+      localRepository.discardPrintJob(jobId);
+      return { jobId, status: "SKIPPED" };
+    }
     localRepository.markPrintJob(jobId, "PRINTED");
     return { jobId, status: "PRINTED" };
   } catch (error) {
@@ -315,6 +289,7 @@ function registerIpcHandlers() {
     "reverseDeliverySettlement",
     "configureTables",
     "updateTable",
+    "deleteTable",
     "saveSettings",
     "getDashboard",
     "getDetailedReport",
@@ -381,13 +356,19 @@ function registerIpcHandlers() {
         payload.kind === "KITCHEN_ORDER"
           ? settings.printing.kitchen
           : settings.printing.bill;
-      await printHtml(printerTestHtml(payload.kind, settings), profile);
+      const outcome = await printHtml(
+        printerTestHtml(payload.kind, settings),
+        profile,
+        {
+          parent: mainWindow,
+        },
+      );
       return {
-        printed: true,
+        printed: outcome === "PRINTED",
         message:
-          profile.mode === "SYSTEM_DIALOG"
-            ? "Se completó la prueba mediante el diálogo del sistema."
-            : `Prueba enviada a ${profile.deviceName || "la impresora predeterminada"}.`,
+          outcome === "PRINTED"
+            ? "Impresión completada."
+            : "Impresión cancelada. No se imprimió nada.",
       };
     },
   );

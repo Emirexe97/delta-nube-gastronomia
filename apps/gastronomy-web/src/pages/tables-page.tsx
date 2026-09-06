@@ -12,6 +12,7 @@ import {
   Plus,
   SquaresFour,
   UserCircle,
+  Trash,
 } from "@phosphor-icons/react";
 import {
   Badge,
@@ -50,10 +51,21 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
     Math.max(1, data.tables.filter((table) => table.active).length),
   );
   const [tableMessage, setTableMessage] = useState<string | null>(null);
+  const [deletingTable, setDeletingTable] = useState<RestaurantTableDto | null>(
+    null,
+  );
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [removedEvent, setRemovedEvent] = useState<{
+    tableId: string;
+    revision: number;
+  } | null>(null);
   const eligibleWaiters = data.users.filter(
     (user) =>
       user.active && ["WAITER", "MANAGER", "ADMIN"].includes(user.roleCode),
   );
+  const canManageTables =
+    data.currentUser.permissions.includes("tables.manage") ||
+    data.currentUser.permissions.includes("*");
 
   const createOrder = useApiMutation(
     (input: OpenTableInput) =>
@@ -83,6 +95,20 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         setTableMessage(
           `Salón actualizado: ${activeCount} mesa${activeCount === 1 ? "" : "s"} activa${activeCount === 1 ? "" : "s"}.`,
         );
+      },
+      onError: (value) => setTableMessage(humanError(value)),
+    },
+  );
+  const deleteTable = useApiMutation(
+    (input: { tableId: string }) => window.gastronomy.deleteTable(input),
+    {
+      onSuccess: (_result, variables) => {
+        setTableMessage("Mesa eliminada.");
+        setRemovedEvent({ tableId: variables.tableId, revision: Date.now() });
+        if (deletingTable?.currentOrderId === selectedOrderId)
+          setSelectedOrderId(null);
+        setDeletingTable(null);
+        setDeleteConfirmation("");
       },
       onError: (value) => setTableMessage(humanError(value)),
     },
@@ -181,7 +207,11 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         ) : null}
       </Card>
 
-      <QuickEntry data={data} onOpenFullOrder={setSelectedOrderId} />
+      <QuickEntry
+        data={data}
+        onOpenFullOrder={setSelectedOrderId}
+        removedEvent={removedEvent}
+      />
 
       <section
         aria-label="Mesas del salón"
@@ -190,60 +220,75 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         {tables.map((table) => {
           const occupied = Boolean(table.currentOrderId);
           return (
-            <button
+            <Card
               key={table.id}
-              type="button"
-              aria-label={
-                occupied
-                  ? `Abrir pedido de mesa ${table.number}`
-                  : `Abrir mesa ${table.number}`
-              }
-              onClick={() =>
-                occupied
-                  ? setSelectedOrderId(table.currentOrderId)
-                  : requestOpen(table)
-              }
-              disabled={!occupied && !data.cashSession}
-              className="focus-ring rounded-xl text-left disabled:cursor-not-allowed disabled:opacity-55"
+              className={`relative min-h-[150px] overflow-hidden p-4 transition hover:shadow-md ${occupied ? "border-brand-200 bg-gradient-to-br from-white to-brand-50/80" : "border-emerald-100"}`}
             >
-              <Card
-                className={`relative min-h-[150px] overflow-hidden p-4 transition hover:-translate-y-0.5 hover:shadow-md ${occupied ? "border-brand-200 bg-gradient-to-br from-white to-brand-50/80" : "border-emerald-100"}`}
-              >
+              <div
+                className={`absolute inset-x-0 top-0 h-1 ${occupied ? "bg-brand-600" : "bg-emerald-500"}`}
+              />
+              <div className="flex items-start justify-between">
                 <div
-                  className={`absolute inset-x-0 top-0 h-1 ${occupied ? "bg-brand-600" : "bg-emerald-500"}`}
-                />
-                <div className="flex items-start justify-between">
-                  <div
-                    className={`grid h-10 w-10 place-items-center rounded-xl ${occupied ? "bg-brand-100 text-brand-700" : "bg-emerald-50 text-emerald-600"}`}
-                  >
-                    <SquaresFour size={20} weight="duotone" />
-                  </div>
-                  <Badge tone={occupied ? "orange" : "green"}>
-                    {occupied ? "Ocupada" : "Libre"}
-                  </Badge>
+                  className={`grid h-10 w-10 place-items-center rounded-xl ${occupied ? "bg-brand-100 text-brand-700" : "bg-emerald-50 text-emerald-600"}`}
+                >
+                  <SquaresFour size={20} weight="duotone" />
                 </div>
-                <p className="mt-4 text-xl font-extrabold">
-                  Mesa {table.number}
-                </p>
-                {occupied ? (
-                  <div className="mt-1">
-                    <p className="text-sm font-bold text-brand-700">
-                      {formatMoney(table.currentTotalMinor)}
-                    </p>
-                    <p className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-400">
-                      <UserCircle size={12} />{" "}
-                      {table.waiterName || "Sin mesero"} ·{" "}
-                      {formatElapsed(table.openedAt)}
-                    </p>
-                  </div>
-                ) : (
-                  <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
-                    <Plus size={13} />
-                    Abrir pedido
+                <Badge tone={occupied ? "orange" : "green"}>
+                  {occupied ? "Ocupada" : "Libre"}
+                </Badge>
+              </div>
+              <p className="mt-4 text-xl font-extrabold">Mesa {table.number}</p>
+              {occupied ? (
+                <div className="mt-1">
+                  <p className="text-sm font-bold text-brand-700">
+                    {formatMoney(table.currentTotalMinor)}
                   </p>
-                )}
-              </Card>
-            </button>
+                  <p className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-400">
+                    <UserCircle size={12} /> {table.waiterName || "Sin mesero"}{" "}
+                    · {formatElapsed(table.openedAt)}
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
+                  <Plus size={13} />
+                  Abrir pedido
+                </p>
+              )}
+              <div className="mt-4 flex gap-2">
+                <Button
+                  type="button"
+                  className="flex-1"
+                  aria-label={
+                    occupied
+                      ? `Abrir pedido de mesa ${table.number}`
+                      : `Abrir mesa ${table.number}`
+                  }
+                  disabled={!occupied && !data.cashSession}
+                  onClick={() =>
+                    occupied
+                      ? setSelectedOrderId(table.currentOrderId)
+                      : requestOpen(table)
+                  }
+                >
+                  {occupied ? "Abrir pedido" : "Abrir mesa"}
+                </Button>
+                {canManageTables ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    aria-label={`Eliminar mesa ${table.number}`}
+                    onClick={() => {
+                      deleteTable.reset();
+                      setTableMessage(null);
+                      setDeletingTable(table);
+                      setDeleteConfirmation("");
+                    }}
+                  >
+                    <Trash size={16} />
+                  </Button>
+                ) : null}
+              </div>
+            </Card>
           );
         })}
       </section>
@@ -321,6 +366,71 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         orderId={selectedOrderId}
         onClose={() => setSelectedOrderId(null)}
       />
+      <Modal
+        open={Boolean(deletingTable)}
+        onClose={() => {
+          if (!deleteTable.isPending) {
+            setDeletingTable(null);
+            setDeleteConfirmation("");
+          }
+        }}
+        title={`Eliminar mesa ${deletingTable?.number ?? ""}`}
+        description="Se conservará el historial. Esta acción sólo elimina la mesa del salón."
+      >
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (
+              deletingTable &&
+              deleteConfirmation.trim() === String(deletingTable.number)
+            )
+              deleteTable.mutate({ tableId: deletingTable.id });
+          }}
+          className="grid gap-4"
+        >
+          <p className="text-sm text-slate-700">
+            Escribí <strong>{deletingTable?.number}</strong> para confirmar. Si
+            tiene consumo, pagos o impresiones, la operación será bloqueada.
+          </p>
+          <Input
+            autoFocus
+            value={deleteConfirmation}
+            onChange={(event) => setDeleteConfirmation(event.target.value)}
+            placeholder={`Número de mesa ${deletingTable?.number ?? ""}`}
+            aria-label="Confirmación número de mesa"
+          />
+          {tableMessage && deleteTable.isError ? (
+            <p
+              role="alert"
+              className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700"
+            >
+              {tableMessage}
+            </p>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setDeletingTable(null);
+                setDeleteConfirmation("");
+              }}
+              disabled={deleteTable.isPending}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="submit"
+              disabled={
+                deleteConfirmation.trim() !==
+                  String(deletingTable?.number ?? "") || deleteTable.isPending
+              }
+            >
+              {deleteTable.isPending ? "Eliminando…" : "Eliminar mesa"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
@@ -330,9 +440,11 @@ type QuickStep = "TABLE" | "WAITER" | "ITEM";
 function QuickEntry({
   data,
   onOpenFullOrder,
+  removedEvent,
 }: {
   data: BootstrapDto;
   onOpenFullOrder(orderId: string): void;
+  removedEvent?: { tableId: string; revision: number } | null;
 }) {
   const [step, setStep] = useState<QuickStep>("TABLE");
   const [tableNumber, setTableNumber] = useState("");
@@ -364,6 +476,10 @@ function QuickEntry({
   const productNameRef = useRef<HTMLInputElement>(null);
   const priceRef = useRef<HTMLInputElement>(null);
   const productBlurTimerRef = useRef<number | null>(null);
+  const focusFrameRef = useRef<number | null>(null);
+  const tableAdvanceRef = useRef(false);
+  const waiterAdvanceRef = useRef(false);
+  const preferredWaiterFocusRef = useRef<"number" | "name">("number");
 
   const activeProducts = useMemo(
     () =>
@@ -426,15 +542,30 @@ function QuickEntry({
   }, [data.orders, order?.id]);
 
   const focus = (ref: React.RefObject<HTMLElement | null>) => {
-    window.requestAnimationFrame(() => ref.current?.focus());
+    if (focusFrameRef.current !== null) {
+      window.cancelAnimationFrame(focusFrameRef.current);
+    }
+    const captured = document.activeElement;
+    focusFrameRef.current = window.requestAnimationFrame(() => {
+      focusFrameRef.current = null;
+      const target = ref.current;
+      if (
+        target &&
+        (document.activeElement === captured ||
+          document.activeElement === document.body ||
+          document.activeElement === target)
+      ) {
+        target.focus();
+      }
+    });
   };
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      if (step === "WAITER") waiterRef.current?.focus();
-      if (step === "ITEM") quantityRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [step]);
+    return () => {
+      if (focusFrameRef.current !== null) {
+        window.cancelAnimationFrame(focusFrameRef.current);
+      }
+    };
+  }, []);
   const fail = (
     message: string,
     ref?: React.RefObject<HTMLInputElement | null>,
@@ -468,6 +599,9 @@ function QuickEntry({
     resetLine();
     focus(tableRef);
   };
+  useEffect(() => {
+    if (removedEvent?.tableId === table?.id) resetFlow();
+  }, [removedEvent]);
 
   const ensureTable = useApiMutation((number: number) =>
     window.gastronomy.ensureTable({ number }),
@@ -481,13 +615,17 @@ function QuickEntry({
   );
 
   const submitTable = async () => {
+    if (tableAdvanceRef.current || ensureTable.isPending) return;
+    tableAdvanceRef.current = true;
     if (!data.cashSession) {
       fail("Abrí caja antes de iniciar una mesa.", tableRef);
+      tableAdvanceRef.current = false;
       return;
     }
     const number = Number(tableNumber);
-    if (!Number.isInteger(number) || number <= 0) {
-      fail("Ingresá un número de mesa válido.", tableRef);
+    if (!Number.isInteger(number) || number < 1 || number > 9999) {
+      fail("Ingresá un número de mesa válido (entre 1 y 9999).", tableRef);
+      tableAdvanceRef.current = false;
       return;
     }
     try {
@@ -506,6 +644,7 @@ function QuickEntry({
             "La mesa tiene un pedido abierto que no se pudo cargar.",
             tableRef,
           );
+          tableAdvanceRef.current = false;
           return;
         }
         const assignedWaiter = eligibleWaiters.find(
@@ -517,20 +656,26 @@ function QuickEntry({
         );
         setOrder(currentOrder);
         setStatus(`Mesa ${number} abierta · pedido #${currentOrder.number}`);
-        setStep("ITEM");
-        focus(quantityRef);
+        setStep("WAITER");
+        focus(waiterRef);
         return;
       }
       setStatus(existed ? `Mesa ${number} lista` : `Mesa ${number} creada`);
       setStep("WAITER");
-      focus(waiterRef);
+      focus(
+        preferredWaiterFocusRef.current === "name" ? waiterNameRef : waiterRef,
+      );
+      preferredWaiterFocusRef.current = "number";
     } catch (value) {
       fail(humanError(value), tableRef);
+    } finally {
+      tableAdvanceRef.current = false;
     }
   };
 
   const submitWaiter = async () => {
     if (!table) return;
+    if (waiterAdvanceRef.current || createOrder.isPending) return;
     const number = Number(waiterNumber);
     const waiter = eligibleWaiters.find(
       (user) =>
@@ -543,6 +688,13 @@ function QuickEntry({
       );
       return;
     }
+    if (order) {
+      setError(null);
+      setStep("ITEM");
+      focus(quantityRef);
+      return;
+    }
+    waiterAdvanceRef.current = true;
     try {
       const created = await createOrder.mutateAsync({
         tableId: table.id,
@@ -557,7 +709,19 @@ function QuickEntry({
       focus(quantityRef);
     } catch (value) {
       fail(humanError(value), waiterRef);
+    } finally {
+      waiterAdvanceRef.current = false;
     }
+  };
+
+  const tableNumberIsValid = Boolean(
+    data.cashSession &&
+    /^\d+$/.test(tableNumber) &&
+    Number(tableNumber) >= 1 &&
+    Number(tableNumber) <= 9999,
+  );
+  const resolveTableForMouse = () => {
+    if (step === "TABLE" && tableNumberIsValid) void submitTable();
   };
 
   const changeWaiterNumber = (value: string) => {
@@ -687,7 +851,7 @@ function QuickEntry({
   };
 
   const submitItem = async () => {
-    if (!order) return;
+    if (!order || busy) return;
     const parsedQuantity = Number(quantity);
     if (!Number.isInteger(parsedQuantity) || parsedQuantity <= 0) {
       fail("Ingresá una cantidad entera mayor que cero.", quantityRef);
@@ -753,6 +917,8 @@ function QuickEntry({
     order?.items.reduce((total, item) => total + item.quantity, 0) ?? 0;
   const busy =
     ensureTable.isPending || createOrder.isPending || addItem.isPending;
+  const waiterFieldsEnabled =
+    !busy && (step === "WAITER" || (step === "TABLE" && tableNumberIsValid));
 
   return (
     <>
@@ -767,8 +933,7 @@ function QuickEntry({
                 Carga rápida por teclado
               </h3>
               <p className="text-[11px] text-slate-500">
-                Tab: mesa → número de mozo → nombre · Enter para cargar
-                productos
+                Enter avanza · Shift+Enter retrocede · Tab conserva el flujo
               </p>
             </div>
           </div>
@@ -799,21 +964,45 @@ function QuickEntry({
             }}
             className="grid max-w-3xl items-end gap-2 sm:grid-cols-[minmax(150px_.7fr)_minmax(150px_.7fr)_minmax(240px_1.3fr)_auto]"
           >
-            <Field label="Número de mesa" hint="Tab abre o crea la mesa.">
+            <Field
+              label="Número de mesa"
+              hint="Enter, Tab o Continuar abre o crea la mesa."
+            >
               <Input
                 ref={tableRef}
                 autoFocus
                 inputMode="numeric"
                 value={tableNumber}
-                disabled={step !== "TABLE" || busy}
+                disabled={busy || (step !== "TABLE" && !order)}
                 onChange={(event) => {
-                  setTableNumber(event.target.value.replace(/\D/g, ""));
+                  const next = event.target.value.replace(/\D/g, "");
+                  if (next !== tableNumber) {
+                    setTable(null);
+                    setOrder(null);
+                    setWaiterNumber("");
+                    setWaiterUserId("");
+                    setQuantity("");
+                    setProductCode("");
+                    setProductName("");
+                    setUnitPrice("");
+                    setSelectedProductId(null);
+                    setProductListOpen(false);
+                  }
+                  setTableNumber(next);
+                  if (step !== "TABLE") {
+                    setStep("TABLE");
+                  }
                   setError(null);
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === "Tab" && !event.shiftKey) {
+                  if (
+                    (event.key === "Enter" || event.key === "Tab") &&
+                    !event.shiftKey
+                  ) {
                     event.preventDefault();
                     void submitTable();
+                  } else if (event.key === "Enter" && event.shiftKey) {
+                    event.preventDefault();
                   }
                 }}
                 placeholder="Ej.: 12"
@@ -824,8 +1013,25 @@ function QuickEntry({
                 ref={waiterRef}
                 inputMode="numeric"
                 value={waiterNumber}
-                disabled={step !== "WAITER" || busy}
+                disabled={busy || (!waiterFieldsEnabled && !order)}
+                readOnly={Boolean(order)}
+                aria-readonly={order ? "true" : undefined}
                 onChange={(event) => changeWaiterNumber(event.target.value)}
+                onMouseDown={() => {
+                  preferredWaiterFocusRef.current = "number";
+                  resolveTableForMouse();
+                }}
+                onFocus={resolveTableForMouse}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    focus(waiterNameRef);
+                  } else if (event.key === "Enter" && event.shiftKey) {
+                    event.preventDefault();
+                    setStep("TABLE");
+                    focus(tableRef);
+                  }
+                }}
                 placeholder="Ej.: 2"
               />
             </Field>
@@ -833,12 +1039,26 @@ function QuickEntry({
               <Select
                 ref={waiterNameRef}
                 value={waiterUserId}
-                disabled={step !== "WAITER" || busy}
-                onChange={(event) => changeWaiterName(event.target.value)}
+                disabled={busy || (!waiterFieldsEnabled && !order)}
+                aria-readonly={order ? "true" : undefined}
+                onMouseDown={() => {
+                  preferredWaiterFocusRef.current = "name";
+                  resolveTableForMouse();
+                }}
+                onFocus={resolveTableForMouse}
+                onChange={(event) => {
+                  if (!order) changeWaiterName(event.target.value);
+                }}
                 onKeyDown={(event) => {
-                  if (event.key === "Tab" && !event.shiftKey) {
+                  if (
+                    (event.key === "Enter" || event.key === "Tab") &&
+                    !event.shiftKey
+                  ) {
                     event.preventDefault();
                     void submitWaiter();
+                  } else if (event.key === "Enter" && event.shiftKey) {
+                    event.preventDefault();
+                    focus(waiterRef);
                   }
                 }}
               >
@@ -850,12 +1070,28 @@ function QuickEntry({
                 ))}
               </Select>
             </Field>
-            {step !== "TABLE" ? (
+            {step === "WAITER" ? (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={!waiterUserId || busy}
+                onClick={() => void submitWaiter()}
+              >
+                Abrir mesa
+              </Button>
+            ) : step === "ITEM" ? (
               <Button type="button" variant="ghost" onClick={resetFlow}>
                 Nueva mesa
               </Button>
             ) : (
-              <span aria-hidden="true" />
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={!tableNumberIsValid || busy}
+                onClick={() => void submitTable()}
+              >
+                Continuar
+              </Button>
             )}
           </form>
 
@@ -891,7 +1127,11 @@ function QuickEntry({
                       setError(null);
                     }}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter") {
+                      if (event.key === "Enter" && event.shiftKey) {
+                        event.preventDefault();
+                        setStep("WAITER");
+                        focus(waiterNameRef);
+                      } else if (event.key === "Enter") {
                         event.preventDefault();
                         focus(codeRef);
                       }
@@ -905,6 +1145,15 @@ function QuickEntry({
                     list="quick-product-codes"
                     value={productCode}
                     onChange={(event) => changeCode(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && event.shiftKey) {
+                        event.preventDefault();
+                        focus(quantityRef);
+                      } else if (event.key === "Enter") {
+                        event.preventDefault();
+                        focus(productNameRef);
+                      }
+                    }}
                     placeholder="MUZG"
                     autoComplete="off"
                   />
@@ -959,6 +1208,12 @@ function QuickEntry({
                           previewProduct(productSuggestions[next]!);
                           return;
                         }
+                        if (event.key === "Enter" && event.shiftKey) {
+                          event.preventDefault();
+                          setProductListOpen(false);
+                          focus(codeRef);
+                          return;
+                        }
                         if (
                           (event.key === "Enter" || event.key === "Tab") &&
                           productListOpen &&
@@ -970,6 +1225,16 @@ function QuickEntry({
                               productSuggestions[0]!,
                           );
                           setProductListOpen(false);
+                          if (event.key === "Enter") focus(priceRef);
+                          return;
+                        }
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          const product =
+                            selectedProduct ?? matchName(productName);
+                          if (product) chooseProduct(product);
+                          setProductListOpen(false);
+                          focus(priceRef);
                           return;
                         }
                         if (event.key === "Escape") {
@@ -1070,6 +1335,15 @@ function QuickEntry({
                       setUnitPrice(event.target.value);
                       setError(null);
                     }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && event.shiftKey) {
+                        event.preventDefault();
+                        focus(productNameRef);
+                      } else if (event.key === "Enter") {
+                        event.preventDefault();
+                        void submitItem();
+                      }
+                    }}
                     placeholder="$ 0"
                     className={
                       priceWasChanged
@@ -1086,6 +1360,12 @@ function QuickEntry({
                     enteredPriceMinor == null ||
                     busy
                   }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && event.shiftKey) {
+                      event.preventDefault();
+                      focus(priceRef);
+                    }
+                  }}
                 >
                   {addItem.isPending ? "Agregando…" : "Agregar"}{" "}
                   <Plus size={16} />

@@ -20,6 +20,54 @@ class MemoryStorage implements DemoStorage {
 }
 
 describe("API de demostración", () => {
+  it("elimina mesa libre, conserva id al reactivar y permite repetir", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const table = await api.ensureTable({ number: 51 });
+    await expect(api.deleteTable({ tableId: table.id })).resolves.toEqual({
+      deleted: true,
+    });
+    const again = await api.ensureTable({ number: 51 });
+    expect(again.id).toBe(table.id);
+    await expect(api.deleteTable({ tableId: table.id })).resolves.toEqual({
+      deleted: true,
+    });
+  });
+
+  it("cancela pedido vacío y bloquea pedido con consumo", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const table = await api.ensureTable({ number: 52 });
+    const order = await api.createOrder({ type: "DINE_IN", tableId: table.id });
+    await api.deleteTable({ tableId: table.id });
+    expect(
+      (await api.bootstrap()).orders.find((item) => item.id === order.id)
+        ?.operationalStatus,
+    ).toBe("CANCELLED");
+    const occupied = await api.ensureTable({ number: 53 });
+    const occupiedOrder = await api.createOrder({
+      type: "DINE_IN",
+      tableId: occupied.id,
+    });
+    await api.addOrderItem({
+      orderId: occupiedOrder.id,
+      productId: "prod-muzza",
+    });
+    await expect(api.deleteTable({ tableId: occupied.id })).rejects.toThrow(
+      /consumo/,
+    );
+  });
+
+  it("rechaza eliminación sin tables.manage", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    const table = await api.ensureTable({ number: 54 });
+    const persisted = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    persisted.data.currentUser.permissions = ["orders.create", "orders.edit"];
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(persisted));
+    const restricted = createDemoApi(storage);
+    await expect(restricted.deleteTable({ tableId: table.id })).rejects.toThrow(
+      /permiso/,
+    );
+  });
   it("entrega un escenario inicial completo y en español", async () => {
     const api = createDemoApi(new MemoryStorage());
     const data = await api.bootstrap();

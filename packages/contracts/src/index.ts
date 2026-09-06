@@ -776,6 +776,7 @@ export interface DesktopApi {
     active: boolean;
     sortOrder?: number;
   }): Promise<RestaurantTableDto>;
+  deleteTable(input: { tableId: Id }): Promise<{ deleted: true }>;
   exportSalesCsv(): Promise<{ path: string | null }>;
   getDetailedReport(filters: ReportFilters): Promise<DetailedReportDto>;
   getAuditLog(input: {

@@ -71,6 +71,9 @@ export function OrderEditor({
   const [driverUserId, setDriverUserId] = useState("");
   const [driverError, setDriverError] = useState<string | null>(null);
   const [printFeedback, setPrintFeedback] = useState<string | null>(null);
+  const [skippedPrintKind, setSkippedPrintKind] = useState<
+    "KITCHEN_ORDER" | "CUSTOMER_BILL" | null
+  >(null);
   const [printConfirmKind, setPrintConfirmKind] = useState<
     "KITCHEN_ORDER" | "CUSTOMER_BILL" | null
   >(null);
@@ -159,12 +162,15 @@ export function OrderEditor({
       });
     },
     {
-      onSuccess: (_result, input) => {
+      onSuccess: (result, input) => {
         const label = input.kind === "KITCHEN_ORDER" ? "Comanda" : "Cuenta";
+        setSkippedPrintKind(result.status === "SKIPPED" ? input.kind : null);
         setPrintFeedback(
-          isDemoMode
-            ? `${label} simulada: se creó el trabajo, pero no fue enviada a una impresora.`
-            : `${label} impresa/enviada según el resultado del dispositivo.`,
+          result.status === "SKIPPED"
+            ? `${label} no impresa. Podés continuar trabajando y volver a imprimirla cuando quieras.`
+            : isDemoMode
+              ? `${label} simulada: se creó el trabajo, pero no fue enviada a una impresora.`
+              : `${label} impresa/enviada según el resultado del dispositivo.`,
         );
         setPrintConfirmKind(null);
       },
@@ -182,6 +188,7 @@ export function OrderEditor({
   useEffect(() => {
     setPrintFeedback(null);
     setPrintConfirmKind(null);
+    setSkippedPrintKind(null);
   }, [orderId]);
 
   useEffect(() => {
@@ -677,11 +684,13 @@ export function OrderEditor({
                 <Printer size={16} />{" "}
                 {print.isPending
                   ? "Enviando…"
-                  : isDraft
-                    ? "Confirmar e imprimir"
-                    : printedKinds.has("KITCHEN_ORDER")
-                      ? "Reimprimir comanda"
-                      : "Comanda"}
+                  : skippedPrintKind === "KITCHEN_ORDER"
+                    ? "Reintentar comanda"
+                    : isDraft
+                      ? "Confirmar e imprimir"
+                      : printedKinds.has("KITCHEN_ORDER")
+                        ? "Reimprimir comanda"
+                        : "Comanda"}
               </Button>
               <Button
                 variant="secondary"
@@ -696,9 +705,11 @@ export function OrderEditor({
                 <Printer size={16} />{" "}
                 {print.isPending
                   ? "Enviando…"
-                  : printedKinds.has("CUSTOMER_BILL")
-                    ? "Reimprimir cuenta"
-                    : "Cuenta"}
+                  : skippedPrintKind === "CUSTOMER_BILL"
+                    ? "Reintentar cuenta"
+                    : printedKinds.has("CUSTOMER_BILL")
+                      ? "Reimprimir cuenta"
+                      : "Cuenta"}
               </Button>
               <Button
                 onClick={() => {

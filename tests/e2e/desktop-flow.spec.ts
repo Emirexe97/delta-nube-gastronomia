@@ -354,6 +354,10 @@ test("carga una mesa y productos de punta a punta solo con teclado", async () =>
   await expect(product).toHaveValue("Muzzarella E2E");
   await expect(price).toHaveValue("16500");
   await code.press("Enter");
+  await expect(product).toBeFocused();
+  await product.press("Enter");
+  await expect(price).toBeFocused();
+  await price.press("Enter");
   await expect(
     page.getByText("2 × Muzzarella E2E agregado", { exact: true }),
   ).toBeVisible();

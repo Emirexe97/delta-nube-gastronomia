@@ -52,6 +52,7 @@ const api: DesktopApi = {
     invoke("reverseDeliverySettlement", input),
   configureTables: (input) => invoke("configureTables", input),
   updateTable: (input) => invoke("updateTable", input),
+  deleteTable: (input) => invoke("deleteTable", input),
   exportSalesCsv: () => invoke("exportSalesCsv"),
   getDetailedReport: (filters) => invoke("getDetailedReport", filters),
   getAuditLog: (input) => invoke("getAuditLog", input),
