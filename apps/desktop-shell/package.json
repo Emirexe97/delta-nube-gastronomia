@@ -1,0 +1,67 @@
+{
+  "name": "@gastronomy/desktop-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aplicación desktop local de Delta Nube Gastronomía",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsup && node scripts/stage-renderer.mjs",
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3-multiple-ciphers",
+    "dev": "wait-on http-get://localhost:5173 && pnpm build && pnpm rebuild:native && cross-env GASTRONOMY_RENDERER_URL=http://localhost:5173 electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test",
+    "dist:win": "pnpm --filter @gastronomy/web build && pnpm build && pnpm rebuild:native && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "@gastronomy/application": "workspace:*",
+    "@gastronomy/contracts": "workspace:*",
+    "@gastronomy/database": "workspace:*",
+    "@gastronomy/domain": "workspace:*",
+    "better-sqlite3-multiple-ciphers": "12.11.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "@gastronomy/web": "workspace:*",
+    "@types/node": "^22.8.1",
+    "cross-env": "^7.0.3",
+    "electron": "^39.8.1",
+    "electron-builder": "^26.8.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.deltanube.gastronomy",
+    "productName": "Delta Nube Gastronomía",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "renderer/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3-multiple-ciphers/build/Release/*.node",
+      "node_modules/better-sqlite3-multiple-ciphers/build/Release/*.dll"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

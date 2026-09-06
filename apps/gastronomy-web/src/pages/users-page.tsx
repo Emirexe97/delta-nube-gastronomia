@@ -1,0 +1,323 @@
+import { useEffect, useState } from "react";
+import type { BootstrapDto, UserDto } from "@gastronomy/contracts";
+import { PencilSimple, Plus, UsersThree } from "@phosphor-icons/react";
+import {
+  Badge,
+  Button,
+  Card,
+  Field,
+  Input,
+  Modal,
+  Select,
+} from "@gastronomy/ui";
+import { useApiMutation } from "../api";
+import { humanError } from "../lib";
+
+const roles = [
+  ["ADMIN", "Administrador"],
+  ["MANAGER", "Supervisor"],
+  ["CASHIER", "Cajero"],
+  ["WAITER", "Mozo"],
+] as const;
+type RoleCode = (typeof roles)[number][0];
+
+export function UsersPage({ data }: { data: BootstrapDto }) {
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<UserDto | null>(null);
+  return (
+    <div className="panel-enter mx-auto max-w-[1250px] space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-extrabold">Usuarios y permisos</h2>
+          <p className="text-xs text-slate-400">
+            Roles reutilizables, capacidades y número rápido para salón
+          </p>
+        </div>
+        <Button onClick={() => setCreateOpen(true)}>
+          <Plus />
+          Nuevo usuario
+        </Button>
+      </div>
+      <Card className="overflow-hidden">
+        <table className="dn-table">
+          <thead>
+            <tr>
+              <th>N.º</th>
+              <th>Usuario</th>
+              <th>Rol</th>
+              <th>Permisos</th>
+              <th>Estado</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.users.filter((user) => user.roleCode !== "DELIVERY_DRIVER").map((user) => (
+              <tr key={user.id}>
+                <td className="font-mono text-xs font-extrabold text-brand-700">
+                  #{user.staffNumber}
+                </td>
+                <td className="font-bold text-slate-900">{user.fullName}</td>
+                <td>
+                  <Badge tone="orange">{user.roleName}</Badge>
+                </td>
+                <td>
+                  <span className="text-xs font-semibold">
+                    {user.permissions.length}
+                  </span>
+                  <p className="max-w-[420px] truncate text-[10px] text-slate-400">
+                    {user.permissions.join(" · ") ||
+                      "Sin capacidades operativas"}
+                  </p>
+                </td>
+                <td>
+                  <Badge tone={user.active ? "green" : "slate"}>
+                    {user.active ? "Activo" : "Inactivo"}
+                  </Badge>
+                </td>
+                <td className="text-right">
+                  <button
+                    onClick={() => setEditing(user)}
+                    className="rounded-lg p-2 text-slate-400 hover:bg-brand-50 hover:text-brand-700"
+                    aria-label={`Editar ${user.fullName}`}
+                  >
+                    <PencilSimple />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+      <CreateUserModal open={createOpen} onClose={() => setCreateOpen(false)} />
+      <EditUserModal user={editing} onClose={() => setEditing(null)} />
+    </div>
+  );
+}
+
+function CreateUserModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose(): void;
+}) {
+  const [name, setName] = useState("");
+  const [roleCode, setRoleCode] = useState<RoleCode>("WAITER");
+  const [pin, setPin] = useState("");
+  const [authorizerPin, setAuthorizerPin] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const mutation = useApiMutation(
+    (input: Parameters<typeof window.gastronomy.createUser>[0]) =>
+      window.gastronomy.createUser(input),
+    {
+      onSuccess: () => {
+        setName("");
+        setPin("");
+        setAuthorizerPin("");
+        onClose();
+      },
+      onError: (value) => setError(humanError(value)),
+    },
+  );
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Nuevo usuario"
+      description="El autorizante debe poseer users.manage"
+    >
+      <div className="grid gap-4">
+        <Field label="Nombre completo">
+          <Input
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </Field>
+        <Field label="Rol">
+          <Select
+            value={roleCode}
+            onChange={(event) => setRoleCode(event.target.value as RoleCode)}
+          >
+            {roles.map(([code, label]) => (
+              <option key={code} value={code}>
+                {label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="PIN del usuario">
+            <Input
+              type="password"
+              inputMode="numeric"
+              value={pin}
+              maxLength={8}
+              onChange={(event) =>
+                setPin(event.target.value.replace(/\D/g, ""))
+              }
+            />
+          </Field>
+          <Field label="PIN de autorización">
+            <Input
+              type="password"
+              inputMode="numeric"
+              value={authorizerPin}
+              maxLength={8}
+              onChange={(event) =>
+                setAuthorizerPin(event.target.value.replace(/\D/g, ""))
+              }
+            />
+          </Field>
+        </div>
+        {error ? (
+          <p className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button
+            disabled={
+              !name.trim() ||
+              pin.length < 4 ||
+              authorizerPin.length < 4 ||
+              mutation.isPending
+            }
+            onClick={() =>
+              mutation.mutate({ fullName: name, roleCode, pin, authorizerPin })
+            }
+          >
+            <UsersThree />
+            Crear usuario
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function EditUserModal({
+  user,
+  onClose,
+}: {
+  user: UserDto | null;
+  onClose(): void;
+}) {
+  const [roleCode, setRoleCode] = useState<RoleCode>("WAITER");
+  const [active, setActive] = useState(true);
+  const [newPin, setNewPin] = useState("");
+  const [reason, setReason] = useState("");
+  const [authorizerPin, setAuthorizerPin] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (user) {
+      setRoleCode(user.roleCode as RoleCode);
+      setActive(user.active);
+      setNewPin("");
+      setReason("");
+      setAuthorizerPin("");
+      setError(null);
+    }
+  }, [user]);
+  const mutation = useApiMutation(
+    (input: Parameters<typeof window.gastronomy.updateUser>[0]) =>
+      window.gastronomy.updateUser(input),
+    { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
+  );
+  return (
+    <Modal
+      open={Boolean(user)}
+      onClose={onClose}
+      title={`Editar ${user?.fullName ?? "usuario"}`}
+      description="Los cambios quedan auditados"
+    >
+      <div className="grid gap-4">
+        <Field label="Rol">
+          <Select
+            value={roleCode}
+            onChange={(event) => setRoleCode(event.target.value as RoleCode)}
+          >
+            {roles.map(([code, label]) => (
+              <option key={code} value={code}>
+                {label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <label className="flex items-center gap-3 rounded-lg border border-slate-200 p-3 text-xs font-semibold">
+          <input
+            type="checkbox"
+            checked={active}
+            onChange={(event) => setActive(event.target.checked)}
+            className="accent-brand-600"
+          />
+          Usuario activo
+        </label>
+        <Field label="Nuevo PIN (opcional)">
+          <Input
+            type="password"
+            inputMode="numeric"
+            maxLength={8}
+            value={newPin}
+            onChange={(event) =>
+              setNewPin(event.target.value.replace(/\D/g, ""))
+            }
+          />
+        </Field>
+        <Field label="Motivo">
+          <Input
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Cambio de función, baja, rotación de PIN…"
+          />
+        </Field>
+        <Field label="PIN de autorización">
+          <Input
+            type="password"
+            inputMode="numeric"
+            maxLength={8}
+            value={authorizerPin}
+            onChange={(event) =>
+              setAuthorizerPin(event.target.value.replace(/\D/g, ""))
+            }
+          />
+        </Field>
+        {error ? (
+          <p className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button
+            disabled={
+              !user ||
+              !reason.trim() ||
+              authorizerPin.length < 4 ||
+              (newPin.length > 0 && newPin.length < 4) ||
+              mutation.isPending
+            }
+            onClick={() =>
+              mutation.mutate({
+                userId: user!.id,
+                roleCode,
+                active,
+                newPin: newPin || null,
+                reason,
+                authorizerPin,
+              })
+            }
+          >
+            Guardar cambios
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+

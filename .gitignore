@@ -1,0 +1,16 @@
+node_modules/
+.turbo/
+dist/
+release/
+coverage/
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env
+.reference/
+artifacts-ui.png
+test-results/
+playwright-report/
+# Generated desktop renderer bundle
+apps/desktop-shell/renderer/

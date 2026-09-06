@@ -1,0 +1,31 @@
+{
+  "name": "delta-nube-gastronomia",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "dev:web": "pnpm --filter @gastronomy/web dev",
+    "dev:demo": "pnpm --filter @gastronomy/web dev:demo",
+    "dev:desktop": "pnpm --filter @gastronomy/desktop-shell dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "benchmark": "pnpm --filter @gastronomy/database benchmark",
+    "test:e2e": "pnpm build && pnpm --filter @gastronomy/desktop-shell rebuild:native && playwright test",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "prettier": "^3.3.3",
+    "turbo": "^2.1.3",
+    "typescript": "^5.6.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3-multiple-ciphers",
+      "electron",
+      "esbuild"
+    ]
+  }
+}
