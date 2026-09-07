@@ -54,6 +54,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
   return (
     <div
       data-navigation-dirty={hasUnsavedSettings ? "true" : undefined}
+      data-enter-navigation
       className="panel-enter mx-auto max-w-[1100px] space-y-4"
     >
       <div>

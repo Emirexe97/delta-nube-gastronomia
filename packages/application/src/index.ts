@@ -26,10 +26,14 @@ import type {
   ProductDto,
   RefundPaymentInput,
   ReportFilters,
+  CashSessionHistoryItemDto,
+  CashSessionReportDto,
+  CashSessionReportFilters,
   SearchCustomersPageInput,
   UpdateProductInput,
   UpdateCustomerInput,
   UpdateDraftOrderInput,
+  UpdateOrderItemNotesInput,
   ConfirmOrderInput,
   SettleDeliveryInput,
 } from "@gastronomy/contracts";
@@ -67,11 +71,14 @@ export interface GastronomyRepository {
   openCashSession(input: OpenCashSessionInput): CashSessionDto;
   registerCashMovement(input: CashMovementInput): CashSessionDto;
   closeCashSession(input: CloseCashSessionInput): CashSessionDto;
+  listCashSessionHistory(): CashSessionHistoryItemDto[];
+  getCashSessionReport(filters: CashSessionReportFilters): CashSessionReportDto;
   createOrder(input: CreateOrderInput): OrderDto;
   updateDraftOrder(input: UpdateDraftOrderInput): OrderDto;
   confirmOrder(input: ConfirmOrderInput): OrderDto;
   discardDraftOrder(orderId: Id): { discarded: boolean };
   addOrderItem(input: AddOrderItemInput): OrderDto;
+  updateOrderItemNotes(input: UpdateOrderItemNotesInput): OrderDto;
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput): OrderDto;
   removeOrderItem(orderId: Id, itemId: Id): OrderDto;
   addOrderItemModifier(input: {
@@ -348,6 +355,13 @@ export class GastronomyApplication {
         );
     }
     return this.repository.addOrderItem(input);
+  }
+
+  updateOrderItemNotes(input: UpdateOrderItemNotesInput) {
+    const notes = input.notes?.trim() || null;
+    if (notes && notes.length > 500)
+      throw new Error("Las observaciones admiten hasta 500 caracteres.");
+    return this.repository.updateOrderItemNotes({ ...input, notes });
   }
 
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput) {
@@ -812,6 +826,15 @@ export class GastronomyApplication {
 
   exportSalesCsv() {
     return this.repository.exportSalesCsv();
+  }
+
+  listCashSessionHistory() {
+    return this.repository.listCashSessionHistory();
+  }
+
+  getCashSessionReport(filters: CashSessionReportFilters) {
+    if (!filters?.cashSessionId) throw new Error("La caja no es válida.");
+    return this.repository.getCashSessionReport(filters);
   }
 
   getDetailedReport(filters: ReportFilters) {

@@ -4,6 +4,8 @@ import { copyFile, rm, writeFile } from "node:fs/promises";
 import { GastronomyApplication } from "@gastronomy/application";
 import type {
   AppSettingsDto,
+  CashSessionReportDto,
+  CashSessionReportFilters,
   DesktopApi,
   OrderDto,
 } from "@gastronomy/contracts";
@@ -65,9 +67,10 @@ function orderTicketHtml(
       const halves = item.halves.length
         ? `<div class="detail">½ ${escapeHtml(item.halves[0]?.nameSnapshot)} · ½ ${escapeHtml(item.halves[1]?.nameSnapshot)}</div>`
         : "";
-      const notes = item.notes
-        ? `<span class="modifier"><strong>OBS:</strong> ${escapeHtml(item.notes)}</span>`
-        : "";
+      const notes =
+        isKitchen && item.notes
+          ? `<span class="modifier"><strong>OBS:</strong> ${escapeHtml(item.notes)}</span>`
+          : "";
       const modifiers = item.modifiers
         .map(
           (modifier) =>
@@ -95,6 +98,7 @@ function orderTicketHtml(
   </style></head><body><header class="center"><h1 class="title">${escapeHtml(isKitchen ? template.kitchenHeader || "COMANDA" : template.title || settings.businessName)}</h1>${!isKitchen && template.subtitle ? `<p class="subtitle">${escapeHtml(template.subtitle)}</p>` : ""}</header><section class="meta"><div class="meta-line"><strong>${dateLabel} · ${timeLabel}</strong>${template.showOrderNumber || isKitchen ? `<strong>PEDIDO #${order.number}</strong>` : ""}</div><div class="meta-line">${template.showTable || isKitchen ? `<strong>${escapeHtml(typeLabel)}</strong>` : "<span></span>"}${template.showWaiter && order.waiterName ? `<span>Mozo: <strong>${escapeHtml(order.waiterName)}</strong></span>` : `<span>${escapeHtml(settings.printing.terminalLabel)}</span>`}</div>${order.printCount > 0 ? `<div class="center"><span class="reprint">REIMPRESIÓN</span></div>` : ""}</section>
   ${order.promisedAt ? `<p class="promised">ENTREGA ${escapeHtml(new Date(order.promisedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }))}</p>` : ""}
   ${template.showCustomer && (order.customerNameSnapshot || order.customerPhoneSnapshot || order.deliveryAddressSnapshot) ? `<section class="info">${order.customerNameSnapshot ? `<strong>${escapeHtml(order.customerNameSnapshot)}</strong>` : ""}${order.customerPhoneSnapshot ? ` · ${escapeHtml(order.customerPhoneSnapshot)}` : ""}${order.deliveryAddressSnapshot ? `<br>${escapeHtml(order.deliveryAddressSnapshot)}` : ""}</section>` : ""}
+  ${isKitchen && order.type === "DELIVERY" && order.deliveryAddressNotesSnapshot ? `<p class="order-note"><strong>Referencia:</strong> ${escapeHtml(order.deliveryAddressNotesSnapshot)}</p>` : ""}
   <div class="columns"><strong>Cant. · Producto</strong>${isKitchen || !template.showItemTotal ? "" : "<strong>Total</strong>"}</div>${itemRows}
   ${order.notes ? `<p class="order-note"><strong>OBS:</strong> ${escapeHtml(order.notes)}</p>` : ""}
   ${isKitchen ? "" : `<section class="totals">${showBreakdown ? `<div class="row"><span>Subtotal</span><strong>${escapeHtml(formatMoney(order.subtotalMinor))}</strong></div>` : ""}${order.discountMinor ? `<div class="row"><span>Descuento</span><strong>-${escapeHtml(formatMoney(order.discountMinor))}</strong></div>` : ""}${order.deliveryFeeMinor ? `<div class="row"><span>Delivery</span><strong>${escapeHtml(formatMoney(order.deliveryFeeMinor))}</strong></div>` : ""}<div class="row total"><span>TOTAL</span><span>${escapeHtml(formatMoney(order.totalMinor))}</span></div></section>`}
@@ -110,6 +114,89 @@ function orderTicketHtml(
       : ""
   }
   ${(isKitchen && template.kitchenFooter) || (!isKitchen && (template.footer || template.nonFiscalLegend)) ? `<footer class="footer">${isKitchen && template.kitchenFooter ? lineBreaks(template.kitchenFooter) : ""}${!isKitchen && template.footer ? `<strong>${lineBreaks(template.footer)}</strong>` : ""}${!isKitchen && template.nonFiscalLegend ? `<br>${lineBreaks(template.nonFiscalLegend)}` : ""}</footer>` : ""}<div aria-hidden="true" style="height:${feedHeightMm}mm"></div></body></html>`;
+}
+
+function cashSessionReportHtml(
+  report: CashSessionReportDto,
+  settings: AppSettingsDto,
+) {
+  const session = report.session;
+  const profile = settings.printing.bill;
+  const paperMm = profile.paperWidth === "58mm" ? 58 : 80;
+  const contentMm = paperMm - 8;
+  const fontSizePx = Math.max(
+    9,
+    Math.min(15, (contentMm / profile.charsPerLine) * 6.2),
+  ).toFixed(1);
+  const money = (value: unknown) => escapeHtml(formatMoney(Number(value) || 0));
+  const date = (value: unknown) =>
+    value ? escapeHtml(new Date(String(value)).toLocaleString("es-AR")) : "—";
+  const filterLabels: Record<string, string> = {
+    tableId: "Mesa",
+    waiterUserId: "Mozo",
+    productId: "Producto",
+    categoryName: "Categoría",
+    orderType: "Tipo de pedido",
+    paymentMethodCode: "Medio de pago",
+    operationalStatus: "Estado",
+  };
+  const filterValue = (key: string, value: unknown) => {
+    if (key === "tableId")
+      return report.byTable.find((row) => row.tableId === value)?.name ?? value;
+    if (key === "waiterUserId")
+      return (
+        report.byWaiter.find((row) => row.waiterUserId === value)?.name ?? value
+      );
+    if (key === "productId")
+      return (
+        report.byProduct.find((row) => row.productId === value)?.name ?? value
+      );
+    if (key === "paymentMethodCode")
+      return (
+        report.byPaymentMethod.find((row) => row.code === value)?.name ?? value
+      );
+    if (key === "orderType")
+      return (
+        { DINE_IN: "Salón", TAKEAWAY: "Para retirar", DELIVERY: "Delivery" }[
+          String(value)
+        ] ?? value
+      );
+    if (key === "operationalStatus")
+      return (
+        {
+          OPEN: "Abierto",
+          IN_PREPARATION: "En preparación",
+          READY: "Listo",
+          DELIVERED: "Entregado",
+          CANCELLED: "Cancelado",
+        }[String(value)] ?? value
+      );
+    return value;
+  };
+  const filters = Object.entries(report.filters ?? {})
+    .filter(([key, value]) => key !== "cashSessionId" && value)
+    .map(
+      ([key, value]) =>
+        `<p>${escapeHtml(filterLabels[key] ?? key)}: ${escapeHtml(filterValue(key, value))}</p>`,
+    )
+    .join("");
+  const aggregate = (
+    title: string,
+    rows: Array<{ name: string; amountMinor: number; quantity?: number }>,
+  ) =>
+    rows.length
+      ? `<h3>${escapeHtml(title)}</h3>${rows.map((row) => `<div class="row"><span>${escapeHtml(row.name)}${row.quantity == null ? "" : ` ×${row.quantity}`}</span><span>${money(row.amountMinor)}</span></div>`).join("")}`
+      : "";
+  const details = report.detailAvailable
+    ? `${aggregate("Por producto", report.byProduct)}${aggregate("Por categoría", report.byCategory)}${aggregate("Por mesa", report.byTable)}${aggregate("Por mozo", report.byWaiter)}${aggregate(
+        "Por tipo",
+        report.byType.map((row) => ({ ...row, name: row.type })),
+      )}${aggregate("Por medio de pago", report.byPaymentMethod)}<h3>Detalle de pedidos</h3>${report.orders.map((order) => `<div class="row"><span>#${escapeHtml(order.number)} · ${escapeHtml(order.items[0]?.productNameSnapshot ?? order.type)}</span><span>${money(order.totalMinor)}</span></div>`).join("")}`
+    : `<p class="notice">El detalle de este turno ya no está disponible; se muestra el resumen conservado.</p>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    @page{size:${paperMm}mm auto;margin:3mm}body{font-family:"Courier New",monospace;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;overflow-wrap:anywhere}h1,h2,h3,p{margin:0 0 5px}.center{text-align:center}.divider{border-top:1px dashed #000;margin:8px 0}.row{display:flex;justify-content:space-between;gap:8px;margin:4px 0}.total{font-size:16px;font-weight:800}.notice{border:1px solid #000;padding:5px}
+  </style></head><body><div class="center"><h1>${escapeHtml(settings.businessName)}</h1><h2>INFORME DE CAJA #${escapeHtml(session.number)}</h2><p>${escapeHtml(settings.printing.terminalLabel)}</p></div><div class="divider"></div>
+  <p>Día comercial: ${escapeHtml(session.businessDate)}</p><p>Apertura: ${date(session.openedAt)}</p><p>Cierre: ${date(session.closedAt)}</p><p>Responsable: ${escapeHtml(session.openedByName)}</p>${filters ? `<div class="divider"></div><h3>Filtros</h3>${filters}` : ""}<div class="divider"></div><h3>Resumen</h3><div class="row total"><span>Ventas</span><span>${money(report.totals.salesMinor)}</span></div><div class="row"><span>Pedidos</span><span>${escapeHtml(report.totals.orderCount)}</span></div><div class="row"><span>Ticket promedio</span><span>${money(report.totals.averageTicketMinor)}</span></div><div class="row"><span>Descuentos</span><span>${money(report.totals.discountsMinor)}</span></div><div class="row"><span>Devoluciones</span><span>${money(report.totals.refundsMinor)}</span></div><div class="divider"></div><h3>Arqueo</h3><div class="row"><span>Apertura</span><span>${money(session.openingAmountMinor)}</span></div><div class="row"><span>Esperado</span><span>${money(session.expectedAmountMinor)}</span></div><div class="row"><span>Contado</span><span>${money(session.countedAmountMinor)}</span></div><div class="row"><span>Diferencia</span><span>${money(session.differenceMinor)}</span></div><div class="divider"></div>${details}<div class="divider"></div><p class="center">Impreso: ${escapeHtml(new Date().toLocaleString("es-AR"))}</p><div aria-hidden="true" style="height:${Math.max(0, profile.feedLinesBeforeCut) * 3.5}mm"></div></body></html>`;
 }
 
 async function printOrder(
@@ -147,6 +234,7 @@ function printerTestHtml(
     customerPhoneSnapshot: "11 5555-0199",
     deliveryAddressSnapshot:
       "Avenida Siempre Viva 742, departamento 8, timbre rojo",
+    deliveryAddressNotesSnapshot: "Tocar timbre rojo",
     deliveryFeeMinor: 25_000,
     promisedAt: new Date(Date.now() + 30 * 60_000).toISOString(),
     scheduled: true,
@@ -246,6 +334,7 @@ function registerIpcHandlers() {
   const methods: Exclude<
     keyof DesktopApi,
     | "printOrder"
+    | "printCashSessionReport"
     | "retryPrint"
     | "exportSalesCsv"
     | "createBackup"
@@ -258,12 +347,15 @@ function registerIpcHandlers() {
     "openCashSession",
     "registerCashMovement",
     "closeCashSession",
+    "listCashSessionHistory",
+    "getCashSessionReport",
     "createOrder",
     "updateDraftOrder",
     "confirmOrder",
     "discardDraftOrder",
     "addOrderItem",
     "addHalfAndHalfItem",
+    "updateOrderItemNotes",
     "removeOrderItem",
     "addOrderItemModifier",
     "removeOrderItemModifier",
@@ -292,7 +384,6 @@ function registerIpcHandlers() {
     "createUser",
     "createDriver",
     "updateUser",
-    "deleteUser",
     "settleDelivery",
     "reverseCashMovement",
     "reverseDeliverySettlement",
@@ -338,6 +429,25 @@ function registerIpcHandlers() {
       const { appService } = services();
       const job = appService.queuePrint(payload);
       return executePrintJob(job.jobId, payload.orderId, payload.kind);
+    },
+  );
+  ipcMain.handle(
+    "gastronomy:printCashSessionReport",
+    async (_event, payload: { filters: CashSessionReportFilters }) => {
+      const { appService } = services();
+      const report = appService.getCashSessionReport(payload.filters);
+      const outcome = await printHtml(
+        cashSessionReportHtml(report, appService.bootstrap().settings),
+        appService.bootstrap().settings.printing.bill,
+        { parent: mainWindow },
+      );
+      return {
+        printed: outcome === "PRINTED",
+        message:
+          outcome === "PRINTED"
+            ? "Informe impreso."
+            : "Impresión cancelada. No se imprimió nada.",
+      };
     },
   );
   ipcMain.handle("gastronomy:listPrinters", async () => {

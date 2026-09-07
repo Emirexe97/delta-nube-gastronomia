@@ -4,8 +4,14 @@ import type {
   CategoryDto,
   CustomerDto,
   DeliveryLedgerDto,
+  DriverDeliveryActivityDto,
   DesktopApi,
   DetailedReportDto,
+  CashSessionDto,
+  CashSessionReportDto,
+  CashSessionReportFilters,
+  CashSessionHistoryItemDto,
+  CashMovementType,
   OrderDto,
   OrderItemDto,
   ProductDto,
@@ -30,8 +36,21 @@ export interface DemoStorage {
 }
 
 interface DemoState {
-  version: 8;
+  version: 9;
   data: BootstrapDto;
+  historicalSessions: CashSessionDto[];
+  movements: Array<{
+    id: string;
+    sessionId: string;
+    type: CashMovementType;
+    amountMinor: number;
+    affectsCash: boolean;
+    paymentMethodCode: string | null;
+    orderId: string | null;
+    userId: string;
+    reason: string | null;
+    createdAt: string;
+  }>;
   customers: CustomerDto[];
   audit: AuditEntryDto[];
   sequence: number;
@@ -134,9 +153,47 @@ function validateCustomerInput(input: {
 
 function seedState(): DemoState {
   const updatedAt = now();
+  const oldDate = new Date();
+  oldDate.setDate(oldDate.getDate() - 120);
+  const oldBusinessDate = oldDate.toISOString().slice(0, 10);
   return {
-    version: 8,
+    version: 9,
     data: createDemoBootstrap(),
+    historicalSessions: [
+      {
+        id: "cash-demo-old",
+        number: 1,
+        businessDate: oldBusinessDate,
+        openedAt: `${oldBusinessDate}T12:00:00.000Z`,
+        closedAt: `${oldBusinessDate}T23:00:00.000Z`,
+        openedByUserId: "user-admin",
+        openedByName: "Administrador Demo",
+        openingAmountMinor: 2_000_000,
+        expectedAmountMinor: 8_500_000,
+        countedAmountMinor: 8_500_000,
+        differenceMinor: 0,
+        closingFloatAmountMinor: 2_000_000,
+        cashRemovedAmountMinor: 6_500_000,
+        floatDifferenceMinor: 0,
+        cashSalesMinor: 6_000_000,
+        cashIncomeMinor: 500_000,
+        cashExpenseMinor: 0,
+        cashWithdrawalMinor: 0,
+        cashRefundMinor: 0,
+        salesTotalMinor: 8_000_000,
+        salesByType: {
+          DINE_IN: 5_000_000,
+          TAKEAWAY: 1_000_000,
+          DELIVERY: 2_000_000,
+        },
+        salesByPaymentMethod: [
+          { code: "CASH", name: "Efectivo", amountMinor: 6_000_000 },
+          { code: "TRANSFER", name: "Transferencia", amountMinor: 2_000_000 },
+        ],
+        status: "CLOSED",
+      },
+    ],
+    movements: [],
     customers: [
       {
         id: "customer-ana",
@@ -209,7 +266,7 @@ function loadState(storage: DemoStorage): DemoState {
       version: number;
     };
     if (
-      ![5, 6, 7, 8].includes(parsed.version) ||
+      ![5, 6, 7, 8, 9].includes(parsed.version) ||
       !parsed.data?.settings?.printing
     )
       return seedState();
@@ -220,6 +277,8 @@ function loadState(storage: DemoStorage): DemoState {
       }
       parsed.version = 6;
     }
+    parsed.historicalSessions ??= [];
+    parsed.movements ??= [];
     for (const customer of parsed.customers) {
       if (
         !customer.updatedAt ||
@@ -243,7 +302,7 @@ function loadState(storage: DemoStorage): DemoState {
         ledger.settledAt ??= ledger.createdAt;
       }
     }
-    parsed.version = 8;
+    parsed.version = 9;
     return parsed as DemoState;
   } catch {
     return seedState();
@@ -376,6 +435,37 @@ function makeDashboard(data: BootstrapDto) {
   return result;
 }
 
+function makeDriverDeliveryActivity(
+  orders: OrderDto[],
+): DriverDeliveryActivityDto[] {
+  const byDriver = new Map<string, DriverDeliveryActivityDto>();
+  for (const order of orders) {
+    if (
+      order.type !== "DELIVERY" ||
+      order.operationalStatus !== "DELIVERED" ||
+      !order.driverUserId
+    )
+      continue;
+    const current = byDriver.get(order.driverUserId);
+    if (current) {
+      current.deliveryCount += 1;
+      current.earningsMinor += order.deliveryFeeMinor;
+      if (order.updatedAt > current.lastDeliveryAt)
+        current.lastDeliveryAt = order.updatedAt;
+    } else {
+      byDriver.set(order.driverUserId, {
+        driverUserId: order.driverUserId,
+        deliveryCount: 1,
+        earningsMinor: order.deliveryFeeMinor,
+        lastDeliveryAt: order.updatedAt,
+      });
+    }
+  }
+  return [...byDriver.values()].sort((a, b) =>
+    b.lastDeliveryAt.localeCompare(a.lastDeliveryAt),
+  );
+}
+
 function normalize(state: DemoState) {
   for (const order of state.data.orders) refreshOrder(order);
   if (state.data.cashSession) {
@@ -415,6 +505,9 @@ function normalize(state: DemoState) {
   }
   refreshTables(state.data);
   state.data.dashboard = makeDashboard(state.data);
+  state.data.driverDeliveryActivity = makeDriverDeliveryActivity(
+    state.data.orders,
+  );
 }
 
 function audit(
@@ -440,6 +533,182 @@ function audit(
     afterJson: null,
   });
 }
+
+function retentionCutoff() {
+  const date = new Date();
+  date.setDate(1);
+  date.setMonth(date.getMonth() - 2);
+  return date.toISOString().slice(0, 10);
+}
+
+function sessionReport(
+  state: DemoState,
+  filters: CashSessionReportFilters,
+): CashSessionReportDto {
+  const session = [state.data.cashSession, ...state.historicalSessions].find(
+    (candidate) => candidate?.id === filters.cashSessionId,
+  );
+  if (!session) throw new Error("No se encontró la caja.");
+  const detailAvailable =
+    session.status === "OPEN" ||
+    (session.closedAt ?? session.openedAt).slice(0, 10) >= retentionCutoff();
+  const base = state.data.orders.filter(
+    (order) =>
+      order.cashSessionPaidId === session.id &&
+      order.paidMinor > 0 &&
+      order.operationalStatus !== "CANCELLED",
+  );
+  const orders = detailAvailable
+    ? base.filter(
+        (order) =>
+          (!filters.tableId || order.tableId === filters.tableId) &&
+          (!filters.waiterUserId ||
+            order.waiterUserId === filters.waiterUserId) &&
+          (!filters.productId ||
+            order.items.some((item) => item.productId === filters.productId)) &&
+          (!filters.categoryName ||
+            order.items.some(
+              (item) =>
+                state.data.products.find((p) => p.id === item.productId)
+                  ?.categoryName === filters.categoryName,
+            )) &&
+          (!filters.orderType || order.type === filters.orderType) &&
+          (!filters.paymentMethodCode ||
+            order.payments.some(
+              (p) => p.methodCode === filters.paymentMethodCode,
+            )) &&
+          (!filters.operationalStatus ||
+            order.operationalStatus === filters.operationalStatus),
+      )
+    : base;
+  const totals = {
+    salesMinor: detailAvailable
+      ? orders.reduce((n, o) => n + o.paidMinor, 0)
+      : (session.salesTotalMinor ?? 0),
+    orderCount: detailAvailable ? orders.length : 0,
+    averageTicketMinor: 0,
+    discountsMinor: 0,
+    refundsMinor: detailAvailable ? 0 : (session.cashRefundMinor ?? 0),
+  };
+  totals.averageTicketMinor = totals.orderCount
+    ? Math.round(totals.salesMinor / totals.orderCount)
+    : 0;
+  const grouped = <T extends string>(
+    values: Array<{ key: T; name: string; amount: number; count: number }>,
+  ) => {
+    const map = new Map<T, { name: string; amount: number; count: number }>();
+    for (const value of values) {
+      const row = map.get(value.key) ?? {
+        name: value.name,
+        amount: 0,
+        count: 0,
+      };
+      row.amount += value.amount;
+      row.count += value.count;
+      map.set(value.key, row);
+    }
+    return [...map].map(([key, value]) => ({
+      key,
+      name: value.name,
+      orderCount: value.count,
+      amountMinor: value.amount,
+    }));
+  };
+  const byTable = grouped(
+    orders.map((o) => ({
+      key: o.tableId ?? "",
+      name:
+        state.data.tables.find((t) => t.id === o.tableId)?.name ??
+        (o.tableId
+          ? `Mesa ${state.data.tables.find((t) => t.id === o.tableId)?.number ?? ""}`
+          : "Sin mesa"),
+      amount: o.paidMinor,
+      count: 1,
+    })),
+  ).map(({ key, ...v }) => ({ tableId: key || null, ...v }));
+  const byWaiter = grouped(
+    orders.map((o) => ({
+      key: o.waiterUserId ?? "",
+      name: o.waiterName ?? "Sin mozo",
+      amount: o.paidMinor,
+      count: 1,
+    })),
+  ).map(({ key, ...v }) => ({ waiterUserId: key || null, ...v }));
+  const byType = (["DINE_IN", "TAKEAWAY", "DELIVERY"] as const).map((type) => ({
+    type,
+    orderCount: detailAvailable
+      ? orders.filter((o) => o.type === type).length
+      : 0,
+    amountMinor: detailAvailable
+      ? orders
+          .filter((o) => o.type === type)
+          .reduce((n, o) => n + o.paidMinor, 0)
+      : (session.salesByType?.[type] ?? 0),
+  }));
+  const productMap = new Map<
+    string,
+    { productId: string | null; quantity: number; amountMinor: number }
+  >();
+  for (const o of orders)
+    for (const item of o.items) {
+      const row = productMap.get(item.productNameSnapshot) ?? {
+        productId: item.productId,
+        quantity: 0,
+        amountMinor: 0,
+      };
+      row.quantity += item.quantity;
+      row.amountMinor += item.lineTotalMinor;
+      productMap.set(item.productNameSnapshot, row);
+    }
+  const byProduct = [...productMap].map(([name, v]) => ({ name, ...v }));
+  const categoryMap = new Map<
+    string,
+    { quantity: number; amountMinor: number }
+  >();
+  for (const row of byProduct) {
+    const category =
+      state.data.products.find((p) => p.id === row.productId)?.categoryName ??
+      "Otros";
+    const current = categoryMap.get(category) ?? {
+      quantity: 0,
+      amountMinor: 0,
+    };
+    current.quantity += row.quantity;
+    current.amountMinor += row.amountMinor;
+    categoryMap.set(category, current);
+  }
+  const byPaymentMethod = detailAvailable
+    ? [
+        ...new Set(orders.flatMap((o) => o.payments.map((p) => p.methodCode))),
+      ].map((code) => ({
+        code,
+        name: methodName(state.data, code),
+        amountMinor: orders
+          .flatMap((o) => o.payments)
+          .filter((p) => p.methodCode === code)
+          .reduce((n, p) => n + p.amountMinor - p.refundedMinor, 0),
+      }))
+    : (session.salesByPaymentMethod ?? []);
+  return outputReport({
+    session,
+    detailAvailable,
+    retentionCutoff: retentionCutoff(),
+    totals,
+    byTable,
+    byWaiter,
+    byProduct,
+    byCategory: [...categoryMap].map(([name, v]) => ({ name, ...v })),
+    byType,
+    byPaymentMethod,
+    orders: detailAvailable ? orders : [],
+    movements: detailAvailable
+      ? state.movements.filter((m) => m.sessionId === session.id)
+      : [],
+    filters,
+  });
+}
+
+const outputReport = <T>(value: T): T => clone(value);
 
 export function resetDemoData(storage: DemoStorage = window.localStorage) {
   storage.removeItem(DEMO_STORAGE_KEY);
@@ -635,6 +904,18 @@ export function createDemoApi(
       if (input.type === "WITHDRAWAL")
         cash.cashWithdrawalMinor =
           (cash.cashWithdrawalMinor ?? 0) + input.amountMinor;
+      state.movements.push({
+        id: uid("movement", state),
+        sessionId: cash.id,
+        type: input.type,
+        amountMinor: input.amountMinor,
+        affectsCash: true,
+        paymentMethodCode: null,
+        orderId: null,
+        userId: state.data.currentUser.id,
+        reason: input.reason ?? null,
+        createdAt: now(),
+      });
       audit(state, "CASH_SESSION", cash.id, `CAJA_${input.type}`, input.reason);
       save();
       return output(cash);
@@ -705,6 +986,7 @@ export function createDemoApi(
         input.reason ?? null,
         input.force ? "cash.close" : null,
       );
+      state.historicalSessions.unshift(clone(closed));
       state.data.cashSession = null;
       save();
       return output(closed);
@@ -783,6 +1065,7 @@ export function createDemoApi(
           input.customerPhone?.trim() || customer?.phone || null,
         deliveryAddressSnapshot:
           selectedAddress?.address ?? input.deliveryAddress?.trim() ?? null,
+        deliveryAddressNotesSnapshot: selectedAddress?.notes ?? null,
         deliveryFeeMinor: input.deliveryFeeMinor ?? 0,
         promisedAt: input.promisedAt ?? null,
         scheduled: input.scheduled ?? false,
@@ -855,6 +1138,7 @@ export function createDemoApi(
           input.customerPhone?.trim() || customer?.phone || null,
         deliveryAddressSnapshot:
           selectedAddress?.address ?? input.deliveryAddress?.trim() ?? null,
+        deliveryAddressNotesSnapshot: selectedAddress?.notes ?? null,
         deliveryFeeMinor: fee,
         promisedAt: input.promisedAt ?? null,
         scheduled: input.scheduled ?? false,
@@ -938,6 +1222,30 @@ export function createDemoApi(
         );
       }
       audit(state, "ORDER", order.id, "PRODUCTO_AGREGADO");
+      save();
+      return output(order);
+    },
+
+    async updateOrderItemNotes(input) {
+      const order = orderById(input.orderId);
+      assertOrderAction(order, "EDIT");
+      const item = order.items.find(
+        (candidate) => candidate.id === input.itemId,
+      );
+      if (!item) throw new Error("No se encontró el producto del pedido.");
+      const notes = input.notes?.trim() || null;
+      if (notes && notes.length > 500)
+        throw new Error("Las observaciones admiten hasta 500 caracteres.");
+      const before = item.notes;
+      item.notes = notes;
+      order.updatedAt = now();
+      audit(
+        state,
+        "ORDER_ITEM",
+        item.id,
+        "ORDER_ITEM_NOTES_UPDATED",
+        `Pedido ${order.number}: observaciones ${before ? "actualizadas" : notes ? "agregadas" : "eliminadas"}`,
+      );
       save();
       return output(order);
     },
@@ -1230,6 +1538,24 @@ export function createDemoApi(
       if (state.data.cashSession)
         state.data.cashSession.cashSalesMinor =
           (state.data.cashSession.cashSalesMinor ?? 0) + cashAmount;
+      if (state.data.cashSession)
+        for (const payment of input.payments) {
+          const method = state.data.paymentMethods.find(
+            (m) => m.code === payment.methodCode,
+          );
+          state.movements.push({
+            id: uid("movement", state),
+            sessionId: state.data.cashSession.id,
+            type: "SALE",
+            amountMinor: payment.amountMinor,
+            affectsCash: method?.affectsCash ?? false,
+            paymentMethodCode: payment.methodCode,
+            orderId: order.id,
+            userId: state.data.currentUser.id,
+            reason: null,
+            createdAt: now(),
+          });
+        }
       audit(state, "ORDER", order.id, "PEDIDO_COBRADO");
       save();
       return output(order);
@@ -1277,6 +1603,18 @@ export function createDemoApi(
         state.data.cashSession.expectedAmountMinor -= amountMinor;
         state.data.cashSession.cashRefundMinor =
           (state.data.cashSession.cashRefundMinor ?? 0) + amountMinor;
+        state.movements.push({
+          id: uid("movement", state),
+          sessionId: state.data.cashSession.id,
+          type: "REFUND",
+          amountMinor,
+          affectsCash: true,
+          paymentMethodCode: payment.methodCode,
+          orderId: order.id,
+          userId: state.data.currentUser.id,
+          reason: input.reason,
+          createdAt: now(),
+        });
       }
       audit(
         state,
@@ -1393,6 +1731,14 @@ export function createDemoApi(
       audit(state, "PRINT_JOB", job.id, "REIMPRESION_SIMULADA");
       save();
       return { jobId: job.id, status: job.status };
+    },
+
+    async printCashSessionReport(input) {
+      const report = sessionReport(state, input.filters);
+      return {
+        printed: true,
+        message: `Informe de caja ${report.session.number} enviado a la impresora demo.`,
+      };
     },
 
     async searchCustomers(query) {
@@ -2321,6 +2667,25 @@ export function createDemoApi(
       return {
         path: "Demostración: exportación simulada (no se creó ningún archivo)",
       };
+    },
+
+    async listCashSessionHistory(): Promise<CashSessionHistoryItemDto[]> {
+      return output(
+        state.historicalSessions.map((session) => ({
+          session,
+          detailAvailable:
+            session.status === "OPEN" ||
+            (session.closedAt ?? session.openedAt).slice(0, 10) >=
+              retentionCutoff(),
+        })),
+      );
+    },
+
+    async getCashSessionReport(
+      filters: CashSessionReportFilters,
+    ): Promise<CashSessionReportDto> {
+      if (!filters?.cashSessionId) throw new Error("La caja no es válida.");
+      return sessionReport(state, filters);
     },
 
     async getDetailedReport(

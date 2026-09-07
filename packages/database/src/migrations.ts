@@ -536,4 +536,11 @@ CREATE INDEX IF NOT EXISTS command_receipts_terminal_idx ON command_receipts(ter
 ALTER TABLE cash_movements ADD COLUMN reference_id TEXT REFERENCES cash_movements(id);
 `,
   },
+  {
+    version: 15,
+    name: "delivery_address_notes_snapshot",
+    sql: String.raw`
+ALTER TABLE orders ADD COLUMN delivery_address_notes_snapshot TEXT;
+`,
+  },
 ];

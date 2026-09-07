@@ -288,6 +288,7 @@ export interface OrderDto {
   customerNameSnapshot: string | null;
   customerPhoneSnapshot: string | null;
   deliveryAddressSnapshot: string | null;
+  deliveryAddressNotesSnapshot: string | null;
   deliveryFeeMinor: MoneyMinor;
   promisedAt: IsoDateTime | null;
   scheduled: boolean;
@@ -342,6 +343,80 @@ export interface CashSessionDto {
   status: CashSessionStatus;
 }
 
+export interface CashSessionHistoryItemDto {
+  session: CashSessionDto;
+  detailAvailable: boolean;
+}
+
+export interface CashSessionReportFilters {
+  cashSessionId: Id;
+  tableId?: Id;
+  waiterUserId?: Id;
+  productId?: Id;
+  categoryName?: string;
+  orderType?: OrderType;
+  paymentMethodCode?: string;
+  operationalStatus?: OrderOperationalStatus;
+}
+
+export interface CashSessionReportDto {
+  session: CashSessionDto;
+  detailAvailable: boolean;
+  retentionCutoff: BusinessDate;
+  totals: {
+    salesMinor: MoneyMinor;
+    orderCount: number;
+    averageTicketMinor: MoneyMinor;
+    discountsMinor: MoneyMinor;
+    refundsMinor: MoneyMinor;
+  };
+  byTable: Array<{
+    tableId: Id | null;
+    name: string;
+    orderCount: number;
+    amountMinor: MoneyMinor;
+  }>;
+  byWaiter: Array<{
+    waiterUserId: Id | null;
+    name: string;
+    orderCount: number;
+    amountMinor: MoneyMinor;
+  }>;
+  byProduct: Array<{
+    productId: Id | null;
+    name: string;
+    quantity: number;
+    amountMinor: MoneyMinor;
+  }>;
+  byCategory: Array<{
+    name: string;
+    quantity: number;
+    amountMinor: MoneyMinor;
+  }>;
+  byType: Array<{
+    type: OrderType;
+    orderCount: number;
+    amountMinor: MoneyMinor;
+  }>;
+  byPaymentMethod: Array<{
+    code: string;
+    name: string;
+    amountMinor: MoneyMinor;
+  }>;
+  orders: OrderDto[];
+  movements: Array<{
+    id: Id;
+    type: CashMovementType;
+    amountMinor: MoneyMinor;
+    affectsCash: boolean;
+    paymentMethodCode: string | null;
+    orderId: Id | null;
+    userId: Id;
+    reason: string | null;
+    createdAt: IsoDateTime;
+  }>;
+  filters: CashSessionReportFilters;
+}
 export interface DeliveryLedgerDto {
   id: Id;
   orderId: Id;
@@ -356,6 +431,13 @@ export interface DeliveryLedgerDto {
   status: "PENDING" | "SETTLED";
   createdAt: IsoDateTime;
   settledAt: IsoDateTime | null;
+}
+
+export interface DriverDeliveryActivityDto {
+  driverUserId: Id;
+  deliveryCount: number;
+  earningsMinor: MoneyMinor;
+  lastDeliveryAt: IsoDateTime;
 }
 
 export interface PaymentMethodDto {
@@ -467,6 +549,7 @@ export interface BootstrapDto {
   orders: OrderDto[];
   users: UserDto[];
   deliveryLedger: DeliveryLedgerDto[];
+  driverDeliveryActivity: DriverDeliveryActivityDto[];
   paymentMethods: PaymentMethodDto[];
   printJobs: PrintJobDto[];
   dashboard: DashboardSummaryDto;
@@ -576,6 +659,12 @@ export interface PrinterDeviceDto {
   isDefault: boolean;
 }
 
+export interface UpdateOrderItemNotesInput {
+  orderId: Id;
+  itemId: Id;
+  notes: string | null;
+}
+
 export interface AddOrderItemInput {
   orderId: Id;
   productId: Id;
@@ -638,11 +727,16 @@ export interface DesktopApi {
   ): Promise<DeliveryLedgerDto>;
 
   closeCashSession(input: CloseCashSessionInput): Promise<CashSessionDto>;
+  listCashSessionHistory(): Promise<CashSessionHistoryItemDto[]>;
+  getCashSessionReport(
+    filters: CashSessionReportFilters,
+  ): Promise<CashSessionReportDto>;
   createOrder(input: CreateOrderInput): Promise<OrderDto>;
   updateDraftOrder(input: UpdateDraftOrderInput): Promise<OrderDto>;
   confirmOrder(input: ConfirmOrderInput): Promise<OrderDto>;
   discardDraftOrder(input: { orderId: Id }): Promise<{ discarded: boolean }>;
   addOrderItem(input: AddOrderItemInput): Promise<OrderDto>;
+  updateOrderItemNotes(input: UpdateOrderItemNotesInput): Promise<OrderDto>;
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput): Promise<OrderDto>;
   removeOrderItem(input: { orderId: Id; itemId: Id }): Promise<OrderDto>;
   addOrderItemModifier(input: {
@@ -679,6 +773,9 @@ export interface DesktopApi {
     kind: "KITCHEN_ORDER" | "CUSTOMER_BILL";
   }): Promise<{ jobId: Id; status: string }>;
   retryPrint(input: { jobId: Id }): Promise<{ jobId: Id; status: string }>;
+  printCashSessionReport(input: {
+    filters: CashSessionReportFilters;
+  }): Promise<{ printed: boolean; message: string }>;
   searchCustomers(query: string): Promise<CustomerDto[]>;
   searchCustomersPage(
     input: SearchCustomersPageInput,

@@ -251,6 +251,7 @@ function demoOrder(
     customerNameSnapshot: partial.customerNameSnapshot ?? null,
     customerPhoneSnapshot: partial.customerPhoneSnapshot ?? null,
     deliveryAddressSnapshot: partial.deliveryAddressSnapshot ?? null,
+    deliveryAddressNotesSnapshot: partial.deliveryAddressNotesSnapshot ?? null,
     deliveryFeeMinor: partial.deliveryFeeMinor ?? 0,
     promisedAt: partial.promisedAt ?? null,
     scheduled: partial.scheduled ?? false,
@@ -509,6 +510,7 @@ export function createDemoBootstrap(): BootstrapDto {
         settledAt: null,
       },
     ],
+    driverDeliveryActivity: [],
     paymentMethods: [
       {
         id: "payment-cash",

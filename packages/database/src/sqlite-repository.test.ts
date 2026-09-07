@@ -212,6 +212,81 @@ test("pedido conserva snapshot aunque cambie el precio del producto", () => {
   });
 });
 
+test("delivery conserva snapshot de observaciones de dirección aunque cambie la ficha", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const customer = repository.createCustomer({
+      name: "Cliente con indicaciones",
+      phone: "11 4555-1234",
+      addresses: [
+        {
+          label: "Casa",
+          address: "Calle Snapshot 123",
+          notes: "Tocar timbre rojo",
+        },
+      ],
+    });
+    const address = customer.addresses[0]!;
+    const created = repository.createOrder({
+      type: "DELIVERY",
+      customerId: customer.id,
+      customerAddressId: address.id,
+      deliveryFeeMinor: 100_000,
+    });
+    assert.equal(created.deliveryAddressNotesSnapshot, "Tocar timbre rojo");
+    repository.db
+      .prepare("UPDATE customer_addresses SET notes = ? WHERE id = ?")
+      .run("Dejar en recepción", address.id);
+    assert.equal(
+      repository.getOrder(created.id).deliveryAddressNotesSnapshot,
+      "Tocar timbre rojo",
+    );
+  });
+});
+
+test("agrega, normaliza y quita la observación de comanda de una línea", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const order = repository.createOrder({
+      type: "DINE_IN",
+      tableId: repository.bootstrap().tables[0]!.id,
+      waiterUserId: "user-admin",
+    });
+    const populated = repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+    const itemId = populated.items[0]!.id;
+
+    const noted = repository.updateOrderItemNotes({
+      orderId: order.id,
+      itemId,
+      notes: "  Sin cebolla · alergia al maní  ",
+    });
+    assert.equal(noted.items[0]?.notes, "Sin cebolla · alergia al maní");
+    assert.throws(
+      () =>
+        repository.updateOrderItemNotes({
+          orderId: order.id,
+          itemId,
+          notes: "x".repeat(501),
+        }),
+      /500 caracteres/,
+    );
+
+    const cleared = repository.updateOrderItemNotes({
+      orderId: order.id,
+      itemId,
+      notes: "   ",
+    });
+    assert.equal(cleared.items[0]?.notes, null);
+    assert.equal(
+      repository.getAuditLog({ action: "ORDER_ITEM_NOTES_UPDATED" }).length,
+      2,
+    );
+  });
+});
+
 test("precio manual exige PIN, conserva el catálogo y deja auditoría", () => {
   withRepository((repository) => {
     repository.openCashSession({ openingAmountMinor: 0 });
@@ -994,6 +1069,54 @@ test("delivery efectivo genera rendición y permite liquidarla", () => {
         }),
       /pendiente/i,
     );
+  });
+});
+
+test("actividad del repartidor cuenta entregas aunque no exista rendición", () => {
+  withRepository((repository) => {
+    repository.saveSettings({
+      ...repository.bootstrap().settings,
+      deliverySettlementEnabled: false,
+    });
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const draft = repository.createOrder({
+      type: "DELIVERY",
+      deliveryAddress: "Calle actividad 123",
+      customerName: "Cliente actividad",
+      customerPhone: "11 4000-1234",
+      deliveryFeeMinor: 275_000,
+    });
+    const populated = repository.addOrderItem({
+      orderId: draft.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: draft.id });
+    const driver = repository.createUser({
+      fullName: "Repartidor posterior",
+      roleCode: "DELIVERY_DRIVER",
+      pin: "3579",
+      authorizerPin: "2468",
+    });
+    repository.assignDeliveryDriver({
+      orderId: draft.id,
+      driverUserId: driver.id,
+    });
+    repository.completeOrder({
+      orderId: draft.id,
+      finalStatus: "DELIVERED",
+      collectedByDriver: true,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+
+    const bootstrap = repository.bootstrap();
+    assert.equal(bootstrap.deliveryLedger.length, 0);
+    const activity = bootstrap.driverDeliveryActivity.find(
+      (row) => row.driverUserId === driver.id,
+    );
+    assert.ok(activity);
+    assert.equal(activity.deliveryCount, 1);
+    assert.equal(activity.earningsMinor, 275_000);
+    assert.equal(typeof activity.lastDeliveryAt, "string");
   });
 });
 
@@ -2675,5 +2798,137 @@ test("trabajo de impresión conserva impresora y copias del perfil", () => {
     const job = repository.bootstrap().printJobs[0];
     assert.equal(job?.printerName, "Cocina térmica");
     assert.equal(job?.copies, 2);
+  });
+});
+
+test("informe separa dos turnos con la misma fecha comercial", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const first = repository.createOrder(takeawayOrder());
+    const firstPopulated = repository.addOrderItem({
+      orderId: first.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: first.id });
+    repository.payOrder({
+      orderId: first.id,
+      payments: [
+        { methodCode: "CASH", amountMinor: firstPopulated.totalMinor },
+      ],
+    });
+    repository.updateOrderStatus(first.id, "DELIVERED");
+    const firstSession = repository.bootstrap().cashSession!;
+    repository.closeCashSession({
+      countedAmountMinor: firstSession.expectedAmountMinor,
+    });
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const second = repository.createOrder(
+      takeawayOrder({ customerName: "Segundo" }),
+    );
+    const secondPopulated = repository.addOrderItem({
+      orderId: second.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: second.id });
+    repository.payOrder({
+      orderId: second.id,
+      payments: [
+        { methodCode: "CASH", amountMinor: secondPopulated.totalMinor },
+      ],
+    });
+    const secondSession = repository.bootstrap().cashSession!;
+    const firstReport = repository.getCashSessionReport({
+      cashSessionId: firstSession.id,
+    });
+    const secondReport = repository.getCashSessionReport({
+      cashSessionId: secondSession.id,
+    });
+    assert.equal(firstReport.totals.orderCount, 1);
+    assert.deepEqual(
+      firstReport.orders.map((order) => order.id),
+      [first.id],
+    );
+    assert.equal(secondReport.totals.orderCount, 1);
+    assert.deepEqual(
+      secondReport.orders.map((order) => order.id),
+      [second.id],
+    );
+  });
+});
+
+test("informe de caja aplica filtros combinables de mesa, mozo y producto", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const table = repository.ensureTable(81);
+    const waiter = repository.createUser({
+      fullName: "Mozo informe",
+      roleCode: "WAITER",
+      pin: "9753",
+      authorizerPin: "2468",
+    });
+    const order = repository.createOrder({
+      type: "DINE_IN",
+      tableId: table.id,
+      waiterUserId: waiter.id,
+    });
+    const populated = repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: order.id });
+    repository.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+    const session = repository.bootstrap().cashSession!;
+    const report = repository.getCashSessionReport({
+      cashSessionId: session.id,
+      tableId: table.id,
+      waiterUserId: waiter.id,
+      productId: "starter-muzza-grande",
+    });
+    assert.equal(report.totals.orderCount, 1);
+    assert.equal(report.byTable[0]?.tableId, table.id);
+    assert.equal(report.byWaiter[0]?.waiterUserId, waiter.id);
+    assert.equal(report.byProduct[0]?.productId, "starter-muzza-grande");
+    const empty = repository.getCashSessionReport({
+      cashSessionId: session.id,
+      tableId: "missing-table",
+      productId: "starter-muzza-grande",
+    });
+    assert.equal(empty.totals.orderCount, 0);
+  });
+});
+
+test("historial lista cajas cerradas y sesión antigua queda sólo en resumen", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const session = repository.bootstrap().cashSession!;
+    repository.closeCashSession({
+      countedAmountMinor: session.expectedAmountMinor,
+    });
+    repository.db
+      .prepare(
+        "UPDATE cash_sessions SET business_date = ?, closed_at = ? WHERE id = ?",
+      )
+      .run("2020-01-01", "2020-01-01T12:00:00.000Z", session.id);
+    const history = repository.listCashSessionHistory();
+    const item = history.find((entry) => entry.session.id === session.id)!;
+    assert.equal(item.detailAvailable, false);
+    const report = repository.getCashSessionReport({
+      cashSessionId: session.id,
+      tableId: "ignored",
+      paymentMethodCode: "CASH",
+    });
+    assert.equal(report.detailAvailable, false);
+    assert.equal(report.orders.length, 0);
+    assert.equal(report.movements.length, 0);
+    assert.equal(report.byProduct.length, 0);
+    assert.equal(report.filters.tableId, undefined);
+    assert.equal(report.filters.paymentMethodCode, undefined);
+    const cutoff = new Date();
+    cutoff.setDate(1);
+    cutoff.setMonth(cutoff.getMonth() - 2);
+    assert.equal(report.retentionCutoff, cutoff.toISOString().slice(0, 10));
   });
 });

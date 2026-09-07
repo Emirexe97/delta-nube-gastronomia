@@ -167,6 +167,144 @@ test("SYSTEM_DIRECT con default válido imprime sin preview", async () => {
   ).toBe(1);
 });
 
+test("la observación del producto sólo aparece en la comanda", async () => {
+  await launch([]);
+  const setup = await page.evaluate(async () => {
+    const api = (window as any).gastronomy;
+    const data = await api.bootstrap();
+    await api.openCashSession({ openingAmountMinor: 0 });
+    const table = await api.ensureTable({ number: 62 });
+    const product =
+      data.products.find((item: any) => item.code === "MUZG") ??
+      data.products[0];
+    const order = await api.createOrder({ type: "DINE_IN", tableId: table.id });
+    await api.addOrderItem({
+      orderId: order.id,
+      productId: product.id,
+      quantity: 1,
+    });
+    const current = await api.bootstrap();
+    const item = current.orders.find(
+      (candidate: any) => candidate.id === order.id,
+    ).items[0];
+    await api.updateOrderItemNotes({
+      orderId: order.id,
+      itemId: item.id,
+      notes: "SIN AJO — ALERGIA",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    await api.saveSettings({
+      ...data.settings,
+      printing: {
+        ...data.settings.printing,
+        kitchen: { ...data.settings.printing.kitchen, mode: "SYSTEM_DIALOG" },
+        bill: { ...data.settings.printing.bill, mode: "SYSTEM_DIALOG" },
+      },
+    });
+    return order.id;
+  });
+
+  await page.evaluate((orderId) => {
+    (window as any).__printResult = null;
+    void (window as any).gastronomy
+      .printOrder({ orderId, kind: "KITCHEN_ORDER" })
+      .then((result: unknown) => ((window as any).__printResult = result));
+  }, setup);
+  const kitchenPreview = await previewWindow();
+  await expect(kitchenPreview.getByText("OBS:")).toBeVisible();
+  await expect(kitchenPreview.getByText("SIN AJO — ALERGIA")).toBeVisible();
+  await kitchenPreview.getByRole("button", { name: "Cancelar" }).click();
+  await result();
+
+  await page.evaluate((orderId) => {
+    (window as any).__printResult = null;
+    void (window as any).gastronomy
+      .printOrder({ orderId, kind: "CUSTOMER_BILL" })
+      .then((value: unknown) => ((window as any).__printResult = value));
+  }, setup);
+  const billPreview = await previewWindow();
+  await expect(billPreview.getByText("SIN AJO — ALERGIA")).toHaveCount(0);
+  await billPreview.getByRole("button", { name: "Cancelar" }).click();
+  await result();
+});
+
+test("la referencia de la dirección delivery sólo aparece en la comanda", async () => {
+  await launch([]);
+  const setup = await page.evaluate(async () => {
+    const api = (window as any).gastronomy;
+    const data = await api.bootstrap();
+    await api.openCashSession({ openingAmountMinor: 0 });
+    const customer = await api.createCustomer({
+      name: "Cliente con referencia",
+      phone: "11 5555-0101",
+      addresses: [
+        {
+          label: "Casa",
+          address: "Av. Siempre Viva 742",
+          notes: "Tocar timbre rojo; dejar en recepción",
+          deliveryFeeMinor: 0,
+          active: true,
+        },
+      ],
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerId: customer.id,
+      customerAddressId: customer.addresses[0].id,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+      deliveryAddress: customer.addresses[0].address,
+      deliveryFeeMinor: 0,
+    });
+    const product =
+      data.products.find((item: any) => item.code === "MUZG") ??
+      data.products[0];
+    await api.addOrderItem({
+      orderId: order.id,
+      productId: product.id,
+      quantity: 1,
+    });
+    await api.confirmOrder({ orderId: order.id });
+    await api.saveSettings({
+      ...data.settings,
+      printing: {
+        ...data.settings.printing,
+        kitchen: { ...data.settings.printing.kitchen, mode: "SYSTEM_DIALOG" },
+        bill: { ...data.settings.printing.bill, mode: "SYSTEM_DIALOG" },
+      },
+    });
+    return order.id;
+  });
+
+  await page.evaluate((orderId) => {
+    (window as any).__printResult = null;
+    void (window as any).gastronomy
+      .printOrder({ orderId, kind: "KITCHEN_ORDER" })
+      .then((result: unknown) => ((window as any).__printResult = result));
+  }, setup);
+  const kitchenPreview = await previewWindow();
+  await expect(
+    kitchenPreview.getByText(
+      "Referencia: Tocar timbre rojo; dejar en recepción",
+    ),
+  ).toBeVisible();
+  await kitchenPreview.getByRole("button", { name: "Cancelar" }).click();
+  await result();
+
+  await page.evaluate((orderId) => {
+    (window as any).__printResult = null;
+    void (window as any).gastronomy
+      .printOrder({ orderId, kind: "CUSTOMER_BILL" })
+      .then((value: unknown) => ((window as any).__printResult = value));
+  }, setup);
+  const billPreview = await previewWindow();
+  await expect(
+    billPreview.getByText("Referencia: Tocar timbre rojo; dejar en recepción"),
+  ).toHaveCount(0);
+  await billPreview.getByRole("button", { name: "Cancelar" }).click();
+  await result();
+});
+
 test("fallo directo no abre preview y queda disponible para reintentar", async () => {
   await launch([{ name: "Mock Printer", isDefault: true }], true);
   await startTest(await settingsFor("SYSTEM_DIRECT"));

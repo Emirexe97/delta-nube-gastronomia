@@ -65,6 +65,8 @@ export function OrderEditor({
   const [halfOpen, setHalfOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [modifierItemId, setModifierItemId] = useState<string | null>(null);
+  const [notesItemId, setNotesItemId] = useState<string | null>(null);
+  const [notesError, setNotesError] = useState<string | null>(null);
   const [discountOpen, setDiscountOpen] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [discardError, setDiscardError] = useState<string | null>(null);
@@ -179,6 +181,18 @@ export function OrderEditor({
       window.gastronomy.removeOrderItemModifier(input),
     { onError: (value) => setError(humanError(value)) },
   );
+  const updateItemNotes = useApiMutation(
+    (input: { orderId: string; itemId: string; notes: string | null }) =>
+      window.gastronomy.updateOrderItemNotes(input),
+    {
+      onSuccess: () => setNotesItemId(null),
+      onError: (value) => {
+        const message = humanError(value);
+        setNotesError(message);
+        setError(message);
+      },
+    },
+  );
   const updateStatus = useApiMutation(
     (input: { orderId: string; status: OrderOperationalStatus }) =>
       window.gastronomy.updateOrderStatus(input),
@@ -257,6 +271,8 @@ export function OrderEditor({
     setSkippedPrintKind(null);
     setAddingProduct(null);
     setAddingError(null);
+    setNotesItemId(null);
+    setNotesError(null);
   }, [orderId]);
 
   useEffect(() => {
@@ -272,7 +288,8 @@ export function OrderEditor({
         discardConfirmOpen ||
         driverOpen ||
         Boolean(addingProduct) ||
-        Boolean(modifierItemId);
+        Boolean(modifierItemId) ||
+        Boolean(notesItemId);
       const canOpenPayment =
         order.lifecycleStatus !== "DRAFT" &&
         order.items.length > 0 &&
@@ -294,6 +311,7 @@ export function OrderEditor({
     driverOpen,
     halfOpen,
     modifierItemId,
+    notesItemId,
     order,
     orderId,
     payOpen,
@@ -345,6 +363,7 @@ export function OrderEditor({
     addItem.isPending ||
     removeItem.isPending ||
     removeModifier.isPending ||
+    updateItemNotes.isPending ||
     updateStatus.isPending ||
     assignDriver.isPending ||
     confirm.isPending ||
@@ -569,6 +588,22 @@ export function OrderEditor({
                           <p className="ml-4 mt-1 text-[10px] text-amber-700">
                             {item.notes}
                           </p>
+                        ) : null}
+                        {!locked ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNotesError(null);
+                              setNotesItemId(item.id);
+                            }}
+                            className="ml-2 mt-1 flex min-h-10 items-center gap-1 px-2 text-[10px] font-bold text-brand-600 hover:underline"
+                            aria-label={`${item.notes ? "Editar" : "Agregar"} observación para ${item.productNameSnapshot}`}
+                          >
+                            <Plus size={11} />
+                            {item.notes
+                              ? "Editar observación"
+                              : "Agregar observación"}
+                          </button>
                         ) : null}
                         {!locked && data.modifiers.length ? (
                           <button
@@ -1024,6 +1059,25 @@ export function OrderEditor({
         onClose={() => setModifierItemId(null)}
         onError={setError}
       />
+      <ItemNotesModal
+        open={Boolean(notesItemId)}
+        item={order.items.find((item) => item.id === notesItemId) ?? null}
+        onClose={() => {
+          setNotesError(null);
+          setNotesItemId(null);
+        }}
+        onSave={(notes) => {
+          if (!notesItemId) return;
+          setNotesError(null);
+          updateItemNotes.mutate({
+            orderId: order.id,
+            itemId: notesItemId,
+            notes: notes.trim() || null,
+          });
+        }}
+        isPending={updateItemNotes.isPending}
+        error={notesError}
+      />
       <DiscountModal
         open={discountOpen}
         order={order}
@@ -1190,6 +1244,101 @@ export function OrderEditor({
           </div>
         </div>
       </Modal>
+    </Modal>
+  );
+}
+
+function ItemNotesModal({
+  open,
+  item,
+  onClose,
+  onSave,
+  isPending,
+  error,
+}: {
+  open: boolean;
+  item: OrderDto["items"][number] | null;
+  onClose(): void;
+  onSave(notes: string): void;
+  isPending: boolean;
+  error: string | null;
+}) {
+  const [notes, setNotes] = useState("");
+
+  useEffect(() => {
+    if (open) setNotes(item?.notes ?? "");
+  }, [open, item]);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      closeDisabled={isPending}
+      title={item?.notes ? "Editar observación" : "Agregar observación"}
+      description={
+        item ? `${item.quantity}× ${item.productNameSnapshot}` : undefined
+      }
+    >
+      <form
+        className="grid gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!item || isPending) return;
+          onSave(notes);
+        }}
+      >
+        <Field label="Observación para comanda">
+          <Textarea
+            autoFocus
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            maxLength={500}
+            rows={4}
+            placeholder="Ej.: sin ajo · alergia a los frutos secos"
+            aria-describedby="item-notes-helper item-notes-counter"
+          />
+        </Field>
+        <div className="-mt-1 space-y-1">
+          <p id="item-notes-helper" className="text-[11px] text-slate-500">
+            Sólo se imprime en la comanda; no aparece en la cuenta del cliente.
+          </p>
+          <p
+            id="item-notes-counter"
+            className="text-right text-[10px] text-slate-400"
+          >
+            {notes.length}/500
+          </p>
+        </div>
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700"
+          >
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            disabled={isPending}
+          >
+            Cancelar
+          </Button>
+          <Button
+            type="button"
+            variant="danger"
+            onClick={() => onSave("")}
+            disabled={!item?.notes || isPending}
+          >
+            Quitar / limpiar
+          </Button>
+          <Button type="submit" disabled={!item || !notes.trim() || isPending}>
+            Guardar
+          </Button>
+        </div>
+      </form>
     </Modal>
   );
 }

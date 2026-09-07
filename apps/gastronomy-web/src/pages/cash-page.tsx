@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type {
   BootstrapDto,
   CashMovementInput,
@@ -28,6 +29,10 @@ import {
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import {
+  CashSessionHistory,
+  CashSessionReportModal,
+} from "../components/cash-session-report";
+import {
   formatMoney,
   humanError,
   paidOrdersForSession,
@@ -39,9 +44,12 @@ import {
 } from "../lib";
 
 export function CashPage({ data }: { data: BootstrapDto }) {
+  const queryClient = useQueryClient();
   const [openModal, setOpenModal] = useState(false);
   const [movementOpen, setMovementOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
+  const [reportSessionId, setReportSessionId] = useState<string | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
   const session = data.cashSession;
   const paidOrders = paidOrdersForSession(data.orders, session);
   const channelTotals = salesByChannel(paidOrders);
@@ -227,6 +235,12 @@ export function CashPage({ data }: { data: BootstrapDto }) {
               <Badge tone="amber">Bloquea cierre normal</Badge>
             </div>
           ) : null}
+          <CashSessionHistory
+            onReport={(id) => {
+              setReportSessionId(id);
+              setReportOpen(true);
+            }}
+          />
         </>
       ) : (
         <Card className="grid min-h-[380px] place-items-center p-8 text-center">
@@ -261,8 +275,33 @@ export function CashPage({ data }: { data: BootstrapDto }) {
           pendingDriverOwesMinor={pendingDriverOwesMinor}
           pendingBusinessOwesMinor={pendingBusinessOwesMinor}
           onClose={() => setCloseOpen(false)}
+          onReport={() => {
+            setReportSessionId(session.id);
+            setReportOpen(true);
+          }}
+          onClosed={(closed) => {
+            void queryClient.invalidateQueries({
+              queryKey: ["cash-session-history"],
+            });
+            setCloseOpen(false);
+            setReportSessionId(closed.id);
+            setReportOpen(true);
+          }}
         />
       ) : null}
+      {!session ? (
+        <CashSessionHistory
+          onReport={(id) => {
+            setReportSessionId(id);
+            setReportOpen(true);
+          }}
+        />
+      ) : null}
+      <CashSessionReportModal
+        open={reportOpen}
+        sessionId={reportSessionId}
+        onClose={() => setReportOpen(false)}
+      />
     </div>
   );
 }
@@ -446,6 +485,8 @@ function CloseCashModal({
   pendingDriverOwesMinor,
   pendingBusinessOwesMinor,
   onClose,
+  onReport,
+  onClosed,
 }: {
   open: boolean;
   session: CashSessionDto;
@@ -454,6 +495,8 @@ function CloseCashModal({
   pendingDriverOwesMinor: number;
   pendingBusinessOwesMinor: number;
   onClose(): void;
+  onReport(): void;
+  onClosed(closed: CashSessionDto): void;
 }) {
   const [counted, setCounted] = useState("");
   const [closingFloat, setClosingFloat] = useState("");
@@ -500,7 +543,10 @@ function CloseCashModal({
     (!force || (Boolean(reason.trim()) && pin.length >= 4));
   const mutation = useApiMutation(
     (input: CloseCashSessionInput) => window.gastronomy.closeCashSession(input),
-    { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
+    {
+      onSuccess: (closed) => onClosed(closed),
+      onError: (value) => setError(humanError(value)),
+    },
   );
   const submit = () => {
     if (countedMinor == null || closingFloatMinor == null) return;
@@ -708,6 +754,9 @@ function CloseCashModal({
               <Receipt /> Revisar cierre
             </Button>
           </div>
+          <Button type="button" variant="secondary" onClick={onReport}>
+            <Receipt /> Ver informe del turno antes de cerrar
+          </Button>
         </form>
       )}
     </Modal>

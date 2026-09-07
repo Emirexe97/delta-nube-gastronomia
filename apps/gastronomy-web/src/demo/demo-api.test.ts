@@ -20,6 +20,49 @@ class MemoryStorage implements DemoStorage {
 }
 
 describe("API de demostración", () => {
+  it("conserva cierres y expone informe filtrable por sesión", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const current = (await api.bootstrap()).cashSession!;
+    const report = await api.getCashSessionReport({
+      cashSessionId: current.id,
+      orderType: "DELIVERY",
+    });
+    expect(report).toMatchObject({
+      session: { id: current.id },
+      detailAvailable: true,
+      filters: { cashSessionId: current.id, orderType: "DELIVERY" },
+    });
+    await api.closeCashSession({
+      countedAmountMinor: current.expectedAmountMinor,
+      force: true,
+      reason: "Cierre demo",
+      authorizerPin: "1234",
+    });
+    expect(
+      (await api.listCashSessionHistory()).some(
+        (item) => item.session.id === current.id,
+      ),
+    ).toBe(true);
+  });
+
+  it("mantiene resumen de cajas antiguas sin detalle", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const old = (await api.listCashSessionHistory()).find(
+      (item) => item.session.id === "cash-demo-old",
+    )!;
+    expect(old.detailAvailable).toBe(false);
+    const report = await api.getCashSessionReport({
+      cashSessionId: old.session.id,
+      productId: "inexistente",
+    });
+    expect(report).toMatchObject({
+      detailAvailable: false,
+      orders: [],
+      movements: [],
+      totals: { salesMinor: 8_000_000 },
+    });
+  });
+
   it("elimina mesa libre, conserva id al reactivar y permite repetir", async () => {
     const api = createDemoApi(new MemoryStorage());
     const table = await api.ensureTable({ number: 51 });
@@ -197,6 +240,40 @@ describe("API de demostración", () => {
     expect(after.cashSession?.expectedAmountMinor).toBeGreaterThan(
       after.cashSession?.openingAmountMinor ?? 0,
     );
+  });
+
+  it("edita y quita la observación de comanda de un producto", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const order = await api.createOrder({
+      type: "DINE_IN",
+      tableId: "table-3",
+      waiterUserId: "user-waiter",
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    const itemId = populated.items[0]!.id;
+
+    await expect(
+      api.updateOrderItemNotes({
+        orderId: order.id,
+        itemId,
+        notes: "  Sin queso · alergia  ",
+      }),
+    ).resolves.toMatchObject({
+      items: [{ id: itemId, notes: "Sin queso · alergia" }],
+    });
+    await expect(
+      api.updateOrderItemNotes({
+        orderId: order.id,
+        itemId,
+        notes: "x".repeat(501),
+      }),
+    ).rejects.toThrow(/500 caracteres/);
+    await expect(
+      api.updateOrderItemNotes({ orderId: order.id, itemId, notes: "   " }),
+    ).resolves.toMatchObject({ items: [{ id: itemId, notes: null }] });
   });
 
   it("registra cobro no efectivo en resumen sin aumentar efectivo esperado", async () => {
@@ -784,6 +861,52 @@ describe("API de demostración", () => {
       paymentStatus: "UNPAID",
     });
     expect(unchanged?.payments).toHaveLength(0);
+  });
+
+  it("cuenta actividad del repartidor creado después aunque el ledger esté desactivado", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const settings = await api.bootstrap();
+    await api.saveSettings({
+      ...settings.settings,
+      deliverySettlementEnabled: false,
+    });
+    const draft = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente actividad demo",
+      customerPhone: "11 4000-1234",
+      deliveryAddress: "Calle actividad 123",
+      deliveryFeeMinor: 275_000,
+    });
+    const populated = await api.addOrderItem({
+      orderId: draft.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: draft.id });
+    const driver = await api.createDriver({
+      fullName: "Repartidor posterior demo",
+      authorizerPin: "1234",
+    });
+    await api.assignDeliveryDriver({
+      orderId: draft.id,
+      driverUserId: driver.id,
+    });
+    await api.completeOrder({
+      orderId: draft.id,
+      finalStatus: "DELIVERED",
+      collectedByDriver: true,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+
+    const bootstrap = await api.bootstrap();
+    expect(
+      bootstrap.deliveryLedger.some((ledger) => ledger.orderId === draft.id),
+    ).toBe(false);
+    expect(bootstrap.driverDeliveryActivity).toContainEqual({
+      driverUserId: driver.id,
+      deliveryCount: 1,
+      earningsMinor: 275_000,
+      lastDeliveryAt: expect.any(String),
+    });
   });
 
   it("devuelve un pago completo y vuelve a dejar el pedido impago", async () => {

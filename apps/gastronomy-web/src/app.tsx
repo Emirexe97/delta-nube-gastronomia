@@ -41,6 +41,7 @@ import { UsersPage } from "./pages/users-page";
 import { AuditPage } from "./pages/audit-page";
 import { resetDemoData } from "./demo/demo-api";
 import { isDemoMode } from "./demo/install-demo";
+import { useEnterNavigation } from "./hooks/use-enter-navigation";
 
 const navigation = [
   { to: "/resumen", label: "Resumen", icon: ChartPieSlice, group: "General" },
@@ -79,6 +80,7 @@ const navigation = [
 ] as const;
 
 export function App() {
+  useEnterNavigation();
   const bootstrap = useBootstrap();
   const location = useLocation();
   const navigate = useNavigate();

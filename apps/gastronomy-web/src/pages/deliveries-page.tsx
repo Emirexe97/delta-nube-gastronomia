@@ -44,8 +44,14 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
     driverFilter === "ALL"
       ? data.deliveryLedger
       : data.deliveryLedger.filter((row) => row.driverUserId === driverFilter);
+  const activity =
+    driverFilter === "ALL"
+      ? data.driverDeliveryActivity
+      : data.driverDeliveryActivity.filter(
+          (row) => row.driverUserId === driverFilter,
+        );
   const pending = ledger.filter((row) => row.status === "PENDING");
-  const selectedRows = data.deliveryLedger.filter(
+  const selectedRows = ledger.filter(
     (row) => row.status === "PENDING" && selectedIds.includes(row.id),
   );
 
@@ -57,38 +63,46 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
   useEffect(() => {
     const valid = new Set(
       data.deliveryLedger
-        .filter((row) => row.status === "PENDING")
+        .filter(
+          (row) =>
+            row.status === "PENDING" &&
+            (driverFilter === "ALL" || row.driverUserId === driverFilter),
+        )
         .map((row) => row.id),
     );
     setSelectedIds((current) => current.filter((id) => valid.has(id)));
-  }, [data.deliveryLedger]);
+  }, [data.deliveryLedger, driverFilter]);
 
-  const totals = useMemo(
-    () =>
-      ledger.reduce(
-        (result, row) => {
-          result.earnings += row.deliveryFeeMinor;
-          result.deliveries += 1;
-          if (row.status === "PENDING")
-            result[row.direction] += row.amountDueMinor;
-          return result;
-        },
-        {
-          earnings: 0,
-          deliveries: 0,
-          DRIVER_OWES_BUSINESS: 0,
-          BUSINESS_OWES_DRIVER: 0,
-        },
-      ),
-    [ledger],
-  );
+  const totals = useMemo(() => {
+    const result = activity.reduce(
+      (summary, row) => {
+        summary.earnings += row.earningsMinor;
+        summary.deliveries += row.deliveryCount;
+        return summary;
+      },
+      { earnings: 0, deliveries: 0 },
+    );
+    return pending.reduce(
+      (summary, row) => {
+        summary[row.direction] += row.amountDueMinor;
+        return summary;
+      },
+      {
+        ...result,
+        DRIVER_OWES_BUSINESS: 0,
+        BUSINESS_OWES_DRIVER: 0,
+      },
+    );
+  }, [activity, pending]);
   const driverRows = useMemo(
     () =>
       drivers.map((driver) => {
+        const activityRow = data.driverDeliveryActivity.find(
+          (row) => row.driverUserId === driver.id,
+        );
         const rows = data.deliveryLedger.filter(
           (row) => row.driverUserId === driver.id,
         );
-        const lastDelivery = rows[0]?.createdAt ?? null;
         const lastSettlement = rows
           .filter((row) => row.settledAt)
           .sort((left, right) =>
@@ -96,17 +110,17 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
           )[0]?.settledAt;
         return {
           driver,
-          deliveries: rows.length,
-          earnings: rows.reduce((sum, row) => sum + row.deliveryFeeMinor, 0),
+          deliveries: activityRow?.deliveryCount ?? 0,
+          earnings: activityRow?.earningsMinor ?? 0,
           pendingCount: rows.filter((row) => row.status === "PENDING").length,
           pendingAmount: rows
             .filter((row) => row.status === "PENDING")
             .reduce((sum, row) => sum + row.amountDueMinor, 0),
-          lastDelivery,
+          lastDelivery: activityRow?.lastDeliveryAt ?? null,
           lastSettlement: lastSettlement ?? null,
         };
       }),
-    [data.deliveryLedger, drivers],
+    [data.deliveryLedger, data.driverDeliveryActivity, drivers],
   );
 
   const allVisibleSelected =

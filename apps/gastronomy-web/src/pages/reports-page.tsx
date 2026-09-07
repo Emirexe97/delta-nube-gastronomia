@@ -37,7 +37,10 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
   );
   const summary = report.data;
   return (
-    <div className="panel-enter mx-auto max-w-[1450px] space-y-4">
+    <div
+      data-enter-navigation
+      className="panel-enter mx-auto max-w-[1450px] space-y-4"
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-extrabold">Informes operativos</h2>
