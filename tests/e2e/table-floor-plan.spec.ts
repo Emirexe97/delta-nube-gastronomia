@@ -85,7 +85,14 @@ test("crea un sector, diseña una mesa y la opera desde el plano", async () => {
     dialog.getByText("Abrir mesa 91", { exact: true }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "Abrir mesa" }).click();
-  await expect(page.getByText(/Pedido #\d+ · Salón/)).toBeVisible();
+  const editor = page.getByRole("dialog", { name: /Pedido #\d+ · Salón/ });
+  await expect(editor).toBeVisible();
+  await editor.getByRole("button", { name: "Cerrar", exact: true }).click();
+  await page.getByRole("tab", { name: "Vista clásica" }).click();
+  await expect(
+    page.getByRole("button", { name: "Abrir pedido de mesa 91" }),
+  ).toBeVisible();
+  await expect(page.getByText("Ventana", { exact: true })).toBeVisible();
 
   const persisted = await page.evaluate(async () => {
     const data = await window.gastronomy.bootstrap();
@@ -99,4 +106,56 @@ test("crea un sector, diseña una mesa y la opera desde el plano", async () => {
     shape: "ROUND",
   });
   expect(persisted.table?.layoutX).toBeGreaterThan(5);
+});
+
+test("sincroniza altas, cambios y eliminaciones entre ambas vistas", async () => {
+  await page.getByRole("link", { name: "Salón" }).click();
+  const tableCount = page.getByLabel("Mesas activas");
+  const newNumber = Number(await tableCount.inputValue()) + 1;
+  await tableCount.fill(String(newNumber));
+  await page.getByRole("button", { name: "Actualizar salón" }).click();
+  await expect(
+    page.getByRole("button", { name: `Abrir mesa ${newNumber}` }),
+  ).toBeVisible();
+
+  await page.getByRole("tab", { name: "Plano por sectores" }).click();
+  await page.getByRole("button", { name: "Editar plano" }).click();
+  const planTable = page.getByRole("button", {
+    name: `Editar mesa ${newNumber}`,
+  });
+  await expect(planTable).toBeVisible();
+  await planTable.click();
+  await page.getByLabel("Nombre opcional").fill("Mesa compartida");
+  await page.getByRole("button", { name: "Guardar mesa" }).click();
+  await expect(page.getByText("Plano guardado.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Terminar edición" }).click();
+  await page.getByRole("tab", { name: "Vista clásica" }).click();
+  await expect(
+    page.getByText("Mesa compartida", { exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("tab", { name: "Plano por sectores" }).click();
+  await page.getByRole("button", { name: "Editar plano" }).click();
+  await page.getByRole("button", { name: `Editar mesa ${newNumber}` }).click();
+  await page
+    .getByRole("button", { name: "Eliminar mesa", exact: true })
+    .click();
+  const deleteDialog = page.getByRole("dialog", {
+    name: `Eliminar mesa ${newNumber}`,
+  });
+  await deleteDialog
+    .getByLabel("Confirmación número de mesa")
+    .fill(String(newNumber));
+  await deleteDialog
+    .getByRole("button", { name: "Eliminar mesa", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: `Editar mesa ${newNumber}` }),
+  ).toHaveCount(0);
+
+  await page.getByRole("tab", { name: "Vista clásica" }).click();
+  await expect(
+    page.getByRole("button", { name: `Abrir mesa ${newNumber}` }),
+  ).toHaveCount(0);
 });

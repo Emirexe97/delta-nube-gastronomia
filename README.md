@@ -98,7 +98,7 @@ pnpm --filter @gastronomy/desktop-shell dist:win
 ```
 
 El artefacto se genera en
-`apps/desktop-shell/release/Delta Nube Gastronomía Setup 0.1.4.exe`. El comando
+`apps/desktop-shell/release/Delta Nube Gastronomía Setup 0.1.5.exe`. El comando
 recompila primero SQLite para la ABI exacta de Electron.
 
 ## Autorizaciones locales

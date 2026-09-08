@@ -132,6 +132,12 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
     table.currentOrderId
       ? setSelectedOrderId(table.currentOrderId)
       : requestOpen(table);
+  const requestDeleteTable = (table: RestaurantTableDto) => {
+    deleteTable.reset();
+    setTableMessage(null);
+    setDeletingTable(table);
+    setDeleteConfirmation("");
+  };
 
   return (
     <div className="panel-enter mx-auto max-w-[1500px] space-y-4">
@@ -285,6 +291,11 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
                   <p className="mt-4 text-xl font-extrabold">
                     Mesa {table.number}
                   </p>
+                  {table.name ? (
+                    <p className="truncate text-[11px] font-semibold text-slate-500">
+                      {table.name}
+                    </p>
+                  ) : null}
                   {occupied ? (
                     <div className="mt-1">
                       <p className="text-sm font-bold text-brand-700">
@@ -321,12 +332,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
                         type="button"
                         variant="secondary"
                         aria-label={`Eliminar mesa ${table.number}`}
-                        onClick={() => {
-                          deleteTable.reset();
-                          setTableMessage(null);
-                          setDeletingTable(table);
-                          setDeleteConfirmation("");
-                        }}
+                        onClick={() => requestDeleteTable(table)}
                       >
                         <Trash size={16} />
                       </Button>
@@ -343,6 +349,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
           tables={tables}
           canManageTables={canManageTables}
           onActivateTable={activateTable}
+          onRequestDeleteTable={requestDeleteTable}
         />
       )}
 
@@ -677,6 +684,29 @@ function QuickEntry({
   useEffect(() => {
     if (removedEvent?.tableId === table?.id) resetFlow();
   }, [removedEvent]);
+
+  useEffect(() => {
+    if (!table) return;
+    const currentTable = data.tables.find(
+      (candidate) => candidate.id === table.id && candidate.active,
+    );
+    if (!currentTable) {
+      resetFlow();
+      return;
+    }
+    setTable(currentTable);
+    if (!currentTable.currentOrderId) {
+      if (order) {
+        setOrder(null);
+        setStep("WAITER");
+      }
+      return;
+    }
+    const currentOrder = data.orders.find(
+      (candidate) => candidate.id === currentTable.currentOrderId,
+    );
+    if (currentOrder) setOrder(currentOrder);
+  }, [data.orders, data.tables]);
 
   const ensureTable = useApiMutation((number: number) =>
     window.gastronomy.ensureTable({ number }),

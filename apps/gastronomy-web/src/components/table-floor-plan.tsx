@@ -56,11 +56,13 @@ export function TableFloorPlan({
   tables,
   canManageTables,
   onActivateTable,
+  onRequestDeleteTable,
 }: {
   data: BootstrapDto;
   tables: RestaurantTableDto[];
   canManageTables: boolean;
   onActivateTable(table: RestaurantTableDto): void;
+  onRequestDeleteTable(table: RestaurantTableDto): void;
 }) {
   const sectors = useMemo(
     () => [...data.tableSectors].sort((a, b) => a.sortOrder - b.sortOrder),
@@ -656,6 +658,14 @@ export function TableFloorPlan({
                   disabled={updateTable.isPending}
                 >
                   <FloppyDisk size={16} /> Guardar mesa
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => onRequestDeleteTable(selectedTable)}
+                  disabled={updateTable.isPending}
+                >
+                  <Trash size={16} /> Eliminar mesa
                 </Button>
               </div>
             ) : (
