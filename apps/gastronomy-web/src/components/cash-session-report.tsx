@@ -21,7 +21,7 @@ export function CashSessionHistory({
   });
   return (
     <Card className="overflow-hidden">
-      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
         <div>
           <h2 className="text-sm font-bold">Historial de cajas</h2>
           <p className="text-[11px] text-slate-400">
@@ -45,7 +45,7 @@ export function CashSessionHistory({
           Todavía no hay cajas cerradas.
         </p>
       ) : (
-        <div className="overflow-auto">
+        <div className="overflow-x-auto">
           <table className="dn-table">
             <thead>
               <tr>
@@ -241,7 +241,7 @@ export function CashSessionReportModal({
                 </Select>
               </Field>
             ))}
-            <div className="flex items-end gap-2">
+            <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-4">
               <Button onClick={() => setApplied({ ...filters })}>
                 <Funnel /> Aplicar
               </Button>
@@ -292,7 +292,7 @@ export function CashSessionReportModal({
                 </Badge>
               </div>
             </Card>
-            <div className="grid gap-2 sm:grid-cols-5">
+            <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
               {[
                 ["Ventas", data.totals.salesMinor],
                 ["Pedidos", data.totals.orderCount],
@@ -311,7 +311,7 @@ export function CashSessionReportModal({
             {data.detailAvailable ? (
               <>
                 <Aggregates data={data} />
-                <div className="overflow-auto">
+                <div className="overflow-x-auto">
                   <table className="dn-table">
                     <thead>
                       <tr>
@@ -343,7 +343,7 @@ export function CashSessionReportModal({
                     </tbody>
                   </table>
                 </div>
-                <div className="overflow-auto">
+                <div className="overflow-x-auto">
                   <table className="dn-table">
                     <thead>
                       <tr>

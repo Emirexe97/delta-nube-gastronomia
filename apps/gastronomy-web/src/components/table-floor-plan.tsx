@@ -563,13 +563,15 @@ export function TableFloorPlan({
 
       <div
         className={
-          editing ? "grid gap-3 lg:grid-cols-[minmax(0,1fr)_290px]" : ""
+          editing
+            ? "grid gap-3 md:grid-cols-[minmax(0,1fr)_260px] lg:grid-cols-[minmax(0,1fr)_290px]"
+            : ""
         }
       >
         <Card className="overflow-hidden p-0">
           <div
             ref={canvasRef}
-            className="relative min-h-[540px] overflow-hidden bg-slate-50"
+            className="relative min-h-[420px] overflow-hidden bg-slate-50 sm:min-h-[480px] lg:min-h-[540px]"
             style={{
               backgroundImage:
                 "linear-gradient(to right, rgb(226 232 240 / .75) 1px, transparent 1px), linear-gradient(to bottom, rgb(226 232 240 / .75) 1px, transparent 1px)",

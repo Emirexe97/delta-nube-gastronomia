@@ -402,7 +402,7 @@ export function OrderEditor({
       }
       width="max-w-[1180px]"
     >
-      <div className="order-editor-layout grid min-h-0 gap-4 lg:grid-cols-[1.35fr_.9fr]">
+      <div className="order-editor-layout grid min-h-0 gap-3 min-[900px]:grid-cols-[1.1fr_.9fr] lg:gap-4 lg:grid-cols-[1.35fr_.9fr]">
         <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-slate-50/70 p-3">
           <div className="relative">
             <MagnifyingGlass
@@ -544,7 +544,7 @@ export function OrderEditor({
                 {order.items.map((item) => (
                   <article
                     key={item.id}
-                    className="group rounded-xl border border-slate-100 bg-slate-50/70 p-3"
+                    className="group rounded-xl border border-slate-100 bg-slate-50/70 p-2.5"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">

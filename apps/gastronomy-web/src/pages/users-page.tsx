@@ -33,7 +33,7 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
   const [editing, setEditing] = useState<UserDto | null>(null);
   return (
     <div className="panel-enter mx-auto max-w-[1250px] space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-extrabold">Usuarios y permisos</h2>
           <p className="text-xs text-slate-400">
@@ -45,8 +45,8 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
           Nuevo usuario
         </Button>
       </div>
-      <Card className="overflow-hidden">
-        <table className="dn-table">
+      <Card className="overflow-x-auto">
+        <table className="dn-table min-w-[640px]">
           <thead>
             <tr>
               <th>N.º</th>

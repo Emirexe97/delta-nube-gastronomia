@@ -1127,18 +1127,7 @@ function CustomerModal({
               key={address.key}
               className="grid gap-2 rounded-lg border border-slate-200 bg-white p-3 sm:grid-cols-[130px_1fr_auto]"
             >
-              <Field
-                label={
-                  index === 0
-                    ? "Etiqueta de la dirección principal"
-                    : "Etiqueta"
-                }
-              >
-                {index === 0 ? (
-                  <span className="mb-1 inline-flex w-fit rounded-md bg-brand-50 px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide text-brand-700">
-                    Dirección principal
-                  </span>
-                ) : null}
+              <Field label="Etiqueta">
                 <Input
                   name={`addressLabel-${index}`}
                   value={address.label}
@@ -1148,6 +1137,11 @@ function CustomerModal({
                   placeholder={index === 0 ? "Casa" : "Trabajo, Familiar…"}
                   maxLength={60}
                 />
+                {index === 0 ? (
+                  <span className="inline-flex w-fit rounded-md bg-brand-50 px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide text-brand-700">
+                    Dirección principal
+                  </span>
+                ) : null}
               </Field>
               <div className="grid gap-2">
                 <Field label="Dirección">
@@ -1666,7 +1660,7 @@ function CustomerProfileModal({
             </div>
             {profile?.history.items.length ? (
               <div className="mt-2 overflow-auto rounded-xl border border-slate-200">
-                <table className="dn-table">
+                <table className="dn-table min-w-[640px]">
                   <thead>
                     <tr>
                       <th>Pedido</th>
@@ -2183,7 +2177,7 @@ function LegacyCustomerProfileModal({
             </div>
             {orders.length ? (
               <div className="mt-2 max-h-72 overflow-auto rounded-xl border border-slate-200">
-                <table className="dn-table">
+                <table className="dn-table min-w-[640px]">
                   <thead>
                     <tr>
                       <th>Pedido</th>

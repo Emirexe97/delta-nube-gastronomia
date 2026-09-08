@@ -58,7 +58,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
         </Button>
       </div>
       <Card className="p-3">
-        <div className="grid gap-3 sm:grid-cols-[180px_180px_1fr]">
+        <div className="grid gap-3 sm:grid-cols-[minmax(170px,180px)_minmax(170px,180px)_1fr]">
           <Field label="Día comercial desde">
             <Input
               type="date"
@@ -73,7 +73,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
               onChange={(event) => setDateTo(event.target.value)}
             />
           </Field>
-          <div className="flex items-end pb-2 text-xs text-slate-400">
+          <div className="self-end pb-1 text-xs leading-5 text-slate-400">
             Las ventas se muestran netas en su día original; las devoluciones de
             caja se muestran en el día en que se realizaron.
           </div>
@@ -266,33 +266,35 @@ function ReportTable({
         <h3 className="text-sm font-bold">{title}</h3>
       </div>
       {rows.length ? (
-        <table className="dn-table">
-          <thead>
-            <tr>
-              {headers.map((header, index) => (
-                <th key={header} className={index ? "text-right" : ""}>
-                  {header}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => (
-              <tr key={`${row[0]}-${index}`}>
-                {row.map((cell, cellIndex) => (
-                  <td
-                    key={cellIndex}
-                    className={
-                      cellIndex ? "text-right font-semibold" : "font-semibold"
-                    }
-                  >
-                    {cell}
-                  </td>
+        <div className="overflow-x-auto">
+          <table className="dn-table">
+            <thead>
+              <tr>
+                {headers.map((header, index) => (
+                  <th key={header} className={index ? "text-right" : ""}>
+                    {header}
+                  </th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={`${row[0]}-${index}`}>
+                  {row.map((cell, cellIndex) => (
+                    <td
+                      key={cellIndex}
+                      className={
+                        cellIndex ? "text-right font-semibold" : "font-semibold"
+                      }
+                    >
+                      {cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : (
         <div className="grid h-32 place-items-center text-xs text-slate-400">
           Sin datos para el rango

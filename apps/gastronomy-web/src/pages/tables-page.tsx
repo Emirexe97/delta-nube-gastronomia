@@ -1030,10 +1030,10 @@ function QuickEntry({
   return (
     <>
       <Card className="overflow-hidden border-brand-200 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-brand-100 bg-brand-50/60 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-lg bg-brand-600 text-white">
-              <Keyboard size={19} weight="bold" />
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-brand-100 bg-brand-50/60 px-3 py-2">
+          <div className="flex items-center gap-2.5">
+            <div className="grid h-8 w-8 place-items-center rounded-lg bg-brand-600 text-white">
+              <Keyboard size={17} weight="bold" />
             </div>
             <div>
               <h3 className="text-sm font-extrabold text-slate-900">
@@ -1061,7 +1061,7 @@ function QuickEntry({
           </div>
         </div>
 
-        <div className="p-4">
+        <div className="p-3">
           <form
             data-navigation-autosave="true"
             onSubmit={(event) => {
@@ -1069,13 +1069,11 @@ function QuickEntry({
               if (step === "TABLE") void submitTable();
               if (step === "WAITER") void submitWaiter();
             }}
-            className="grid max-w-3xl items-end gap-2 sm:grid-cols-[minmax(150px_.7fr)_minmax(150px_.7fr)_minmax(240px_1.3fr)_auto]"
+            className="grid max-w-5xl grid-cols-1 items-end gap-2 sm:grid-cols-12"
           >
-            <Field
-              label="Número de mesa"
-              hint="Enter, Tab o Continuar abre o crea la mesa."
-            >
+            <Field label="Número de mesa" className="sm:col-span-2">
               <Input
+                className="h-9"
                 ref={tableRef}
                 autoFocus
                 inputMode="numeric"
@@ -1115,8 +1113,9 @@ function QuickEntry({
                 placeholder="Ej.: 12"
               />
             </Field>
-            <Field label="Número de mozo" hint="Se sincroniza con el nombre.">
+            <Field label="Número de mozo" className="sm:col-span-2">
               <Input
+                className="h-9"
                 ref={waiterRef}
                 inputMode="numeric"
                 value={waiterNumber}
@@ -1142,8 +1141,9 @@ function QuickEntry({
                 placeholder="Ej.: 2"
               />
             </Field>
-            <Field label="Nombre de mozo" hint="Podés elegirlo por nombre.">
+            <Field label="Nombre de mozo" className="sm:col-span-5">
               <Select
+                className="h-9"
                 ref={waiterNameRef}
                 value={waiterUserId}
                 disabled={busy || (!waiterFieldsEnabled && !order)}
@@ -1181,19 +1181,26 @@ function QuickEntry({
               <Button
                 type="button"
                 variant="secondary"
+                className="h-9 w-full sm:col-span-3"
                 disabled={!waiterUserId || busy}
                 onClick={() => void submitWaiter()}
               >
                 Abrir mesa
               </Button>
             ) : step === "ITEM" ? (
-              <Button type="button" variant="ghost" onClick={resetFlow}>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-9 w-full sm:col-span-3"
+                onClick={resetFlow}
+              >
                 Nueva mesa
               </Button>
             ) : (
               <Button
                 type="button"
                 variant="secondary"
+                className="h-9 w-full sm:col-span-3"
                 disabled={!tableNumberIsValid || busy}
                 onClick={() => void submitTable()}
               >
@@ -1203,28 +1210,40 @@ function QuickEntry({
           </form>
 
           {step === "ITEM" && order ? (
-            <div className="mt-4 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+            <div className="mt-3 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-1.5 text-xs">
                 <span className="font-bold text-slate-700">
                   Mesa {table?.number ?? order.tableNumber} · Pedido #
                   {order.number} · {order.waiterName || "Mozo asignado"}
                 </span>
-                <span className="text-slate-500">
-                  {itemCount} unidades ·{" "}
-                  <strong className="text-brand-700">
-                    {formatMoney(order.totalMinor)}
-                  </strong>
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-500">
+                    {itemCount} unidades ·{" "}
+                    <strong className="text-brand-700">
+                      {formatMoney(order.totalMinor)}
+                    </strong>
+                  </span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-8 px-2.5 text-xs"
+                    onClick={() => onOpenFullOrder(order.id)}
+                  >
+                    <Eye size={15} />
+                    Ver pedido
+                  </Button>
+                </div>
               </div>
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
                   void submitItem();
                 }}
-                className="grid items-end gap-2 lg:grid-cols-[90px_minmax(145px_.7fr)_minmax(220px_1.3fr)_170px_auto]"
+                className="grid grid-cols-1 items-end gap-2 sm:grid-cols-12"
               >
-                <Field label="Cantidad">
+                <Field label="Cantidad" className="sm:col-span-1">
                   <Input
+                    className="h-9 px-2"
                     ref={quantityRef}
                     autoFocus
                     inputMode="numeric"
@@ -1246,8 +1265,9 @@ function QuickEntry({
                     placeholder="0"
                   />
                 </Field>
-                <Field label="Código / ID">
+                <Field label="Código / ID" className="sm:col-span-2">
                   <Input
+                    className="h-9"
                     ref={codeRef}
                     list="quick-product-codes"
                     value={productCode}
@@ -1282,11 +1302,12 @@ function QuickEntry({
                     ])}
                   </datalist>
                 </Field>
-                <div className="grid gap-1.5 text-[12px] font-semibold text-slate-600">
+                <div className="grid gap-1.5 text-[12px] font-semibold text-slate-600 sm:col-span-4">
                   <label htmlFor="quick-product-name">Producto</label>
                   <div className="relative">
                     <Input
                       id="quick-product-name"
+                      className="h-9"
                       ref={productNameRef}
                       value={productName}
                       onChange={(event) => changeName(event.target.value)}
@@ -1432,14 +1453,7 @@ function QuickEntry({
                     ) : null}
                   </div>
                 </div>
-                <Field
-                  label="Precio salón"
-                  hint={
-                    priceWasChanged
-                      ? "Precio manual · requiere PIN"
-                      : "Podés modificarlo"
-                  }
-                >
+                <Field label="Precio salón" className="sm:col-span-2">
                   <Input
                     ref={priceRef}
                     inputMode="decimal"
@@ -1460,15 +1474,21 @@ function QuickEntry({
                       }
                     }}
                     placeholder="$ 0"
+                    title={
+                      priceWasChanged
+                        ? "Precio manual · requiere PIN"
+                        : "Podés modificarlo"
+                    }
                     className={
                       priceWasChanged
-                        ? "border-amber-300 bg-amber-50 font-extrabold text-amber-800"
-                        : "font-bold text-slate-700"
+                        ? "h-9 border-amber-300 bg-amber-50 font-extrabold text-amber-800"
+                        : "h-9 font-bold text-slate-700"
                     }
                   />
                 </Field>
                 <Button
                   type="submit"
+                  className="h-9 w-full sm:col-span-3"
                   disabled={
                     !quantity ||
                     !selectedProduct ||
@@ -1486,19 +1506,6 @@ function QuickEntry({
                   <Plus size={16} />
                 </Button>
               </form>
-              <div className="flex flex-wrap justify-between gap-2">
-                <Button type="button" variant="ghost" onClick={resetFlow}>
-                  Nueva mesa
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => onOpenFullOrder(order.id)}
-                >
-                  <Eye size={16} />
-                  Ver pedido completo
-                </Button>
-              </div>
             </div>
           ) : null}
 

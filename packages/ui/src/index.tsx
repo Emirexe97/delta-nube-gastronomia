@@ -141,13 +141,20 @@ export function Field({
   label,
   hint,
   children,
+  className,
 }: {
   label: string;
   hint?: string;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <label className="grid gap-1.5 text-[12px] font-semibold text-slate-600">
+    <label
+      className={cn(
+        "grid content-start gap-1.5 text-[12px] font-semibold text-slate-600",
+        className,
+      )}
+    >
       <span>{label}</span>
       {children}
       {hint ? <span className="font-normal text-slate-400">{hint}</span> : null}

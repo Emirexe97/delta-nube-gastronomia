@@ -219,7 +219,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
           </p>
         </div>
         <div className="overflow-auto">
-          <table className="dn-table">
+          <table className="dn-table min-w-[640px]">
             <thead>
               <tr>
                 <th>Repartidor</th>
@@ -295,7 +295,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         </div>
         {ledger.length ? (
           <div className="max-h-[460px] overflow-auto">
-            <table className="dn-table">
+            <table className="dn-table min-w-[640px]">
               <thead>
                 <tr>
                   {driverFilter !== "ALL" ? <th>Elegir</th> : null}
@@ -607,7 +607,7 @@ function SettlementModal({
             net={net}
           />
           <div className="max-h-52 overflow-auto rounded-xl border border-slate-200">
-            <table className="dn-table">
+            <table className="dn-table min-w-[640px]">
               <thead>
                 <tr>
                   <th>Pedido</th>

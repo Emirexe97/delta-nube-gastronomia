@@ -185,8 +185,8 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
         </div>
       ) : null}
       <Card className="overflow-hidden">
-        <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 p-3">
-          <div className="relative min-w-[240px] flex-1">
+        <div className="grid items-center gap-2 border-b border-slate-100 p-3 sm:grid-cols-[minmax(220px,1fr)_auto]">
+          <div className="relative min-w-0 flex-1 sm:min-w-[240px]">
             <MagnifyingGlass
               className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               size={16}
@@ -199,7 +199,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
               className="pl-9"
             />
           </div>
-          <div className="flex gap-1 overflow-x-auto">
+          <div className="flex min-w-0 gap-1 overflow-x-auto pb-0.5">
             {(
               [
                 ["ALL", "Todos"],
@@ -226,7 +226,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
             ))}
           </div>
         </div>
-        <div className="max-h-[calc(100vh-230px)] overflow-auto">
+        <div className="max-h-[calc(100vh-270px)] overflow-auto">
           {orders.length ? (
             <table className="dn-table">
               <thead>

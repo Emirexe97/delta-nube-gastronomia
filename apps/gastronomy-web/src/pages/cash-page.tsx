@@ -85,7 +85,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
       {session ? (
         <>
           <Card className="overflow-hidden">
-            <div className="grid gap-px bg-slate-200 md:grid-cols-4">
+            <div className="grid items-stretch gap-px bg-slate-200 md:grid-cols-4">
               <CashHeader label="Caja">
                 <p className="text-2xl font-extrabold">#{session.number}</p>
                 <Badge tone="green">Abierta</Badge>
@@ -103,7 +103,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                   {formatMoney(session.openingAmountMinor)}
                 </p>
               </CashHeader>
-              <div className="bg-slate-950 p-4 text-white">
+              <div className="flex min-h-[104px] flex-col justify-center bg-slate-950 p-4 text-white">
                 <SmallLabel>Efectivo esperado</SmallLabel>
                 <p className="mt-1 text-2xl font-extrabold">
                   {formatMoney(session.expectedAmountMinor)}
@@ -314,7 +314,7 @@ function CashHeader({
   children: ReactNode;
 }) {
   return (
-    <div className="bg-white p-4">
+    <div className="flex min-h-[104px] flex-col justify-center bg-white p-4">
       <SmallLabel>{label}</SmallLabel>
       {children}
     </div>

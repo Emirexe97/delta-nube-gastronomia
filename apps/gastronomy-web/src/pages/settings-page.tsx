@@ -195,6 +195,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                   type="button"
                   role="switch"
                   aria-checked={settings.modules[key]}
+                  aria-label={`${label}: ${settings.modules[key] ? "visible" : "oculto"}`}
                   onClick={() => toggleModule(key)}
                   className={`relative h-6 w-11 rounded-full transition ${settings.modules[key] ? "bg-brand-600" : "bg-slate-200"}`}
                 >
@@ -386,7 +387,7 @@ function PrintTextSettingsCard({
         title="Textos de impresión"
         detail="Encabezados, pies y datos visibles de comanda y cuenta"
       />
-      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+      <div className="mt-4 grid items-start gap-4 lg:grid-cols-2">
         <section
           aria-label="Textos de comanda"
           className="rounded-xl border border-brand-100 bg-brand-50/30 p-3"
@@ -576,7 +577,7 @@ function PrinterProfileEditor({
         </Field>
         <Field
           label="Impresora"
-          hint={loading ? "Buscando dispositivos…" : undefined}
+          hint={loading ? "Buscando dispositivos…" : " "}
         >
           <Select
             value={profile.deviceName}
@@ -636,8 +637,8 @@ function PrinterProfileEditor({
           />
         </Field>
       </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-3">
-        <label className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-[11px] font-semibold text-slate-600">
+      <div className="mt-3 grid items-start gap-2 sm:grid-cols-3">
+        <label className="mt-[1.625rem] flex min-h-10 items-center gap-2 rounded-lg bg-white px-3 py-2 text-[11px] font-semibold text-slate-600">
           <input
             type="checkbox"
             checked={profile.cutter}

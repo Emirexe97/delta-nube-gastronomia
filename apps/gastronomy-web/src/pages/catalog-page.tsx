@@ -193,7 +193,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       {tab === "PRODUCTS" ? (
         <Card className="overflow-hidden">
           <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 p-3">
-            <div className="relative min-w-64 flex-1">
+            <div className="relative min-w-0 flex-1 sm:min-w-64">
               <MagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <Input
                 aria-label="Buscar productos"
@@ -258,7 +258,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           ) : null}
           {products.length ? (
             <div className="max-h-[calc(100vh-260px)] overflow-auto">
-              <table className="dn-table">
+              <table className="dn-table min-w-[640px]">
                 <thead>
                   <tr>
                     <th className="w-10">
@@ -375,9 +375,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           onCreateProduct={(category) => openNewProduct(category.id)}
         />
       ) : (
-        <Card className="overflow-hidden">
+        <Card className="overflow-x-auto">
           {data.modifiers.length ? (
-            <table className="dn-table">
+            <table className="dn-table min-w-[640px]">
               <thead>
                 <tr>
                   <th>Grupo</th>
@@ -896,7 +896,7 @@ function BulkProductsModal({
           </div>
           {products.length ? (
             <div className="max-h-64 overflow-auto">
-              <table className="dn-table">
+              <table className="dn-table min-w-[640px]">
                 <thead>
                   <tr>
                     <th>Producto</th>
@@ -1117,7 +1117,7 @@ function CategoryTable({
       </div>
       {rows.length ? (
         <div className="max-h-[calc(100vh-260px)] overflow-auto">
-          <table className="dn-table">
+          <table className="dn-table min-w-[640px]">
             <thead>
               <tr>
                 <th>Orden</th>

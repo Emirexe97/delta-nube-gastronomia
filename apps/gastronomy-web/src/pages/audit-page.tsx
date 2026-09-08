@@ -45,7 +45,7 @@ export function AuditPage() {
         </p>
       </div>
       <Card className="p-3">
-        <div className="grid gap-3 md:grid-cols-[150px_150px_220px_1fr]">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(170px,180px)_minmax(170px,180px)_minmax(200px,220px)_minmax(240px,1fr)]">
           <Field label="Desde">
             <Input
               type="date"
