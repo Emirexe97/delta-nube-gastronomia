@@ -1,6 +1,6 @@
 {
   "name": "@gastronomy/desktop-shell",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Aplicación desktop local de Delta Nube Gastronomía",
   "main": "dist/main.js",

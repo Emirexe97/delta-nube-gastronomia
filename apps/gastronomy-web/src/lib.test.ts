@@ -51,6 +51,10 @@ const product = (
   active: true,
   prices: [],
   stockMinor: null,
+  stockTargetMinor: null,
+  stockMinMinor: null,
+  stockCriticalMinor: null,
+  imageDataUrl: null,
 });
 
 describe("rankProducts", () => {

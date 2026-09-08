@@ -50,9 +50,6 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
   );
   const [waiterUserId, setWaiterUserId] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [tableCount, setTableCount] = useState(
-    Math.max(1, data.tables.filter((table) => table.active).length),
-  );
   const [tableMessage, setTableMessage] = useState<string | null>(null);
   const [deletingTable, setDeletingTable] = useState<RestaurantTableDto | null>(
     null,
@@ -80,26 +77,6 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         setSelectedOrderId(order.id);
       },
       onError: (value) => setError(humanError(value)),
-    },
-  );
-  useEffect(() => {
-    setTableCount(
-      Math.max(1, data.tables.filter((table) => table.active).length),
-    );
-  }, [data.tables]);
-  const configureTables = useApiMutation(
-    (count: number) => window.gastronomy.configureTables({ count }),
-    {
-      onSuccess: (updatedTables) => {
-        const activeCount = updatedTables.filter(
-          (table) => table.active,
-        ).length;
-        setTableCount(Math.max(1, activeCount));
-        setTableMessage(
-          `Salón actualizado: ${activeCount} mesa${activeCount === 1 ? "" : "s"} activa${activeCount === 1 ? "" : "s"}.`,
-        );
-      },
-      onError: (value) => setTableMessage(humanError(value)),
     },
   );
   const deleteTable = useApiMutation(
@@ -207,63 +184,6 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
 
       {view === "CLASSIC" ? (
         <>
-          <Card className="border-orange-100 bg-gradient-to-r from-white to-orange-50/70 p-3">
-            <form
-              className="flex flex-wrap items-end gap-3"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (tableCount >= 1 && tableCount <= 200)
-                  configureTables.mutate(tableCount);
-              }}
-            >
-              <div className="min-w-0 flex-1">
-                <h3 className="text-xs font-extrabold text-slate-700">
-                  Cantidad de mesas
-                </h3>
-                <p className="mt-0.5 text-[10px] text-slate-400">
-                  Generá del 1 al {tableCount}. Las mesas ocupadas y su
-                  historial se conservan al reducir la cantidad.
-                </p>
-              </div>
-              <Field label="Mesas activas">
-                <Input
-                  className="w-24"
-                  type="number"
-                  min={1}
-                  max={200}
-                  value={tableCount}
-                  onChange={(event) => {
-                    setTableCount(Number(event.target.value));
-                    setTableMessage(null);
-                  }}
-                  aria-describedby="table-count-status"
-                />
-              </Field>
-              <Button
-                type="submit"
-                disabled={
-                  configureTables.isPending ||
-                  tableCount < 1 ||
-                  tableCount > 200
-                }
-              >
-                {configureTables.isPending
-                  ? "Actualizando…"
-                  : "Actualizar salón"}
-              </Button>
-            </form>
-            {tableMessage ? (
-              <p
-                id="table-count-status"
-                role="status"
-                aria-live="polite"
-                className={`mt-2 rounded-lg px-3 py-2 text-[11px] font-semibold ${configureTables.isError ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}
-              >
-                {tableMessage}
-              </p>
-            ) : null}
-          </Card>
-
           <section
             aria-label="Mesas del salón"
             className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"

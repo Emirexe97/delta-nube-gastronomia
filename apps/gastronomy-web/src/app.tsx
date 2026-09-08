@@ -18,6 +18,7 @@ import {
   GearSix,
   List,
   Package,
+  ShoppingCart,
   Motorcycle,
   Receipt,
   ShieldCheck,
@@ -32,6 +33,7 @@ import { DashboardPage } from "./pages/dashboard-page";
 import { TablesPage } from "./pages/tables-page";
 import { OrdersPage } from "./pages/orders-page";
 import { CatalogPage } from "./pages/catalog-page";
+import { PurchasesPage } from "./pages/purchases-page";
 import { CustomersPage } from "./pages/customers-page";
 import { CashPage } from "./pages/cash-page";
 import { ReportsPage } from "./pages/reports-page";
@@ -54,6 +56,13 @@ const navigation = [
   },
   { to: "/pedidos", label: "Pedidos", icon: Receipt, group: "Operación" },
   { to: "/catalogo", label: "Productos", icon: Package, group: "Gestión" },
+  {
+    to: "/compras",
+    label: "Compras",
+    icon: ShoppingCart,
+    group: "Gestión",
+    permission: "purchases.manage",
+  },
   { to: "/clientes", label: "Clientes", icon: AddressBook, group: "Gestión" },
   {
     to: "/repartidores",
@@ -288,10 +297,18 @@ export function App() {
 
   const visibleNavigation = useMemo(() => {
     const modules = bootstrap.data?.settings.modules;
+    const permissions = bootstrap.data?.currentUser.permissions ?? [];
     return navigation.filter(
-      (item) => !("module" in item) || modules?.[item.module] !== false,
+      (item) =>
+        (!("module" in item) || modules?.[item.module] !== false) &&
+        (!("permission" in item) ||
+          permissions.includes(item.permission) ||
+          permissions.includes("*")),
     );
-  }, [bootstrap.data?.settings.modules]);
+  }, [
+    bootstrap.data?.currentUser.permissions,
+    bootstrap.data?.settings.modules,
+  ]);
   const groups = [...new Set(visibleNavigation.map((item) => item.group))];
   const current = navigation.find((item) =>
     location.pathname.startsWith(item.to),
@@ -498,6 +515,18 @@ export function App() {
             <Route
               path="/catalogo"
               element={<CatalogPage data={bootstrap.data} />}
+            />
+            <Route
+              path="/compras"
+              element={
+                bootstrap.data.currentUser.permissions.includes(
+                  "purchases.manage",
+                ) || bootstrap.data.currentUser.permissions.includes("*") ? (
+                  <PurchasesPage data={bootstrap.data} />
+                ) : (
+                  <Navigate to="/resumen" replace />
+                )
+              }
             />
             <Route
               path="/clientes"

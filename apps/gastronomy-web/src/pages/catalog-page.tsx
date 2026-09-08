@@ -26,6 +26,7 @@ import {
   Select,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
+import { convertProductImageToWebp } from "../product-image";
 import {
   formatMoney,
   humanError,
@@ -329,6 +330,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                       <td>
                         <button
                           type="button"
+                          aria-label={`Stock actual de ${product.name}; seleccionar para ajustar`}
                           onClick={() => setStockProduct(product)}
                           className="font-bold text-brand-700 hover:underline"
                         >
@@ -343,16 +345,28 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                         </Badge>
                       </td>
                       <td className="text-right">
-                        <button
-                          type="button"
-                          aria-label={`Editar ${product.name}`}
-                          title="Editar producto y precios"
-                          onClick={() => setEditingProduct(product)}
-                          className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                        >
-                          <PencilSimple size={14} />
-                          Editar
-                        </button>
+                        <div className="flex justify-end gap-1.5">
+                          <button
+                            type="button"
+                            aria-label={`Ajustar inventario de ${product.name}`}
+                            title="Registrar un ajuste de inventario"
+                            onClick={() => setStockProduct(product)}
+                            className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                          >
+                            <SlidersHorizontal size={14} />
+                            Ajustar
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Editar ${product.name}`}
+                            title="Editar producto y precios"
+                            onClick={() => setEditingProduct(product)}
+                            className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                          >
+                            <PencilSimple size={14} />
+                            Editar
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1323,6 +1337,11 @@ function ProductModal({
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [stock, setStock] = useState("");
+  const [stockTarget, setStockTarget] = useState("");
+  const [stockMin, setStockMin] = useState("");
+  const [stockCritical, setStockCritical] = useState("");
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [imageProcessing, setImageProcessing] = useState(false);
   const [active, setActive] = useState(true);
   const [prices, setPrices] = useState<VisibleProductPrices>({
     SALON: "",
@@ -1357,6 +1376,23 @@ function ProductModal({
       product?.stockMinor == null ? "" : String(product.stockMinor / 1000),
     );
     setActive(product?.active ?? true);
+    setStockTarget(
+      product?.stockTargetMinor == null
+        ? ""
+        : String(product.stockTargetMinor / 1000),
+    );
+    setStockMin(
+      product?.stockMinMinor == null
+        ? ""
+        : String(product.stockMinMinor / 1000),
+    );
+    setStockCritical(
+      product?.stockCriticalMinor == null
+        ? ""
+        : String(product.stockCriticalMinor / 1000),
+    );
+    setImageDataUrl(product?.imageDataUrl ?? null);
+    setImageProcessing(false);
     setPrices(
       Object.fromEntries(
         visiblePriceListCodes.map((priceListCode) => [
@@ -1413,8 +1449,24 @@ function ProductModal({
   const invalidPrices = visiblePriceListCodes.some(
     (codeValue) => parseMoneyInput(prices[codeValue]) == null,
   );
-  const invalidInitialStock =
-    !editing && Boolean(stock.trim()) && parsedStockMinor == null;
+  const invalidStock = Boolean(stock.trim()) && parsedStockMinor == null;
+  const parsedTarget = stockTarget.trim() ? parseStockInput(stockTarget) : null;
+  const parsedMin = stockMin.trim() ? parseStockInput(stockMin) : null;
+  const parsedCritical = stockCritical.trim()
+    ? parseStockInput(stockCritical)
+    : null;
+  const invalidInventory =
+    invalidStock ||
+    (Boolean(stockTarget.trim()) && parsedTarget == null) ||
+    (Boolean(stockMin.trim()) && parsedMin == null) ||
+    (Boolean(stockCritical.trim()) && parsedCritical == null) ||
+    (parsedCritical != null &&
+      parsedMin != null &&
+      parsedCritical > parsedMin) ||
+    (parsedMin != null && parsedTarget != null && parsedMin > parsedTarget) ||
+    (parsedCritical != null &&
+      parsedTarget != null &&
+      parsedCritical > parsedTarget);
 
   const mutation = useApiMutation(
     async (parsedPrices: Record<VisiblePriceListCode, number>) => {
@@ -1436,6 +1488,11 @@ function ProductModal({
           name,
           code: code || null,
           active,
+          stockMinor: parsedStockMinor,
+          stockTargetMinor: parsedTarget,
+          stockMinMinor: parsedMin,
+          stockCriticalMinor: parsedCritical,
+          imageDataUrl,
           prices: normalizedPrices,
           reason,
           authorizerPin: pin,
@@ -1446,6 +1503,10 @@ function ProductModal({
         name,
         code: code || null,
         stockMinor: parsedStockMinor,
+        stockTargetMinor: parsedTarget,
+        stockMinMinor: parsedMin,
+        stockCriticalMinor: parsedCritical,
+        imageDataUrl,
         prices: normalizedPrices,
       });
     },
@@ -1463,9 +1524,9 @@ function ProductModal({
       setError("Completá precios válidos.");
       return;
     }
-    if (invalidInitialStock) {
+    if (invalidInventory) {
       setError(
-        "El stock inicial debe ser mayor o igual a cero y tener hasta tres decimales.",
+        "Revisá el inventario: usá valores positivos de hasta tres decimales y respetá Crítico ≤ Mínimo ≤ Objetivo.",
       );
       return;
     }
@@ -1481,7 +1542,7 @@ function ProductModal({
       open={open}
       onClose={onClose}
       closeDisabled={mutation.isPending}
-      width="max-w-3xl"
+      width="max-w-4xl"
       title={
         editing ? `Editar · ${product?.name ?? "producto"}` : "Nuevo producto"
       }
@@ -1512,9 +1573,7 @@ function ProductModal({
               ))}
           </Select>
         </Field>
-        <div
-          className={`grid gap-3 ${editing ? "sm:grid-cols-[1fr_150px]" : "sm:grid-cols-[1fr_120px_120px]"}`}
-        >
+        <div className="grid gap-3 sm:grid-cols-[1fr_150px]">
           <Field label="Nombre">
             <Input
               autoFocus
@@ -1530,28 +1589,6 @@ function ProductModal({
               placeholder="MUZG"
             />
           </Field>
-          {!editing ? (
-            <Field
-              label="Stock inicial"
-              hint={
-                invalidInitialStock
-                  ? "Ingresá un número mayor o igual a cero con hasta tres decimales."
-                  : "Opcional; admite hasta tres decimales."
-              }
-            >
-              <Input
-                inputMode="decimal"
-                value={stock}
-                aria-invalid={invalidInitialStock}
-                onChange={(event) => {
-                  setStock(event.target.value);
-                  if (error) setError(null);
-                }}
-                placeholder="Opcional"
-                className={invalidInitialStock ? "border-rose-300" : ""}
-              />
-            </Field>
-          ) : null}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           {visiblePriceListCodes.map((key) => (
@@ -1570,6 +1607,85 @@ function ProductModal({
             </Field>
           ))}
         </div>
+        <section
+          className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-2 lg:grid-cols-4"
+          aria-label="Inventario"
+        >
+          {(
+            [
+              ["Stock actual", stock, setStock],
+              ["Objetivo", stockTarget, setStockTarget],
+              ["Mínimo", stockMin, setStockMin],
+              ["Crítico", stockCritical, setStockCritical],
+            ] as const
+          ).map(([label, value, setter]) => (
+            <Field key={label} label={label}>
+              <Input
+                inputMode="decimal"
+                value={value}
+                aria-invalid={invalidInventory}
+                placeholder="Opcional"
+                onChange={(event) => {
+                  setter(event.target.value);
+                  if (error) setError(null);
+                }}
+              />
+            </Field>
+          ))}
+          <p className="text-[10px] text-slate-400 sm:col-span-2 lg:col-span-4">
+            Admite hasta tres decimales. Los niveles deben respetar Crítico ≤
+            Mínimo ≤ Objetivo.
+          </p>
+        </section>
+        <section
+          className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 p-3"
+          aria-label="Imagen del producto"
+        >
+          {imageDataUrl ? (
+            <img
+              src={imageDataUrl}
+              alt="Vista previa del producto"
+              className="h-16 w-16 shrink-0 rounded-lg border border-slate-200 object-cover"
+            />
+          ) : null}
+          <Field
+            label="Foto del producto"
+            hint="JPG, PNG o WebP hasta 10 MiB. Se optimiza automáticamente."
+            className="min-w-[240px] flex-1"
+          >
+            <Input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              disabled={imageProcessing}
+              onChange={async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                setImageProcessing(true);
+                setError(null);
+                try {
+                  setImageDataUrl(
+                    (await convertProductImageToWebp(file)).dataUrl,
+                  );
+                } catch (value) {
+                  setError(humanError(value));
+                } finally {
+                  setImageProcessing(false);
+                  event.target.value = "";
+                }
+              }}
+            />
+          </Field>
+          {imageDataUrl ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={imageProcessing}
+              onClick={() => setImageDataUrl(null)}
+            >
+              Quitar
+            </Button>
+          ) : null}
+        </section>
 
         {editing ? (
           <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-[1fr_150px]">
@@ -1666,8 +1782,9 @@ function ProductModal({
               !name.trim() ||
               !categoryId ||
               invalidPrices ||
-              invalidInitialStock ||
+              invalidInventory ||
               (editing && (pin.length < 4 || !reason.trim())) ||
+              imageProcessing ||
               mutation.isPending
             }
           >

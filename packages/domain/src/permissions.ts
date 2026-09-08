@@ -18,6 +18,7 @@ export const SYSTEM_PERMISSIONS = [
   "customers.manage",
   "prices.bulk_update",
   "stock.adjust",
+  "purchases.manage",
 ] as const;
 
 export type Permission = (typeof SYSTEM_PERMISSIONS)[number];

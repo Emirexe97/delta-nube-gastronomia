@@ -380,6 +380,8 @@ function registerIpcHandlers() {
     "updateProduct",
     "bulkUpdateProducts",
     "createModifier",
+    "listPurchases",
+    "createPurchase",
     "adjustStock",
     "createUser",
     "createDriver",
@@ -415,6 +417,7 @@ function registerIpcHandlers() {
         "cancelOrder",
         "reverseCashMovement",
         "reverseDeliverySettlement",
+        "createPurchase",
       ];
       if (
         idempotentMethods.includes(method) &&

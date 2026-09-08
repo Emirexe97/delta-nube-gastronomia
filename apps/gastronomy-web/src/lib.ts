@@ -69,6 +69,7 @@ const auditLabels: Record<string, string> = {
   DELIVERY_SETTLED: "Rendición liquidada",
   SETTINGS_UPDATED: "Configuración actualizada",
   STOCK_ADJUSTED: "Stock ajustado",
+  PURCHASE_CREATED: "Ingreso de mercadería registrado",
   USER_CREATED: "Usuario creado",
   USER_UPDATED: "Usuario actualizado",
   CUSTOMER_CREATED: "Cliente creado",
@@ -91,6 +92,7 @@ const entityLabels: Record<string, string> = {
   SETTINGS: "Configuración",
   PRODUCT: "Producto",
   PRODUCT_BATCH: "Lote de productos",
+  PURCHASE: "Compra",
   PAYMENT: "Pago",
   USER: "Usuario",
   CASH_SESSION: "Caja",
@@ -109,6 +111,7 @@ const permissionLabels: Record<string, string> = {
   "cash.expense": "Movimientos de caja",
   "settings.manage": "Administrar configuración",
   "stock.adjust": "Ajustar stock",
+  "purchases.manage": "Registrar compras e ingresos",
   "users.manage": "Administrar usuarios",
   "tables.manage": "Administrar mesas y sectores",
 };

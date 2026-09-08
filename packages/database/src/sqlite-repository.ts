@@ -41,6 +41,8 @@ import type {
   ModifierDto,
   ProductDto,
   RefundPaymentInput,
+  CreatePurchaseInput,
+  PurchaseDto,
   RestaurantTableDto,
   ReportFilters,
   UpdateProductInput,
@@ -177,6 +179,22 @@ const DEFAULT_SETTINGS: AppSettingsDto = {
 const nowIso = () => new Date().toISOString();
 const flag = (value: unknown) => Number(value) === 1;
 const json = (value: unknown) => JSON.stringify(value);
+const parseShapePoints = (value: unknown): Array<{ x: number; y: number }> => {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]"));
+    if (!Array.isArray(parsed)) return [];
+    const points = parsed.filter(
+      (point): point is { x: number; y: number } =>
+        point != null &&
+        typeof point === "object" &&
+        Number.isFinite((point as { x?: unknown }).x) &&
+        Number.isFinite((point as { y?: unknown }).y),
+    );
+    return points.map((point) => ({ x: Number(point.x), y: Number(point.y) }));
+  } catch {
+    return [];
+  }
+};
 const jsonStringArray = (value: unknown): string[] => {
   try {
     const parsed = JSON.parse(String(value ?? "[]"));
@@ -1165,6 +1183,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       sortOrder: Number(row.sort_order),
       active: flag(row.active),
       stockMinor: row.stock_minor == null ? null : Number(row.stock_minor),
+      stockTargetMinor:
+        row.stock_target_minor == null ? null : Number(row.stock_target_minor),
+      stockMinMinor:
+        row.stock_min_minor == null ? null : Number(row.stock_min_minor),
+      stockCriticalMinor:
+        row.stock_critical_minor == null
+          ? null
+          : Number(row.stock_critical_minor),
+      imageDataUrl:
+        row.image_data_url == null ? null : String(row.image_data_url),
       prices: (pricesStatement.all(row.id) as Row[]).map((price) => ({
         priceListId: String(price.price_list_id),
         priceListCode: String(price.price_list_code),
@@ -1403,7 +1431,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       this.db
         .prepare(
           `SELECT id, sector_id, kind, label, color, layout_x, layout_y,
-                  layout_width, layout_height, sort_order
+                  layout_width, layout_height, sort_order, points_json,
+                  stroke_color, stroke_width, fill_opacity
            FROM floor_plan_shapes
            ORDER BY sort_order, created_at, id`,
         )
@@ -1414,6 +1443,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       kind: String(row.kind) as FloorPlanShapeDto["kind"],
       label: row.label == null ? null : String(row.label),
       color: String(row.color),
+      points: parseShapePoints(row.points_json),
+      strokeColor: String(row.stroke_color ?? row.color),
+      strokeWidth: Number(row.stroke_width ?? 2),
+      fillOpacity: Number(row.fill_opacity ?? 0),
       layoutX: Number(row.layout_x),
       layoutY: Number(row.layout_y),
       layoutWidth: Number(row.layout_width),
@@ -4027,6 +4060,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     name: string;
     code?: string | null;
     stockMinor?: number | null;
+    stockTargetMinor?: number | null;
+    stockMinMinor?: number | null;
+    stockCriticalMinor?: number | null;
+    imageDataUrl?: string | null;
     prices: Array<{
       priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY";
       amountMinor: number;
@@ -4053,8 +4090,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
       this.db
         .prepare(
-          `INSERT INTO products(id, category_id, name, code, sort_order, stock_minor, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO products(id, category_id, name, code, sort_order, stock_minor, stock_target_minor, stock_min_minor, stock_critical_minor, image_data_url, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -4063,6 +4100,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           input.code?.trim() || null,
           sortOrder,
           input.stockMinor ?? null,
+          input.stockTargetMinor ?? null,
+          input.stockMinMinor ?? null,
+          input.stockCriticalMinor ?? null,
+          input.imageDataUrl ?? null,
           timestamp,
           timestamp,
         );
@@ -4110,15 +4151,44 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         "La categoría no existe.",
       );
       const timestamp = nowIso();
+      const stockMinor =
+        input.stockMinor === undefined ? before.stockMinor : input.stockMinor;
+      const stockTargetMinor =
+        input.stockTargetMinor === undefined
+          ? before.stockTargetMinor
+          : input.stockTargetMinor;
+      const stockMinMinor =
+        input.stockMinMinor === undefined
+          ? before.stockMinMinor
+          : input.stockMinMinor;
+      const stockCriticalMinor =
+        input.stockCriticalMinor === undefined
+          ? before.stockCriticalMinor
+          : input.stockCriticalMinor;
+      const imageDataUrl =
+        input.imageDataUrl === undefined
+          ? before.imageDataUrl
+          : input.imageDataUrl;
+      if (stockMinor !== before.stockMinor)
+        this.authorizePin(input.authorizerPin, "stock.adjust");
       this.db
         .prepare(
-          `UPDATE products SET category_id = ?, name = ?, code = ?, active = ?, updated_at = ? WHERE id = ?`,
+          `UPDATE products
+           SET category_id = ?, name = ?, code = ?, active = ?, stock_minor = ?,
+               stock_target_minor = ?, stock_min_minor = ?, stock_critical_minor = ?,
+               image_data_url = ?, updated_at = ?
+           WHERE id = ?`,
         )
         .run(
           input.categoryId,
           input.name.trim(),
           input.code?.trim() || null,
           input.active ? 1 : 0,
+          stockMinor,
+          stockTargetMinor,
+          stockMinMinor,
+          stockCriticalMinor,
+          imageDataUrl,
           timestamp,
           input.productId,
         );
@@ -4152,6 +4222,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       });
       this.event("Product", input.productId, "ProductUpdated", {
         prices: after.prices,
+        stockMinor: after.stockMinor,
+        stockTargetMinor: after.stockTargetMinor,
+        stockMinMinor: after.stockMinMinor,
+        stockCriticalMinor: after.stockCriticalMinor,
       });
       return after;
     });
@@ -4311,6 +4385,152 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
     });
     return run();
+  }
+
+  listPurchases(): PurchaseDto[] {
+    assertPermission(this.currentUser().permissions, "purchases.manage");
+    const rows = this.db
+      .prepare(
+        `SELECT p.*, u.full_name AS created_by_user_name
+         FROM purchases p
+         JOIN users u ON u.id = p.created_by_user_id
+         ORDER BY p.created_at DESC, p.id DESC`,
+      )
+      .all() as Row[];
+    const items = this.db.prepare(
+      `SELECT * FROM purchase_items
+       WHERE purchase_id = ? ORDER BY rowid`,
+    );
+    return rows.map((row) => ({
+      id: String(row.id),
+      supplierName: String(row.supplier_name),
+      invoiceNumber:
+        row.invoice_number == null ? null : String(row.invoice_number),
+      notes: row.notes == null ? null : String(row.notes),
+      totalMinor: Number(row.total_minor),
+      createdByUserId: String(row.created_by_user_id),
+      createdByUserName: String(row.created_by_user_name),
+      createdAt: String(row.created_at),
+      items: (items.all(row.id) as Row[]).map((item) => ({
+        id: String(item.id),
+        productId: String(item.product_id),
+        productName: String(item.product_name_snapshot),
+        quantityMinor: Number(item.quantity_minor),
+        unitCostMinor: Number(item.unit_cost_minor),
+        lineTotalMinor: Number(item.line_total_minor),
+        stockBeforeMinor: Number(item.stock_before_minor),
+        stockAfterMinor: Number(item.stock_after_minor),
+      })),
+    }));
+  }
+
+  createPurchase(input: CreatePurchaseInput): PurchaseDto {
+    return this.idempotentTransaction(
+      input.idempotencyKey,
+      input.terminalId,
+      "createPurchase",
+      undefined,
+      input,
+      () => {
+        const authorizer = this.authorizePin(
+          input.authorizerPin,
+          "purchases.manage",
+        );
+        if (!input.supplierName.trim() || !input.items.length)
+          throw new Error("La compra no es válida.");
+        const purchaseId = randomUUID();
+        const timestamp = nowIso();
+        let totalMinor = 0;
+        this.db
+          .prepare(
+            `INSERT INTO purchases(
+               id, supplier_name, invoice_number, notes, total_minor,
+               created_by_user_id, created_at
+             ) VALUES (?, ?, ?, ?, 0, ?, ?)`,
+          )
+          .run(
+            purchaseId,
+            input.supplierName.trim(),
+            input.invoiceNumber?.trim() || null,
+            input.notes?.trim() || null,
+            String(authorizer.id),
+            timestamp,
+          );
+        const productStatement = this.db.prepare(
+          "SELECT id, name, stock_minor FROM products WHERE id = ? AND active = 1",
+        );
+        const updateStock = this.db.prepare(
+          "UPDATE products SET stock_minor = ?, updated_at = ? WHERE id = ?",
+        );
+        const insertItem = this.db.prepare(
+          `INSERT INTO purchase_items(
+             id, purchase_id, product_id, product_name_snapshot,
+             quantity_minor, unit_cost_minor, line_total_minor,
+             stock_before_minor, stock_after_minor
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        for (const item of input.items) {
+          if (
+            !Number.isSafeInteger(item.quantityMinor) ||
+            item.quantityMinor <= 0 ||
+            !Number.isSafeInteger(item.unitCostMinor) ||
+            item.unitCostMinor < 0
+          ) {
+            throw new Error("Un ítem de la compra no es válido.");
+          }
+          const product = requireRow(
+            productStatement.get(item.productId) as Row | undefined,
+            "El producto no existe o está inactivo.",
+          );
+          const stockBeforeMinor = Number(product.stock_minor ?? 0);
+          const stockAfterMinor = stockBeforeMinor + item.quantityMinor;
+          const lineTotalMinor = Math.round(
+            (item.quantityMinor * item.unitCostMinor) / 1000,
+          );
+          if (
+            !Number.isSafeInteger(stockAfterMinor) ||
+            !Number.isSafeInteger(lineTotalMinor) ||
+            !Number.isSafeInteger(totalMinor + lineTotalMinor)
+          ) {
+            throw new Error("La compra excede el rango permitido.");
+          }
+          totalMinor += lineTotalMinor;
+          updateStock.run(stockAfterMinor, timestamp, item.productId);
+          insertItem.run(
+            randomUUID(),
+            purchaseId,
+            item.productId,
+            String(product.name),
+            item.quantityMinor,
+            item.unitCostMinor,
+            lineTotalMinor,
+            stockBeforeMinor,
+            stockAfterMinor,
+          );
+        }
+        this.db
+          .prepare("UPDATE purchases SET total_minor = ? WHERE id = ?")
+          .run(totalMinor, purchaseId);
+        this.audit({
+          entityType: "PURCHASE",
+          entityId: purchaseId,
+          action: "PURCHASE_CREATED",
+          permission: "purchases.manage",
+          reason: input.notes?.trim() || undefined,
+          after: {
+            supplierName: input.supplierName.trim(),
+            invoiceNumber: input.invoiceNumber?.trim() || null,
+            totalMinor,
+            itemCount: input.items.length,
+          },
+          authorizerUserId: String(authorizer.id),
+        });
+        return requireRow(
+          this.listPurchases().find((purchase) => purchase.id === purchaseId),
+          "No se pudo leer la compra registrada.",
+        );
+      },
+    );
   }
 
   adjustStock(input: {
@@ -4992,6 +5212,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     kind: FloorPlanShapeDto["kind"];
     label?: string | null;
     color: string;
+    points?: Array<{ x: number; y: number }>;
+    strokeColor?: string;
+    strokeWidth?: number;
+    fillOpacity?: number;
     layoutX: number;
     layoutY: number;
     layoutWidth: number;
@@ -5005,11 +5229,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       .prepare(
         `INSERT INTO floor_plan_shapes(
            id, sector_id, kind, label, color, layout_x, layout_y,
-           layout_width, layout_height, sort_order, created_at, updated_at
+           layout_width, layout_height, sort_order, points_json, stroke_color,
+           stroke_width, fill_opacity, created_at, updated_at
          ) VALUES (
            ?, ?, ?, ?, ?, ?, ?, ?, ?,
            (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM floor_plan_shapes WHERE sector_id = ?),
-           ?, ?
+           ?, ?, ?, ?, ?, ?
          )`,
       )
       .run(
@@ -5023,6 +5248,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         input.layoutWidth,
         input.layoutHeight,
         input.sectorId,
+        JSON.stringify(input.points ?? []),
+        (input.strokeColor ?? input.color).toUpperCase(),
+        input.strokeWidth ?? 2,
+        input.fillOpacity ?? 1,
         timestamp,
         timestamp,
       );
@@ -5038,6 +5267,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     kind: FloorPlanShapeDto["kind"];
     label?: string | null;
     color: string;
+    points?: Array<{ x: number; y: number }>;
+    strokeColor?: string;
+    strokeWidth?: number;
+    fillOpacity?: number;
     layoutX: number;
     layoutY: number;
     layoutWidth: number;
@@ -5054,7 +5287,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       .prepare(
         `UPDATE floor_plan_shapes
          SET sector_id = ?, kind = ?, label = ?, color = ?, layout_x = ?,
-             layout_y = ?, layout_width = ?, layout_height = ?, sort_order = ?, updated_at = ?
+             layout_y = ?, layout_width = ?, layout_height = ?, sort_order = ?,
+             points_json = ?, stroke_color = ?, stroke_width = ?, fill_opacity = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -5067,6 +5301,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         input.layoutWidth,
         input.layoutHeight,
         input.sortOrder ?? before.sortOrder,
+        JSON.stringify(input.points ?? before.points),
+        (input.strokeColor ?? before.strokeColor).toUpperCase(),
+        input.strokeWidth ?? before.strokeWidth,
+        input.fillOpacity ?? before.fillOpacity,
         nowIso(),
         input.shapeId,
       );
@@ -5090,6 +5328,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     kind: string;
     label?: string | null;
     color: string;
+    points?: Array<{ x: number; y: number }>;
+    strokeColor?: string;
+    strokeWidth?: number;
+    fillOpacity?: number;
     layoutX: number;
     layoutY: number;
     layoutWidth: number;
@@ -5097,10 +5339,52 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }) {
     if (!this.listTableSectors().some((sector) => sector.id === input.sectorId))
       throw new Error("El sector seleccionado no existe.");
-    if (!["RECTANGLE", "ELLIPSE", "LINE"].includes(input.kind))
+    if (
+      !["RECTANGLE", "ELLIPSE", "LINE", "POLYGON", "POLYLINE"].includes(
+        input.kind,
+      )
+    )
       throw new Error("El tipo de figura no es válido.");
     if (!/^#[0-9A-F]{6}$/i.test(input.color))
       throw new Error("El color de la figura no es válido.");
+    const points = input.points ?? [];
+    if (!Array.isArray(points))
+      throw new Error("Los nodos de la figura no son válidos.");
+    const minPoints =
+      input.kind === "POLYGON" ? 3 : input.kind === "POLYLINE" ? 2 : 0;
+    const maxPoints =
+      input.kind === "POLYGON" || input.kind === "POLYLINE" ? 64 : 0;
+    if (points.length < minPoints || points.length > maxPoints)
+      throw new Error("La cantidad de nodos de la figura no es válida.");
+    if (
+      !points.every(
+        (point) =>
+          point != null &&
+          typeof point === "object" &&
+          Number.isFinite(point.x) &&
+          Number.isFinite(point.y) &&
+          point.x >= 0 &&
+          point.x <= 100 &&
+          point.y >= 0 &&
+          point.y <= 100,
+      )
+    )
+      throw new Error("Las coordenadas de la figura no son válidas.");
+    const strokeColor = input.strokeColor ?? input.color;
+    if (!/^#[0-9A-F]{6}$/i.test(strokeColor))
+      throw new Error("El color de trazo no es válido.");
+    if (
+      !Number.isFinite(input.strokeWidth ?? 2) ||
+      (input.strokeWidth ?? 2) < 1 ||
+      (input.strokeWidth ?? 2) > 12
+    )
+      throw new Error("El ancho de trazo no es válido.");
+    if (
+      !Number.isFinite(input.fillOpacity ?? 0) ||
+      (input.fillOpacity ?? 0) < 0 ||
+      (input.fillOpacity ?? 0) > 1
+    )
+      throw new Error("La opacidad de relleno no es válida.");
     if ((input.label?.trim().length ?? 0) > 60)
       throw new Error("La etiqueta admite hasta 60 caracteres.");
     const values = [

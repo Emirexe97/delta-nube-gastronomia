@@ -641,4 +641,71 @@ CREATE INDEX IF NOT EXISTS floor_plan_shapes_sector_idx
   ON floor_plan_shapes(sector_id, sort_order, created_at);
 `,
   },
+  {
+    version: 19,
+    name: "inventory_thresholds_and_purchases",
+    sql: String.raw`
+ALTER TABLE products ADD COLUMN stock_target_minor INTEGER CHECK(stock_target_minor >= 0);
+ALTER TABLE products ADD COLUMN stock_min_minor INTEGER CHECK(stock_min_minor >= 0);
+ALTER TABLE products ADD COLUMN stock_critical_minor INTEGER CHECK(stock_critical_minor >= 0);
+ALTER TABLE products ADD COLUMN image_data_url TEXT;
+
+CREATE TABLE IF NOT EXISTS purchases (
+  id TEXT PRIMARY KEY,
+  supplier_name TEXT NOT NULL,
+  invoice_number TEXT,
+  notes TEXT,
+  total_minor INTEGER NOT NULL CHECK(total_minor >= 0),
+  created_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS purchases_created_idx
+  ON purchases(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS purchase_items (
+  id TEXT PRIMARY KEY,
+  purchase_id TEXT NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+  product_id TEXT NOT NULL REFERENCES products(id),
+  product_name_snapshot TEXT NOT NULL,
+  quantity_minor INTEGER NOT NULL CHECK(quantity_minor > 0),
+  unit_cost_minor INTEGER NOT NULL CHECK(unit_cost_minor >= 0),
+  line_total_minor INTEGER NOT NULL CHECK(line_total_minor >= 0),
+  stock_before_minor INTEGER NOT NULL CHECK(stock_before_minor >= 0),
+  stock_after_minor INTEGER NOT NULL CHECK(stock_after_minor >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS purchase_items_purchase_idx ON purchase_items(purchase_id);
+`,
+  },
+  {
+    version: 20,
+    name: "floor_plan_vector_shapes",
+    sql: String.raw`
+DROP INDEX IF EXISTS floor_plan_shapes_sector_idx;
+ALTER TABLE floor_plan_shapes RENAME TO floor_plan_shapes_legacy;
+CREATE TABLE floor_plan_shapes (
+  id TEXT PRIMARY KEY,
+  sector_id TEXT NOT NULL REFERENCES table_sectors(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('RECTANGLE','ELLIPSE','LINE','POLYGON','POLYLINE')),
+  label TEXT,
+  color TEXT NOT NULL,
+  layout_x REAL NOT NULL,
+  layout_y REAL NOT NULL,
+  layout_width REAL NOT NULL,
+  layout_height REAL NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  points_json TEXT NOT NULL DEFAULT '[]',
+  stroke_color TEXT NOT NULL DEFAULT '#000000',
+  stroke_width REAL NOT NULL DEFAULT 2,
+  fill_opacity REAL NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO floor_plan_shapes (id, sector_id, kind, label, color, layout_x, layout_y, layout_width, layout_height, sort_order, points_json, stroke_color, stroke_width, fill_opacity, created_at, updated_at)
+SELECT id, sector_id, kind, label, color, layout_x, layout_y, layout_width, layout_height, sort_order, '[]', color, 2, 1, created_at, updated_at FROM floor_plan_shapes_legacy;
+DROP TABLE floor_plan_shapes_legacy;
+CREATE INDEX IF NOT EXISTS floor_plan_shapes_sector_idx ON floor_plan_shapes(sector_id, sort_order, created_at);
+`,
+  },
 ];

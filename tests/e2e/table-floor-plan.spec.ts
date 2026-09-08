@@ -110,16 +110,16 @@ test("crea un sector, diseña una mesa y la opera desde el plano", async () => {
 
 test("sincroniza altas, cambios y eliminaciones entre ambas vistas", async () => {
   await page.getByRole("link", { name: "Salón" }).click();
-  const tableCount = page.getByLabel("Mesas activas");
-  const newNumber = Number(await tableCount.inputValue()) + 1;
-  await tableCount.fill(String(newNumber));
-  await page.getByRole("button", { name: "Actualizar salón" }).click();
-  await expect(
-    page.getByRole("button", { name: `Abrir mesa ${newNumber}` }),
-  ).toBeVisible();
-
+  const newNumber = await page.evaluate(async () => {
+    const data = await window.gastronomy.bootstrap();
+    return Math.max(...data.tables.map((table) => table.number)) + 1;
+  });
   await page.getByRole("tab", { name: "Plano por sectores" }).click();
   await page.getByRole("button", { name: "Editar plano" }).click();
+  await page.getByRole("button", { name: "Nueva mesa" }).click();
+  const createDialog = page.getByRole("dialog", { name: /Agregar mesa a/ });
+  await createDialog.getByLabel("Número de mesa").fill(String(newNumber));
+  await createDialog.getByRole("button", { name: "Agregar mesa" }).click();
   const planTable = page.getByRole("button", {
     name: `Editar mesa ${newNumber}`,
   });

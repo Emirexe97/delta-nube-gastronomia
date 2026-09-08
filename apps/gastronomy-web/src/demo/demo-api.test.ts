@@ -197,6 +197,56 @@ describe("API de demostración", () => {
     expect((await api.bootstrap()).floorPlanShapes).toEqual([]);
   });
 
+  it("persiste figuras vectoriales y valida la cantidad de nodos", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    const sector = (await api.bootstrap()).tableSectors[0]!;
+    const polygon = await api.createFloorPlanShape({
+      sectorId: sector.id,
+      kind: "POLYGON",
+      label: "Área irregular",
+      color: "#FDBA74",
+      strokeColor: "#C2410C",
+      strokeWidth: 3,
+      fillOpacity: 0.4,
+      points: [
+        { x: 0, y: 0 },
+        { x: 100, y: 10 },
+        { x: 80, y: 100 },
+      ],
+      layoutX: 12,
+      layoutY: 14,
+      layoutWidth: 44,
+      layoutHeight: 30,
+    });
+    expect(polygon).toMatchObject({
+      kind: "POLYGON",
+      strokeColor: "#C2410C",
+      strokeWidth: 3,
+      fillOpacity: 0.4,
+    });
+    await expect(createDemoApi(storage).bootstrap()).resolves.toMatchObject({
+      floorPlanShapes: [
+        expect.objectContaining({
+          id: polygon.id,
+          points: polygon.points,
+        }),
+      ],
+    });
+    await expect(
+      api.createFloorPlanShape({
+        sectorId: sector.id,
+        kind: "POLYLINE",
+        color: "#64748B",
+        points: [{ x: 0, y: 0 }],
+        layoutX: 5,
+        layoutY: 5,
+        layoutWidth: 20,
+        layoutHeight: 20,
+      }),
+    ).rejects.toThrow("cantidad de nodos");
+  });
+
   it("cancela pedido vacío y bloquea pedido con consumo", async () => {
     const api = createDemoApi(new MemoryStorage());
     const table = await api.ensureTable({ number: 52 });
@@ -1241,5 +1291,41 @@ describe("API de demostración", () => {
         (product) => product.id === "prod-muzza",
       )?.stockMinor,
     ).toBe(35_000);
+  });
+
+  it("registra compras idempotentes y conserva parámetros de inventario", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const before = (await api.bootstrap()).products.find(
+      (product) => product.id === "prod-muzza",
+    )!;
+    expect(before.stockTargetMinor).toBe(50_000);
+    const input = {
+      idempotencyKey: "demo-purchase-1",
+      supplierName: "Proveedor Demo",
+      invoiceNumber: "FAC-1",
+      notes: "Reposición semanal",
+      authorizerPin: "1234",
+      items: [
+        {
+          productId: before.id,
+          quantityMinor: 2_500,
+          unitCostMinor: 10_000,
+        },
+      ],
+    };
+    const purchase = await api.createPurchase(input);
+    expect(purchase.totalMinor).toBe(25_000);
+    expect(purchase.items[0]).toMatchObject({
+      productName: before.name,
+      stockBeforeMinor: before.stockMinor,
+      stockAfterMinor: (before.stockMinor ?? 0) + 2_500,
+    });
+    expect((await api.createPurchase(input)).id).toBe(purchase.id);
+    expect((await api.listPurchases()).length).toBe(1);
+    expect(
+      (await api.bootstrap()).products.find(
+        (product) => product.id === before.id,
+      )?.stockMinor,
+    ).toBe((before.stockMinor ?? 0) + 2_500);
   });
 });

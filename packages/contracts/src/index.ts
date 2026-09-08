@@ -119,6 +119,10 @@ export interface ProductDto {
   sortOrder: number;
   active: boolean;
   stockMinor: number | null;
+  stockTargetMinor: number | null;
+  stockMinMinor: number | null;
+  stockCriticalMinor: number | null;
+  imageDataUrl: string | null;
   prices: ProductPriceDto[];
 }
 
@@ -248,9 +252,13 @@ export interface TableSectorDto {
 export interface FloorPlanShapeDto {
   id: Id;
   sectorId: Id;
-  kind: "RECTANGLE" | "ELLIPSE" | "LINE";
+  kind: "RECTANGLE" | "ELLIPSE" | "LINE" | "POLYGON" | "POLYLINE";
   label: string | null;
   color: string;
+  points: Array<{ x: number; y: number }>;
+  strokeColor: string;
+  strokeWidth: number;
+  fillOpacity: number;
   layoutX: number;
   layoutY: number;
   layoutWidth: number;
@@ -652,6 +660,11 @@ export interface UpdateProductInput {
   name: string;
   code?: string | null;
   active: boolean;
+  stockMinor?: number | null;
+  stockTargetMinor?: number | null;
+  stockMinMinor?: number | null;
+  stockCriticalMinor?: number | null;
+  imageDataUrl?: string | null;
   prices: Array<{
     priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY";
     amountMinor: MoneyMinor;
@@ -670,6 +683,41 @@ export interface BulkUpdateProductsInput extends IdempotentRequest {
     priceListCodes: Array<"SALON" | "TAKEAWAY" | "DELIVERY">;
   } | null;
   reason: string;
+  authorizerPin: string;
+}
+
+export interface PurchaseItemDto {
+  id: Id;
+  productId: Id;
+  productName: string;
+  quantityMinor: number;
+  unitCostMinor: MoneyMinor;
+  lineTotalMinor: MoneyMinor;
+  stockBeforeMinor: number;
+  stockAfterMinor: number;
+}
+
+export interface PurchaseDto {
+  id: Id;
+  supplierName: string;
+  invoiceNumber: string | null;
+  notes: string | null;
+  totalMinor: MoneyMinor;
+  createdByUserId: Id;
+  createdByUserName: string;
+  createdAt: IsoDateTime;
+  items: PurchaseItemDto[];
+}
+
+export interface CreatePurchaseInput extends IdempotentRequest {
+  supplierName: string;
+  invoiceNumber?: string | null;
+  notes?: string | null;
+  items: Array<{
+    productId: Id;
+    quantityMinor: number;
+    unitCostMinor: MoneyMinor;
+  }>;
   authorizerPin: string;
 }
 
@@ -854,6 +902,10 @@ export interface DesktopApi {
     name: string;
     code?: string | null;
     stockMinor?: number | null;
+    stockTargetMinor?: number | null;
+    stockMinMinor?: number | null;
+    stockCriticalMinor?: number | null;
+    imageDataUrl?: string | null;
     prices: Array<{
       priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY";
       amountMinor: MoneyMinor;
@@ -866,6 +918,8 @@ export interface DesktopApi {
     name: string;
     priceMinor: MoneyMinor;
   }): Promise<ModifierDto>;
+  listPurchases(): Promise<PurchaseDto[]>;
+  createPurchase(input: CreatePurchaseInput): Promise<PurchaseDto>;
   adjustStock(input: {
     productId: Id;
     newStockMinor: number;
@@ -914,6 +968,10 @@ export interface DesktopApi {
     kind: FloorPlanShapeDto["kind"];
     label?: string | null;
     color: string;
+    points?: Array<{ x: number; y: number }>;
+    strokeColor?: string;
+    strokeWidth?: number;
+    fillOpacity?: number;
     layoutX: number;
     layoutY: number;
     layoutWidth: number;
@@ -925,6 +983,10 @@ export interface DesktopApi {
     kind: FloorPlanShapeDto["kind"];
     label?: string | null;
     color: string;
+    points?: Array<{ x: number; y: number }>;
+    strokeColor?: string;
+    strokeWidth?: number;
+    fillOpacity?: number;
     layoutX: number;
     layoutY: number;
     layoutWidth: number;

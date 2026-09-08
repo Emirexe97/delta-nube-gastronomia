@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type {
   BootstrapDto,
   FloorPlanShapeDto,
@@ -23,6 +29,14 @@ import {
   Select,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
+import {
+  globalPointsToLocalGeometry,
+  resizeNormalizedRect,
+  svgPoints,
+  type NormalizedPoint,
+  type NormalizedRect,
+  type ResizeHandle,
+} from "../floor-plan-geometry";
 import { formatElapsed, formatMoney, humanError } from "../lib";
 
 type TableDraft = Pick<
@@ -33,8 +47,27 @@ type TableDraft = Pick<
 type Position = { x: number; y: number };
 type FloorShapeDraft = Pick<
   FloorPlanShapeDto,
-  "sectorId" | "kind" | "label" | "color" | "layoutWidth" | "layoutHeight"
+  | "sectorId"
+  | "kind"
+  | "label"
+  | "color"
+  | "layoutWidth"
+  | "layoutHeight"
+  | "points"
+  | "strokeColor"
+  | "strokeWidth"
+  | "fillOpacity"
 >;
+
+type ResizeTarget = "TABLE" | "SHAPE";
+type ResizeState = {
+  target: ResizeTarget;
+  id: string;
+  handle: ResizeHandle;
+  startRect: NormalizedRect;
+};
+type DrawKind = "POLYGON" | "POLYLINE";
+type NodeDragState = { shapeId: string; nodeIndex: number };
 
 const shapeLabels: Record<RestaurantTableDto["shape"], string> = {
   ROUND: "Redonda",
@@ -46,7 +79,65 @@ const floorShapeLabels: Record<FloorPlanShapeDto["kind"], string> = {
   RECTANGLE: "Rectángulo",
   ELLIPSE: "Círculo / óvalo",
   LINE: "Línea / barra",
+  POLYGON: "Polígono",
+  POLYLINE: "Línea por nodos",
 };
+
+const resizeHandles: Array<{
+  handle: ResizeHandle;
+  label: string;
+  className: string;
+  cursor: string;
+}> = [
+  {
+    handle: "nw",
+    label: "noroeste",
+    className: "-left-2 -top-2",
+    cursor: "nwse-resize",
+  },
+  {
+    handle: "n",
+    label: "norte",
+    className: "left-1/2 -top-2 -translate-x-1/2",
+    cursor: "ns-resize",
+  },
+  {
+    handle: "ne",
+    label: "noreste",
+    className: "-right-2 -top-2",
+    cursor: "nesw-resize",
+  },
+  {
+    handle: "e",
+    label: "este",
+    className: "-right-2 top-1/2 -translate-y-1/2",
+    cursor: "ew-resize",
+  },
+  {
+    handle: "se",
+    label: "sureste",
+    className: "-bottom-2 -right-2",
+    cursor: "nwse-resize",
+  },
+  {
+    handle: "s",
+    label: "sur",
+    className: "-bottom-2 left-1/2 -translate-x-1/2",
+    cursor: "ns-resize",
+  },
+  {
+    handle: "sw",
+    label: "suroeste",
+    className: "-bottom-2 -left-2",
+    cursor: "nesw-resize",
+  },
+  {
+    handle: "w",
+    label: "oeste",
+    className: "-left-2 top-1/2 -translate-y-1/2",
+    cursor: "ew-resize",
+  },
+];
 
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
@@ -69,6 +160,47 @@ function tableDraft(table: RestaurantTableDto): TableDraft {
     layoutHeight: table.layoutHeight,
     shape: table.shape,
   };
+}
+
+function ResizeHandles({
+  label,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+}: {
+  label: string;
+  onPointerDown(
+    handle: ResizeHandle,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ): void;
+  onPointerMove(
+    handle: ResizeHandle,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ): void;
+  onPointerUp(
+    handle: ResizeHandle,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ): void;
+}) {
+  return (
+    <>
+      {resizeHandles.map(({ handle, label: direction, className, cursor }) => (
+        <button
+          key={handle}
+          type="button"
+          aria-label={`Redimensionar ${label} hacia ${direction}`}
+          title={`Redimensionar hacia ${direction}`}
+          className={`absolute z-40 h-4 w-4 rounded-full border-2 border-white bg-brand-600 shadow-md outline-none ring-brand-200 transition hover:scale-125 focus:ring-4 ${className}`}
+          style={{ cursor, touchAction: "none" }}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => onPointerDown(handle, event)}
+          onPointerMove={(event) => onPointerMove(handle, event)}
+          onPointerUp={(event) => onPointerUp(handle, event)}
+          onPointerCancel={(event) => onPointerUp(handle, event)}
+        />
+      ))}
+    </>
+  );
 }
 
 export function TableFloorPlan({
@@ -108,6 +240,10 @@ export function TableFloorPlan({
     offsetX: number;
     offsetY: number;
   } | null>(null);
+  const [resize, setResize] = useState<ResizeState | null>(null);
+  const [drawKind, setDrawKind] = useState<DrawKind | null>(null);
+  const [drawingPoints, setDrawingPoints] = useState<NormalizedPoint[]>([]);
+  const [nodeDrag, setNodeDrag] = useState<NodeDragState | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [sectorDialog, setSectorDialog] = useState<
     { mode: "CREATE" } | { mode: "RENAME"; sector: TableSectorDto } | null
@@ -167,6 +303,10 @@ export function TableFloorPlan({
             color: selectedShape.color,
             layoutWidth: selectedShape.layoutWidth,
             layoutHeight: selectedShape.layoutHeight,
+            points: selectedShape.points,
+            strokeColor: selectedShape.strokeColor,
+            strokeWidth: selectedShape.strokeWidth,
+            fillOpacity: selectedShape.fillOpacity,
           }
         : null,
     );
@@ -265,7 +405,7 @@ export function TableFloorPlan({
       onSuccess: (shape) => {
         setSelectedTableId(null);
         setSelectedShapeId(shape.id);
-        setMessage("Figura agregada. Personalizala desde sus propiedades.");
+        setMessage("Plano guardado.");
       },
       onError: (value) => setMessage(humanError(value)),
     },
@@ -291,7 +431,10 @@ export function TableFloorPlan({
     },
   );
 
-  const persistPosition = (table: RestaurantTableDto, position: Position) => {
+  const persistTableGeometry = (
+    table: RestaurantTableDto,
+    geometry: NormalizedRect,
+  ) => {
     updateTable.mutate({
       tableId: table.id,
       number: table.number,
@@ -299,13 +442,27 @@ export function TableFloorPlan({
       active: table.active,
       sortOrder: table.sortOrder,
       sectorId: table.sectorId,
-      layoutX: position.x,
-      layoutY: position.y,
-      layoutWidth: table.layoutWidth,
-      layoutHeight: table.layoutHeight,
+      layoutX: geometry.x,
+      layoutY: geometry.y,
+      layoutWidth: geometry.width,
+      layoutHeight: geometry.height,
       shape: table.shape,
     });
   };
+
+  const persistPosition = (table: RestaurantTableDto, position: Position) =>
+    persistTableGeometry(table, {
+      x: position.x,
+      y: position.y,
+      width:
+        selectedTableId === table.id && draft
+          ? draft.layoutWidth
+          : table.layoutWidth,
+      height:
+        selectedTableId === table.id && draft
+          ? draft.layoutHeight
+          : table.layoutHeight,
+    });
 
   const positionFromPointer = (
     table: RestaurantTableDto,
@@ -409,6 +566,10 @@ export function TableFloorPlan({
       color: shape.color,
       layoutWidth: shape.layoutWidth,
       layoutHeight: shape.layoutHeight,
+      points: shape.points,
+      strokeColor: shape.strokeColor,
+      strokeWidth: shape.strokeWidth,
+      fillOpacity: shape.fillOpacity,
     },
   ) =>
     updateFloorShape.mutate({
@@ -430,6 +591,236 @@ export function TableFloorPlan({
       setActiveSectorId(shapeDraft.sectorId);
       setSelectedShapeId(null);
     }
+  };
+
+  const canvasPointFromClient = (
+    clientX: number,
+    clientY: number,
+  ): NormalizedPoint | null => {
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (!bounds) return null;
+    return {
+      x:
+        Math.round(
+          clamp(((clientX - bounds.left) / bounds.width) * 100, 0, 100) * 10,
+        ) / 10,
+      y:
+        Math.round(
+          clamp(((clientY - bounds.top) / bounds.height) * 100, 0, 100) * 10,
+        ) / 10,
+    };
+  };
+
+  const currentTableRect = (table: RestaurantTableDto): NormalizedRect => {
+    const position = positions[table.id] ?? {
+      x: table.layoutX,
+      y: table.layoutY,
+    };
+    return {
+      ...position,
+      width:
+        selectedTableId === table.id && draft
+          ? draft.layoutWidth
+          : table.layoutWidth,
+      height:
+        selectedTableId === table.id && draft
+          ? draft.layoutHeight
+          : table.layoutHeight,
+    };
+  };
+
+  const currentShapeRect = (shape: FloorPlanShapeDto): NormalizedRect => {
+    const position = shapePositions[shape.id] ?? {
+      x: shape.layoutX,
+      y: shape.layoutY,
+    };
+    return {
+      ...position,
+      width:
+        selectedShapeId === shape.id && shapeDraft
+          ? shapeDraft.layoutWidth
+          : shape.layoutWidth,
+      height:
+        selectedShapeId === shape.id && shapeDraft
+          ? shapeDraft.layoutHeight
+          : shape.layoutHeight,
+    };
+  };
+
+  const resizedRect = (
+    state: ResizeState,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const pointer = canvasPointFromClient(clientX, clientY);
+    if (!pointer) return state.startRect;
+    return resizeNormalizedRect(
+      state.startRect,
+      state.handle,
+      pointer,
+      state.target === "TABLE" ? 6 : 2,
+      state.target === "TABLE" ? 8 : 2,
+      state.target === "TABLE" ? 40 : 100,
+      state.target === "TABLE" ? 40 : 100,
+    );
+  };
+
+  const applyResize = (state: ResizeState, rect: NormalizedRect) => {
+    if (state.target === "TABLE") {
+      setPositions((current) => ({
+        ...current,
+        [state.id]: { x: rect.x, y: rect.y },
+      }));
+      setDraft((current) =>
+        current
+          ? { ...current, layoutWidth: rect.width, layoutHeight: rect.height }
+          : current,
+      );
+      return;
+    }
+    setShapePositions((current) => ({
+      ...current,
+      [state.id]: { x: rect.x, y: rect.y },
+    }));
+    setShapeDraft((current) =>
+      current
+        ? { ...current, layoutWidth: rect.width, layoutHeight: rect.height }
+        : current,
+    );
+  };
+
+  const startResize = (
+    target: ResizeTarget,
+    id: string,
+    handle: ResizeHandle,
+    event: ReactPointerEvent<HTMLButtonElement>,
+    rect: NormalizedRect,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setDrag(null);
+    setShapeDrag(null);
+    setResize({ target, id, handle, startRect: rect });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const moveResize = (
+    target: ResizeTarget,
+    id: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (!resize || resize.target !== target || resize.id !== id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    applyResize(resize, resizedRect(resize, event.clientX, event.clientY));
+  };
+
+  const finishResize = (
+    target: ResizeTarget,
+    id: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (!resize || resize.target !== target || resize.id !== id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = resizedRect(resize, event.clientX, event.clientY);
+    applyResize(resize, next);
+    setResize(null);
+    if (target === "TABLE") {
+      const table = tables.find((candidate) => candidate.id === id);
+      if (table) persistTableGeometry(table, next);
+      return;
+    }
+    const shape = data.floorPlanShapes.find((candidate) => candidate.id === id);
+    if (shape) {
+      const nextDraft = shapeDraft
+        ? {
+            ...shapeDraft,
+            layoutWidth: next.width,
+            layoutHeight: next.height,
+          }
+        : undefined;
+      persistShape(shape, { x: next.x, y: next.y }, nextDraft);
+    }
+  };
+
+  const startDrawing = (kind: DrawKind) => {
+    setDrawKind(kind);
+    setDrawingPoints([]);
+    setSelectedTableId(null);
+    setSelectedShapeId(null);
+    setMessage(
+      kind === "POLYGON"
+        ? "Marcá al menos tres nodos y cerrá el polígono."
+        : "Marcá al menos dos nodos y finalizá la línea.",
+    );
+  };
+
+  const cancelDrawing = () => {
+    setDrawKind(null);
+    setDrawingPoints([]);
+    setMessage("Dibujo cancelado.");
+  };
+
+  const finishDrawing = () => {
+    if (!drawKind || !activeSector) return;
+    const minimum = drawKind === "POLYGON" ? 3 : 2;
+    if (drawingPoints.length < minimum) {
+      setMessage(
+        drawKind === "POLYGON"
+          ? "El polígono necesita al menos tres nodos."
+          : "La línea necesita al menos dos nodos.",
+      );
+      return;
+    }
+    const geometry = globalPointsToLocalGeometry(drawingPoints);
+    const width = Math.max(2, geometry.bounds.width);
+    const height = Math.max(2, geometry.bounds.height);
+    createFloorShape.mutate({
+      sectorId: activeSector.id,
+      kind: drawKind,
+      label: drawKind === "POLYGON" ? "Área dibujada" : "Línea dibujada",
+      color: "#FDBA74",
+      layoutX: clamp(geometry.bounds.x, 0, 100 - width),
+      layoutY: clamp(geometry.bounds.y, 0, 100 - height),
+      layoutWidth: width,
+      layoutHeight: height,
+      points: geometry.points,
+      strokeColor: "#C2410C",
+      strokeWidth: 2,
+      fillOpacity: drawKind === "POLYGON" ? 0.32 : 0,
+    });
+    setDrawKind(null);
+    setDrawingPoints([]);
+  };
+
+  const updateShapeNode = (
+    shape: FloorPlanShapeDto,
+    nodeIndex: number,
+    clientX: number,
+    clientY: number,
+    persist: boolean,
+  ) => {
+    if (!shapeDraft) return;
+    const canvasPoint = canvasPointFromClient(clientX, clientY);
+    if (!canvasPoint) return;
+    const rect = currentShapeRect(shape);
+    const nextPoint = {
+      x:
+        Math.round(
+          clamp(((canvasPoint.x - rect.x) / rect.width) * 100, 0, 100) * 10,
+        ) / 10,
+      y:
+        Math.round(
+          clamp(((canvasPoint.y - rect.y) / rect.height) * 100, 0, 100) * 10,
+        ) / 10,
+    };
+    const points = shapeDraft.points.map((point, index) =>
+      index === nodeIndex ? nextPoint : point,
+    );
+    const nextDraft = { ...shapeDraft, points };
+    setShapeDraft(nextDraft);
+    if (persist) persistShape(shape, { x: rect.x, y: rect.y }, nextDraft);
   };
 
   return (
@@ -517,6 +908,22 @@ export function TableFloorPlan({
                 </Button>
                 <Button
                   type="button"
+                  variant={drawKind === "POLYGON" ? "primary" : "secondary"}
+                  onClick={() => startDrawing("POLYGON")}
+                  disabled={createFloorShape.isPending}
+                >
+                  <PencilSimple size={15} /> Dibujar área
+                </Button>
+                <Button
+                  type="button"
+                  variant={drawKind === "POLYLINE" ? "primary" : "secondary"}
+                  onClick={() => startDrawing("POLYLINE")}
+                  disabled={createFloorShape.isPending}
+                >
+                  <PencilSimple size={15} /> Dibujar línea
+                </Button>
+                <Button
+                  type="button"
                   variant="secondary"
                   disabled={sectors.length <= 1}
                   onClick={() => setDeletingSector(activeSector)}
@@ -533,6 +940,8 @@ export function TableFloorPlan({
                   setEditing((value) => !value);
                   setSelectedTableId(null);
                   setSelectedShapeId(null);
+                  setDrawKind(null);
+                  setDrawingPoints([]);
                   setMessage(null);
                 }}
               >
@@ -548,7 +957,7 @@ export function TableFloorPlan({
         </div>
         <p className="mt-2 text-[11px] text-slate-400">
           {editing
-            ? "Arrastrá mesas y figuras para ubicarlas. Seleccioná un elemento para personalizarlo."
+            ? "Arrastrá para mover. Usá los tiradores para cambiar el tamaño o dibujá áreas y líneas marcando nodos."
             : "Elegí un sector y tocá una mesa para abrirla o continuar su pedido."}
         </p>
         {message ? (
@@ -571,6 +980,18 @@ export function TableFloorPlan({
         <Card className="overflow-hidden p-0">
           <div
             ref={canvasRef}
+            role="region"
+            aria-label="Editor del plano"
+            tabIndex={editing ? 0 : -1}
+            onKeyDown={(event) => {
+              if (!drawKind) return;
+              if (event.key === "Escape") cancelDrawing();
+              if (event.key === "Enter") finishDrawing();
+              if (event.key === "Backspace") {
+                event.preventDefault();
+                setDrawingPoints((current) => current.slice(0, -1));
+              }
+            }}
             className="relative min-h-[420px] overflow-hidden bg-slate-50 sm:min-h-[480px] lg:min-h-[540px]"
             style={{
               backgroundImage:
@@ -582,8 +1003,104 @@ export function TableFloorPlan({
               <MapTrifold size={17} className="text-brand-600" />
               {activeSector?.name ?? "Sector"}
             </div>
+            {drawKind ? (
+              <div
+                data-floor-drawing-toolbar
+                className="absolute right-4 top-4 z-50 flex flex-wrap items-center justify-end gap-2 rounded-xl border border-brand-100 bg-white/95 p-2 shadow-lg backdrop-blur"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <span className="px-1 text-[11px] font-extrabold text-slate-600">
+                  {drawingPoints.length} nodos
+                </span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    setDrawingPoints((current) => current.slice(0, -1))
+                  }
+                  disabled={!drawingPoints.length}
+                >
+                  Deshacer nodo
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={cancelDrawing}
+                >
+                  Cancelar dibujo
+                </Button>
+                <Button
+                  type="button"
+                  onClick={finishDrawing}
+                  disabled={
+                    drawingPoints.length < (drawKind === "POLYGON" ? 3 : 2) ||
+                    createFloorShape.isPending
+                  }
+                >
+                  {drawKind === "POLYGON"
+                    ? "Cerrar polígono"
+                    : "Finalizar línea"}
+                </Button>
+              </div>
+            ) : null}
+            {drawKind ? (
+              <div
+                className="absolute inset-0 z-40 cursor-crosshair"
+                aria-label="Área de dibujo por nodos"
+                onClick={(event) => {
+                  const point = canvasPointFromClient(
+                    event.clientX,
+                    event.clientY,
+                  );
+                  if (point)
+                    setDrawingPoints((current) =>
+                      current.length < 64 ? [...current, point] : current,
+                    );
+                }}
+              />
+            ) : null}
+            {drawKind && drawingPoints.length ? (
+              <svg
+                className="pointer-events-none absolute inset-0 z-30 h-full w-full"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                {drawKind === "POLYGON" ? (
+                  <polygon
+                    points={svgPoints(drawingPoints)}
+                    fill="#FDBA7452"
+                    stroke="#C2410C"
+                    strokeWidth="0.55"
+                    strokeDasharray="1.4 1"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : (
+                  <polyline
+                    points={svgPoints(drawingPoints)}
+                    fill="none"
+                    stroke="#C2410C"
+                    strokeWidth="0.75"
+                    strokeDasharray="1.4 1"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )}
+                {drawingPoints.map((point, index) => (
+                  <circle
+                    key={`${point.x}-${point.y}-${index}`}
+                    cx={point.x}
+                    cy={point.y}
+                    r="0.8"
+                    fill="#FFFFFF"
+                    stroke="#C2410C"
+                    strokeWidth="0.35"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+              </svg>
+            ) : null}
             {!sectorTables.length && !sectorShapes.length ? (
-              <div className="absolute inset-0 grid place-items-center p-8 text-center">
+              <div className="pointer-events-none absolute inset-0 grid place-items-center p-8 text-center">
                 <div>
                   <MapTrifold
                     className="mx-auto text-slate-300"
@@ -609,98 +1126,215 @@ export function TableFloorPlan({
               const selected = selectedShapeId === shape.id;
               const appearance: FloorPlanShapeDto =
                 selected && shapeDraft ? { ...shape, ...shapeDraft } : shape;
+              const isVector =
+                appearance.kind === "POLYGON" || appearance.kind === "POLYLINE";
               const style = {
                 left: `${position.x}%`,
                 top: `${position.y}%`,
                 width: `${appearance.layoutWidth}%`,
                 height: `${appearance.layoutHeight}%`,
-                backgroundColor: appearance.color,
-                color: contrastColor(appearance.color),
-                borderRadius: appearance.kind === "ELLIPSE" ? "9999px" : "8px",
                 touchAction: "none",
               };
-              if (!editing)
-                return (
-                  <div
-                    key={shape.id}
-                    className="pointer-events-none absolute grid place-items-center border border-black/10 px-2 text-center text-[10px] font-bold text-slate-800/75 shadow-sm"
-                    style={style}
-                    aria-hidden="true"
+              const visual = (
+                <>
+                  {isVector ? (
+                    <svg
+                      className="absolute inset-0 h-full w-full overflow-visible"
+                      viewBox="0 0 100 100"
+                      preserveAspectRatio="none"
+                      aria-hidden="true"
+                    >
+                      {appearance.kind === "POLYGON" ? (
+                        <polygon
+                          points={svgPoints(appearance.points)}
+                          fill={appearance.color}
+                          fillOpacity={appearance.fillOpacity}
+                          stroke={appearance.strokeColor}
+                          strokeWidth={appearance.strokeWidth}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      ) : (
+                        <polyline
+                          points={svgPoints(appearance.points)}
+                          fill="none"
+                          stroke={appearance.strokeColor}
+                          strokeWidth={appearance.strokeWidth}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      )}
+                    </svg>
+                  ) : null}
+                  <span
+                    className={`relative z-10 min-w-0 truncate rounded-md px-1 ${isVector ? "bg-white/80 py-0.5 shadow-sm" : ""}`}
                   >
-                    {appearance.label}
-                  </div>
-                );
-              return (
-                <button
-                  key={shape.id}
-                  type="button"
-                  aria-label={`Editar figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
-                  onClick={() => {
-                    setSelectedTableId(null);
-                    setSelectedShapeId(shape.id);
-                  }}
-                  onPointerDown={(event) => {
-                    event.preventDefault();
-                    const bounds = canvasRef.current?.getBoundingClientRect();
-                    if (!bounds) return;
-                    setSelectedTableId(null);
-                    setSelectedShapeId(shape.id);
-                    setShapeDrag({
-                      shapeId: shape.id,
-                      offsetX:
-                        ((event.clientX - bounds.left) / bounds.width) * 100 -
-                        position.x,
-                      offsetY:
-                        ((event.clientY - bounds.top) / bounds.height) * 100 -
-                        position.y,
-                    });
-                    event.currentTarget.setPointerCapture(event.pointerId);
-                  }}
-                  onPointerMove={(event) => {
-                    if (shapeDrag?.shapeId !== shape.id) return;
-                    const next = shapePositionFromPointer(
-                      appearance,
-                      event.clientX,
-                      event.clientY,
-                      shapeDrag.offsetX,
-                      shapeDrag.offsetY,
-                    );
-                    setShapePositions((current) => ({
-                      ...current,
-                      [shape.id]: next,
-                    }));
-                  }}
-                  onPointerUp={(event) => {
-                    if (shapeDrag?.shapeId !== shape.id) return;
-                    const next = shapePositionFromPointer(
-                      appearance,
-                      event.clientX,
-                      event.clientY,
-                      shapeDrag.offsetX,
-                      shapeDrag.offsetY,
-                    );
-                    setShapePositions((current) => ({
-                      ...current,
-                      [shape.id]: next,
-                    }));
-                    setShapeDrag(null);
-                    persistShape(
-                      shape,
-                      next,
-                      selected && shapeDraft ? shapeDraft : undefined,
-                    );
-                  }}
-                  className={`absolute grid cursor-grab place-items-center border-2 border-black/15 px-2 text-center text-[10px] font-bold text-slate-800/75 shadow-sm focus:outline-none focus:ring-4 focus:ring-brand-200 active:cursor-grabbing ${selected ? "ring-4 ring-amber-300" : ""}`}
-                  style={style}
-                >
-                  <span className="min-w-0 truncate">
-                    <ArrowsOutCardinal
-                      className="mx-auto mb-0.5 opacity-50"
-                      size={13}
-                    />
+                    {editing ? (
+                      <ArrowsOutCardinal
+                        className="mx-auto mb-0.5 opacity-50"
+                        size={13}
+                      />
+                    ) : null}
                     {appearance.label || floorShapeLabels[appearance.kind]}
                   </span>
-                </button>
+                </>
+              );
+              return (
+                <div
+                  key={shape.id}
+                  className={`absolute ${editing ? "z-20" : "pointer-events-none z-0"}`}
+                  style={style}
+                >
+                  <button
+                    type="button"
+                    aria-label={`Editar figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
+                    tabIndex={editing ? 0 : -1}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedTableId(null);
+                      setSelectedShapeId(shape.id);
+                    }}
+                    onPointerDown={(event) => {
+                      if (!editing || drawKind) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const bounds = canvasRef.current?.getBoundingClientRect();
+                      if (!bounds) return;
+                      setSelectedTableId(null);
+                      setSelectedShapeId(shape.id);
+                      setShapeDrag({
+                        shapeId: shape.id,
+                        offsetX:
+                          ((event.clientX - bounds.left) / bounds.width) * 100 -
+                          position.x,
+                        offsetY:
+                          ((event.clientY - bounds.top) / bounds.height) * 100 -
+                          position.y,
+                      });
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                    }}
+                    onPointerMove={(event) => {
+                      if (shapeDrag?.shapeId !== shape.id) return;
+                      const next = shapePositionFromPointer(
+                        appearance,
+                        event.clientX,
+                        event.clientY,
+                        shapeDrag.offsetX,
+                        shapeDrag.offsetY,
+                      );
+                      setShapePositions((current) => ({
+                        ...current,
+                        [shape.id]: next,
+                      }));
+                    }}
+                    onPointerUp={(event) => {
+                      if (shapeDrag?.shapeId !== shape.id) return;
+                      const next = shapePositionFromPointer(
+                        appearance,
+                        event.clientX,
+                        event.clientY,
+                        shapeDrag.offsetX,
+                        shapeDrag.offsetY,
+                      );
+                      setShapePositions((current) => ({
+                        ...current,
+                        [shape.id]: next,
+                      }));
+                      setShapeDrag(null);
+                      persistShape(
+                        shape,
+                        next,
+                        selected && shapeDraft ? shapeDraft : undefined,
+                      );
+                    }}
+                    onPointerCancel={() => setShapeDrag(null)}
+                    className={`absolute inset-0 grid place-items-center px-2 text-center text-[10px] font-bold shadow-sm outline-none transition focus:ring-4 focus:ring-brand-200 ${isVector ? "border-0 bg-transparent text-slate-800" : "border-2 border-black/15"} ${appearance.kind === "ELLIPSE" ? "rounded-full" : "rounded-lg"} ${editing ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${selected ? "ring-4 ring-amber-300" : ""}`}
+                    style={
+                      isVector
+                        ? { color: appearance.strokeColor }
+                        : {
+                            backgroundColor: appearance.color,
+                            color: contrastColor(appearance.color),
+                          }
+                    }
+                  >
+                    {visual}
+                  </button>
+                  {editing && selected ? (
+                    <ResizeHandles
+                      label={`figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
+                      onPointerDown={(handle, event) =>
+                        startResize(
+                          "SHAPE",
+                          shape.id,
+                          handle,
+                          event,
+                          currentShapeRect(shape),
+                        )
+                      }
+                      onPointerMove={(_, event) =>
+                        moveResize("SHAPE", shape.id, event)
+                      }
+                      onPointerUp={(_, event) =>
+                        finishResize("SHAPE", shape.id, event)
+                      }
+                    />
+                  ) : null}
+                  {editing && selected && isVector
+                    ? appearance.points.map((point, nodeIndex) => (
+                        <button
+                          key={`${shape.id}-node-${nodeIndex}`}
+                          type="button"
+                          aria-label={`Editar nodo ${nodeIndex + 1} de figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
+                          title={`Nodo ${nodeIndex + 1}`}
+                          className="absolute z-50 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-brand-700 bg-white shadow-md outline-none ring-brand-200 hover:scale-125 focus:ring-4"
+                          style={{
+                            left: `${point.x}%`,
+                            top: `${point.y}%`,
+                            cursor: "crosshair",
+                            touchAction: "none",
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setNodeDrag({ shapeId: shape.id, nodeIndex });
+                            event.currentTarget.setPointerCapture(
+                              event.pointerId,
+                            );
+                          }}
+                          onPointerMove={(event) => {
+                            if (
+                              nodeDrag?.shapeId !== shape.id ||
+                              nodeDrag.nodeIndex !== nodeIndex
+                            )
+                              return;
+                            updateShapeNode(
+                              shape,
+                              nodeIndex,
+                              event.clientX,
+                              event.clientY,
+                              false,
+                            );
+                          }}
+                          onPointerUp={(event) => {
+                            if (
+                              nodeDrag?.shapeId !== shape.id ||
+                              nodeDrag.nodeIndex !== nodeIndex
+                            )
+                              return;
+                            updateShapeNode(
+                              shape,
+                              nodeIndex,
+                              event.clientX,
+                              event.clientY,
+                              true,
+                            );
+                            setNodeDrag(null);
+                          }}
+                          onPointerCancel={() => setNodeDrag(null)}
+                        />
+                      ))
+                    : null}
+                </div>
               );
             })}
             {sectorTables.map((table) => {
@@ -710,144 +1344,175 @@ export function TableFloorPlan({
                 y: table.layoutY,
               };
               const selected = selectedTableId === table.id;
+              const width =
+                selected && draft ? draft.layoutWidth : table.layoutWidth;
+              const height =
+                selected && draft ? draft.layoutHeight : table.layoutHeight;
               return (
-                <button
+                <div
                   key={table.id}
-                  type="button"
-                  aria-label={`${editing ? "Editar" : occupied ? "Abrir pedido de" : "Abrir"} mesa ${table.number}`}
-                  disabled={!editing && !occupied && !data.cashSession}
-                  onClick={() => {
-                    if (editing) {
-                      setSelectedShapeId(null);
-                      setSelectedTableId(table.id);
-                    } else onActivateTable(table);
-                  }}
-                  onPointerDown={(event) => {
-                    if (!editing) return;
-                    event.preventDefault();
-                    const bounds = canvasRef.current?.getBoundingClientRect();
-                    if (!bounds) return;
-                    setSelectedTableId(table.id);
-                    setSelectedShapeId(null);
-                    setDrag({
-                      tableId: table.id,
-                      offsetX:
-                        ((event.clientX - bounds.left) / bounds.width) * 100 -
-                        position.x,
-                      offsetY:
-                        ((event.clientY - bounds.top) / bounds.height) * 100 -
-                        position.y,
-                    });
-                    event.currentTarget.setPointerCapture(event.pointerId);
-                  }}
-                  onPointerMove={(event) => {
-                    if (!editing || drag?.tableId !== table.id) return;
-                    const next = positionFromPointer(
-                      table,
-                      event.clientX,
-                      event.clientY,
-                      drag.offsetX,
-                      drag.offsetY,
-                    );
-                    setPositions((current) => ({
-                      ...current,
-                      [table.id]: next,
-                    }));
-                  }}
-                  onPointerUp={(event) => {
-                    if (!editing || drag?.tableId !== table.id) return;
-                    const next = positionFromPointer(
-                      table,
-                      event.clientX,
-                      event.clientY,
-                      drag.offsetX,
-                      drag.offsetY,
-                    );
-                    setPositions((current) => ({
-                      ...current,
-                      [table.id]: next,
-                    }));
-                    setDrag(null);
-                    persistPosition(table, next);
-                  }}
-                  onKeyDown={(event) => {
-                    if (
-                      !editing ||
-                      ![
-                        "ArrowLeft",
-                        "ArrowRight",
-                        "ArrowUp",
-                        "ArrowDown",
-                      ].includes(event.key)
-                    )
-                      return;
-                    event.preventDefault();
-                    const delta = event.shiftKey ? 5 : 1;
-                    const next = {
-                      x: clamp(
-                        position.x +
-                          (event.key === "ArrowLeft"
-                            ? -delta
-                            : event.key === "ArrowRight"
-                              ? delta
-                              : 0),
-                        0,
-                        100 - table.layoutWidth,
-                      ),
-                      y: clamp(
-                        position.y +
-                          (event.key === "ArrowUp"
-                            ? -delta
-                            : event.key === "ArrowDown"
-                              ? delta
-                              : 0),
-                        0,
-                        100 - table.layoutHeight,
-                      ),
-                    };
-                    setPositions((current) => ({
-                      ...current,
-                      [table.id]: next,
-                    }));
-                    persistPosition(table, next);
-                  }}
-                  className={`absolute z-10 grid place-items-center border-2 px-2 text-center shadow-md transition focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-2xl" : "rounded-xl"} ${occupied ? "border-brand-500 bg-brand-600 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:-translate-y-0.5 hover:shadow-lg"}`}
                   style={{
                     left: `${position.x}%`,
                     top: `${position.y}%`,
-                    width: `${table.layoutWidth}%`,
-                    height: `${table.layoutHeight}%`,
-                    touchAction: "none",
+                    width: `${width}%`,
+                    height: `${height}%`,
                   }}
+                  className="absolute z-10"
                 >
-                  <span className="min-w-0">
-                    {editing ? (
-                      <ArrowsOutCardinal
-                        className="mx-auto mb-0.5 opacity-60"
-                        size={13}
-                      />
-                    ) : null}
-                    <strong className="block truncate text-sm">
-                      Mesa {table.number}
-                    </strong>
-                    {table.name ? (
-                      <span className="block truncate text-[9px] opacity-75">
-                        {table.name}
+                  <button
+                    type="button"
+                    aria-label={`${editing ? "Editar" : occupied ? "Abrir pedido de" : "Abrir"} mesa ${table.number}`}
+                    disabled={!editing && !occupied && !data.cashSession}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (editing) {
+                        setSelectedShapeId(null);
+                        setSelectedTableId(table.id);
+                      } else onActivateTable(table);
+                    }}
+                    onPointerDown={(event) => {
+                      if (!editing || drawKind) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const bounds = canvasRef.current?.getBoundingClientRect();
+                      if (!bounds) return;
+                      setSelectedTableId(table.id);
+                      setSelectedShapeId(null);
+                      setDrag({
+                        tableId: table.id,
+                        offsetX:
+                          ((event.clientX - bounds.left) / bounds.width) * 100 -
+                          position.x,
+                        offsetY:
+                          ((event.clientY - bounds.top) / bounds.height) * 100 -
+                          position.y,
+                      });
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                    }}
+                    onPointerMove={(event) => {
+                      if (!editing || drag?.tableId !== table.id) return;
+                      const next = positionFromPointer(
+                        { ...table, layoutWidth: width, layoutHeight: height },
+                        event.clientX,
+                        event.clientY,
+                        drag.offsetX,
+                        drag.offsetY,
+                      );
+                      setPositions((current) => ({
+                        ...current,
+                        [table.id]: next,
+                      }));
+                    }}
+                    onPointerUp={(event) => {
+                      if (!editing || drag?.tableId !== table.id) return;
+                      const next = positionFromPointer(
+                        { ...table, layoutWidth: width, layoutHeight: height },
+                        event.clientX,
+                        event.clientY,
+                        drag.offsetX,
+                        drag.offsetY,
+                      );
+                      setPositions((current) => ({
+                        ...current,
+                        [table.id]: next,
+                      }));
+                      setDrag(null);
+                      persistPosition(table, next);
+                    }}
+                    onPointerCancel={() => setDrag(null)}
+                    onKeyDown={(event) => {
+                      if (
+                        !editing ||
+                        ![
+                          "ArrowLeft",
+                          "ArrowRight",
+                          "ArrowUp",
+                          "ArrowDown",
+                        ].includes(event.key)
+                      )
+                        return;
+                      event.preventDefault();
+                      const delta = event.shiftKey ? 5 : 1;
+                      const next = {
+                        x: clamp(
+                          position.x +
+                            (event.key === "ArrowLeft"
+                              ? -delta
+                              : event.key === "ArrowRight"
+                                ? delta
+                                : 0),
+                          0,
+                          100 - width,
+                        ),
+                        y: clamp(
+                          position.y +
+                            (event.key === "ArrowUp"
+                              ? -delta
+                              : event.key === "ArrowDown"
+                                ? delta
+                                : 0),
+                          0,
+                          100 - height,
+                        ),
+                      };
+                      setPositions((current) => ({
+                        ...current,
+                        [table.id]: next,
+                      }));
+                      persistPosition(table, next);
+                    }}
+                    className={`absolute inset-0 grid place-items-center border-2 px-2 text-center shadow-md transition focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-2xl" : "rounded-xl"} ${occupied ? "border-brand-500 bg-brand-600 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:-translate-y-0.5 hover:shadow-lg"}`}
+                    style={{ touchAction: "none" }}
+                  >
+                    <span className="min-w-0">
+                      {editing ? (
+                        <ArrowsOutCardinal
+                          className="mx-auto mb-0.5 opacity-60"
+                          size={13}
+                        />
+                      ) : null}
+                      <strong className="block truncate text-sm">
+                        Mesa {table.number}
+                      </strong>
+                      {table.name ? (
+                        <span className="block truncate text-[9px] opacity-75">
+                          {table.name}
+                        </span>
+                      ) : null}
+                      <span className="block truncate text-[10px] font-bold">
+                        {occupied
+                          ? formatMoney(table.currentTotalMinor)
+                          : "Libre"}
                       </span>
-                    ) : null}
-                    <span className="block truncate text-[10px] font-bold">
-                      {occupied
-                        ? formatMoney(table.currentTotalMinor)
-                        : "Libre"}
+                      {occupied ? (
+                        <span className="block truncate text-[8px] opacity-75">
+                          {table.waiterName ?? "Sin mesero"} ·{" "}
+                          {formatElapsed(table.openedAt)}
+                        </span>
+                      ) : null}
                     </span>
-                    {occupied ? (
-                      <span className="block truncate text-[8px] opacity-75">
-                        {table.waiterName ?? "Sin mesero"} ·{" "}
-                        {formatElapsed(table.openedAt)}
-                      </span>
-                    ) : null}
-                  </span>
-                </button>
+                  </button>
+                  {editing && selected ? (
+                    <ResizeHandles
+                      label={`mesa ${table.number}`}
+                      onPointerDown={(handle, event) =>
+                        startResize(
+                          "TABLE",
+                          table.id,
+                          handle,
+                          event,
+                          currentTableRect(table),
+                        )
+                      }
+                      onPointerMove={(_, event) =>
+                        moveResize("TABLE", table.id, event)
+                      }
+                      onPointerUp={(_, event) =>
+                        finishResize("TABLE", table.id, event)
+                      }
+                    />
+                  ) : null}
+                </div>
               );
             })}
           </div>
@@ -976,6 +1641,27 @@ export function TableFloorPlan({
                         kind,
                         layoutWidth: kind === "LINE" ? 34 : 24,
                         layoutHeight: kind === "LINE" ? 4 : 16,
+                        points:
+                          kind === "POLYGON"
+                            ? [
+                                { x: 10, y: 10 },
+                                { x: 90, y: 20 },
+                                { x: 75, y: 90 },
+                                { x: 20, y: 80 },
+                              ]
+                            : kind === "POLYLINE"
+                              ? [
+                                  { x: 0, y: 50 },
+                                  { x: 50, y: 20 },
+                                  { x: 100, y: 70 },
+                                ]
+                              : [],
+                        fillOpacity:
+                          kind === "POLYGON"
+                            ? 0.32
+                            : kind === "POLYLINE"
+                              ? 0
+                              : 1,
                       });
                     }}
                   >
@@ -999,7 +1685,7 @@ export function TableFloorPlan({
                     }
                   />
                 </Field>
-                <Field label="Color">
+                <Field label="Color de relleno">
                   <div className="flex items-center gap-2">
                     <Input
                       type="color"
@@ -1025,6 +1711,70 @@ export function TableFloorPlan({
                     />
                   </div>
                 </Field>
+                <Field label="Color del borde">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="color"
+                      value={shapeDraft.strokeColor}
+                      onChange={(event) =>
+                        setShapeDraft({
+                          ...shapeDraft,
+                          strokeColor: event.target.value.toUpperCase(),
+                        })
+                      }
+                      className="w-16 cursor-pointer p-1"
+                    />
+                    <Input
+                      value={shapeDraft.strokeColor}
+                      maxLength={7}
+                      aria-label="Hexadecimal del borde"
+                      onChange={(event) =>
+                        setShapeDraft({
+                          ...shapeDraft,
+                          strokeColor: event.target.value.toUpperCase(),
+                        })
+                      }
+                    />
+                  </div>
+                </Field>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Grosor del borde">
+                    <Input
+                      type="number"
+                      min={1}
+                      max={12}
+                      step={0.5}
+                      value={shapeDraft.strokeWidth}
+                      onChange={(event) =>
+                        setShapeDraft({
+                          ...shapeDraft,
+                          strokeWidth: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Opacidad del relleno">
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={Math.round(shapeDraft.fillOpacity * 100)}
+                      onChange={(event) =>
+                        setShapeDraft({
+                          ...shapeDraft,
+                          fillOpacity: Number(event.target.value) / 100,
+                        })
+                      }
+                    />
+                  </Field>
+                </div>
+                {shapeDraft.kind === "POLYGON" ||
+                shapeDraft.kind === "POLYLINE" ? (
+                  <div className="rounded-xl border border-brand-100 bg-brand-50/60 px-3 py-2 text-[11px] font-semibold text-brand-800">
+                    {shapeDraft.points.length} nodos · Arrastrá los puntos
+                    blancos del dibujo para ajustar su forma.
+                  </div>
+                ) : null}
                 <Field label="Sector de la figura">
                   <Select
                     value={shapeDraft.sectorId}
@@ -1078,6 +1828,11 @@ export function TableFloorPlan({
                   disabled={
                     updateFloorShape.isPending ||
                     !/^#[0-9A-F]{6}$/i.test(shapeDraft.color) ||
+                    !/^#[0-9A-F]{6}$/i.test(shapeDraft.strokeColor) ||
+                    shapeDraft.strokeWidth < 1 ||
+                    shapeDraft.strokeWidth > 12 ||
+                    shapeDraft.fillOpacity < 0 ||
+                    shapeDraft.fillOpacity > 1 ||
                     shapeDraft.layoutWidth < 2 ||
                     shapeDraft.layoutHeight < 2
                   }

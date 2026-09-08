@@ -303,6 +303,21 @@ test("edita precios de producto con autorización e historial", async () => {
   });
   await dialog.getByLabel("Nombre").fill("Muzzarella E2E");
   await dialog.getByLabel("Delivery / Para retirar").fill("16500");
+  await dialog.getByLabel("Stock actual").fill("40");
+  await dialog.getByLabel("Objetivo").fill("60");
+  await dialog.getByLabel("Mínimo").fill("20");
+  await dialog.getByLabel("Crítico").fill("10");
+  await dialog.locator('input[type="file"]').setInputFiles({
+    name: "producto.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
+  await expect(
+    dialog.getByAltText("Vista previa del producto"),
+  ).toHaveAttribute("src", /^data:image\/webp;base64,/);
   await dialog.getByLabel("Motivo del cambio").fill("Actualización E2E");
   await dialog.getByLabel("PIN de autorización").fill("1234");
   await dialog.getByRole("button", { name: "Guardar cambios" }).click();
@@ -311,11 +326,19 @@ test("edita precios de producto con autorización e historial", async () => {
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Editar Muzzarella E2E" }).click();
+  const reopenedDialog = page.getByRole("dialog", {
+    name: /Editar · Muzzarella E2E/,
+  });
   await expect(
-    page
-      .getByRole("dialog", { name: /Editar · Muzzarella E2E/ })
-      .getByText("Actualización E2E", { exact: true }),
+    reopenedDialog.getByText("Actualización E2E", { exact: true }),
   ).toBeVisible();
+  await expect(reopenedDialog.getByLabel("Stock actual")).toHaveValue("40");
+  await expect(reopenedDialog.getByLabel("Objetivo")).toHaveValue("60");
+  await expect(reopenedDialog.getByLabel("Mínimo")).toHaveValue("20");
+  await expect(reopenedDialog.getByLabel("Crítico")).toHaveValue("10");
+  await expect(
+    reopenedDialog.getByAltText("Vista previa del producto"),
+  ).toHaveAttribute("src", /^data:image\/webp;base64,/);
   await page.keyboard.press("Escape");
 
   await page.getByLabel("Seleccionar Muzzarella E2E").check();
@@ -613,7 +636,7 @@ test("guarda perfiles de impresión compatibles con el POS", async () => {
   await expect(page.getByLabel("Pie de cuenta")).toHaveValue("Gracias E2E");
 });
 
-test("configura sólo la cantidad de mesas desde Salón", async () => {
+test("reserva la gestión de mesas al plano por sectores", async () => {
   await page.getByRole("link", { name: "Configuración" }).click();
   await expect(page.getByLabel("Secciones de configuración")).not.toContainText(
     "Mesas",
@@ -621,19 +644,13 @@ test("configura sólo la cantidad de mesas desde Salón", async () => {
   await expect(page.getByLabel("Mesas activas")).toHaveCount(0);
 
   await page.getByRole("link", { name: "Salón" }).click();
+  await expect(page.getByLabel("Mesas activas")).toHaveCount(0);
   await expect(
-    page.getByRole("heading", { name: "Cantidad de mesas" }),
-  ).toBeVisible();
-  const tableCountInput = page.getByLabel("Mesas activas");
-  const currentCount = Number(await tableCountInput.inputValue());
-  const requestedCount = Math.min(currentCount + 1, 200);
-  await tableCountInput.fill(String(requestedCount));
-  await page.getByRole("button", { name: "Actualizar salón" }).click();
-  await expect(page.locator("#table-count-status")).toContainText(
-    "Salón actualizado:",
-  );
+    page.getByRole("button", { name: "Actualizar salón" }),
+  ).toHaveCount(0);
+  await page.getByRole("tab", { name: "Plano por sectores" }).click();
   await expect(
-    page.getByRole("button", { name: `Abrir mesa ${requestedCount}` }),
+    page.getByRole("button", { name: "Editar plano" }),
   ).toBeVisible();
 });
 

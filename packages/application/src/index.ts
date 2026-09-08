@@ -36,6 +36,8 @@ import type {
   UpdateDraftOrderInput,
   UpdateOrderItemNotesInput,
   ConfirmOrderInput,
+  CreatePurchaseInput,
+  PurchaseDto,
   SettleDeliveryInput,
   TableSectorDto,
 } from "@gastronomy/contracts";
@@ -63,6 +65,45 @@ function normalizeProductPrices(prices: ChannelPrice[]): ChannelPrice[] {
     { priceListCode: "TAKEAWAY", amountMinor: offPremise.amountMinor },
     { priceListCode: "DELIVERY", amountMinor: offPremise.amountMinor },
   ];
+}
+
+type ProductInventoryInput = {
+  stockMinor?: number | null;
+  stockTargetMinor?: number | null;
+  stockMinMinor?: number | null;
+  stockCriticalMinor?: number | null;
+  imageDataUrl?: string | null;
+};
+
+function validateProductInventory(input: ProductInventoryInput) {
+  for (const [label, value] of [
+    ["stock", input.stockMinor],
+    ["stock objetivo", input.stockTargetMinor],
+    ["stock mínimo", input.stockMinMinor],
+    ["stock crítico", input.stockCriticalMinor],
+  ] as const) {
+    if (value != null && (!Number.isSafeInteger(value) || value < 0))
+      throw new Error(`El ${label} no es válido.`);
+  }
+  const target = input.stockTargetMinor;
+  const minimum = input.stockMinMinor;
+  const critical = input.stockCriticalMinor;
+  if (
+    (critical != null && minimum != null && critical > minimum) ||
+    (minimum != null && target != null && minimum > target) ||
+    (critical != null && target != null && critical > target)
+  ) {
+    throw new Error(
+      "El stock debe respetar: crítico menor o igual al mínimo, y mínimo menor o igual al objetivo.",
+    );
+  }
+  if (
+    input.imageDataUrl != null &&
+    (!/^data:image\/webp;base64,[a-z0-9+/]+=*$/i.test(input.imageDataUrl) ||
+      input.imageDataUrl.length > 2_100_000)
+  ) {
+    throw new Error("La foto del producto debe ser una imagen WebP válida.");
+  }
 }
 
 export interface GastronomyRepository {
@@ -167,6 +208,10 @@ export interface GastronomyRepository {
     name: string;
     code?: string | null;
     stockMinor?: number | null;
+    stockTargetMinor?: number | null;
+    stockMinMinor?: number | null;
+    stockCriticalMinor?: number | null;
+    imageDataUrl?: string | null;
     prices: Array<{
       priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY";
       amountMinor: number;
@@ -179,6 +224,8 @@ export interface GastronomyRepository {
     name: string;
     priceMinor: number;
   }): import("@gastronomy/contracts").ModifierDto;
+  listPurchases(): PurchaseDto[];
+  createPurchase(input: CreatePurchaseInput): PurchaseDto;
   adjustStock(input: {
     productId: Id;
     newStockMinor: number;
@@ -234,6 +281,10 @@ export interface GastronomyRepository {
     kind: FloorPlanShapeDto["kind"];
     label?: string | null;
     color: string;
+    points?: Array<{ x: number; y: number }>;
+    strokeColor?: string;
+    strokeWidth?: number;
+    fillOpacity?: number;
     layoutX: number;
     layoutY: number;
     layoutWidth: number;
@@ -245,6 +296,10 @@ export interface GastronomyRepository {
     kind: FloorPlanShapeDto["kind"];
     label?: string | null;
     color: string;
+    points?: Array<{ x: number; y: number }>;
+    strokeColor?: string;
+    strokeWidth?: number;
+    fillOpacity?: number;
     layoutX: number;
     layoutY: number;
     layoutWidth: number;
@@ -670,11 +725,7 @@ export class GastronomyApplication {
 
   createProduct(input: Parameters<GastronomyRepository["createProduct"]>[0]) {
     if (!input.name.trim()) throw new Error("Ingresá el nombre del producto.");
-    if (
-      input.stockMinor != null &&
-      (!Number.isSafeInteger(input.stockMinor) || input.stockMinor < 0)
-    )
-      throw new Error("El stock inicial no es válido.");
+    validateProductInventory(input);
     const prices = normalizeProductPrices(input.prices);
     for (const price of prices) nonNegativeMoney(price.amountMinor, "precio");
     return this.repository.createProduct({ ...input, prices });
@@ -686,6 +737,7 @@ export class GastronomyApplication {
       throw new Error("El cambio de producto requiere un motivo.");
     if (!/^\d{4,8}$/.test(input.authorizerPin))
       throw new Error("El PIN de autorización no es válido.");
+    validateProductInventory(input);
     const prices = normalizeProductPrices(input.prices);
     for (const price of prices) nonNegativeMoney(price.amountMinor, "precio");
     return this.repository.updateProduct({
@@ -751,6 +803,46 @@ export class GastronomyApplication {
       productIds,
       priceAdjustment: normalizedAdjustment,
       reason: input.reason.trim(),
+    });
+  }
+
+  listPurchases() {
+    return this.repository.listPurchases();
+  }
+
+  createPurchase(input: CreatePurchaseInput) {
+    if (input.supplierName.trim().length < 2)
+      throw new Error("Ingresá el proveedor de la compra.");
+    if (input.supplierName.trim().length > 160)
+      throw new Error("El proveedor admite hasta 160 caracteres.");
+    if ((input.invoiceNumber?.trim().length ?? 0) > 80)
+      throw new Error("El comprobante admite hasta 80 caracteres.");
+    if ((input.notes?.trim().length ?? 0) > 1_000)
+      throw new Error("Las notas admiten hasta 1000 caracteres.");
+    if (!/^\d{4,8}$/.test(input.authorizerPin))
+      throw new Error("El PIN de autorización no es válido.");
+    if (!input.items.length || input.items.length > 100)
+      throw new Error("La compra debe tener entre 1 y 100 productos.");
+    if (
+      new Set(input.items.map((item) => item.productId)).size !==
+      input.items.length
+    )
+      throw new Error("Cada producto puede aparecer una sola vez por compra.");
+    for (const item of input.items) {
+      if (!Number.isSafeInteger(item.quantityMinor) || item.quantityMinor <= 0)
+        throw new Error("La cantidad ingresada no es válida.");
+      nonNegativeMoney(item.unitCostMinor, "costo unitario");
+      const lineTotal = Math.round(
+        (item.quantityMinor * item.unitCostMinor) / 1000,
+      );
+      if (!Number.isSafeInteger(lineTotal))
+        throw new Error("El total de una línea excede el rango permitido.");
+    }
+    return this.repository.createPurchase({
+      ...input,
+      supplierName: input.supplierName.trim(),
+      invoiceNumber: input.invoiceNumber?.trim() || null,
+      notes: input.notes?.trim() || null,
     });
   }
 

@@ -16,6 +16,7 @@ import type {
   OrderDto,
   OrderItemDto,
   ProductDto,
+  PurchaseDto,
   ReportFilters,
   UserDto,
 } from "@gastronomy/contracts";
@@ -50,6 +51,7 @@ const SENSITIVE_DEMO_AUDIT_ACTIONS = new Set([
   "PRODUCTO_ACTUALIZADO",
   "PRODUCTOS_ACTUALIZADOS_EN_LOTE",
   "STOCK_AJUSTADO",
+  "PURCHASE_CREATED",
   "USUARIO_CREADO",
   "DRIVER_CREATED",
   "USUARIO_ACTUALIZADO",
@@ -67,7 +69,7 @@ export interface DemoStorage {
 }
 
 interface DemoState {
-  version: 10;
+  version: 12;
   data: BootstrapDto;
   historicalSessions: CashSessionDto[];
   movements: Array<{
@@ -84,6 +86,8 @@ interface DemoState {
   }>;
   customers: CustomerDto[];
   audit: AuditEntryDto[];
+  purchases: PurchaseDto[];
+  purchaseReceipts: Record<string, { purchaseId: string; requestJson: string }>;
   sequence: number;
 }
 
@@ -133,6 +137,46 @@ function normalizeProductPrices(
       amountMinor: offPremise.amountMinor,
     },
   ];
+}
+
+function validateProductInventory(input: {
+  stockMinor?: number | null;
+  stockTargetMinor?: number | null;
+  stockMinMinor?: number | null;
+  stockCriticalMinor?: number | null;
+  imageDataUrl?: string | null;
+}) {
+  for (const [label, value] of [
+    ["stock inicial", input.stockMinor],
+    ["stock objetivo", input.stockTargetMinor],
+    ["stock mínimo", input.stockMinMinor],
+    ["stock crítico", input.stockCriticalMinor],
+  ] as const) {
+    if (value != null && (!Number.isSafeInteger(value) || value < 0))
+      throw new Error(`El ${label} no es válido.`);
+  }
+  if (
+    (input.stockCriticalMinor != null &&
+      input.stockMinMinor != null &&
+      input.stockCriticalMinor > input.stockMinMinor) ||
+    (input.stockMinMinor != null &&
+      input.stockTargetMinor != null &&
+      input.stockMinMinor > input.stockTargetMinor) ||
+    (input.stockCriticalMinor != null &&
+      input.stockTargetMinor != null &&
+      input.stockCriticalMinor > input.stockTargetMinor)
+  ) {
+    throw new Error(
+      "El stock debe respetar: crítico menor o igual al mínimo, y mínimo menor o igual al objetivo.",
+    );
+  }
+  if (
+    input.imageDataUrl != null &&
+    (!/^data:image\/webp;base64,[a-z0-9+/]+=*$/i.test(input.imageDataUrl) ||
+      input.imageDataUrl.length > 2_100_000)
+  ) {
+    throw new Error("La foto del producto debe ser una imagen WebP válida.");
+  }
 }
 
 function validateCustomerInput(input: {
@@ -191,13 +235,53 @@ function validateFloorPlanShapeInput(input: {
   layoutY: number;
   layoutWidth: number;
   layoutHeight: number;
+  points?: Array<{ x: number; y: number }>;
+  strokeColor?: string;
+  strokeWidth?: number;
+  fillOpacity?: number;
 }) {
-  if (!["RECTANGLE", "ELLIPSE", "LINE"].includes(input.kind))
+  if (
+    !["RECTANGLE", "ELLIPSE", "LINE", "POLYGON", "POLYLINE"].includes(
+      input.kind,
+    )
+  )
     throw new Error("El tipo de figura no es válido.");
   if (!/^#[0-9A-F]{6}$/i.test(input.color))
     throw new Error("El color de la figura no es válido.");
   if ((input.label?.trim().length ?? 0) > 60)
     throw new Error("La etiqueta admite hasta 60 caracteres.");
+  const points = input.points ?? [];
+  const minimumPoints =
+    input.kind === "POLYGON" ? 3 : input.kind === "POLYLINE" ? 2 : 0;
+  const maximumPoints = minimumPoints ? 64 : 0;
+  if (points.length < minimumPoints || points.length > maximumPoints)
+    throw new Error("La cantidad de nodos de la figura no es válida.");
+  if (
+    !points.every(
+      (point) =>
+        Number.isFinite(point.x) &&
+        Number.isFinite(point.y) &&
+        point.x >= 0 &&
+        point.x <= 100 &&
+        point.y >= 0 &&
+        point.y <= 100,
+    )
+  )
+    throw new Error("Las coordenadas de la figura no son válidas.");
+  if (!/^#[0-9A-F]{6}$/i.test(input.strokeColor ?? input.color))
+    throw new Error("El color del borde no es válido.");
+  if (
+    !Number.isFinite(input.strokeWidth ?? 2) ||
+    (input.strokeWidth ?? 2) < 1 ||
+    (input.strokeWidth ?? 2) > 12
+  )
+    throw new Error("El grosor del borde no es válido.");
+  if (
+    !Number.isFinite(input.fillOpacity ?? 1) ||
+    (input.fillOpacity ?? 1) < 0 ||
+    (input.fillOpacity ?? 1) > 1
+  )
+    throw new Error("La opacidad del relleno no es válida.");
   if (
     ![
       input.layoutX,
@@ -223,7 +307,7 @@ function seedState(): DemoState {
   oldDate.setDate(oldDate.getDate() - 120);
   const oldBusinessDate = oldDate.toISOString().slice(0, 10);
   return {
-    version: 10,
+    version: 12,
     data: createDemoBootstrap(),
     historicalSessions: [
       {
@@ -305,6 +389,8 @@ function seedState(): DemoState {
       },
     ],
     audit: [],
+    purchases: [],
+    purchaseReceipts: {},
     sequence: 2000,
   };
 }
@@ -317,7 +403,7 @@ function loadState(storage: DemoStorage): DemoState {
       version: number;
     };
     if (
-      ![5, 6, 7, 8, 9, 10].includes(parsed.version) ||
+      ![5, 6, 7, 8, 9, 10, 11, 12].includes(parsed.version) ||
       !parsed.data?.settings?.printing
     )
       return seedState();
@@ -330,10 +416,18 @@ function loadState(storage: DemoStorage): DemoState {
     }
     parsed.historicalSessions ??= [];
     parsed.movements ??= [];
+    parsed.purchases ??= [];
+    parsed.purchaseReceipts ??= {};
     parsed.data.tableSectors ??= [
       { id: "sector-main", name: "Salón", sortOrder: 1 },
     ];
     parsed.data.floorPlanShapes ??= [];
+    for (const shape of parsed.data.floorPlanShapes) {
+      shape.points ??= [];
+      shape.strokeColor ??= shape.color;
+      shape.strokeWidth ??= 2;
+      shape.fillOpacity ??= 1;
+    }
     for (const table of parsed.data.tables) {
       table.sectorId ??= parsed.data.tableSectors[0]!.id;
       table.layoutX ??= 4 + ((table.number - 1) % 5) * 19;
@@ -341,6 +435,12 @@ function loadState(storage: DemoStorage): DemoState {
       table.layoutWidth ??= 14;
       table.layoutHeight ??= 17;
       table.shape ??= "SQUARE";
+    }
+    for (const product of parsed.data.products) {
+      product.stockTargetMinor ??= null;
+      product.stockMinMinor ??= null;
+      product.stockCriticalMinor ??= null;
+      product.imageDataUrl ??= null;
     }
     for (const customer of parsed.customers) {
       if (
@@ -365,7 +465,7 @@ function loadState(storage: DemoStorage): DemoState {
         ledger.settledAt ??= ledger.createdAt;
       }
     }
-    parsed.version = 10;
+    parsed.version = 12;
     return parsed as DemoState;
   } catch {
     return seedState();
@@ -2326,11 +2426,7 @@ export function createDemoApi(
     async createProduct(input) {
       const category = categoryById(input.categoryId);
       const prices = normalizeProductPrices(input.prices);
-      if (
-        input.stockMinor != null &&
-        (!Number.isSafeInteger(input.stockMinor) || input.stockMinor < 0)
-      )
-        throw new Error("El stock inicial no es válido.");
+      validateProductInventory(input);
       const product: ProductDto = {
         id: uid("product", state),
         categoryId: category.id,
@@ -2343,6 +2439,10 @@ export function createDemoApi(
           ).length + 1,
         active: true,
         stockMinor: input.stockMinor ?? null,
+        stockTargetMinor: input.stockTargetMinor ?? null,
+        stockMinMinor: input.stockMinMinor ?? null,
+        stockCriticalMinor: input.stockCriticalMinor ?? null,
+        imageDataUrl: input.imageDataUrl ?? null,
         prices: prices.map((price) => ({
           priceListId: `price-${price.priceListCode.toLowerCase()}`,
           ...price,
@@ -2357,6 +2457,7 @@ export function createDemoApi(
 
     async updateProduct(input) {
       requirePin(input.authorizerPin);
+      validateProductInventory(input);
       const product = productById(input.productId);
       const category = categoryById(input.categoryId);
       Object.assign(product, {
@@ -2365,6 +2466,26 @@ export function createDemoApi(
         name: input.name.trim(),
         code: input.code?.trim() || null,
         active: input.active,
+        stockMinor:
+          input.stockMinor === undefined
+            ? product.stockMinor
+            : input.stockMinor,
+        stockTargetMinor:
+          input.stockTargetMinor === undefined
+            ? product.stockTargetMinor
+            : input.stockTargetMinor,
+        stockMinMinor:
+          input.stockMinMinor === undefined
+            ? product.stockMinMinor
+            : input.stockMinMinor,
+        stockCriticalMinor:
+          input.stockCriticalMinor === undefined
+            ? product.stockCriticalMinor
+            : input.stockCriticalMinor,
+        imageDataUrl:
+          input.imageDataUrl === undefined
+            ? product.imageDataUrl
+            : input.imageDataUrl,
         prices: normalizeProductPrices(input.prices).map((price) => ({
           priceListId: `price-${price.priceListCode.toLowerCase()}`,
           ...price,
@@ -2471,6 +2592,114 @@ export function createDemoApi(
       audit(state, "MODIFIER", modifier.id, "MODIFICADOR_CREADO");
       save();
       return output(modifier);
+    },
+
+    async listPurchases() {
+      return output(state.purchases);
+    },
+
+    async createPurchase(input) {
+      requirePin(input.authorizerPin);
+      const requestJson = JSON.stringify({
+        supplierName: input.supplierName,
+        invoiceNumber: input.invoiceNumber ?? null,
+        notes: input.notes ?? null,
+        items: input.items,
+      });
+      const receipt = input.idempotencyKey
+        ? state.purchaseReceipts[input.idempotencyKey]
+        : undefined;
+      if (receipt) {
+        if (receipt.requestJson !== requestJson)
+          throw new Error(
+            "La clave de idempotencia fue reutilizada con datos diferentes.",
+          );
+        const previous = state.purchases.find(
+          (purchase) => purchase.id === receipt.purchaseId,
+        );
+        if (previous) return output(previous);
+      }
+      const supplierName = input.supplierName.trim();
+      if (supplierName.length < 2)
+        throw new Error("Ingresá el proveedor de la compra.");
+      if (!input.items.length || input.items.length > 100)
+        throw new Error("La compra debe tener entre 1 y 100 productos.");
+      if (
+        new Set(input.items.map((item) => item.productId)).size !==
+        input.items.length
+      )
+        throw new Error(
+          "Cada producto puede aparecer una sola vez por compra.",
+        );
+      const before = clone(state);
+      try {
+        let totalMinor = 0;
+        const items = input.items.map((item) => {
+          if (
+            !Number.isSafeInteger(item.quantityMinor) ||
+            item.quantityMinor <= 0 ||
+            !Number.isSafeInteger(item.unitCostMinor) ||
+            item.unitCostMinor < 0
+          )
+            throw new Error("Un ítem de la compra no es válido.");
+          const product = productById(item.productId);
+          if (!product.active)
+            throw new Error(`El producto ${product.name} está inactivo.`);
+          const stockBeforeMinor = product.stockMinor ?? 0;
+          const stockAfterMinor = stockBeforeMinor + item.quantityMinor;
+          const lineTotalMinor = Math.round(
+            (item.quantityMinor * item.unitCostMinor) / 1000,
+          );
+          if (
+            !Number.isSafeInteger(stockAfterMinor) ||
+            !Number.isSafeInteger(lineTotalMinor) ||
+            !Number.isSafeInteger(totalMinor + lineTotalMinor)
+          )
+            throw new Error("La compra excede el rango permitido.");
+          product.stockMinor = stockAfterMinor;
+          totalMinor += lineTotalMinor;
+          return {
+            id: uid("purchase-item", state),
+            productId: product.id,
+            productName: product.name,
+            quantityMinor: item.quantityMinor,
+            unitCostMinor: item.unitCostMinor,
+            lineTotalMinor,
+            stockBeforeMinor,
+            stockAfterMinor,
+          };
+        });
+        const purchase: PurchaseDto = {
+          id: uid("purchase", state),
+          supplierName,
+          invoiceNumber: input.invoiceNumber?.trim() || null,
+          notes: input.notes?.trim() || null,
+          totalMinor,
+          createdByUserId: state.data.currentUser.id,
+          createdByUserName: state.data.currentUser.fullName,
+          createdAt: now(),
+          items,
+        };
+        state.purchases.unshift(purchase);
+        if (input.idempotencyKey)
+          state.purchaseReceipts[input.idempotencyKey] = {
+            purchaseId: purchase.id,
+            requestJson,
+          };
+        audit(
+          state,
+          "PURCHASE",
+          purchase.id,
+          "PURCHASE_CREATED",
+          purchase.notes,
+          "purchases.manage",
+        );
+        save();
+        return output(purchase);
+      } catch (error) {
+        state = before;
+        throw error;
+      }
     },
 
     async adjustStock(input) {
@@ -2769,6 +2998,10 @@ export function createDemoApi(
         kind: input.kind,
         label: input.label?.trim() || null,
         color: input.color.toUpperCase(),
+        points: input.points ?? [],
+        strokeColor: (input.strokeColor ?? input.color).toUpperCase(),
+        strokeWidth: input.strokeWidth ?? 2,
+        fillOpacity: input.fillOpacity ?? 1,
         layoutX: input.layoutX,
         layoutY: input.layoutY,
         layoutWidth: input.layoutWidth,
@@ -2795,12 +3028,23 @@ export function createDemoApi(
         !state.data.tableSectors.some((sector) => sector.id === input.sectorId)
       )
         throw new Error("El sector seleccionado no existe.");
-      validateFloorPlanShapeInput(input);
+      const next = {
+        ...input,
+        points: input.points ?? shape.points,
+        strokeColor: input.strokeColor ?? shape.strokeColor,
+        strokeWidth: input.strokeWidth ?? shape.strokeWidth,
+        fillOpacity: input.fillOpacity ?? shape.fillOpacity,
+      };
+      validateFloorPlanShapeInput(next);
       Object.assign(shape, {
         sectorId: input.sectorId,
         kind: input.kind,
         label: input.label?.trim() || null,
         color: input.color.toUpperCase(),
+        points: next.points,
+        strokeColor: next.strokeColor.toUpperCase(),
+        strokeWidth: next.strokeWidth,
+        fillOpacity: next.fillOpacity,
         layoutX: input.layoutX,
         layoutY: input.layoutY,
         layoutWidth: input.layoutWidth,

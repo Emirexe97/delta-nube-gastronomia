@@ -34,6 +34,126 @@ function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
   }
 }
 
+test("persiste inventario avanzado y foto WebP al crear y editar productos", () => {
+  withRepository((repository) => {
+    const category = repository.bootstrap().categories[0]!;
+    const imageDataUrl = "data:image/webp;base64,UklGRg==";
+    const product = repository.createProduct({
+      categoryId: category.id,
+      name: "Producto inventariable",
+      code: "INV-ADV",
+      stockMinor: 12_500,
+      stockTargetMinor: 30_000,
+      stockMinMinor: 10_000,
+      stockCriticalMinor: 5_000,
+      imageDataUrl,
+      prices: [
+        { priceListCode: "SALON", amountMinor: 1_000 },
+        { priceListCode: "TAKEAWAY", amountMinor: 900 },
+        { priceListCode: "DELIVERY", amountMinor: 900 },
+      ],
+    });
+    assert.equal(product.stockMinor, 12_500);
+    assert.equal(product.stockTargetMinor, 30_000);
+    assert.equal(product.stockMinMinor, 10_000);
+    assert.equal(product.stockCriticalMinor, 5_000);
+    assert.equal(product.imageDataUrl, imageDataUrl);
+
+    const updated = repository.updateProduct({
+      productId: product.id,
+      categoryId: category.id,
+      name: product.name,
+      code: product.code,
+      active: true,
+      stockMinor: 14_000,
+      stockTargetMinor: 32_000,
+      stockMinMinor: 11_000,
+      stockCriticalMinor: 4_000,
+      imageDataUrl: null,
+      prices: product.prices.map((price) => ({
+        priceListCode: price.priceListCode as "SALON" | "TAKEAWAY" | "DELIVERY",
+        amountMinor: price.amountMinor,
+      })),
+      reason: "Actualizar parámetros de inventario",
+      authorizerPin: "2468",
+    });
+    assert.equal(updated.stockMinor, 14_000);
+    assert.equal(updated.stockTargetMinor, 32_000);
+    assert.equal(updated.stockMinMinor, 11_000);
+    assert.equal(updated.stockCriticalMinor, 4_000);
+    assert.equal(updated.imageDataUrl, null);
+  });
+});
+
+test("registra compras idempotentes e incrementa el stock de forma atómica", () => {
+  withRepository((repository) => {
+    const product = repository.bootstrap().products[0]!;
+    repository.adjustStock({
+      productId: product.id,
+      newStockMinor: 1_000,
+      reason: "Preparar compra",
+      authorizerPin: "2468",
+    });
+    const input = {
+      idempotencyKey: "purchase-test-1",
+      terminalId: "TEST",
+      supplierName: "Proveedor Norte",
+      invoiceNumber: "FAC-100",
+      notes: "Ingreso de prueba",
+      authorizerPin: "2468",
+      items: [
+        {
+          productId: product.id,
+          quantityMinor: 1_500,
+          unitCostMinor: 10_000,
+        },
+      ],
+    };
+    const purchase = repository.createPurchase(input);
+    assert.equal(purchase.totalMinor, 15_000);
+    assert.equal(purchase.createdByUserName, "Administrador");
+    assert.equal(purchase.items[0]?.stockBeforeMinor, 1_000);
+    assert.equal(purchase.items[0]?.stockAfterMinor, 2_500);
+    assert.equal(
+      repository.bootstrap().products.find((item) => item.id === product.id)
+        ?.stockMinor,
+      2_500,
+    );
+
+    const repeated = repository.createPurchase(input);
+    assert.equal(repeated.id, purchase.id);
+    assert.equal(repository.listPurchases().length, 1);
+    assert.equal(
+      repository.bootstrap().products.find((item) => item.id === product.id)
+        ?.stockMinor,
+      2_500,
+    );
+
+    assert.throws(
+      () =>
+        repository.createPurchase({
+          ...input,
+          idempotencyKey: "purchase-test-invalid",
+          items: [
+            ...input.items,
+            {
+              productId: "missing-product",
+              quantityMinor: 1_000,
+              unitCostMinor: 500,
+            },
+          ],
+        }),
+      /no existe/i,
+    );
+    assert.equal(repository.listPurchases().length, 1);
+    assert.equal(
+      repository.bootstrap().products.find((item) => item.id === product.id)
+        ?.stockMinor,
+      2_500,
+    );
+  });
+});
+
 test("elimina mesa libre conservando historial y permite reactivar el mismo id", () => {
   withRepository((repository) => {
     const table = repository.ensureTable(51);
@@ -2815,6 +2935,63 @@ test("persiste figuras decorativas del plano y las elimina con su sector", () =>
         .bootstrap()
         .floorPlanShapes.some((shape) => shape.id === created.id),
       false,
+    );
+  });
+});
+
+test("persiste polígonos y líneas con nodos, borde y relleno", () => {
+  withRepository((repository) => {
+    const sector = repository.bootstrap().tableSectors[0]!;
+    const polygon = repository.createFloorPlanShape({
+      sectorId: sector.id,
+      kind: "POLYGON",
+      label: "Planta irregular",
+      color: "#FDBA74",
+      strokeColor: "#C2410C",
+      strokeWidth: 3,
+      fillOpacity: 0.35,
+      points: [
+        { x: 0, y: 10 },
+        { x: 90, y: 0 },
+        { x: 100, y: 80 },
+        { x: 20, y: 100 },
+      ],
+      layoutX: 10,
+      layoutY: 12,
+      layoutWidth: 50,
+      layoutHeight: 42,
+    });
+    assert.equal(polygon.kind, "POLYGON");
+    assert.equal(polygon.strokeColor, "#C2410C");
+    assert.equal(polygon.strokeWidth, 3);
+    assert.equal(polygon.fillOpacity, 0.35);
+    assert.deepEqual(polygon.points[2], { x: 100, y: 80 });
+
+    const movedPoints = polygon.points.map((point, index) =>
+      index === 1 ? { x: 75, y: 18 } : point,
+    );
+    const updated = repository.updateFloorPlanShape({
+      ...polygon,
+      shapeId: polygon.id,
+      points: movedPoints,
+      strokeWidth: 4,
+    });
+    assert.deepEqual(updated.points, movedPoints);
+    assert.equal(updated.strokeWidth, 4);
+
+    assert.throws(
+      () =>
+        repository.createFloorPlanShape({
+          sectorId: sector.id,
+          kind: "POLYLINE",
+          color: "#64748B",
+          points: [{ x: 0, y: 0 }],
+          layoutX: 0,
+          layoutY: 0,
+          layoutWidth: 20,
+          layoutHeight: 20,
+        }),
+      /cantidad de nodos/i,
     );
   });
 });

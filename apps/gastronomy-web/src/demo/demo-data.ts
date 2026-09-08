@@ -103,6 +103,19 @@ const prices = (salon: number, offPremise = salon) => [
   },
 ];
 
+const inventory = (
+  stockMinor: number,
+  stockTargetMinor: number,
+  stockMinMinor: number,
+  stockCriticalMinor: number,
+) => ({
+  stockMinor,
+  stockTargetMinor,
+  stockMinMinor,
+  stockCriticalMinor,
+  imageDataUrl: null,
+});
+
 export const demoProducts: ProductDto[] = [
   {
     id: "prod-muzza",
@@ -112,7 +125,7 @@ export const demoProducts: ProductDto[] = [
     code: "MUZG",
     sortOrder: 1,
     active: true,
-    stockMinor: 35_000,
+    ...inventory(35_000, 50_000, 20_000, 10_000),
     prices: prices(1_500_000, 1_550_000),
   },
   {
@@ -123,7 +136,7 @@ export const demoProducts: ProductDto[] = [
     code: "NAPG",
     sortOrder: 2,
     active: true,
-    stockMinor: 24_000,
+    ...inventory(24_000, 40_000, 16_000, 8_000),
     prices: prices(1_800_000, 1_850_000),
   },
   {
@@ -134,7 +147,7 @@ export const demoProducts: ProductDto[] = [
     code: "ESPG",
     sortOrder: 3,
     active: true,
-    stockMinor: 18_000,
+    ...inventory(18_000, 35_000, 14_000, 7_000),
     prices: prices(2_000_000, 2_050_000),
   },
   {
@@ -145,7 +158,7 @@ export const demoProducts: ProductDto[] = [
     code: "EMPC",
     sortOrder: 1,
     active: true,
-    stockMinor: 80_000,
+    ...inventory(80_000, 120_000, 50_000, 25_000),
     prices: prices(180_000),
   },
   {
@@ -156,7 +169,7 @@ export const demoProducts: ProductDto[] = [
     code: "EMPJQ",
     sortOrder: 2,
     active: true,
-    stockMinor: 64_000,
+    ...inventory(64_000, 100_000, 40_000, 20_000),
     prices: prices(180_000),
   },
   {
@@ -167,7 +180,7 @@ export const demoProducts: ProductDto[] = [
     code: "GAS15",
     sortOrder: 1,
     active: true,
-    stockMinor: 28_000,
+    ...inventory(28_000, 45_000, 18_000, 9_000),
     prices: prices(450_000),
   },
   {
@@ -178,7 +191,7 @@ export const demoProducts: ProductDto[] = [
     code: "AGUA",
     sortOrder: 2,
     active: true,
-    stockMinor: 42_000,
+    ...inventory(42_000, 60_000, 24_000, 12_000),
     prices: prices(220_000),
   },
   {
@@ -189,7 +202,7 @@ export const demoProducts: ProductDto[] = [
     code: "FLAN",
     sortOrder: 1,
     active: true,
-    stockMinor: 12_000,
+    ...inventory(12_000, 24_000, 10_000, 5_000),
     prices: prices(350_000),
   },
 ];
