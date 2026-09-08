@@ -479,6 +479,7 @@ export function createDemoBootstrap(): BootstrapDto {
       { id: "sector-main", name: "Salón", sortOrder: 1 },
       { id: "sector-terrace", name: "Terraza", sortOrder: 2 },
     ],
+    floorPlanShapes: [],
     modifiers: [
       {
         id: "mod-extra-queso",

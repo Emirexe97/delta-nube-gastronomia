@@ -18,6 +18,7 @@ import type {
   DashboardSummaryDto,
   DeliveryLedgerDto,
   DetailedReportDto,
+  FloorPlanShapeDto,
   Id,
   OpenCashSessionInput,
   OrderDto,
@@ -228,6 +229,29 @@ export interface GastronomyRepository {
     deleted: true;
     fallbackSectorId: Id;
   };
+  createFloorPlanShape(input: {
+    sectorId: Id;
+    kind: FloorPlanShapeDto["kind"];
+    label?: string | null;
+    color: string;
+    layoutX: number;
+    layoutY: number;
+    layoutWidth: number;
+    layoutHeight: number;
+  }): FloorPlanShapeDto;
+  updateFloorPlanShape(input: {
+    shapeId: Id;
+    sectorId: Id;
+    kind: FloorPlanShapeDto["kind"];
+    label?: string | null;
+    color: string;
+    layoutX: number;
+    layoutY: number;
+    layoutWidth: number;
+    layoutHeight: number;
+    sortOrder?: number;
+  }): FloorPlanShapeDto;
+  deleteFloorPlanShape(input: { shapeId: Id }): { deleted: true };
   updateTable(input: {
     tableId: Id;
     number: number;
@@ -844,6 +868,20 @@ export class GastronomyApplication {
   deleteTableSector(input: { sectorId: Id }) {
     if (!input?.sectorId) throw new Error("El sector no es válido.");
     return this.repository.deleteTableSector(input);
+  }
+  createFloorPlanShape(
+    input: Parameters<GastronomyRepository["createFloorPlanShape"]>[0],
+  ) {
+    return this.repository.createFloorPlanShape(input);
+  }
+  updateFloorPlanShape(
+    input: Parameters<GastronomyRepository["updateFloorPlanShape"]>[0],
+  ) {
+    return this.repository.updateFloorPlanShape(input);
+  }
+  deleteFloorPlanShape(input: { shapeId: Id }) {
+    if (!input?.shapeId) throw new Error("La figura no es válida.");
+    return this.repository.deleteFloorPlanShape(input);
   }
   updateTable(input: Parameters<GastronomyRepository["updateTable"]>[0]) {
     return this.repository.updateTable(input);

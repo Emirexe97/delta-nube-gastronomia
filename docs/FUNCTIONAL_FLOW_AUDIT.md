@@ -83,6 +83,8 @@ La corrección introduce tres principios:
 - `Configuración → Salón y mesas` permite generar 1…N, editar número, nombre y orden, y activar/desactivar.
 - `Salón → Plano por sectores` permite crear subpestañas como Salón, Terraza o
   Patio, arrastrar mesas, editar su forma y tamaño y moverlas entre sectores.
+- El mismo editor permite agregar figuras decorativas con etiqueta, color,
+  forma y tamaño para representar paredes, barras, accesos u objetos del salón.
 - Fuera del modo edición, cada mesa del plano abre o continúa el mismo pedido
   que la vista clásica; la carga rápida está disponible en ambas vistas.
 - El ID interno es independiente del número visible.

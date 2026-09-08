@@ -11,7 +11,8 @@ Candidato funcional local:
 - SQLite local en WAL y migración inicial versionada;
 - apertura, movimientos y cierre protegido de caja;
 - día comercial fijado por apertura;
-- salón con vista clásica y plano editable por sectores, mesas libres/ocupadas,
+- salón con vista clásica y plano editable por sectores, figuras decorativas,
+  mesas libres/ocupadas,
   formas, tamaños y posiciones persistentes;
 - pedidos de salón, para retirar y envío, con borrador separado del estado operativo;
 - vistas operativas de Pedidos y Salón limitadas al turno de caja actual, con el histórico preservado en Informes;
@@ -98,7 +99,7 @@ pnpm --filter @gastronomy/desktop-shell dist:win
 ```
 
 El artefacto se genera en
-`apps/desktop-shell/release/Delta Nube Gastronomía Setup 0.1.5.exe`. El comando
+`apps/desktop-shell/release/Delta Nube Gastronomía Setup 0.1.6.exe`. El comando
 recompila primero SQLite para la ABI exacta de Electron.
 
 ## Autorizaciones locales

@@ -7,6 +7,7 @@ import type {
   DriverDeliveryActivityDto,
   DesktopApi,
   DetailedReportDto,
+  FloorPlanShapeDto,
   CashSessionDto,
   CashSessionReportDto,
   CashSessionReportFilters,
@@ -181,6 +182,41 @@ function validateCustomerInput(input: {
   }
 }
 
+function validateFloorPlanShapeInput(input: {
+  sectorId: string;
+  kind: string;
+  label?: string | null;
+  color: string;
+  layoutX: number;
+  layoutY: number;
+  layoutWidth: number;
+  layoutHeight: number;
+}) {
+  if (!["RECTANGLE", "ELLIPSE", "LINE"].includes(input.kind))
+    throw new Error("El tipo de figura no es válido.");
+  if (!/^#[0-9A-F]{6}$/i.test(input.color))
+    throw new Error("El color de la figura no es válido.");
+  if ((input.label?.trim().length ?? 0) > 60)
+    throw new Error("La etiqueta admite hasta 60 caracteres.");
+  if (
+    ![
+      input.layoutX,
+      input.layoutY,
+      input.layoutWidth,
+      input.layoutHeight,
+    ].every(Number.isFinite) ||
+    input.layoutX < 0 ||
+    input.layoutY < 0 ||
+    input.layoutWidth < 2 ||
+    input.layoutWidth > 100 ||
+    input.layoutHeight < 2 ||
+    input.layoutHeight > 100 ||
+    input.layoutX + input.layoutWidth > 100 ||
+    input.layoutY + input.layoutHeight > 100
+  )
+    throw new Error("La posición o el tamaño de la figura no es válido.");
+}
+
 function seedState(): DemoState {
   const updatedAt = now();
   const oldDate = new Date();
@@ -297,6 +333,7 @@ function loadState(storage: DemoStorage): DemoState {
     parsed.data.tableSectors ??= [
       { id: "sector-main", name: "Salón", sortOrder: 1 },
     ];
+    parsed.data.floorPlanShapes ??= [];
     for (const table of parsed.data.tables) {
       table.sectorId ??= parsed.data.tableSectors[0]!.id;
       table.layoutX ??= 4 + ((table.number - 1) % 5) * 19;
@@ -2705,6 +2742,9 @@ export function createDemoApi(
       const fallback = state.data.tableSectors[0]!;
       for (const table of state.data.tables)
         if (table.sectorId === input.sectorId) table.sectorId = fallback.id;
+      state.data.floorPlanShapes = state.data.floorPlanShapes.filter(
+        (shape) => shape.sectorId !== input.sectorId,
+      );
       audit(
         state,
         "TABLE_SECTOR",
@@ -2715,6 +2755,70 @@ export function createDemoApi(
       );
       save();
       return { deleted: true as const, fallbackSectorId: fallback.id };
+    },
+
+    async createFloorPlanShape(input) {
+      if (
+        !state.data.tableSectors.some((sector) => sector.id === input.sectorId)
+      )
+        throw new Error("El sector seleccionado no existe.");
+      validateFloorPlanShapeInput(input);
+      const shape: FloorPlanShapeDto = {
+        id: uid("floor-shape", state),
+        sectorId: input.sectorId,
+        kind: input.kind,
+        label: input.label?.trim() || null,
+        color: input.color.toUpperCase(),
+        layoutX: input.layoutX,
+        layoutY: input.layoutY,
+        layoutWidth: input.layoutWidth,
+        layoutHeight: input.layoutHeight,
+        sortOrder:
+          Math.max(
+            0,
+            ...state.data.floorPlanShapes
+              .filter((item) => item.sectorId === input.sectorId)
+              .map((item) => item.sortOrder),
+          ) + 1,
+      };
+      state.data.floorPlanShapes.push(shape);
+      save();
+      return output(shape);
+    },
+
+    async updateFloorPlanShape(input) {
+      const shape = state.data.floorPlanShapes.find(
+        (candidate) => candidate.id === input.shapeId,
+      );
+      if (!shape) throw new Error("La figura no existe.");
+      if (
+        !state.data.tableSectors.some((sector) => sector.id === input.sectorId)
+      )
+        throw new Error("El sector seleccionado no existe.");
+      validateFloorPlanShapeInput(input);
+      Object.assign(shape, {
+        sectorId: input.sectorId,
+        kind: input.kind,
+        label: input.label?.trim() || null,
+        color: input.color.toUpperCase(),
+        layoutX: input.layoutX,
+        layoutY: input.layoutY,
+        layoutWidth: input.layoutWidth,
+        layoutHeight: input.layoutHeight,
+        sortOrder: input.sortOrder ?? shape.sortOrder,
+      });
+      save();
+      return output(shape);
+    },
+
+    async deleteFloorPlanShape(input) {
+      const index = state.data.floorPlanShapes.findIndex(
+        (shape) => shape.id === input.shapeId,
+      );
+      if (index < 0) throw new Error("La figura no existe.");
+      state.data.floorPlanShapes.splice(index, 1);
+      save();
+      return { deleted: true as const };
     },
 
     async updateTable(input) {

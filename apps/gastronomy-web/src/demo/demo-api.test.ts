@@ -164,6 +164,39 @@ describe("API de demostración", () => {
     ).toContain("SECTOR_ELIMINADO");
   });
 
+  it("crea, modifica y elimina figuras decorativas del plano", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const sector = (await api.bootstrap()).tableSectors[0]!;
+    const created = await api.createFloorPlanShape({
+      sectorId: sector.id,
+      kind: "LINE",
+      label: "Pared norte",
+      color: "#64748B",
+      layoutX: 5,
+      layoutY: 8,
+      layoutWidth: 45,
+      layoutHeight: 3,
+    });
+    const updated = await api.updateFloorPlanShape({
+      ...created,
+      shapeId: created.id,
+      kind: "RECTANGLE",
+      label: "Barra",
+      color: "#EA580C",
+      layoutWidth: 32,
+      layoutHeight: 10,
+    });
+    expect(updated).toMatchObject({
+      kind: "RECTANGLE",
+      label: "Barra",
+      color: "#EA580C",
+      layoutWidth: 32,
+      layoutHeight: 10,
+    });
+    await api.deleteFloorPlanShape({ shapeId: created.id });
+    expect((await api.bootstrap()).floorPlanShapes).toEqual([]);
+  });
+
   it("cancela pedido vacío y bloquea pedido con consumo", async () => {
     const api = createDemoApi(new MemoryStorage());
     const table = await api.ensureTable({ number: 52 });

@@ -2768,6 +2768,57 @@ test("persiste sectores, forma, tamaño y posición de las mesas", () => {
   });
 });
 
+test("persiste figuras decorativas del plano y las elimina con su sector", () => {
+  withRepository((repository) => {
+    const sector = repository.createTableSector({ name: "Patio con barra" });
+    const created = repository.createFloorPlanShape({
+      sectorId: sector.id,
+      kind: "RECTANGLE",
+      label: "Barra",
+      color: "#F59E0B",
+      layoutX: 8,
+      layoutY: 12,
+      layoutWidth: 38,
+      layoutHeight: 9,
+    });
+    const updated = repository.updateFloorPlanShape({
+      shapeId: created.id,
+      sectorId: sector.id,
+      kind: "ELLIPSE",
+      label: "Macetero",
+      color: "#16A34A",
+      layoutX: 52,
+      layoutY: 18,
+      layoutWidth: 16,
+      layoutHeight: 20,
+    });
+    assert.deepEqual(updated, {
+      ...created,
+      kind: "ELLIPSE",
+      label: "Macetero",
+      color: "#16A34A",
+      layoutX: 52,
+      layoutY: 18,
+      layoutWidth: 16,
+      layoutHeight: 20,
+    });
+    assert.equal(
+      repository
+        .bootstrap()
+        .floorPlanShapes.find((shape) => shape.id === created.id)?.label,
+      "Macetero",
+    );
+
+    repository.deleteTableSector({ sectorId: sector.id });
+    assert.equal(
+      repository
+        .bootstrap()
+        .floorPlanShapes.some((shape) => shape.id === created.id),
+      false,
+    );
+  });
+});
+
 test("devolución total revierte el pago, corrige caja y habilita cancelar", () => {
   withRepository((repository) => {
     repository.openCashSession({ openingAmountMinor: 5_000_000 });

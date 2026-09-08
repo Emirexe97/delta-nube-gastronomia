@@ -61,6 +61,8 @@ interfaz:
 7. guardado y recarga de un perfil de impresión y sus encabezados/pies editables.
 8. creación de un sector y una mesa desde el plano, edición de forma, arrastre,
    persistencia y apertura del pedido desde la mesa dibujada.
+9. creación de figuras decorativas por sector, personalización de tipo, color y
+   tamaño, persistencia tras recargar y eliminación independiente de las mesas.
 
 El primer viaje también cobra y devuelve un pago desde la interfaz; el segundo
 verifica que Clientes liste sin buscar y permita editar direcciones; el cuarto

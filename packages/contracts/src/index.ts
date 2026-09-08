@@ -245,6 +245,19 @@ export interface TableSectorDto {
   sortOrder: number;
 }
 
+export interface FloorPlanShapeDto {
+  id: Id;
+  sectorId: Id;
+  kind: "RECTANGLE" | "ELLIPSE" | "LINE";
+  label: string | null;
+  color: string;
+  layoutX: number;
+  layoutY: number;
+  layoutWidth: number;
+  layoutHeight: number;
+  sortOrder: number;
+}
+
 export interface OrderItemModifierDto {
   id: Id;
   nameSnapshot: string;
@@ -558,6 +571,7 @@ export interface BootstrapDto {
   products: ProductDto[];
   modifiers: ModifierDto[];
   tableSectors: TableSectorDto[];
+  floorPlanShapes: FloorPlanShapeDto[];
   tables: RestaurantTableDto[];
   orders: OrderDto[];
   users: UserDto[];
@@ -895,6 +909,29 @@ export interface DesktopApi {
   deleteTableSector(input: {
     sectorId: Id;
   }): Promise<{ deleted: true; fallbackSectorId: Id }>;
+  createFloorPlanShape(input: {
+    sectorId: Id;
+    kind: FloorPlanShapeDto["kind"];
+    label?: string | null;
+    color: string;
+    layoutX: number;
+    layoutY: number;
+    layoutWidth: number;
+    layoutHeight: number;
+  }): Promise<FloorPlanShapeDto>;
+  updateFloorPlanShape(input: {
+    shapeId: Id;
+    sectorId: Id;
+    kind: FloorPlanShapeDto["kind"];
+    label?: string | null;
+    color: string;
+    layoutX: number;
+    layoutY: number;
+    layoutWidth: number;
+    layoutHeight: number;
+    sortOrder?: number;
+  }): Promise<FloorPlanShapeDto>;
+  deleteFloorPlanShape(input: { shapeId: Id }): Promise<{ deleted: true }>;
   updateTable(input: {
     tableId: Id;
     number: number;

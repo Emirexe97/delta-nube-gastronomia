@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   BootstrapDto,
+  FloorPlanShapeDto,
   RestaurantTableDto,
   TableSectorDto,
 } from "@gastronomy/contracts";
@@ -30,6 +31,10 @@ type TableDraft = Pick<
 >;
 
 type Position = { x: number; y: number };
+type FloorShapeDraft = Pick<
+  FloorPlanShapeDto,
+  "sectorId" | "kind" | "label" | "color" | "layoutWidth" | "layoutHeight"
+>;
 
 const shapeLabels: Record<RestaurantTableDto["shape"], string> = {
   ROUND: "Redonda",
@@ -37,8 +42,23 @@ const shapeLabels: Record<RestaurantTableDto["shape"], string> = {
   RECTANGLE: "Rectangular",
 };
 
+const floorShapeLabels: Record<FloorPlanShapeDto["kind"], string> = {
+  RECTANGLE: "Rectángulo",
+  ELLIPSE: "Círculo / óvalo",
+  LINE: "Línea / barra",
+};
+
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
+
+const contrastColor = (background: string) => {
+  const red = Number.parseInt(background.slice(1, 3), 16);
+  const green = Number.parseInt(background.slice(3, 5), 16);
+  const blue = Number.parseInt(background.slice(5, 7), 16);
+  return red * 0.299 + green * 0.587 + blue * 0.114 > 150
+    ? "#334155"
+    : "#FFFFFF";
+};
 
 function tableDraft(table: RestaurantTableDto): TableDraft {
   return {
@@ -71,10 +91,20 @@ export function TableFloorPlan({
   const [activeSectorId, setActiveSectorId] = useState(sectors[0]?.id ?? "");
   const [editing, setEditing] = useState(false);
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TableDraft | null>(null);
+  const [shapeDraft, setShapeDraft] = useState<FloorShapeDraft | null>(null);
   const [positions, setPositions] = useState<Record<string, Position>>({});
+  const [shapePositions, setShapePositions] = useState<
+    Record<string, Position>
+  >({});
   const [drag, setDrag] = useState<{
     tableId: string;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
+  const [shapeDrag, setShapeDrag] = useState<{
+    shapeId: string;
     offsetX: number;
     offsetY: number;
   } | null>(null);
@@ -84,6 +114,9 @@ export function TableFloorPlan({
   >(null);
   const [sectorName, setSectorName] = useState("");
   const [deletingSector, setDeletingSector] = useState<TableSectorDto | null>(
+    null,
+  );
+  const [deletingShape, setDeletingShape] = useState<FloorPlanShapeDto | null>(
     null,
   );
   const [addTableOpen, setAddTableOpen] = useState(false);
@@ -106,13 +139,44 @@ export function TableFloorPlan({
     );
   }, [tables]);
 
+  useEffect(() => {
+    setShapePositions(
+      Object.fromEntries(
+        data.floorPlanShapes.map((shape) => [
+          shape.id,
+          { x: shape.layoutX, y: shape.layoutY },
+        ]),
+      ),
+    );
+  }, [data.floorPlanShapes]);
+
   const selectedTable = tables.find((table) => table.id === selectedTableId);
   useEffect(() => {
     setDraft(selectedTable ? tableDraft(selectedTable) : null);
   }, [selectedTable]);
+  const selectedShape = data.floorPlanShapes.find(
+    (shape) => shape.id === selectedShapeId,
+  );
+  useEffect(() => {
+    setShapeDraft(
+      selectedShape
+        ? {
+            sectorId: selectedShape.sectorId,
+            kind: selectedShape.kind,
+            label: selectedShape.label,
+            color: selectedShape.color,
+            layoutWidth: selectedShape.layoutWidth,
+            layoutHeight: selectedShape.layoutHeight,
+          }
+        : null,
+    );
+  }, [selectedShape]);
 
   const sectorTables = tables.filter(
     (table) => table.sectorId === activeSectorId,
+  );
+  const sectorShapes = data.floorPlanShapes.filter(
+    (shape) => shape.sectorId === activeSectorId,
   );
   const activeSector = sectors.find((sector) => sector.id === activeSectorId);
 
@@ -194,6 +258,38 @@ export function TableFloorPlan({
       onError: (value) => setMessage(humanError(value)),
     },
   );
+  const createFloorShape = useApiMutation(
+    (input: Parameters<typeof window.gastronomy.createFloorPlanShape>[0]) =>
+      window.gastronomy.createFloorPlanShape(input),
+    {
+      onSuccess: (shape) => {
+        setSelectedTableId(null);
+        setSelectedShapeId(shape.id);
+        setMessage("Figura agregada. Personalizala desde sus propiedades.");
+      },
+      onError: (value) => setMessage(humanError(value)),
+    },
+  );
+  const updateFloorShape = useApiMutation(
+    (input: Parameters<typeof window.gastronomy.updateFloorPlanShape>[0]) =>
+      window.gastronomy.updateFloorPlanShape(input),
+    {
+      onSuccess: () => setMessage("Figura guardada."),
+      onError: (value) => setMessage(humanError(value)),
+    },
+  );
+  const deleteFloorShape = useApiMutation(
+    (input: { shapeId: string }) =>
+      window.gastronomy.deleteFloorPlanShape(input),
+    {
+      onSuccess: () => {
+        setSelectedShapeId(null);
+        setDeletingShape(null);
+        setMessage("Figura eliminada.");
+      },
+      onError: (value) => setMessage(humanError(value)),
+    },
+  );
 
   const persistPosition = (table: RestaurantTableDto, position: Position) => {
     updateTable.mutate({
@@ -268,6 +364,74 @@ export function TableFloorPlan({
     }
   };
 
+  const shapePositionFromPointer = (
+    shape: FloorPlanShapeDto,
+    clientX: number,
+    clientY: number,
+    offsetX: number,
+    offsetY: number,
+  ) => {
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (!bounds)
+      return (
+        shapePositions[shape.id] ?? {
+          x: shape.layoutX,
+          y: shape.layoutY,
+        }
+      );
+    return {
+      x:
+        Math.round(
+          clamp(
+            ((clientX - bounds.left) / bounds.width) * 100 - offsetX,
+            0,
+            100 - shape.layoutWidth,
+          ) * 10,
+        ) / 10,
+      y:
+        Math.round(
+          clamp(
+            ((clientY - bounds.top) / bounds.height) * 100 - offsetY,
+            0,
+            100 - shape.layoutHeight,
+          ) * 10,
+        ) / 10,
+    };
+  };
+
+  const persistShape = (
+    shape: FloorPlanShapeDto,
+    position: Position,
+    nextDraft: FloorShapeDraft = {
+      sectorId: shape.sectorId,
+      kind: shape.kind,
+      label: shape.label,
+      color: shape.color,
+      layoutWidth: shape.layoutWidth,
+      layoutHeight: shape.layoutHeight,
+    },
+  ) =>
+    updateFloorShape.mutate({
+      shapeId: shape.id,
+      ...nextDraft,
+      layoutX: clamp(position.x, 0, 100 - nextDraft.layoutWidth),
+      layoutY: clamp(position.y, 0, 100 - nextDraft.layoutHeight),
+      sortOrder: shape.sortOrder,
+    });
+
+  const saveShapeDraft = () => {
+    if (!selectedShape || !shapeDraft) return;
+    const position = shapePositions[selectedShape.id] ?? {
+      x: selectedShape.layoutX,
+      y: selectedShape.layoutY,
+    };
+    persistShape(selectedShape, position, shapeDraft);
+    if (shapeDraft.sectorId !== activeSectorId) {
+      setActiveSectorId(shapeDraft.sectorId);
+      setSelectedShapeId(null);
+    }
+  };
+
   return (
     <div className="space-y-3">
       <Card className="p-3">
@@ -290,6 +454,7 @@ export function TableFloorPlan({
                   onClick={() => {
                     setActiveSectorId(sector.id);
                     setSelectedTableId(null);
+                    setSelectedShapeId(null);
                   }}
                   className={`whitespace-nowrap rounded-xl px-3 py-2 text-xs font-extrabold transition ${sector.id === activeSectorId ? "bg-brand-600 text-white shadow-sm" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
                 >
@@ -334,6 +499,25 @@ export function TableFloorPlan({
                 <Button
                   type="button"
                   variant="secondary"
+                  onClick={() =>
+                    createFloorShape.mutate({
+                      sectorId: activeSector.id,
+                      kind: "RECTANGLE",
+                      label: "Nueva figura",
+                      color: "#CBD5E1",
+                      layoutX: 12 + (sectorShapes.length % 4) * 6,
+                      layoutY: 16 + (sectorShapes.length % 4) * 6,
+                      layoutWidth: 30,
+                      layoutHeight: 12,
+                    })
+                  }
+                  disabled={createFloorShape.isPending}
+                >
+                  <Plus size={15} /> Nueva figura
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
                   disabled={sectors.length <= 1}
                   onClick={() => setDeletingSector(activeSector)}
                 >
@@ -348,6 +532,7 @@ export function TableFloorPlan({
                 onClick={() => {
                   setEditing((value) => !value);
                   setSelectedTableId(null);
+                  setSelectedShapeId(null);
                   setMessage(null);
                 }}
               >
@@ -363,12 +548,12 @@ export function TableFloorPlan({
         </div>
         <p className="mt-2 text-[11px] text-slate-400">
           {editing
-            ? "Arrastrá las mesas para ubicarlas. Seleccioná una para cambiar nombre, sector, forma o tamaño."
+            ? "Arrastrá mesas y figuras para ubicarlas. Seleccioná un elemento para personalizarlo."
             : "Elegí un sector y tocá una mesa para abrirla o continuar su pedido."}
         </p>
         {message ? (
           <p
-            className={`mt-2 rounded-lg px-3 py-2 text-[11px] font-semibold ${updateTable.isError || createSector.isError || renameSector.isError || deleteSector.isError || createTable.isError ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}
+            className={`mt-2 rounded-lg px-3 py-2 text-[11px] font-semibold ${updateTable.isError || createSector.isError || renameSector.isError || deleteSector.isError || createTable.isError || createFloorShape.isError || updateFloorShape.isError || deleteFloorShape.isError ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}
             role="status"
           >
             {message}
@@ -391,11 +576,11 @@ export function TableFloorPlan({
               backgroundSize: "28px 28px",
             }}
           >
-            <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-2 rounded-xl bg-white/90 px-3 py-2 text-xs font-extrabold text-slate-600 shadow-sm backdrop-blur">
+            <div className="pointer-events-none absolute left-4 top-4 z-20 flex items-center gap-2 rounded-xl bg-white/90 px-3 py-2 text-xs font-extrabold text-slate-600 shadow-sm backdrop-blur">
               <MapTrifold size={17} className="text-brand-600" />
               {activeSector?.name ?? "Sector"}
             </div>
-            {!sectorTables.length ? (
+            {!sectorTables.length && !sectorShapes.length ? (
               <div className="absolute inset-0 grid place-items-center p-8 text-center">
                 <div>
                   <MapTrifold
@@ -404,16 +589,118 @@ export function TableFloorPlan({
                     weight="duotone"
                   />
                   <p className="mt-3 text-sm font-bold text-slate-500">
-                    Este sector todavía no tiene mesas
+                    Este sector todavía no tiene elementos
                   </p>
                   {canManageTables ? (
                     <p className="mt-1 text-xs text-slate-400">
-                      Activá “Editar plano” para agregar o mover una mesa.
+                      Activá “Editar plano” para agregar mesas y figuras.
                     </p>
                   ) : null}
                 </div>
               </div>
             ) : null}
+            {sectorShapes.map((shape) => {
+              const position = shapePositions[shape.id] ?? {
+                x: shape.layoutX,
+                y: shape.layoutY,
+              };
+              const selected = selectedShapeId === shape.id;
+              const appearance: FloorPlanShapeDto =
+                selected && shapeDraft ? { ...shape, ...shapeDraft } : shape;
+              const style = {
+                left: `${position.x}%`,
+                top: `${position.y}%`,
+                width: `${appearance.layoutWidth}%`,
+                height: `${appearance.layoutHeight}%`,
+                backgroundColor: appearance.color,
+                color: contrastColor(appearance.color),
+                borderRadius: appearance.kind === "ELLIPSE" ? "9999px" : "8px",
+                touchAction: "none",
+              };
+              if (!editing)
+                return (
+                  <div
+                    key={shape.id}
+                    className="pointer-events-none absolute grid place-items-center border border-black/10 px-2 text-center text-[10px] font-bold text-slate-800/75 shadow-sm"
+                    style={style}
+                    aria-hidden="true"
+                  >
+                    {appearance.label}
+                  </div>
+                );
+              return (
+                <button
+                  key={shape.id}
+                  type="button"
+                  aria-label={`Editar figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
+                  onClick={() => {
+                    setSelectedTableId(null);
+                    setSelectedShapeId(shape.id);
+                  }}
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    const bounds = canvasRef.current?.getBoundingClientRect();
+                    if (!bounds) return;
+                    setSelectedTableId(null);
+                    setSelectedShapeId(shape.id);
+                    setShapeDrag({
+                      shapeId: shape.id,
+                      offsetX:
+                        ((event.clientX - bounds.left) / bounds.width) * 100 -
+                        position.x,
+                      offsetY:
+                        ((event.clientY - bounds.top) / bounds.height) * 100 -
+                        position.y,
+                    });
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  }}
+                  onPointerMove={(event) => {
+                    if (shapeDrag?.shapeId !== shape.id) return;
+                    const next = shapePositionFromPointer(
+                      appearance,
+                      event.clientX,
+                      event.clientY,
+                      shapeDrag.offsetX,
+                      shapeDrag.offsetY,
+                    );
+                    setShapePositions((current) => ({
+                      ...current,
+                      [shape.id]: next,
+                    }));
+                  }}
+                  onPointerUp={(event) => {
+                    if (shapeDrag?.shapeId !== shape.id) return;
+                    const next = shapePositionFromPointer(
+                      appearance,
+                      event.clientX,
+                      event.clientY,
+                      shapeDrag.offsetX,
+                      shapeDrag.offsetY,
+                    );
+                    setShapePositions((current) => ({
+                      ...current,
+                      [shape.id]: next,
+                    }));
+                    setShapeDrag(null);
+                    persistShape(
+                      shape,
+                      next,
+                      selected && shapeDraft ? shapeDraft : undefined,
+                    );
+                  }}
+                  className={`absolute grid cursor-grab place-items-center border-2 border-black/15 px-2 text-center text-[10px] font-bold text-slate-800/75 shadow-sm focus:outline-none focus:ring-4 focus:ring-brand-200 active:cursor-grabbing ${selected ? "ring-4 ring-amber-300" : ""}`}
+                  style={style}
+                >
+                  <span className="min-w-0 truncate">
+                    <ArrowsOutCardinal
+                      className="mx-auto mb-0.5 opacity-50"
+                      size={13}
+                    />
+                    {appearance.label || floorShapeLabels[appearance.kind]}
+                  </span>
+                </button>
+              );
+            })}
             {sectorTables.map((table) => {
               const occupied = Boolean(table.currentOrderId);
               const position = positions[table.id] ?? {
@@ -427,17 +714,19 @@ export function TableFloorPlan({
                   type="button"
                   aria-label={`${editing ? "Editar" : occupied ? "Abrir pedido de" : "Abrir"} mesa ${table.number}`}
                   disabled={!editing && !occupied && !data.cashSession}
-                  onClick={() =>
-                    editing
-                      ? setSelectedTableId(table.id)
-                      : onActivateTable(table)
-                  }
+                  onClick={() => {
+                    if (editing) {
+                      setSelectedShapeId(null);
+                      setSelectedTableId(table.id);
+                    } else onActivateTable(table);
+                  }}
                   onPointerDown={(event) => {
                     if (!editing) return;
                     event.preventDefault();
                     const bounds = canvasRef.current?.getBoundingClientRect();
                     if (!bounds) return;
                     setSelectedTableId(table.id);
+                    setSelectedShapeId(null);
                     setDrag({
                       tableId: table.id,
                       offsetX:
@@ -520,7 +809,7 @@ export function TableFloorPlan({
                     }));
                     persistPosition(table, next);
                   }}
-                  className={`absolute grid place-items-center border-2 px-2 text-center shadow-md transition focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-2xl" : "rounded-xl"} ${occupied ? "border-brand-500 bg-brand-600 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:-translate-y-0.5 hover:shadow-lg"}`}
+                  className={`absolute z-10 grid place-items-center border-2 px-2 text-center shadow-md transition focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-2xl" : "rounded-xl"} ${occupied ? "border-brand-500 bg-brand-600 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:-translate-y-0.5 hover:shadow-lg"}`}
                   style={{
                     left: `${position.x}%`,
                     top: `${position.y}%`,
@@ -564,7 +853,11 @@ export function TableFloorPlan({
 
         {editing ? (
           <Card className="h-fit p-4">
-            <h3 className="text-sm font-extrabold">Propiedades de la mesa</h3>
+            <h3 className="text-sm font-extrabold">
+              {selectedShape
+                ? "Propiedades de la figura"
+                : "Propiedades de la mesa"}
+            </h3>
             {selectedTable && draft ? (
               <div className="mt-4 grid gap-3">
                 <Field label="Número">
@@ -668,9 +961,139 @@ export function TableFloorPlan({
                   <Trash size={16} /> Eliminar mesa
                 </Button>
               </div>
+            ) : selectedShape && shapeDraft ? (
+              <div className="mt-4 grid gap-3">
+                <Field label="Tipo de figura">
+                  <Select
+                    value={shapeDraft.kind}
+                    onChange={(event) => {
+                      const kind = event.target
+                        .value as FloorPlanShapeDto["kind"];
+                      setShapeDraft({
+                        ...shapeDraft,
+                        kind,
+                        layoutWidth: kind === "LINE" ? 34 : 24,
+                        layoutHeight: kind === "LINE" ? 4 : 16,
+                      });
+                    }}
+                  >
+                    {Object.entries(floorShapeLabels).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Etiqueta opcional">
+                  <Input
+                    value={shapeDraft.label ?? ""}
+                    maxLength={60}
+                    placeholder="Ej. Barra, pared, entrada"
+                    onChange={(event) =>
+                      setShapeDraft({
+                        ...shapeDraft,
+                        label: event.target.value,
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="Color">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="color"
+                      value={shapeDraft.color}
+                      onChange={(event) =>
+                        setShapeDraft({
+                          ...shapeDraft,
+                          color: event.target.value.toUpperCase(),
+                        })
+                      }
+                      className="w-16 cursor-pointer p-1"
+                    />
+                    <Input
+                      value={shapeDraft.color}
+                      maxLength={7}
+                      onChange={(event) =>
+                        setShapeDraft({
+                          ...shapeDraft,
+                          color: event.target.value.toUpperCase(),
+                        })
+                      }
+                      aria-label="Código de color"
+                    />
+                  </div>
+                </Field>
+                <Field label="Sector de la figura">
+                  <Select
+                    value={shapeDraft.sectorId}
+                    onChange={(event) =>
+                      setShapeDraft({
+                        ...shapeDraft,
+                        sectorId: event.target.value,
+                      })
+                    }
+                  >
+                    {sectors.map((sector) => (
+                      <option key={sector.id} value={sector.id}>
+                        {sector.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Ancho figura %">
+                    <Input
+                      type="number"
+                      min={2}
+                      max={100}
+                      value={shapeDraft.layoutWidth}
+                      onChange={(event) =>
+                        setShapeDraft({
+                          ...shapeDraft,
+                          layoutWidth: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="Alto figura %">
+                    <Input
+                      type="number"
+                      min={2}
+                      max={100}
+                      value={shapeDraft.layoutHeight}
+                      onChange={(event) =>
+                        setShapeDraft({
+                          ...shapeDraft,
+                          layoutHeight: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Field>
+                </div>
+                <Button
+                  type="button"
+                  onClick={saveShapeDraft}
+                  disabled={
+                    updateFloorShape.isPending ||
+                    !/^#[0-9A-F]{6}$/i.test(shapeDraft.color) ||
+                    shapeDraft.layoutWidth < 2 ||
+                    shapeDraft.layoutHeight < 2
+                  }
+                >
+                  <FloppyDisk size={16} /> Guardar figura
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setDeletingShape(selectedShape)}
+                  disabled={deleteFloorShape.isPending}
+                >
+                  <Trash size={16} /> Eliminar figura
+                </Button>
+              </div>
             ) : (
               <div className="mt-4 rounded-xl border border-dashed border-slate-200 p-5 text-center text-xs text-slate-400">
-                Seleccioná una mesa del plano para editarla.
+                Seleccioná una mesa o figura del plano para editarla.
               </div>
             )}
             <div className="mt-4 border-t border-slate-100 pt-3 text-[10px] text-slate-400">
@@ -798,6 +1221,36 @@ export function TableFloorPlan({
             disabled={deleteSector.isPending}
           >
             Eliminar sector
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(deletingShape)}
+        onClose={() => {
+          if (!deleteFloorShape.isPending) setDeletingShape(null);
+        }}
+        title="Eliminar figura"
+        description="La figura se quitará únicamente de este sector. Las mesas y sus pedidos no se modificarán."
+      >
+        <div className="flex justify-end gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => setDeletingShape(null)}
+            disabled={deleteFloorShape.isPending}
+          >
+            Cancelar
+          </Button>
+          <Button
+            type="button"
+            onClick={() =>
+              deletingShape &&
+              deleteFloorShape.mutate({ shapeId: deletingShape.id })
+            }
+            disabled={deleteFloorShape.isPending}
+          >
+            {deleteFloorShape.isPending ? "Eliminando…" : "Eliminar figura"}
           </Button>
         </div>
       </Modal>

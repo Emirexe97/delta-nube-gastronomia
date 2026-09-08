@@ -28,7 +28,7 @@ de una transacción antes de crear datos iniciales.
 - `categories`, `products`, `price_lists`, `product_prices`
 - `modifier_groups`, `modifiers`, `product_modifiers`
 - `customers`, `customer_addresses`
-- `table_sectors`, `restaurant_tables`
+- `table_sectors`, `restaurant_tables`, `floor_plan_shapes`
 - `orders`, `order_items`, `order_item_halves`, `order_item_modifiers`
 - `delivery_ledger`
 - `print_jobs`
@@ -42,6 +42,8 @@ de una transacción antes de crear datos iniciales.
 - Un pedido abierto por mesa se protege con índice único parcial.
 - Cada mesa conserva sector, posición porcentual, tamaño y forma para reconstruir
   el plano en cualquier resolución.
+- Cada figura decorativa conserva sector, tipo, etiqueta, color, posición y
+  tamaño; se elimina automáticamente si se elimina su sector.
 - Las líneas guardan nombre y precio snapshot.
 - Cada dirección de cliente guarda su valor de envío habitual; el pedido
   conserva además su propio snapshot histórico del costo aplicado.

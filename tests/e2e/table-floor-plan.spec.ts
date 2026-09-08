@@ -159,3 +159,57 @@ test("sincroniza altas, cambios y eliminaciones entre ambas vistas", async () =>
     page.getByRole("button", { name: `Abrir mesa ${newNumber}` }),
   ).toHaveCount(0);
 });
+
+test("dibuja y personaliza figuras persistentes dentro de un sector", async () => {
+  await page.getByRole("link", { name: "Salón" }).click();
+  await page.getByRole("tab", { name: "Plano por sectores" }).click();
+  await page.getByRole("button", { name: "Editar plano" }).click();
+  await page.getByRole("button", { name: "Nueva figura" }).click();
+
+  await expect(page.getByLabel("Tipo de figura")).toHaveValue("RECTANGLE");
+  await page.getByLabel("Tipo de figura").selectOption("ELLIPSE");
+  await page.getByLabel("Etiqueta opcional").fill("Macetero central");
+  await page.getByLabel("Código de color").fill("#22C55E");
+  await page.getByLabel("Ancho figura %").fill("26");
+  await page.getByLabel("Alto figura %").fill("18");
+  await page.getByRole("button", { name: "Guardar figura" }).click();
+  await expect(page.getByText("Figura guardada.")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Editar figura Macetero central" }),
+  ).toBeVisible();
+  const figure = page.getByRole("button", {
+    name: "Editar figura Macetero central",
+  });
+  const bounds = await figure.boundingBox();
+  expect(bounds).not.toBeNull();
+  if (bounds) {
+    await page.mouse.move(
+      bounds.x + bounds.width / 2,
+      bounds.y + bounds.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + bounds.width / 2 + 90, bounds.y + 60);
+    await page.mouse.up();
+  }
+
+  const saved = await page.evaluate(async () => {
+    const data = await window.gastronomy.bootstrap();
+    return data.floorPlanShapes.find(
+      (shape) => shape.label === "Macetero central",
+    );
+  });
+  expect(saved).toMatchObject({
+    kind: "ELLIPSE",
+    color: "#22C55E",
+    layoutWidth: 26,
+    layoutHeight: 18,
+  });
+  expect(saved?.layoutX).toBeGreaterThan(12);
+
+  await page.reload();
+  await page.getByRole("link", { name: "Salón" }).click();
+  await page.getByRole("tab", { name: "Plano por sectores" }).click();
+  await expect(
+    page.getByText("Macetero central", { exact: true }),
+  ).toBeVisible();
+});

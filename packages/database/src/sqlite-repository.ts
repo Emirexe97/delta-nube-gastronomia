@@ -29,6 +29,7 @@ import type {
   DeliveryLedgerDto,
   DriverDeliveryActivityDto,
   DetailedReportDto,
+  FloorPlanShapeDto,
   Id,
   OpenCashSessionInput,
   OrderDto,
@@ -752,6 +753,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       products: this.listProducts(),
       modifiers: this.listModifiers(),
       tableSectors: this.listTableSectors(),
+      floorPlanShapes: this.listFloorPlanShapes(),
       tables: this.listTables(),
       orders: currentCash
         ? this.listBootstrapOrders(String(currentCash.id))
@@ -1392,6 +1394,30 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     ).map((row) => ({
       id: String(row.id),
       name: String(row.name),
+      sortOrder: Number(row.sort_order),
+    }));
+  }
+
+  private listFloorPlanShapes(): FloorPlanShapeDto[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT id, sector_id, kind, label, color, layout_x, layout_y,
+                  layout_width, layout_height, sort_order
+           FROM floor_plan_shapes
+           ORDER BY sort_order, created_at, id`,
+        )
+        .all() as Row[]
+    ).map((row) => ({
+      id: String(row.id),
+      sectorId: String(row.sector_id),
+      kind: String(row.kind) as FloorPlanShapeDto["kind"],
+      label: row.label == null ? null : String(row.label),
+      color: String(row.color),
+      layoutX: Number(row.layout_x),
+      layoutY: Number(row.layout_y),
+      layoutWidth: Number(row.layout_width),
+      layoutHeight: Number(row.layout_height),
       sortOrder: Number(row.sort_order),
     }));
   }
@@ -4959,6 +4985,142 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       return { deleted: true as const, fallbackSectorId: fallback.id };
     });
     return run();
+  }
+
+  createFloorPlanShape(input: {
+    sectorId: Id;
+    kind: FloorPlanShapeDto["kind"];
+    label?: string | null;
+    color: string;
+    layoutX: number;
+    layoutY: number;
+    layoutWidth: number;
+    layoutHeight: number;
+  }): FloorPlanShapeDto {
+    assertPermission(this.currentUser().permissions, "tables.manage");
+    this.assertFloorPlanShape(input);
+    const id = randomUUID();
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO floor_plan_shapes(
+           id, sector_id, kind, label, color, layout_x, layout_y,
+           layout_width, layout_height, sort_order, created_at, updated_at
+         ) VALUES (
+           ?, ?, ?, ?, ?, ?, ?, ?, ?,
+           (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM floor_plan_shapes WHERE sector_id = ?),
+           ?, ?
+         )`,
+      )
+      .run(
+        id,
+        input.sectorId,
+        input.kind,
+        input.label?.trim() || null,
+        input.color.toUpperCase(),
+        input.layoutX,
+        input.layoutY,
+        input.layoutWidth,
+        input.layoutHeight,
+        input.sectorId,
+        timestamp,
+        timestamp,
+      );
+    return requireRow(
+      this.listFloorPlanShapes().find((shape) => shape.id === id),
+      "No se pudo leer la figura creada.",
+    );
+  }
+
+  updateFloorPlanShape(input: {
+    shapeId: Id;
+    sectorId: Id;
+    kind: FloorPlanShapeDto["kind"];
+    label?: string | null;
+    color: string;
+    layoutX: number;
+    layoutY: number;
+    layoutWidth: number;
+    layoutHeight: number;
+    sortOrder?: number;
+  }): FloorPlanShapeDto {
+    assertPermission(this.currentUser().permissions, "tables.manage");
+    const before = requireRow(
+      this.listFloorPlanShapes().find((shape) => shape.id === input.shapeId),
+      "La figura no existe.",
+    );
+    this.assertFloorPlanShape(input);
+    this.db
+      .prepare(
+        `UPDATE floor_plan_shapes
+         SET sector_id = ?, kind = ?, label = ?, color = ?, layout_x = ?,
+             layout_y = ?, layout_width = ?, layout_height = ?, sort_order = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        input.sectorId,
+        input.kind,
+        input.label?.trim() || null,
+        input.color.toUpperCase(),
+        input.layoutX,
+        input.layoutY,
+        input.layoutWidth,
+        input.layoutHeight,
+        input.sortOrder ?? before.sortOrder,
+        nowIso(),
+        input.shapeId,
+      );
+    return requireRow(
+      this.listFloorPlanShapes().find((shape) => shape.id === input.shapeId),
+      "No se pudo leer la figura actualizada.",
+    );
+  }
+
+  deleteFloorPlanShape(input: { shapeId: Id }): { deleted: true } {
+    assertPermission(this.currentUser().permissions, "tables.manage");
+    const result = this.db
+      .prepare("DELETE FROM floor_plan_shapes WHERE id = ?")
+      .run(input.shapeId);
+    if (!result.changes) throw new Error("La figura no existe.");
+    return { deleted: true };
+  }
+
+  private assertFloorPlanShape(input: {
+    sectorId: Id;
+    kind: string;
+    label?: string | null;
+    color: string;
+    layoutX: number;
+    layoutY: number;
+    layoutWidth: number;
+    layoutHeight: number;
+  }) {
+    if (!this.listTableSectors().some((sector) => sector.id === input.sectorId))
+      throw new Error("El sector seleccionado no existe.");
+    if (!["RECTANGLE", "ELLIPSE", "LINE"].includes(input.kind))
+      throw new Error("El tipo de figura no es válido.");
+    if (!/^#[0-9A-F]{6}$/i.test(input.color))
+      throw new Error("El color de la figura no es válido.");
+    if ((input.label?.trim().length ?? 0) > 60)
+      throw new Error("La etiqueta admite hasta 60 caracteres.");
+    const values = [
+      input.layoutX,
+      input.layoutY,
+      input.layoutWidth,
+      input.layoutHeight,
+    ];
+    if (
+      !values.every(Number.isFinite) ||
+      input.layoutX < 0 ||
+      input.layoutY < 0 ||
+      input.layoutWidth < 2 ||
+      input.layoutWidth > 100 ||
+      input.layoutHeight < 2 ||
+      input.layoutHeight > 100 ||
+      input.layoutX + input.layoutWidth > 100 ||
+      input.layoutY + input.layoutHeight > 100
+    )
+      throw new Error("La posición o el tamaño de la figura no es válido.");
   }
 
   updateTable(input: {

@@ -618,4 +618,27 @@ CREATE INDEX IF NOT EXISTS restaurant_tables_sector_idx
   ON restaurant_tables(sector_id, active, sort_order);
 `,
   },
+  {
+    version: 18,
+    name: "floor_plan_decorative_shapes",
+    sql: String.raw`
+CREATE TABLE IF NOT EXISTS floor_plan_shapes (
+  id TEXT PRIMARY KEY,
+  sector_id TEXT NOT NULL REFERENCES table_sectors(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('RECTANGLE','ELLIPSE','LINE')),
+  label TEXT,
+  color TEXT NOT NULL,
+  layout_x REAL NOT NULL,
+  layout_y REAL NOT NULL,
+  layout_width REAL NOT NULL,
+  layout_height REAL NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS floor_plan_shapes_sector_idx
+  ON floor_plan_shapes(sector_id, sort_order, created_at);
+`,
+  },
 ];
