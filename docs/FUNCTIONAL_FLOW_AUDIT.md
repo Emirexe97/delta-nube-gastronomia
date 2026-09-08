@@ -52,7 +52,7 @@ La corrección introduce tres principios:
 - Confirmar exige dirección e identificación suficiente del cliente.
 - `OUT_FOR_DELIVERY` sólo es válido para envíos.
 - Transferencia anticipada: queda `PAID`; al entregar se genera la deuda del costo de envío al repartidor.
-- El cliente se puede buscar o crear dentro del alta de para retirar/envío; la búsqueda espera 1 segundo y permite flechas, `Tab`, `Enter` o clic.
+- El cliente se puede buscar o crear dentro del alta de para retirar/envío; la búsqueda espera 0,1 segundos y permite flechas, `Tab`, `Enter` o clic.
 - El repartidor no posee login, pantalla ni PIN propio: es una identidad operativa para asignación, ganancias y rendiciones visibles por caja.
 - Efectivo en puerta: **Cobrar y entregar** deja `DELIVERED + PAID + rendición PENDING`.
 - La acción **Cobrar y entregar** no permite mezclar efectivo en puerta con medios anticipados: el modelo de rendición exige elegir una de las dos modalidades.
@@ -81,6 +81,10 @@ La corrección introduce tres principios:
 ## Administración de mesas
 
 - `Configuración → Salón y mesas` permite generar 1…N, editar número, nombre y orden, y activar/desactivar.
+- `Salón → Plano por sectores` permite crear subpestañas como Salón, Terraza o
+  Patio, arrastrar mesas, editar su forma y tamaño y moverlas entre sectores.
+- Fuera del modo edición, cada mesa del plano abre o continúa el mismo pedido
+  que la vista clásica; la carga rápida está disponible en ambas vistas.
 - El ID interno es independiente del número visible.
 - Los números se validan como únicos.
 - Una mesa ocupada no puede desactivarse.

@@ -543,4 +543,79 @@ ALTER TABLE cash_movements ADD COLUMN reference_id TEXT REFERENCES cash_movement
 ALTER TABLE orders ADD COLUMN delivery_address_notes_snapshot TEXT;
 `,
   },
+  {
+    version: 16,
+    name: "retain_sensitive_audit_events_only",
+    sql: String.raw`
+DELETE FROM audit_log
+WHERE action NOT IN (
+  'CASH_OPENED',
+  'CASH_INCOME',
+  'CASH_EXPENSE',
+  'CASH_WITHDRAWAL',
+  'CASH_ADJUSTMENT',
+  'CASH_CLOSED',
+  'CASH_FORCE_CLOSED',
+  'ORDER_ITEM_PRICE_OVERRIDDEN',
+  'ORDER_EDITED_AFTER_PRINT',
+  'ORDER_ITEM_REMOVED',
+  'ORDER_MODIFIER_REMOVED',
+  'ORDER_DISCOUNT_APPLIED',
+  'PAYMENT_REFUNDED',
+  'ORDER_CANCELLED',
+  'CUSTOMER_ARCHIVED',
+  'CUSTOMER_MERGED',
+  'CUSTOMER_MERGE_RECEIVED',
+  'CATEGORY_DELETED',
+  'PRODUCT_UPDATED',
+  'PRODUCTS_BULK_UPDATED',
+  'STOCK_ADJUSTED',
+  'USER_CREATED',
+  'DRIVER_CREATED',
+  'USER_UPDATED',
+  'USER_DELETED',
+  'DELIVERY_SETTLED',
+  'CASH_REVERSED',
+  'DELIVERY_SETTLEMENT_REVERSED',
+  'TABLE_DELETED',
+  'TABLE_SECTOR_DELETED',
+  'SETTINGS_UPDATED'
+);
+`,
+  },
+  {
+    version: 17,
+    name: "editable_dining_room_layout",
+    sql: String.raw`
+CREATE TABLE IF NOT EXISTS table_sectors (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO table_sectors(id, name, sort_order, created_at, updated_at)
+VALUES ('sector-main', 'Salón', 1, datetime('now'), datetime('now'));
+
+ALTER TABLE restaurant_tables ADD COLUMN sector_id TEXT REFERENCES table_sectors(id);
+ALTER TABLE restaurant_tables ADD COLUMN layout_x REAL;
+ALTER TABLE restaurant_tables ADD COLUMN layout_y REAL;
+ALTER TABLE restaurant_tables ADD COLUMN layout_width REAL;
+ALTER TABLE restaurant_tables ADD COLUMN layout_height REAL;
+ALTER TABLE restaurant_tables ADD COLUMN shape TEXT;
+
+UPDATE restaurant_tables
+SET sector_id = 'sector-main',
+    layout_x = 4 + ((number - 1) % 5) * 19,
+    layout_y = 6 + (CAST((number - 1) / 5 AS INTEGER) % 4) * 23,
+    layout_width = 14,
+    layout_height = 17,
+    shape = 'SQUARE'
+WHERE sector_id IS NULL;
+
+CREATE INDEX IF NOT EXISTS restaurant_tables_sector_idx
+  ON restaurant_tables(sector_id, active, sort_order);
+`,
+  },
 ];

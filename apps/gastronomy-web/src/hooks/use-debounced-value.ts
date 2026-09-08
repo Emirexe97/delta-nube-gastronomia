@@ -1,11 +1,8 @@
 import { useEffect, useState } from "react";
 
-export const AUTOCOMPLETE_DELAY_MS = 1_000;
+export const AUTOCOMPLETE_DELAY_MS = 100;
 
-export function useDebouncedValue<T>(
-  value: T,
-  delay = AUTOCOMPLETE_DELAY_MS,
-) {
+export function useDebouncedValue<T>(value: T, delay = AUTOCOMPLETE_DELAY_MS) {
   const [debouncedValue, setDebouncedValue] = useState(value);
 
   useEffect(() => {

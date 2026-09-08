@@ -282,7 +282,7 @@ test("agrega, normaliza y quita la observación de comanda de una línea", () =>
     assert.equal(cleared.items[0]?.notes, null);
     assert.equal(
       repository.getAuditLog({ action: "ORDER_ITEM_NOTES_UPDATED" }).length,
-      2,
+      0,
     );
   });
 });
@@ -392,8 +392,8 @@ test("categoría puede renombrarse y ordenarse pero no ocultar productos activos
       /producto\(s\) activo/i,
     );
     assert.equal(
-      repository.getAuditLog({ action: "CATEGORY_UPDATED" })[0]?.authorizerName,
-      "Administrador",
+      repository.getAuditLog({ action: "CATEGORY_UPDATED" }).length,
+      0,
     );
   });
 });
@@ -620,7 +620,7 @@ test("una impresión en cola tras un cierre inesperado se puede reanudar", () =>
     assert.equal(repository.getOrder(order.id).printAttemptCount, 1);
     assert.equal(
       repository.getAuditLog({ action: "PRINT_QUEUED_RECOVERED" }).length,
-      1,
+      0,
     );
   });
 });
@@ -658,7 +658,7 @@ test("bootstrap conserva fallas de impresión aunque existan más de cien éxito
   });
 });
 
-test("bootstrap suma todos los pedidos accionables a doscientos históricos", () => {
+test("bootstrap expone todos los pedidos del turno actual", () => {
   withRepository((repository) => {
     repository.openCashSession({ openingAmountMinor: 0 });
     const table = repository.ensureTable(77);
@@ -707,13 +707,91 @@ test("bootstrap suma todos los pedidos accionables a doscientos históricos", ()
     }
 
     const orders = repository.bootstrap().orders;
-    assert.equal(orders.length, 202);
+    assert.equal(orders.length, 207);
     assert.equal(new Set(orders.map((order) => order.id)).size, orders.length);
     assert.ok(orders.some((order) => order.id === oldTableOrder.id));
     assert.ok(orders.some((order) => order.id === oldDelivery.id));
     assert.equal(
       orders.filter((order) => order.operationalStatus === "DELIVERED").length,
-      200,
+      205,
+    );
+  });
+});
+
+test("bootstrap reinicia pedidos al cerrar y abrir un nuevo turno", () => {
+  withRepository((repository) => {
+    const firstSession = repository.openCashSession({ openingAmountMinor: 0 });
+    const first = repository.createOrder(takeawayOrder());
+    const populated = repository.addOrderItem({
+      orderId: first.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: first.id });
+    repository.payOrder({
+      orderId: first.id,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+    repository.updateOrderStatus(first.id, "DELIVERED");
+    repository.closeCashSession({
+      countedAmountMinor:
+        repository.bootstrap().cashSession!.expectedAmountMinor,
+    });
+
+    assert.deepEqual(repository.bootstrap().orders, []);
+    repository.openCashSession({ openingAmountMinor: 0 });
+    assert.deepEqual(repository.bootstrap().orders, []);
+
+    const second = repository.createOrder(
+      takeawayOrder({ customerName: "Turno nuevo" }),
+    );
+    assert.deepEqual(
+      repository.bootstrap().orders.map((order) => order.id),
+      [second.id],
+    );
+    assert.equal(repository.getOrder(first.id).id, first.id);
+    assert.deepEqual(
+      repository
+        .getCashSessionReport({ cashSessionId: firstSession.id })
+        .orders.map((order) => order.id),
+      [first.id],
+    );
+  });
+});
+
+test("auditoría guarda sólo acciones sensibles y eliminaciones", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const table = repository.ensureTable(78);
+    repository.createCustomer({
+      name: "Cliente sin evento sensible",
+      phone: "11 5555-7878",
+    });
+    const order = repository.createOrder({
+      type: "DINE_IN",
+      tableId: table.id,
+      waiterUserId: "user-admin",
+    });
+    const populated = repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.updateOrderItemNotes({
+      orderId: order.id,
+      itemId: populated.items[0]!.id,
+      notes: "Sin cebolla",
+    });
+    repository.removeOrderItem(order.id, populated.items[0]!.id);
+
+    const actions = (
+      repository.db
+        .prepare("SELECT action FROM audit_log ORDER BY timestamp")
+        .all() as Array<{ action: string }>
+    ).map((entry) => entry.action);
+    assert.deepEqual(actions, ["CASH_OPENED", "ORDER_ITEM_REMOVED"]);
+    assert.equal(repository.getAuditLog({ action: "TABLE_CREATED" }).length, 0);
+    assert.equal(
+      repository.getAuditLog({ action: "CUSTOMER_CREATED" }).length,
+      0,
     );
   });
 });
@@ -1604,9 +1682,8 @@ test("envío confirmado permite asignar y corregir repartidor antes de salir", (
       /debe conservar/i,
     );
     assert.equal(
-      repository.getAuditLog({ action: "DELIVERY_DRIVER_ASSIGNED" })[0]
-        ?.entityId,
-      order.id,
+      repository.getAuditLog({ action: "DELIVERY_DRIVER_ASSIGNED" }).length,
+      0,
     );
   });
 });
@@ -1678,7 +1755,7 @@ test("carga rápida crea mesa idempotente, resuelve número de mozo y agrega can
     });
     assert.equal(updated.waiterUserId, waiter.id);
     assert.equal(updated.items[0]?.quantity, 3);
-    assert.equal(repository.getAuditLog({ action: "TABLE_CREATED" }).length, 1);
+    assert.equal(repository.getAuditLog({ action: "TABLE_CREATED" }).length, 0);
   });
 });
 
@@ -1721,6 +1798,53 @@ test("migración asigna número de personal a usuarios existentes", () => {
     assert.equal(repository.bootstrap().users[0]?.staffNumber, 1);
   } finally {
     repository.close();
+    for (const suffix of ["", "-wal", "-shm"])
+      rmSync(`${path}${suffix}`, { force: true });
+  }
+});
+
+test("migración elimina eventos de auditoría no sensibles", () => {
+  const path = join(tmpdir(), `gastronomy-audit-${randomUUID()}.sqlite`);
+  const first = new SqliteGastronomyRepository(path, {
+    seedStarterCatalog: true,
+  });
+  try {
+    const insert = first.db.prepare(
+      `INSERT INTO audit_log(id, timestamp, entity_type, entity_id, action)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const timestamp = new Date().toISOString();
+    insert.run(
+      "audit-sensitive",
+      timestamp,
+      "ORDER",
+      "order-1",
+      "ORDER_ITEM_REMOVED",
+    );
+    insert.run(
+      "audit-common",
+      timestamp,
+      "RESTAURANT_TABLE",
+      "table-1",
+      "TABLE_CREATED",
+    );
+    first.db.prepare("DELETE FROM schema_migrations WHERE version = 16").run();
+  } finally {
+    first.close();
+  }
+
+  const migrated = new SqliteGastronomyRepository(path, {
+    seedStarterCatalog: true,
+  });
+  try {
+    const actions = (
+      migrated.db.prepare("SELECT action FROM audit_log").all() as Array<{
+        action: string;
+      }>
+    ).map((entry) => entry.action);
+    assert.deepEqual(actions, ["ORDER_ITEM_REMOVED"]);
+  } finally {
+    migrated.close();
     for (const suffix of ["", "-wal", "-shm"])
       rmSync(`${path}${suffix}`, { force: true });
   }
@@ -2114,7 +2238,7 @@ test("cliente conserva dirección principal y alternativas al editarse", () => {
     );
     assert.equal(
       repository.getAuditLog({ action: "CUSTOMER_UPDATED" }).length,
-      1,
+      0,
     );
   });
 });
@@ -2177,7 +2301,7 @@ test("borrador de delivery vuelve a datos y actualiza el valor de la dirección"
     );
     assert.equal(
       repository.getAuditLog({ action: "ORDER_DRAFT_UPDATED" }).length,
-      1,
+      0,
     );
   });
 });
@@ -2581,6 +2705,66 @@ test("reducir mesas conserva ocupadas e historial y desactiva sólo las libres",
       .tables.find((table) => table.id === table20.id);
     assert.ok(preserved);
     assert.equal(preserved.active, false);
+  });
+});
+
+test("persiste sectores, forma, tamaño y posición de las mesas", () => {
+  withRepository((repository) => {
+    const mainSector = repository.bootstrap().tableSectors[0]!;
+    assert.equal(mainSector.name, "Salón");
+    const terrace = repository.createTableSector({ name: "Terraza" });
+    const table = repository.ensureTable(81);
+    const updated = repository.updateTable({
+      tableId: table.id,
+      number: table.number,
+      name: "Junto a la ventana",
+      active: true,
+      sortOrder: table.sortOrder,
+      sectorId: terrace.id,
+      layoutX: 21.5,
+      layoutY: 33,
+      layoutWidth: 24,
+      layoutHeight: 12,
+      shape: "RECTANGLE",
+    });
+    assert.deepEqual(
+      {
+        name: updated.name,
+        sectorId: updated.sectorId,
+        layoutX: updated.layoutX,
+        layoutY: updated.layoutY,
+        layoutWidth: updated.layoutWidth,
+        layoutHeight: updated.layoutHeight,
+        shape: updated.shape,
+      },
+      {
+        name: "Junto a la ventana",
+        sectorId: terrace.id,
+        layoutX: 21.5,
+        layoutY: 33,
+        layoutWidth: 24,
+        layoutHeight: 12,
+        shape: "RECTANGLE",
+      },
+    );
+    assert.equal(
+      repository.updateTableSector({
+        sectorId: terrace.id,
+        name: "Patio",
+      }).name,
+      "Patio",
+    );
+    const deleted = repository.deleteTableSector({ sectorId: terrace.id });
+    assert.equal(deleted.fallbackSectorId, mainSector.id);
+    assert.equal(
+      repository.bootstrap().tables.find((item) => item.id === table.id)
+        ?.sectorId,
+      mainSector.id,
+    );
+    assert.equal(
+      repository.getAuditLog({ action: "TABLE_SECTOR_DELETED" }).length,
+      1,
+    );
   });
 });
 

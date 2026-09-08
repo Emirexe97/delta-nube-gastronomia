@@ -32,6 +32,8 @@
   contra una segunda devolución y cancelación posterior;
 - persistencia de fecha/marca de pedidos programados;
 - creación idempotente de mesa, resolución de número de mozo y carga por cantidad;
+- creación, renombrado y eliminación de sectores, con forma, tamaño y posición
+  persistente de las mesas;
 - recuperación de caja, pedido, estado y líneas después de reiniciar;
 - autorización y auditoría de altas/cambios de usuarios;
 - informes históricos usando snapshots de producto y categoría;
@@ -53,10 +55,12 @@ interfaz:
 3. alta y asignación explícita de mozo al abrir una mesa;
 4. edición autorizada de un producto y consulta de su historial;
 5. creación de mesa y carga de productos con autocompletado alfabético,
-   espera de 1 segundo, flechas, `Tab`, `Enter`, clic y cambio de precio con
+   espera de 0,1 segundos, flechas, `Tab`, `Enter`, clic y cambio de precio con
    retorno seguro o autorización por PIN;
 6. conciliación de caja, cambio final distinto y confirmación definitiva.
 7. guardado y recarga de un perfil de impresión y sus encabezados/pies editables.
+8. creación de un sector y una mesa desde el plano, edición de forma, arrastre,
+   persistencia y apertura del pedido desde la mesa dibujada.
 
 El primer viaje también cobra y devuelve un pago desde la interfaz; el segundo
 verifica que Clientes liste sin buscar y permita editar direcciones; el cuarto

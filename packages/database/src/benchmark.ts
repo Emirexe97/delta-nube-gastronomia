@@ -15,6 +15,10 @@ const repository = new SqliteGastronomyRepository(path, {
 
 try {
   const cash = repository.openCashSession({ openingAmountMinor: 10_000_000 });
+  const driver = repository.createDriver({
+    fullName: "Repartidor benchmark",
+    authorizerPin: "2468",
+  });
   const seedStarted = performance.now();
   for (let index = 0; index < orderCount; index += 1) {
     const type =
@@ -24,9 +28,12 @@ try {
       type,
       tableId: type === "DINE_IN" ? `table-${(index % 10) + 1}` : null,
       customerName: offPremise ? `Cliente ${index}` : null,
-      customerPhone: offPremise ? `11 5555 ${String(index).padStart(4, "0")}` : null,
+      customerPhone: offPremise
+        ? `11 5555 ${String(index).padStart(4, "0")}`
+        : null,
       deliveryAddress: offPremise ? `Calle ${index}` : null,
       deliveryFeeMinor: type === "DELIVERY" ? 250_000 : 0,
+      driverUserId: type === "DELIVERY" ? driver.id : null,
       promisedAt: new Date(
         Date.now() + (20 + (index % 80)) * 60_000,
       ).toISOString(),
@@ -73,10 +80,7 @@ try {
   const actionableOrders = Math.ceil(orderCount / 4);
   const completedOrders = orderCount - actionableOrders;
   assert.equal(persistedOrders, orderCount);
-  assert.equal(
-    bootstrap.orders.length,
-    actionableOrders + Math.min(200, completedOrders),
-  );
+  assert.equal(bootstrap.orders.length, orderCount);
   assert.equal(report.orderCount, completedOrders);
   assert.ok(
     bootstrapMs < 5_000,

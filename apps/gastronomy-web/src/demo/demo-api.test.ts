@@ -20,6 +20,25 @@ class MemoryStorage implements DemoStorage {
 }
 
 describe("API de demostración", () => {
+  it("crea pedidos para retirar y clientes nuevos sin dirección", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const customer = await api.createCustomer({
+      name: "Cliente sin domicilio",
+      phone: "11 5555-0101",
+      addresses: [],
+    });
+    expect(customer.addresses).toEqual([]);
+
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerId: customer.id,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+      deliveryAddress: null,
+    });
+    expect(order.deliveryAddressSnapshot).toBeNull();
+  });
+
   it("conserva cierres y expone informe filtrable por sesión", async () => {
     const api = createDemoApi(new MemoryStorage());
     const current = (await api.bootstrap()).cashSession!;
@@ -43,6 +62,40 @@ describe("API de demostración", () => {
         (item) => item.session.id === current.id,
       ),
     ).toBe(true);
+    expect((await api.bootstrap()).orders).toEqual([]);
+    await api.openCashSession({ openingAmountMinor: 0 });
+    expect((await api.bootstrap()).orders).toEqual([]);
+  });
+
+  it("audita sólo acciones sensibles y no altas operativas", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    await api.ensureTable({ number: 51 });
+    await api.createCustomer({
+      name: "Cliente operativo",
+      phone: "11 5555-5151",
+    });
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Cliente pedido",
+      customerPhone: "11 5555-5252",
+      deliveryAddress: "Calle Prueba 5252",
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.removeOrderItem({
+      orderId: order.id,
+      itemId: populated.items[0]!.id,
+    });
+
+    const audit = await api.getAuditLog({ limit: 200 });
+    expect(audit.map((entry) => entry.action)).toContain("PRODUCTO_QUITADO");
+    expect(audit.map((entry) => entry.action)).not.toContain("MESA_CREADA");
+    expect(audit.map((entry) => entry.action)).not.toContain(
+      "CUSTOMER_CREATED",
+    );
+    expect(audit.map((entry) => entry.action)).not.toContain("PEDIDO_CREADO");
   });
 
   it("mantiene resumen de cajas antiguas sin detalle", async () => {
@@ -74,6 +127,41 @@ describe("API de demostración", () => {
     await expect(api.deleteTable({ tableId: table.id })).resolves.toEqual({
       deleted: true,
     });
+  });
+
+  it("crea sectores y persiste el plano editable de mesas", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const terrace = await api.createTableSector({ name: "Patio" });
+    const table = await api.ensureTable({ number: 81 });
+    const updated = await api.updateTable({
+      tableId: table.id,
+      number: table.number,
+      name: "Ventana",
+      active: true,
+      sectorId: terrace.id,
+      layoutX: 22,
+      layoutY: 31,
+      layoutWidth: 23,
+      layoutHeight: 12,
+      shape: "RECTANGLE",
+    });
+    expect(updated).toMatchObject({
+      sectorId: terrace.id,
+      layoutX: 22,
+      layoutY: 31,
+      layoutWidth: 23,
+      layoutHeight: 12,
+      shape: "RECTANGLE",
+    });
+    await api.updateTableSector({ sectorId: terrace.id, name: "Galería" });
+    const deleted = await api.deleteTableSector({ sectorId: terrace.id });
+    expect(
+      (await api.bootstrap()).tables.find((item) => item.id === table.id)
+        ?.sectorId,
+    ).toBe(deleted.fallbackSectorId);
+    expect(
+      (await api.getAuditLog({ limit: 200 })).map((entry) => entry.action),
+    ).toContain("SECTOR_ELIMINADO");
   });
 
   it("cancela pedido vacío y bloquea pedido con consumo", async () => {

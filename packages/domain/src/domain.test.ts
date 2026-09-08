@@ -9,8 +9,30 @@ import {
   calculateHalfAndHalfBase,
   calculateModifierCharge,
   calculateDiscountMinor,
+  assertOffPremiseCustomer,
   paymentStatusFor,
 } from "./index";
+
+test("para retirar requiere cliente pero permite omitir la dirección", () => {
+  assert.doesNotThrow(() =>
+    assertOffPremiseCustomer({
+      type: "TAKEAWAY",
+      customerName: "Cliente retiro",
+      customerPhone: "11 5555-0101",
+      deliveryAddress: null,
+    }),
+  );
+  assert.throws(
+    () =>
+      assertOffPremiseCustomer({
+        type: "DELIVERY",
+        customerName: "Cliente envío",
+        customerPhone: "11 5555-0202",
+        deliveryAddress: null,
+      }),
+    /dirección/,
+  );
+});
 
 test("mitad y mitad HALF_PLUS_HALF", () => {
   assert.equal(

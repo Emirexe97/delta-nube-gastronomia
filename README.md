@@ -11,8 +11,10 @@ Candidato funcional local:
 - SQLite local en WAL y migración inicial versionada;
 - apertura, movimientos y cierre protegido de caja;
 - día comercial fijado por apertura;
-- salón con mesas libres/ocupadas;
+- salón con vista clásica y plano editable por sectores, mesas libres/ocupadas,
+  formas, tamaños y posiciones persistentes;
 - pedidos de salón, para retirar y envío, con borrador separado del estado operativo;
+- vistas operativas de Pedidos y Salón limitadas al turno de caja actual, con el histórico preservado en Informes;
 - productos, categorías y tres listas de precios;
 - snapshots históricos de producto/precio;
 - pizza mitad y mitad (`HALF_PLUS_HALF` / `MOST_EXPENSIVE`);
@@ -21,7 +23,7 @@ Candidato funcional local:
 - stock opcional en milésimas, con descuento y restitución transaccional;
 - clientes y direcciones principales, con alta directa desde un pedido para retirar o envío;
 - horario prometido con demoras rápidas o fecha/hora programada, alertas y
-  autocompletado de clientes con espera de 1 segundo, primera coincidencia y navegación por flechas, `Tab`, `Enter` o clic;
+  autocompletado de clientes con espera de 0,1 segundos, primera coincidencia y navegación por flechas, `Tab`, `Enter` o clic;
 - cobros simples y mixtos con efectivo recibido, cálculo de vuelto y acciones atómicas de cobro/cierre o cobro/entrega;
 - devolución total por línea de pago con PIN, movimiento inverso de caja, auditoría e idempotencia;
 - impresión térmica desacoplada con perfiles Comanda/Cuenta, papel 58/80 mm, impresora, copias, plantilla, cola/historial y reintento idempotente;
@@ -30,11 +32,11 @@ Candidato funcional local:
 - dashboard e informes básicos;
 - exportación de ventas a CSV UTF-8 con BOM;
 - repartidores como identidades operativas sin pantalla ni PIN propio, asignación en envíos y panel de caja con entregas, ganancias y horarios de rendición;
-- usuarios por rol/capacidad, cambios protegidos y auditoría consultable;
+- usuarios por rol/capacidad, cambios protegidos y auditoría consultable limitada a eliminaciones y acciones sensibles;
 - informes por rango, producto, categoría, hora, mozo, caja y envíos;
 - backup SQLite consistente y restauración con rollback de emergencia;
 - navegación, atajos y búsqueda clasificada por código/prefijo/palabras;
-- carga rápida con autocompletado alfabético por nombre, espera de 1 segundo y lista navegable con flechas, Tab o clic;
+- carga rápida con búsqueda por nombre, código o ID, espera de 0,1 segundos y lista navegable con flechas, Tab o clic;
 - operaciones masivas transaccionales para categoría, estado y variación de precios por canal;
 - benchmark reproducible de 2.500 pedidos;
 - instalador NSIS x64 generado y smoke testeado.
@@ -96,7 +98,7 @@ pnpm --filter @gastronomy/desktop-shell dist:win
 ```
 
 El artefacto se genera en
-`apps/desktop-shell/release/Delta Nube Gastronomía Setup 0.1.0.exe`. El comando
+`apps/desktop-shell/release/Delta Nube Gastronomía Setup 0.1.4.exe`. El comando
 recompila primero SQLite para la ABI exacta de Electron.
 
 ## Autorizaciones locales

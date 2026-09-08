@@ -86,6 +86,50 @@ test("completa la carga por mouse sin Tab y mantiene la navegación por campos",
   await expect(page.getByText(/1 × .* agregado/)).toBeVisible();
 });
 
+test("resuelve y carga un producto por su ID aunque también tenga código", async () => {
+  await openCashAndSalon();
+  const productId = await page.evaluate(async () => {
+    const products = (await window.gastronomy.bootstrap()).products;
+    return products.find((product) => product.code === "MUZG")!.id;
+  });
+  await page.getByLabel("Número de mesa").fill("24");
+  await page.getByLabel(/^Nombre de mozo/).click();
+  await page.getByLabel(/^Nombre de mozo/).selectOption({ index: 1 });
+  await page.getByRole("button", { name: "Abrir mesa", exact: true }).click();
+  await page.getByLabel("Cantidad").fill("1");
+  await page.getByLabel("Código / ID").fill(productId);
+  await expect(
+    page.getByRole("combobox", { name: "Producto", exact: true }),
+  ).toHaveValue("Muzzarella grande");
+  await expect(page.getByLabel("Precio salón")).not.toHaveValue("");
+  await page.getByRole("button", { name: /Agregar/ }).click();
+  await expect(page.getByText(/1 × Muzzarella grande agregado/)).toBeVisible();
+});
+
+test("busca productos por código o ID en el selector de carga rápida", async () => {
+  await openCashAndSalon();
+  const productId = await page.evaluate(async () => {
+    const products = (await window.gastronomy.bootstrap()).products;
+    return products.find((product) => product.code === "MUZG")!.id;
+  });
+  await page.getByLabel("Número de mesa").fill("25");
+  await page.getByLabel(/^Nombre de mozo/).click();
+  await page.getByLabel(/^Nombre de mozo/).selectOption({ index: 1 });
+  await page.getByRole("button", { name: "Abrir mesa", exact: true }).click();
+  const product = page.getByRole("combobox", {
+    name: "Producto",
+    exact: true,
+  });
+  await product.fill(productId);
+  await expect(
+    page.getByRole("option", { name: /Muzzarella grande/ }),
+  ).toBeVisible();
+  await product.fill("MUZG");
+  await expect(
+    page.getByRole("option", { name: /Muzzarella grande/ }),
+  ).toBeVisible();
+});
+
 test("Enter avanza y Shift+Enter retrocede sin duplicar pedido", async () => {
   await openCashAndSalon();
   const table = page.getByLabel("Número de mesa");

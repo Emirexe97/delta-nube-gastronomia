@@ -26,7 +26,7 @@ export function assertOffPremiseCustomer(input: {
     throw new Error("Ingresá el nombre del cliente.");
   if (!input.customerPhone?.trim())
     throw new Error("Ingresá el teléfono del cliente.");
-  if (!input.deliveryAddress?.trim())
+  if (input.type === "DELIVERY" && !input.deliveryAddress?.trim())
     throw new Error("Ingresá la dirección del cliente.");
 }
 
@@ -67,7 +67,7 @@ export function guardOrderAction(
       return deny("Ingresá el nombre del cliente.");
     if (order.type !== "DINE_IN" && !order.customerPhoneSnapshot?.trim())
       return deny("Ingresá el teléfono del cliente.");
-    if (order.type !== "DINE_IN" && !order.deliveryAddressSnapshot?.trim())
+    if (order.type === "DELIVERY" && !order.deliveryAddressSnapshot?.trim())
       return deny("Ingresá la dirección del cliente.");
     return allow();
   }

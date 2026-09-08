@@ -36,6 +36,7 @@ import type {
   UpdateOrderItemNotesInput,
   ConfirmOrderInput,
   SettleDeliveryInput,
+  TableSectorDto,
 } from "@gastronomy/contracts";
 import {
   assertMoneyMinor,
@@ -217,12 +218,28 @@ export interface GastronomyRepository {
   configureTables(
     count: number,
   ): import("@gastronomy/contracts").RestaurantTableDto[];
+  createTableSector(input: { name: string }): TableSectorDto;
+  updateTableSector(input: {
+    sectorId: Id;
+    name: string;
+    sortOrder?: number;
+  }): TableSectorDto;
+  deleteTableSector(input: { sectorId: Id }): {
+    deleted: true;
+    fallbackSectorId: Id;
+  };
   updateTable(input: {
     tableId: Id;
     number: number;
     name?: string | null;
     active: boolean;
     sortOrder?: number;
+    sectorId?: Id;
+    layoutX?: number;
+    layoutY?: number;
+    layoutWidth?: number;
+    layoutHeight?: number;
+    shape?: import("@gastronomy/contracts").RestaurantTableDto["shape"];
   }): import("@gastronomy/contracts").RestaurantTableDto;
   deleteTable(input: { tableId: Id }): { deleted: true };
   exportSalesCsv(): string;
@@ -815,6 +832,18 @@ export class GastronomyApplication {
 
   configureTables(input: { count: number }) {
     return this.repository.configureTables(input.count);
+  }
+  createTableSector(input: { name: string }) {
+    return this.repository.createTableSector(input);
+  }
+  updateTableSector(
+    input: Parameters<GastronomyRepository["updateTableSector"]>[0],
+  ) {
+    return this.repository.updateTableSector(input);
+  }
+  deleteTableSector(input: { sectorId: Id }) {
+    if (!input?.sectorId) throw new Error("El sector no es válido.");
+    return this.repository.deleteTableSector(input);
   }
   updateTable(input: Parameters<GastronomyRepository["updateTable"]>[0]) {
     return this.repository.updateTable(input);

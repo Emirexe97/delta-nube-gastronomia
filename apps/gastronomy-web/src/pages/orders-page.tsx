@@ -504,10 +504,12 @@ function NewOrderModal({
   ]);
 
   const submit = () => {
-    if (!name.trim() || !phone.trim() || !address.trim()) {
-      setError(
-        "Completá el nombre, el teléfono y la dirección del cliente para continuar.",
-      );
+    if (!name.trim() || !phone.trim()) {
+      setError("Completá el nombre y el teléfono del cliente para continuar.");
+      return;
+    }
+    if (type === "DELIVERY" && !address.trim()) {
+      setError("Ingresá la dirección del cliente para continuar.");
       return;
     }
     const promisedAt =
@@ -520,7 +522,7 @@ function NewOrderModal({
       customerAddressId,
       customerName: name.trim(),
       customerPhone: phone.trim(),
-      deliveryAddress: address.trim(),
+      deliveryAddress: address.trim() || null,
       deliveryFeeMinor: type === "DELIVERY" ? (parseMoneyInput(fee) ?? 0) : 0,
       driverUserId: type === "DELIVERY" ? driverUserId || null : null,
       promisedAt,
@@ -532,7 +534,9 @@ function NewOrderModal({
     scheduleMode === "QUICK"
       ? delay > 0
       : Boolean(scheduledAt && new Date(scheduledAt).valueOf() > Date.now());
-  const customerValid = Boolean(name.trim() && phone.trim() && address.trim());
+  const customerValid = Boolean(
+    name.trim() && phone.trim() && (type !== "DELIVERY" || address.trim()),
+  );
 
   return (
     <Modal

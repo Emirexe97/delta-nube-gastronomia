@@ -29,6 +29,36 @@ import {
 export const DEMO_STORAGE_KEY = "delta-nube-gastronomia.demo.v5";
 const DEMO_PIN = "1234";
 
+const SENSITIVE_DEMO_AUDIT_ACTIONS = new Set([
+  "CAJA_ABIERTA",
+  "CAJA_INCOME",
+  "CAJA_EXPENSE",
+  "CAJA_WITHDRAWAL",
+  "CAJA_ADJUSTMENT",
+  "CAJA_CERRADA",
+  "ORDER_ITEM_PRICE_OVERRIDDEN",
+  "PRODUCTO_QUITADO",
+  "MODIFICADOR_QUITADO",
+  "DESCUENTO_APLICADO",
+  "PAGO_DEVUELTO",
+  "PEDIDO_CANCELADO",
+  "CUSTOMER_ARCHIVED",
+  "CUSTOMER_MERGED",
+  "CUSTOMER_MERGE_RECEIVED",
+  "CATEGORY_DELETED",
+  "PRODUCTO_ACTUALIZADO",
+  "PRODUCTOS_ACTUALIZADOS_EN_LOTE",
+  "STOCK_AJUSTADO",
+  "USUARIO_CREADO",
+  "DRIVER_CREATED",
+  "USUARIO_ACTUALIZADO",
+  "USER_DELETED",
+  "RENDICION_LIQUIDADA",
+  "MESA_ELIMINADA",
+  "SECTOR_ELIMINADO",
+  "CONFIGURACION_GUARDADA",
+]);
+
 export interface DemoStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
@@ -36,7 +66,7 @@ export interface DemoStorage {
 }
 
 interface DemoState {
-  version: 9;
+  version: 10;
   data: BootstrapDto;
   historicalSessions: CashSessionDto[];
   movements: Array<{
@@ -157,7 +187,7 @@ function seedState(): DemoState {
   oldDate.setDate(oldDate.getDate() - 120);
   const oldBusinessDate = oldDate.toISOString().slice(0, 10);
   return {
-    version: 9,
+    version: 10,
     data: createDemoBootstrap(),
     historicalSessions: [
       {
@@ -238,22 +268,7 @@ function seedState(): DemoState {
         ],
       },
     ],
-    audit: [
-      {
-        id: "audit-seed",
-        timestamp: new Date(Date.now() - 52 * 60_000).toISOString(),
-        businessDate: today(),
-        operatorName: "Administrador Demo",
-        authorizerName: null,
-        permissionUsed: null,
-        entityType: "ORDER",
-        entityId: "order-1000",
-        action: "PEDIDO_COBRADO",
-        reason: null,
-        beforeJson: null,
-        afterJson: JSON.stringify({ estadoPago: "PAGADO" }),
-      },
-    ],
+    audit: [],
     sequence: 2000,
   };
 }
@@ -266,7 +281,7 @@ function loadState(storage: DemoStorage): DemoState {
       version: number;
     };
     if (
-      ![5, 6, 7, 8, 9].includes(parsed.version) ||
+      ![5, 6, 7, 8, 9, 10].includes(parsed.version) ||
       !parsed.data?.settings?.printing
     )
       return seedState();
@@ -279,6 +294,17 @@ function loadState(storage: DemoStorage): DemoState {
     }
     parsed.historicalSessions ??= [];
     parsed.movements ??= [];
+    parsed.data.tableSectors ??= [
+      { id: "sector-main", name: "Salón", sortOrder: 1 },
+    ];
+    for (const table of parsed.data.tables) {
+      table.sectorId ??= parsed.data.tableSectors[0]!.id;
+      table.layoutX ??= 4 + ((table.number - 1) % 5) * 19;
+      table.layoutY ??= 6 + (Math.floor((table.number - 1) / 5) % 4) * 23;
+      table.layoutWidth ??= 14;
+      table.layoutHeight ??= 17;
+      table.shape ??= "SQUARE";
+    }
     for (const customer of parsed.customers) {
       if (
         !customer.updatedAt ||
@@ -302,7 +328,7 @@ function loadState(storage: DemoStorage): DemoState {
         ledger.settledAt ??= ledger.createdAt;
       }
     }
-    parsed.version = 9;
+    parsed.version = 10;
     return parsed as DemoState;
   } catch {
     return seedState();
@@ -518,6 +544,7 @@ function audit(
   reason: string | null = null,
   permissionUsed: string | null = null,
 ) {
+  if (!SENSITIVE_DEMO_AUDIT_ACTIONS.has(action)) return;
   state.audit.unshift({
     id: uid("audit", state),
     timestamp: now(),
@@ -814,7 +841,14 @@ export function createDemoApi(
   return {
     async bootstrap() {
       save();
-      return output(state.data);
+      const data = output(state.data);
+      data.orders = data.cashSession
+        ? data.orders.filter(
+            (order) => order.cashSessionCreatedId === data.cashSession?.id,
+          )
+        : [];
+      refreshTables(data);
+      return data;
     },
 
     async ensureTable({ number }) {
@@ -824,12 +858,20 @@ export function createDemoApi(
         (candidate) => candidate.number === number,
       );
       if (!table) {
+        const sector = state.data.tableSectors[0];
+        if (!sector) throw new Error("No hay un sector disponible.");
         table = {
           id: uid("table", state),
           number,
           name: null,
           active: true,
           sortOrder: number,
+          sectorId: sector.id,
+          layoutX: 4 + ((number - 1) % 5) * 19,
+          layoutY: 6 + (Math.floor((number - 1) / 5) % 4) * 23,
+          layoutWidth: 14,
+          layoutHeight: 17,
+          shape: "SQUARE",
           currentOrderId: null,
           currentTotalMinor: 0,
           waiterName: null,
@@ -838,6 +880,9 @@ export function createDemoApi(
         state.data.tables.push(table);
         state.data.tables.sort((a, b) => a.number - b.number);
         audit(state, "TABLE", table.id, "MESA_CREADA");
+        save();
+      } else if (!table.active) {
+        table.active = true;
         save();
       }
       return output(table);
@@ -2602,6 +2647,76 @@ export function createDemoApi(
       return output(state.data.tables);
     },
 
+    async createTableSector(input) {
+      const name = input.name.trim();
+      if (name.length < 2 || name.length > 60)
+        throw new Error("El sector debe tener entre 2 y 60 caracteres.");
+      if (
+        state.data.tableSectors.some(
+          (sector) =>
+            sector.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+        )
+      )
+        throw new Error("Ya existe un sector con ese nombre.");
+      const sector = {
+        id: uid("sector", state),
+        name,
+        sortOrder:
+          Math.max(
+            0,
+            ...state.data.tableSectors.map((item) => item.sortOrder),
+          ) + 1,
+      };
+      state.data.tableSectors.push(sector);
+      save();
+      return output(sector);
+    },
+
+    async updateTableSector(input) {
+      const sector = state.data.tableSectors.find(
+        (candidate) => candidate.id === input.sectorId,
+      );
+      if (!sector) throw new Error("El sector no existe.");
+      const name = input.name.trim();
+      if (name.length < 2 || name.length > 60)
+        throw new Error("El sector debe tener entre 2 y 60 caracteres.");
+      if (
+        state.data.tableSectors.some(
+          (candidate) =>
+            candidate.id !== sector.id &&
+            candidate.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+        )
+      )
+        throw new Error("Ya existe un sector con ese nombre.");
+      sector.name = name;
+      sector.sortOrder = input.sortOrder ?? sector.sortOrder;
+      save();
+      return output(sector);
+    },
+
+    async deleteTableSector(input) {
+      if (state.data.tableSectors.length <= 1)
+        throw new Error("El salón debe conservar al menos un sector.");
+      const index = state.data.tableSectors.findIndex(
+        (sector) => sector.id === input.sectorId,
+      );
+      if (index < 0) throw new Error("El sector no existe.");
+      const [removed] = state.data.tableSectors.splice(index, 1);
+      const fallback = state.data.tableSectors[0]!;
+      for (const table of state.data.tables)
+        if (table.sectorId === input.sectorId) table.sectorId = fallback.id;
+      audit(
+        state,
+        "TABLE_SECTOR",
+        input.sectorId,
+        "SECTOR_ELIMINADO",
+        `Las mesas de ${removed?.name ?? "sector"} pasaron a ${fallback.name}`,
+        "tables.manage",
+      );
+      save();
+      return { deleted: true as const, fallbackSectorId: fallback.id };
+    },
+
     async updateTable(input) {
       const table = state.data.tables.find(
         (candidate) => candidate.id === input.tableId,
@@ -2616,11 +2731,43 @@ export function createDemoApi(
         )
       )
         throw new Error("Ya existe otra mesa con ese número.");
+      const sectorId = input.sectorId ?? table.sectorId;
+      if (!state.data.tableSectors.some((sector) => sector.id === sectorId))
+        throw new Error("El sector seleccionado no existe.");
+      const layout = {
+        x: input.layoutX ?? table.layoutX,
+        y: input.layoutY ?? table.layoutY,
+        width: input.layoutWidth ?? table.layoutWidth,
+        height: input.layoutHeight ?? table.layoutHeight,
+      };
+      if (
+        ![layout.x, layout.y, layout.width, layout.height].every(
+          Number.isFinite,
+        ) ||
+        layout.x < 0 ||
+        layout.y < 0 ||
+        layout.width < 6 ||
+        layout.width > 40 ||
+        layout.height < 8 ||
+        layout.height > 40 ||
+        layout.x + layout.width > 100 ||
+        layout.y + layout.height > 100
+      )
+        throw new Error("La posición o el tamaño de la mesa no es válido.");
+      const shape = input.shape ?? table.shape;
+      if (!["ROUND", "SQUARE", "RECTANGLE"].includes(shape))
+        throw new Error("La forma de la mesa no es válida.");
       Object.assign(table, {
         number: input.number,
         name: input.name?.trim() || null,
         active: input.active,
         sortOrder: input.sortOrder ?? table.sortOrder,
+        sectorId,
+        layoutX: layout.x,
+        layoutY: layout.y,
+        layoutWidth: layout.width,
+        layoutHeight: layout.height,
+        shape,
       });
       audit(state, "RESTAURANT_TABLE", table.id, "MESA_ACTUALIZADA");
       save();
@@ -2831,6 +2978,7 @@ export function createDemoApi(
         state.audit
           .filter(
             (entry) =>
+              SENSITIVE_DEMO_AUDIT_ACTIONS.has(entry.action) &&
               (!input.dateFrom ||
                 (entry.businessDate ?? "") >= input.dateFrom) &&
               (!input.dateTo || (entry.businessDate ?? "") <= input.dateTo) &&

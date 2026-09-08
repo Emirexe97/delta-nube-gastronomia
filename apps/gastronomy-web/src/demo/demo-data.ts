@@ -429,6 +429,17 @@ export function createDemoBootstrap(): BootstrapDto {
         name: null,
         active: true,
         sortOrder: number,
+        sectorId: number > 8 ? "sector-terrace" : "sector-main",
+        layoutX: 5 + ((number - 1) % 4) * 23,
+        layoutY: 9 + (Math.floor((number - 1) / 4) % 3) * 29,
+        layoutWidth: number % 3 === 0 ? 20 : 16,
+        layoutHeight: number % 3 === 0 ? 14 : 19,
+        shape:
+          number % 3 === 0
+            ? "RECTANGLE"
+            : number % 2 === 0
+              ? "ROUND"
+              : "SQUARE",
         currentOrderId: number === 2 ? openTableOrder.id : null,
         currentTotalMinor: number === 2 ? openTableOrder.totalMinor : 0,
         waiterName: number === 2 ? openTableOrder.waiterName : null,
@@ -464,6 +475,10 @@ export function createDemoBootstrap(): BootstrapDto {
     },
     categories: structuredClone(demoCategories),
     products: structuredClone(demoProducts),
+    tableSectors: [
+      { id: "sector-main", name: "Salón", sortOrder: 1 },
+      { id: "sector-terrace", name: "Terraza", sortOrder: 2 },
+    ],
     modifiers: [
       {
         id: "mod-extra-queso",

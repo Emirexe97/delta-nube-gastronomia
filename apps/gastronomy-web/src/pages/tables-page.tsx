@@ -9,6 +9,7 @@ import {
   Eye,
   Keyboard,
   LockKey,
+  MapTrifold,
   Plus,
   SquaresFour,
   UserCircle,
@@ -25,6 +26,7 @@ import {
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { OrderEditor } from "../components/order-editor";
+import { TableFloorPlan } from "../components/table-floor-plan";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import {
   formatElapsed,
@@ -41,6 +43,7 @@ const waiterRoleLabels = {
 } as const;
 
 export function TablesPage({ data }: { data: BootstrapDto }) {
+  const [view, setView] = useState<"CLASSIC" | "PLAN">("CLASSIC");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [openingTable, setOpeningTable] = useState<RestaurantTableDto | null>(
     null,
@@ -125,6 +128,10 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
     setWaiterUserId(preferred?.id ?? "");
     setOpeningTable(table);
   };
+  const activateTable = (table: RestaurantTableDto) =>
+    table.currentOrderId
+      ? setSelectedOrderId(table.currentOrderId)
+      : requestOpen(table);
 
   return (
     <div className="panel-enter mx-auto max-w-[1500px] space-y-4">
@@ -154,57 +161,36 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         </div>
       ) : null}
 
-      <Card className="border-orange-100 bg-gradient-to-r from-white to-orange-50/70 p-3">
-        <form
-          className="flex flex-wrap items-end gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (tableCount >= 1 && tableCount <= 200)
-              configureTables.mutate(tableCount);
-          }}
+      <Card className="flex flex-wrap items-center justify-between gap-3 p-2">
+        <div
+          className="flex rounded-xl bg-slate-100 p-1"
+          role="tablist"
+          aria-label="Vista del salón"
         >
-          <div className="min-w-0 flex-1">
-            <h3 className="text-xs font-extrabold text-slate-700">
-              Cantidad de mesas
-            </h3>
-            <p className="mt-0.5 text-[10px] text-slate-400">
-              Generá del 1 al {tableCount}. Las mesas ocupadas y su historial se
-              conservan al reducir la cantidad.
-            </p>
-          </div>
-          <Field label="Mesas activas">
-            <Input
-              className="w-24"
-              type="number"
-              min={1}
-              max={200}
-              value={tableCount}
-              onChange={(event) => {
-                setTableCount(Number(event.target.value));
-                setTableMessage(null);
-              }}
-              aria-describedby="table-count-status"
-            />
-          </Field>
-          <Button
-            type="submit"
-            disabled={
-              configureTables.isPending || tableCount < 1 || tableCount > 200
-            }
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "CLASSIC"}
+            onClick={() => setView("CLASSIC")}
+            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-extrabold transition ${view === "CLASSIC" ? "bg-white text-brand-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
           >
-            {configureTables.isPending ? "Actualizando…" : "Actualizar salón"}
-          </Button>
-        </form>
-        {tableMessage ? (
-          <p
-            id="table-count-status"
-            role="status"
-            aria-live="polite"
-            className={`mt-2 rounded-lg px-3 py-2 text-[11px] font-semibold ${configureTables.isError ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}
+            <SquaresFour size={16} /> Vista clásica
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "PLAN"}
+            onClick={() => setView("PLAN")}
+            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-extrabold transition ${view === "PLAN" ? "bg-white text-brand-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
           >
-            {tableMessage}
-          </p>
-        ) : null}
+            <MapTrifold size={16} /> Plano por sectores
+          </button>
+        </div>
+        <p className="px-2 text-[11px] text-slate-400">
+          {view === "CLASSIC"
+            ? "Listado rápido de todas las mesas"
+            : "Plano editable con subpestañas por sector"}
+        </p>
       </Card>
 
       <QuickEntry
@@ -213,85 +199,152 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         removedEvent={removedEvent}
       />
 
-      <section
-        aria-label="Mesas del salón"
-        className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
-      >
-        {tables.map((table) => {
-          const occupied = Boolean(table.currentOrderId);
-          return (
-            <Card
-              key={table.id}
-              className={`relative min-h-[150px] overflow-hidden p-4 transition hover:shadow-md ${occupied ? "border-brand-200 bg-gradient-to-br from-white to-brand-50/80" : "border-emerald-100"}`}
+      {view === "CLASSIC" ? (
+        <>
+          <Card className="border-orange-100 bg-gradient-to-r from-white to-orange-50/70 p-3">
+            <form
+              className="flex flex-wrap items-end gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (tableCount >= 1 && tableCount <= 200)
+                  configureTables.mutate(tableCount);
+              }}
             >
-              <div
-                className={`absolute inset-x-0 top-0 h-1 ${occupied ? "bg-brand-600" : "bg-emerald-500"}`}
-              />
-              <div className="flex items-start justify-between">
-                <div
-                  className={`grid h-10 w-10 place-items-center rounded-xl ${occupied ? "bg-brand-100 text-brand-700" : "bg-emerald-50 text-emerald-600"}`}
-                >
-                  <SquaresFour size={20} weight="duotone" />
-                </div>
-                <Badge tone={occupied ? "orange" : "green"}>
-                  {occupied ? "Ocupada" : "Libre"}
-                </Badge>
-              </div>
-              <p className="mt-4 text-xl font-extrabold">Mesa {table.number}</p>
-              {occupied ? (
-                <div className="mt-1">
-                  <p className="text-sm font-bold text-brand-700">
-                    {formatMoney(table.currentTotalMinor)}
-                  </p>
-                  <p className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-400">
-                    <UserCircle size={12} /> {table.waiterName || "Sin mesero"}{" "}
-                    · {formatElapsed(table.openedAt)}
-                  </p>
-                </div>
-              ) : (
-                <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
-                  <Plus size={13} />
-                  Abrir pedido
+              <div className="min-w-0 flex-1">
+                <h3 className="text-xs font-extrabold text-slate-700">
+                  Cantidad de mesas
+                </h3>
+                <p className="mt-0.5 text-[10px] text-slate-400">
+                  Generá del 1 al {tableCount}. Las mesas ocupadas y su
+                  historial se conservan al reducir la cantidad.
                 </p>
-              )}
-              <div className="mt-4 flex gap-2">
-                <Button
-                  type="button"
-                  className="flex-1"
-                  aria-label={
-                    occupied
-                      ? `Abrir pedido de mesa ${table.number}`
-                      : `Abrir mesa ${table.number}`
-                  }
-                  disabled={!occupied && !data.cashSession}
-                  onClick={() =>
-                    occupied
-                      ? setSelectedOrderId(table.currentOrderId)
-                      : requestOpen(table)
-                  }
-                >
-                  {occupied ? "Abrir pedido" : "Abrir mesa"}
-                </Button>
-                {canManageTables ? (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    aria-label={`Eliminar mesa ${table.number}`}
-                    onClick={() => {
-                      deleteTable.reset();
-                      setTableMessage(null);
-                      setDeletingTable(table);
-                      setDeleteConfirmation("");
-                    }}
-                  >
-                    <Trash size={16} />
-                  </Button>
-                ) : null}
               </div>
-            </Card>
-          );
-        })}
-      </section>
+              <Field label="Mesas activas">
+                <Input
+                  className="w-24"
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={tableCount}
+                  onChange={(event) => {
+                    setTableCount(Number(event.target.value));
+                    setTableMessage(null);
+                  }}
+                  aria-describedby="table-count-status"
+                />
+              </Field>
+              <Button
+                type="submit"
+                disabled={
+                  configureTables.isPending ||
+                  tableCount < 1 ||
+                  tableCount > 200
+                }
+              >
+                {configureTables.isPending
+                  ? "Actualizando…"
+                  : "Actualizar salón"}
+              </Button>
+            </form>
+            {tableMessage ? (
+              <p
+                id="table-count-status"
+                role="status"
+                aria-live="polite"
+                className={`mt-2 rounded-lg px-3 py-2 text-[11px] font-semibold ${configureTables.isError ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}
+              >
+                {tableMessage}
+              </p>
+            ) : null}
+          </Card>
+
+          <section
+            aria-label="Mesas del salón"
+            className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
+          >
+            {tables.map((table) => {
+              const occupied = Boolean(table.currentOrderId);
+              return (
+                <Card
+                  key={table.id}
+                  className={`relative min-h-[150px] overflow-hidden p-4 transition hover:shadow-md ${occupied ? "border-brand-200 bg-gradient-to-br from-white to-brand-50/80" : "border-emerald-100"}`}
+                >
+                  <div
+                    className={`absolute inset-x-0 top-0 h-1 ${occupied ? "bg-brand-600" : "bg-emerald-500"}`}
+                  />
+                  <div className="flex items-start justify-between">
+                    <div
+                      className={`grid h-10 w-10 place-items-center rounded-xl ${occupied ? "bg-brand-100 text-brand-700" : "bg-emerald-50 text-emerald-600"}`}
+                    >
+                      <SquaresFour size={20} weight="duotone" />
+                    </div>
+                    <Badge tone={occupied ? "orange" : "green"}>
+                      {occupied ? "Ocupada" : "Libre"}
+                    </Badge>
+                  </div>
+                  <p className="mt-4 text-xl font-extrabold">
+                    Mesa {table.number}
+                  </p>
+                  {occupied ? (
+                    <div className="mt-1">
+                      <p className="text-sm font-bold text-brand-700">
+                        {formatMoney(table.currentTotalMinor)}
+                      </p>
+                      <p className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-400">
+                        <UserCircle size={12} />{" "}
+                        {table.waiterName || "Sin mesero"} ·{" "}
+                        {formatElapsed(table.openedAt)}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
+                      <Plus size={13} />
+                      Abrir pedido
+                    </p>
+                  )}
+                  <div className="mt-4 flex gap-2">
+                    <Button
+                      type="button"
+                      className="flex-1"
+                      aria-label={
+                        occupied
+                          ? `Abrir pedido de mesa ${table.number}`
+                          : `Abrir mesa ${table.number}`
+                      }
+                      disabled={!occupied && !data.cashSession}
+                      onClick={() => activateTable(table)}
+                    >
+                      {occupied ? "Abrir pedido" : "Abrir mesa"}
+                    </Button>
+                    {canManageTables ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        aria-label={`Eliminar mesa ${table.number}`}
+                        onClick={() => {
+                          deleteTable.reset();
+                          setTableMessage(null);
+                          setDeletingTable(table);
+                          setDeleteConfirmation("");
+                        }}
+                      >
+                        <Trash size={16} />
+                      </Button>
+                    ) : null}
+                  </div>
+                </Card>
+              );
+            })}
+          </section>
+        </>
+      ) : (
+        <TableFloorPlan
+          data={data}
+          tables={tables}
+          canManageTables={canManageTables}
+          onActivateTable={activateTable}
+        />
+      )}
 
       <Modal
         open={Boolean(openingTable)}
@@ -520,7 +573,29 @@ function QuickEntry({
     const query = normalizeSearch(debouncedProductName);
     if (!query) return activeProducts.slice(0, 8);
     return activeProducts
-      .filter((product) => normalizeSearch(product.name).includes(query))
+      .map((product) => {
+        const name = normalizeSearch(product.name);
+        const code = normalizeSearch(product.code ?? "");
+        const id = normalizeSearch(product.id);
+        const rank =
+          code === query || id === query
+            ? 0
+            : name === query
+              ? 1
+              : code.startsWith(query) || id.startsWith(query)
+                ? 2
+                : name.startsWith(query)
+                  ? 3
+                  : 4;
+        return {
+          product,
+          matches: [name, code, id].some((value) => value.includes(query)),
+          rank,
+        };
+      })
+      .filter((entry) => entry.matches)
+      .sort((left, right) => left.rank - right.rank)
+      .map((entry) => entry.product)
       .slice(0, 8);
   }, [activeProducts, debouncedProductName, productSearchPending]);
   const selectedProduct = activeProducts.find(
@@ -1131,8 +1206,8 @@ function QuickEntry({
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && event.shiftKey) {
                         event.preventDefault();
+                        preferredWaiterFocusRef.current = "name";
                         setStep("WAITER");
-                        focus(waiterNameRef);
                       } else if (event.key === "Enter") {
                         event.preventDefault();
                         focus(codeRef);
@@ -1160,14 +1235,21 @@ function QuickEntry({
                     autoComplete="off"
                   />
                   <datalist id="quick-product-codes">
-                    {activeProducts.map((product) => (
-                      <option
-                        key={product.id}
-                        value={product.code || product.id}
-                      >
+                    {activeProducts.flatMap((product) => [
+                      ...(product.code
+                        ? [
+                            <option
+                              key={`${product.id}-code`}
+                              value={product.code}
+                            >
+                              {product.name}
+                            </option>,
+                          ]
+                        : []),
+                      <option key={`${product.id}-id`} value={product.id}>
                         {product.name}
-                      </option>
-                    ))}
+                      </option>,
+                    ])}
                   </datalist>
                 </Field>
                 <div className="grid gap-1.5 text-[12px] font-semibold text-slate-600">

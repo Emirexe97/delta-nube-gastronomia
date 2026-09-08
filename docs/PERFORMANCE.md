@@ -10,8 +10,8 @@ el archivo al terminar. Puede variarse el volumen con
 - `bootstrap()` debe completar en menos de 5 segundos;
 - el informe detallado del día debe completar en menos de 5 segundos;
 - deben persistirse todos los pedidos;
-- bootstrap conserva deliberadamente una ventana de los 200 pedidos más
-  recientes para mantener acotado el renderer.
+- `bootstrap()` expone sólo los pedidos del turno de caja actual; los turnos
+  anteriores permanecen disponibles mediante los informes históricos.
 
 ## Resultado de referencia — 2026-08-31
 
@@ -21,7 +21,7 @@ el archivo al terminar. Puede variarse el volumen con
 | Pedidos cobrados incluidos en informe |      1.875 |
 | Tamaño SQLite                         |   9,88 MiB |
 | Carga completa                        | 6.080,7 ms |
-| Bootstrap (ventana 200)               |    42,2 ms |
+| Bootstrap (turno actual)              |    42,2 ms |
 | Informe detallado                     |     7,6 ms |
 | RSS del proceso                       |  122,1 MiB |
 

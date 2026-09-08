@@ -28,7 +28,7 @@ de una transacción antes de crear datos iniciales.
 - `categories`, `products`, `price_lists`, `product_prices`
 - `modifier_groups`, `modifiers`, `product_modifiers`
 - `customers`, `customer_addresses`
-- `restaurant_tables`
+- `table_sectors`, `restaurant_tables`
 - `orders`, `order_items`, `order_item_halves`, `order_item_modifiers`
 - `delivery_ledger`
 - `print_jobs`
@@ -40,11 +40,16 @@ de una transacción antes de crear datos iniciales.
 - Todo importe se guarda como entero en centavos.
 - La fecha comercial se copia en la caja al abrirla.
 - Un pedido abierto por mesa se protege con índice único parcial.
+- Cada mesa conserva sector, posición porcentual, tamaño y forma para reconstruir
+  el plano en cualquier resolución.
 - Las líneas guardan nombre y precio snapshot.
 - Cada dirección de cliente guarda su valor de envío habitual; el pedido
   conserva además su propio snapshot histórico del costo aplicado.
 - Los modificadores guardan nombre, precio y alcance snapshot.
 - El stock usa milésimas: una unidad completa descuenta `1000` y una mitad `500`.
+- La auditoría conserva únicamente eliminaciones y acciones sensibles con
+  impacto económico o de seguridad; no registra altas operativas, cambios de
+  estado normales ni intentos de impresión.
 - Descuentos, ajustes de stock y rendiciones exigen PIN con permiso y auditoría.
 - Las líneas conservan también la categoría snapshot para informes históricos.
 - Cobro, movimientos, auditoría y evento local comparten transacción.

@@ -1967,7 +1967,7 @@ function MergeCustomerModal({
         </div>
         <Field
           label="Buscar ficha receptora"
-          hint="La búsqueda comienza después de 1 segundo."
+          hint="La búsqueda comienza después de 0,1 segundos."
         >
           <Input
             value={target ? target.name : query}

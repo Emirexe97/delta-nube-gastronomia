@@ -198,7 +198,7 @@ export function OrderCustomerSelector(props: Props) {
         <div className="min-w-[240px] flex-1">
           <Field
             label="Buscar cliente"
-            hint="Escribí nombre o teléfono. La búsqueda comienza después de 1 segundo."
+            hint="Escribí nombre o teléfono. La búsqueda comienza después de 0,1 segundos."
           >
             <div className="relative">
               <MagnifyingGlass
@@ -410,7 +410,11 @@ export function OrderCustomerSelector(props: Props) {
           />
         </Field>
       </div>
-      <Field label="Dirección *">
+      <Field
+        label={
+          props.type === "DELIVERY" ? "Dirección *" : "Dirección (opcional)"
+        }
+      >
         <Input
           value={props.address}
           onChange={(event) => {
@@ -419,7 +423,7 @@ export function OrderCustomerSelector(props: Props) {
           }}
           placeholder="Calle, número y referencia"
           maxLength={240}
-          required
+          required={props.type === "DELIVERY"}
         />
       </Field>
       {props.type === "DELIVERY" &&
@@ -453,7 +457,9 @@ export function OrderCustomerSelector(props: Props) {
         </Field>
       ) : null}
       <p className="text-[10px] font-semibold text-slate-500">
-        * Nombre, teléfono y dirección son obligatorios para continuar.
+        {props.type === "DELIVERY"
+          ? "* Nombre, teléfono y dirección son obligatorios para continuar."
+          : "* Nombre y teléfono son obligatorios. La dirección es opcional para retirar."}
       </p>
       {props.customerId &&
       selectedCustomer &&
@@ -575,11 +581,12 @@ function CreateCustomerModal({
           event.preventDefault();
           event.stopPropagation();
           const deliveryFeeMinor = parseMoneyInput(fee);
+          const addressRequired = type === "DELIVERY";
           if (
             !name.trim() ||
             name.trim().length < 2 ||
             phone.replace(/\D/g, "").length < 6 ||
-            !address.trim() ||
+            (addressRequired && !address.trim()) ||
             deliveryFeeMinor == null ||
             mutation.isPending
           )
@@ -587,13 +594,16 @@ function CreateCustomerModal({
           mutation.mutate({
             name,
             phone,
-            addresses: [
-              {
-                label: "Principal",
-                address: address.trim(),
-                deliveryFeeMinor: type === "DELIVERY" ? deliveryFeeMinor : 0,
-              },
-            ],
+            addresses: address.trim()
+              ? [
+                  {
+                    label: "Principal",
+                    address: address.trim(),
+                    deliveryFeeMinor:
+                      type === "DELIVERY" ? deliveryFeeMinor : 0,
+                  },
+                ]
+              : [],
           });
         }}
       >
@@ -615,11 +625,13 @@ function CreateCustomerModal({
             required
           />
         </Field>
-        <Field label="Dirección">
+        <Field
+          label={type === "DELIVERY" ? "Dirección" : "Dirección (opcional)"}
+        >
           <Input
             value={address}
             onChange={(event) => setAddress(event.target.value)}
-            required
+            required={type === "DELIVERY"}
             placeholder="Calle, número y referencia"
             maxLength={240}
           />
@@ -651,7 +663,7 @@ function CreateCustomerModal({
             disabled={
               !name.trim() ||
               !phone.trim() ||
-              !address.trim() ||
+              (type === "DELIVERY" && !address.trim()) ||
               parseMoneyInput(fee) == null ||
               mutation.isPending
             }

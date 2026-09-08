@@ -227,10 +227,22 @@ export interface RestaurantTableDto {
   name: string | null;
   active: boolean;
   sortOrder: number;
+  sectorId: Id;
+  layoutX: number;
+  layoutY: number;
+  layoutWidth: number;
+  layoutHeight: number;
+  shape: "ROUND" | "SQUARE" | "RECTANGLE";
   currentOrderId: Id | null;
   currentTotalMinor: MoneyMinor;
   waiterName: string | null;
   openedAt: IsoDateTime | null;
+}
+
+export interface TableSectorDto {
+  id: Id;
+  name: string;
+  sortOrder: number;
 }
 
 export interface OrderItemModifierDto {
@@ -545,6 +557,7 @@ export interface BootstrapDto {
   categories: CategoryDto[];
   products: ProductDto[];
   modifiers: ModifierDto[];
+  tableSectors: TableSectorDto[];
   tables: RestaurantTableDto[];
   orders: OrderDto[];
   users: UserDto[];
@@ -873,12 +886,27 @@ export interface DesktopApi {
   settleDelivery(input: SettleDeliveryInput): Promise<DeliveryLedgerDto[]>;
 
   configureTables(input: { count: number }): Promise<RestaurantTableDto[]>;
+  createTableSector(input: { name: string }): Promise<TableSectorDto>;
+  updateTableSector(input: {
+    sectorId: Id;
+    name: string;
+    sortOrder?: number;
+  }): Promise<TableSectorDto>;
+  deleteTableSector(input: {
+    sectorId: Id;
+  }): Promise<{ deleted: true; fallbackSectorId: Id }>;
   updateTable(input: {
     tableId: Id;
     number: number;
     name?: string | null;
     active: boolean;
     sortOrder?: number;
+    sectorId?: Id;
+    layoutX?: number;
+    layoutY?: number;
+    layoutWidth?: number;
+    layoutHeight?: number;
+    shape?: RestaurantTableDto["shape"];
   }): Promise<RestaurantTableDto>;
   deleteTable(input: { tableId: Id }): Promise<{ deleted: true }>;
   exportSalesCsv(): Promise<{ path: string | null }>;

@@ -64,6 +64,8 @@ const auditLabels: Record<string, string> = {
   TABLE_REACTIVATED: "Mesa reactivada",
   TABLE_UPDATED: "Mesa actualizada",
   TABLES_CONFIGURED: "Mesas configuradas",
+  TABLE_SECTOR_DELETED: "Sector eliminado",
+  SECTOR_ELIMINADO: "Sector eliminado",
   DELIVERY_SETTLED: "Rendición liquidada",
   SETTINGS_UPDATED: "Configuración actualizada",
   STOCK_ADJUSTED: "Stock ajustado",
@@ -94,6 +96,7 @@ const entityLabels: Record<string, string> = {
   CASH_SESSION: "Caja",
   PRINT_JOB: "Impresión",
   CUSTOMER: "Cliente",
+  TABLE_SECTOR: "Sector",
 };
 const permissionLabels: Record<string, string> = {
   "orders.cancel": "Cancelar pedidos",
@@ -107,6 +110,7 @@ const permissionLabels: Record<string, string> = {
   "settings.manage": "Administrar configuración",
   "stock.adjust": "Ajustar stock",
   "users.manage": "Administrar usuarios",
+  "tables.manage": "Administrar mesas y sectores",
 };
 export const auditActionLabel = (value: string) =>
   auditLabels[value] ??

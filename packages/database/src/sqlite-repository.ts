@@ -46,6 +46,7 @@ import type {
   UpdateDraftOrderInput,
   ConfirmOrderInput,
   SettleDeliveryInput,
+  TableSectorDto,
   ReverseCashMovementInput,
   ReverseDeliverySettlementInput,
   UserDto,
@@ -74,6 +75,40 @@ import { migrations } from "./migrations";
 
 type SqliteDatabase = InstanceType<typeof Database>;
 type Row = Record<string, unknown>;
+
+const SENSITIVE_AUDIT_ACTIONS = new Set([
+  "CASH_OPENED",
+  "CASH_INCOME",
+  "CASH_EXPENSE",
+  "CASH_WITHDRAWAL",
+  "CASH_ADJUSTMENT",
+  "CASH_CLOSED",
+  "CASH_FORCE_CLOSED",
+  "ORDER_ITEM_PRICE_OVERRIDDEN",
+  "ORDER_EDITED_AFTER_PRINT",
+  "ORDER_ITEM_REMOVED",
+  "ORDER_MODIFIER_REMOVED",
+  "ORDER_DISCOUNT_APPLIED",
+  "PAYMENT_REFUNDED",
+  "ORDER_CANCELLED",
+  "CUSTOMER_ARCHIVED",
+  "CUSTOMER_MERGED",
+  "CUSTOMER_MERGE_RECEIVED",
+  "CATEGORY_DELETED",
+  "PRODUCT_UPDATED",
+  "PRODUCTS_BULK_UPDATED",
+  "STOCK_ADJUSTED",
+  "USER_CREATED",
+  "DRIVER_CREATED",
+  "USER_UPDATED",
+  "USER_DELETED",
+  "DELIVERY_SETTLED",
+  "CASH_REVERSED",
+  "DELIVERY_SETTLEMENT_REVERSED",
+  "TABLE_DELETED",
+  "TABLE_SECTOR_DELETED",
+  "SETTINGS_UPDATED",
+]);
 
 const DEFAULT_SETTINGS: AppSettingsDto = {
   businessName: "Delta Nube Gastronomía",
@@ -662,6 +697,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     after?: unknown;
     authorizerUserId?: string;
   }) {
+    if (!SENSITIVE_AUDIT_ACTIONS.has(input.action)) return;
     const session = this.getOpenCashSessionRow();
     this.db
       .prepare(
@@ -715,8 +751,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       categories: this.listCategories(),
       products: this.listProducts(),
       modifiers: this.listModifiers(),
+      tableSectors: this.listTableSectors(),
       tables: this.listTables(),
-      orders: this.listBootstrapOrders(),
+      orders: currentCash
+        ? this.listBootstrapOrders(String(currentCash.id))
+        : [],
       users: this.listUsers(),
       deliveryLedger: this.listDeliveryLedger(),
       driverDeliveryActivity: this.listDriverDeliveryActivity(),
@@ -751,12 +790,24 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         );
       }
       const id = randomUUID();
+      const defaultSector = requireRow(
+        this.listTableSectors()[0],
+        "No hay un sector disponible para la mesa.",
+      );
+      const layoutX = 4 + ((number - 1) % 5) * 19;
+      const layoutY = 6 + (Math.floor((number - 1) / 5) % 4) * 23;
       this.db
         .prepare(
-          `INSERT INTO restaurant_tables(id, number, active, sort_order)
-           VALUES (?, ?, 1, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM restaurant_tables))`,
+          `INSERT INTO restaurant_tables(
+             id, number, active, sort_order, sector_id, layout_x, layout_y,
+             layout_width, layout_height, shape
+           ) VALUES (
+             ?, ?, 1,
+             (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM restaurant_tables),
+             ?, ?, ?, 14, 17, 'SQUARE'
+           )`,
         )
-        .run(id, number);
+        .run(id, number, defaultSector.id, layoutX, layoutY);
       this.audit({
         entityType: "RESTAURANT_TABLE",
         entityId: id,
@@ -1314,6 +1365,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       name: row.name == null ? null : String(row.name),
       active: flag(row.active),
       sortOrder: Number(row.sort_order),
+      sectorId: String(row.sector_id ?? "sector-main"),
+      layoutX: Number(row.layout_x ?? 4),
+      layoutY: Number(row.layout_y ?? 6),
+      layoutWidth: Number(row.layout_width ?? 14),
+      layoutHeight: Number(row.layout_height ?? 17),
+      shape: ["ROUND", "SQUARE", "RECTANGLE"].includes(String(row.shape))
+        ? (String(row.shape) as RestaurantTableDto["shape"])
+        : "SQUARE",
       currentOrderId:
         row.current_order_id == null ? null : String(row.current_order_id),
       currentTotalMinor: Number(row.current_total_minor ?? 0),
@@ -1323,35 +1382,29 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }));
   }
 
-  private listBootstrapOrders(): OrderDto[] {
+  private listTableSectors(): TableSectorDto[] {
     return (
       this.db
         .prepare(
-          `WITH actionable AS (
-             SELECT o.id, o.created_at
-             FROM orders o
-             WHERE o.lifecycle_status = 'DRAFT'
-                OR o.operational_status NOT IN ('DELIVERED', 'CANCELLED')
-                OR (o.payment_status <> 'PAID' AND o.operational_status <> 'CANCELLED')
-                OR EXISTS (
-                  SELECT 1 FROM print_jobs pj
-                  WHERE pj.order_id = o.id AND pj.status IN ('QUEUED', 'FAILED')
-                )
-           ),
-           recent_history AS (
-             SELECT o.id, o.created_at
-             FROM orders o
-             WHERE o.id NOT IN (SELECT id FROM actionable)
-             ORDER BY o.created_at DESC LIMIT 200
-           )
-           SELECT id FROM (
-             SELECT id, created_at FROM actionable
-             UNION ALL
-             SELECT id, created_at FROM recent_history
-           )
-           ORDER BY created_at DESC`,
+          "SELECT id, name, sort_order FROM table_sectors ORDER BY sort_order, name",
         )
         .all() as Row[]
+    ).map((row) => ({
+      id: String(row.id),
+      name: String(row.name),
+      sortOrder: Number(row.sort_order),
+    }));
+  }
+
+  private listBootstrapOrders(cashSessionId: string): OrderDto[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT id FROM orders
+           WHERE cash_session_created_id = ?
+           ORDER BY created_at DESC`,
+        )
+        .all(cashSessionId) as Row[]
     ).map((row) => this.getOrder(String(row.id)));
   }
 
@@ -4814,14 +4867,115 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return run();
   }
 
+  createTableSector(input: { name: string }): TableSectorDto {
+    assertPermission(this.currentUser().permissions, "tables.manage");
+    const name = input.name.trim();
+    if (name.length < 2 || name.length > 60)
+      throw new Error("El sector debe tener entre 2 y 60 caracteres.");
+    const duplicate = this.db
+      .prepare("SELECT id FROM table_sectors WHERE name = ? COLLATE NOCASE")
+      .get(name);
+    if (duplicate) throw new Error("Ya existe un sector con ese nombre.");
+    const id = randomUUID();
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO table_sectors(id, name, sort_order, created_at, updated_at)
+         VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM table_sectors), ?, ?)`,
+      )
+      .run(id, name, timestamp, timestamp);
+    return requireRow(
+      this.listTableSectors().find((sector) => sector.id === id),
+      "No se pudo leer el sector creado.",
+    );
+  }
+
+  updateTableSector(input: {
+    sectorId: Id;
+    name: string;
+    sortOrder?: number;
+  }): TableSectorDto {
+    assertPermission(this.currentUser().permissions, "tables.manage");
+    const before = requireRow(
+      this.listTableSectors().find((sector) => sector.id === input.sectorId),
+      "El sector no existe.",
+    );
+    const name = input.name.trim();
+    if (name.length < 2 || name.length > 60)
+      throw new Error("El sector debe tener entre 2 y 60 caracteres.");
+    const duplicate = this.db
+      .prepare(
+        "SELECT id FROM table_sectors WHERE name = ? COLLATE NOCASE AND id <> ?",
+      )
+      .get(name, input.sectorId);
+    if (duplicate) throw new Error("Ya existe un sector con ese nombre.");
+    const sortOrder = input.sortOrder ?? before.sortOrder;
+    if (!Number.isInteger(sortOrder) || sortOrder < 0)
+      throw new Error("El orden del sector no es válido.");
+    this.db
+      .prepare(
+        "UPDATE table_sectors SET name = ?, sort_order = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(name, sortOrder, nowIso(), input.sectorId);
+    return requireRow(
+      this.listTableSectors().find((sector) => sector.id === input.sectorId),
+      "No se pudo leer el sector actualizado.",
+    );
+  }
+
+  deleteTableSector(input: { sectorId: Id }): {
+    deleted: true;
+    fallbackSectorId: Id;
+  } {
+    const run = this.db.transaction(() => {
+      assertPermission(this.currentUser().permissions, "tables.manage");
+      const sectors = this.listTableSectors();
+      const sector = requireRow(
+        sectors.find((candidate) => candidate.id === input.sectorId),
+        "El sector no existe.",
+      );
+      if (sectors.length <= 1)
+        throw new Error("El salón debe conservar al menos un sector.");
+      const fallback = requireRow(
+        sectors.find((candidate) => candidate.id !== input.sectorId),
+        "No hay otro sector disponible.",
+      );
+      this.db
+        .prepare(
+          "UPDATE restaurant_tables SET sector_id = ? WHERE sector_id = ?",
+        )
+        .run(fallback.id, input.sectorId);
+      this.db
+        .prepare("DELETE FROM table_sectors WHERE id = ?")
+        .run(input.sectorId);
+      this.audit({
+        entityType: "TABLE_SECTOR",
+        entityId: input.sectorId,
+        action: "TABLE_SECTOR_DELETED",
+        permission: "tables.manage",
+        before: sector,
+        after: { tablesMovedToSectorId: fallback.id },
+      });
+      return { deleted: true as const, fallbackSectorId: fallback.id };
+    });
+    return run();
+  }
+
   updateTable(input: {
     tableId: Id;
     number: number;
     name?: string | null;
     active: boolean;
     sortOrder?: number;
+    sectorId?: Id;
+    layoutX?: number;
+    layoutY?: number;
+    layoutWidth?: number;
+    layoutHeight?: number;
+    shape?: RestaurantTableDto["shape"];
   }): RestaurantTableDto {
     const run = this.db.transaction(() => {
+      assertPermission(this.currentUser().permissions, "tables.manage");
       const before = requireRow(
         this.listTables().find((table) => table.id === input.tableId),
         "La mesa no existe.",
@@ -4842,15 +4996,50 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         )
         .get(input.number, input.tableId);
       if (duplicate) throw new Error("Ya existe otra mesa con ese número.");
+      const sectorId = input.sectorId ?? before.sectorId;
+      if (!this.listTableSectors().some((sector) => sector.id === sectorId))
+        throw new Error("El sector seleccionado no existe.");
+      const layout = {
+        x: input.layoutX ?? before.layoutX,
+        y: input.layoutY ?? before.layoutY,
+        width: input.layoutWidth ?? before.layoutWidth,
+        height: input.layoutHeight ?? before.layoutHeight,
+      };
+      if (
+        ![layout.x, layout.y, layout.width, layout.height].every(
+          Number.isFinite,
+        ) ||
+        layout.x < 0 ||
+        layout.y < 0 ||
+        layout.width < 6 ||
+        layout.width > 40 ||
+        layout.height < 8 ||
+        layout.height > 40 ||
+        layout.x + layout.width > 100 ||
+        layout.y + layout.height > 100
+      )
+        throw new Error("La posición o el tamaño de la mesa no es válido.");
+      const shape = input.shape ?? before.shape;
+      if (!["ROUND", "SQUARE", "RECTANGLE"].includes(shape))
+        throw new Error("La forma de la mesa no es válida.");
       this.db
         .prepare(
-          "UPDATE restaurant_tables SET number = ?, name = ?, active = ?, sort_order = ? WHERE id = ?",
+          `UPDATE restaurant_tables
+           SET number = ?, name = ?, active = ?, sort_order = ?, sector_id = ?,
+               layout_x = ?, layout_y = ?, layout_width = ?, layout_height = ?, shape = ?
+           WHERE id = ?`,
         )
         .run(
           input.number,
           input.name?.trim() || null,
           input.active ? 1 : 0,
           input.sortOrder ?? before.sortOrder,
+          sectorId,
+          layout.x,
+          layout.y,
+          layout.width,
+          layout.height,
+          shape,
           input.tableId,
         );
       this.audit({
@@ -5452,8 +5641,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     action?: string;
     limit?: number;
   }): AuditEntryDto[] {
-    const where: string[] = [];
-    const params: unknown[] = [];
+    const auditedActions = [...SENSITIVE_AUDIT_ACTIONS];
+    const where: string[] = [
+      `a.action IN (${auditedActions.map(() => "?").join(", ")})`,
+    ];
+    const params: unknown[] = [...auditedActions];
     if (input.dateFrom) {
       where.push("a.business_date >= ?");
       params.push(input.dateFrom);

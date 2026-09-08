@@ -44,11 +44,29 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
   await expect(page.getByLabel("Hora de entrega")).toBeVisible();
   const createOrderButton = page.getByRole("button", { name: "Crear pedido" });
   await expect(createOrderButton).toBeDisabled();
-  await page
-    .getByLabel("Nombre del cliente *", { exact: true })
-    .fill("Cliente E2E");
-  await page.getByLabel("Teléfono *", { exact: true }).fill("11 5555-0101");
-  await page.getByLabel("Dirección *", { exact: true }).fill("Mitre 250");
+  await page.getByRole("button", { name: "Crear cliente" }).click();
+  const customerDialog = page.getByRole("dialog", {
+    name: "Crear cliente sin salir del pedido",
+  });
+  await customerDialog.getByLabel("Nombre", { exact: true }).fill("Retiro E2E");
+  await customerDialog
+    .getByLabel("Teléfono", { exact: true })
+    .fill("11 5555-0101");
+  await expect(
+    customerDialog.getByLabel("Dirección (opcional)", { exact: true }),
+  ).toHaveValue("");
+  await expect(
+    customerDialog.getByRole("button", { name: "Guardar y seleccionar" }),
+  ).toBeEnabled();
+  await customerDialog
+    .getByRole("button", { name: "Guardar y seleccionar" })
+    .click();
+  await expect(
+    page.getByText("Retiro E2E vinculado a la base de datos"),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Dirección (opcional)", { exact: true }),
+  ).toHaveValue("");
   await expect(createOrderButton).toBeEnabled();
   await page.getByRole("button", { name: "Crear pedido" }).click();
   await expect(page.getByText(/Pedido #1/)).toBeVisible();
@@ -64,6 +82,10 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
     page.getByPlaceholder(/Código, nombre, categoría/),
   ).toBeVisible();
   await page.getByRole("button", { name: /Muzzarella grande/ }).click();
+  await page
+    .getByRole("dialog", { name: "Agregar · Muzzarella grande" })
+    .getByRole("button", { name: "Agregar a la mesa" })
+    .click();
   await expect(page.getByText("1×Muzzarella grande")).toBeVisible();
   await page.getByRole("button", { name: "Confirmar pedido" }).click();
   await page.getByRole("button", { name: /Cobrar/ }).click();
@@ -249,12 +271,15 @@ test("asigna un mesero al abrir una mesa", async () => {
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(
-    page.getByRole("button", { name: "Abrir pedido de mesa 1" }),
-  ).toContainText("Mesero E2E");
+    page
+      .getByRole("region", { name: "Mesas del salón" })
+      .getByText(/Mesero E2E ·/),
+  ).toBeVisible();
 });
 
 test("edita precios de producto con autorización e historial", async () => {
   await page.getByRole("link", { name: "Productos" }).click();
+  await page.getByRole("tab", { name: "Categorías" }).click();
   await page.getByRole("button", { name: "Nueva categoría" }).click();
   const categoryDialog = page.getByRole("dialog", {
     name: "Nueva categoría",
@@ -265,6 +290,7 @@ test("edita precios de producto con autorización e historial", async () => {
   await categoryDialog.getByLabel("Nombre de la categoría").fill("Postres E2E");
   await categoryDialog.getByRole("button", { name: "Crear categoría" }).click();
   await expect(page.getByText("Postres E2E", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Productos", exact: true }).click();
 
   const originalRow = page
     .getByRole("row")
@@ -373,6 +399,8 @@ test("carga una mesa y productos de punta a punta solo con teclado", async () =>
     "Especial grande",
   );
   await expect(code).toHaveValue("ESPG");
+  await product.press("ArrowDown");
+  await expect(code).toHaveValue("MUZG");
   await product.press("ArrowDown");
   await expect(code).toHaveValue("NAPG");
   await product.press("Tab");
@@ -487,7 +515,7 @@ test("protege modales anidados y completa atajos y recuperación por teclado", a
   const payment = page.getByRole("dialog", { name: "Cobrar pedido" });
   await expect(payment).toBeVisible();
   await expect(payment.getByLabel("Efectivo", { exact: true })).toBeFocused();
-  await payment.getByLabel("Efectivo", { exact: true }).press("Enter");
+  await payment.getByRole("button", { name: "Confirmar cobro" }).click();
   await expect(payment).toBeHidden();
   await expect(editor.getByText("Pagado", { exact: true })).toBeVisible();
 
@@ -514,14 +542,18 @@ test("protege modales anidados y completa atajos y recuperación por teclado", a
   await draftCreation
     .getByLabel("Teléfono *", { exact: true })
     .fill("2625 000 000");
-  await draftCreation
-    .getByLabel("Dirección *", { exact: true })
-    .fill("Calle E2E 123");
+  await expect(
+    draftCreation.getByLabel("Dirección (opcional)", { exact: true }),
+  ).toHaveValue("");
   await draftCreation.getByRole("button", { name: "Crear pedido" }).click();
   const draftEditor = page.getByRole("dialog", {
     name: /Pedido #\d+ · Para retirar/,
   });
   await draftEditor.getByRole("button", { name: /Muzzarella/ }).click();
+  await page
+    .getByRole("dialog", { name: /Agregar · Muzzarella/ })
+    .getByRole("button", { name: "Agregar a la mesa" })
+    .click();
   await expect(draftEditor.getByText(/1×Muzzarella/)).toBeVisible();
   await draftEditor.getByRole("button", { name: "Descartar borrador" }).click();
   const discard = page.getByRole("dialog", { name: "Descartar borrador" });
