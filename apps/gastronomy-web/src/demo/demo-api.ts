@@ -2901,15 +2901,6 @@ export function createDemoApi(
         throw new Error(
           "El administrador operativo inicial no puede eliminarse.",
         );
-      const hasHistory = state.data.orders.some(
-        (order) =>
-          order.waiterUserId === input.userId ||
-          order.driverUserId === input.userId,
-      );
-      if (hasHistory)
-        throw new Error(
-          "El usuario tiene actividad o historial asociado. Podés marcarlo inactivo desde Editar.",
-        );
       const [deleted] = state.data.users.splice(index, 1);
       audit(
         state,

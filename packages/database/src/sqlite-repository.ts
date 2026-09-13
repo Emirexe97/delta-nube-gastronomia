@@ -561,8 +561,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       staffNumber: Number(row.staff_number),
       fullName: String(row.full_name),
       roleCode: String(row.role_code) as UserDto["roleCode"],
-      roleName:
-        ROLE_LABELS[String(row.role_code)] ?? String(row.role_name),
+      roleName: ROLE_LABELS[String(row.role_code)] ?? String(row.role_name),
       permissions,
       active: flag(row.active),
     };
@@ -1250,7 +1249,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const rows = this.db
       .prepare(
         `SELECT u.id, u.staff_number, u.full_name, u.active, r.code AS role_code, r.name AS role_name
-      FROM users u JOIN roles r ON r.id = u.role_id ORDER BY u.full_name`,
+      FROM users u JOIN roles r ON r.id = u.role_id
+      WHERE u.archived = 0
+      ORDER BY u.full_name`,
       )
       .all() as Row[];
     const permissions = this.db
@@ -1261,8 +1262,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       staffNumber: Number(row.staff_number),
       fullName: String(row.full_name),
       roleCode: String(row.role_code) as UserDto["roleCode"],
-      roleName:
-        ROLE_LABELS[String(row.role_code)] ?? String(row.role_name),
+      roleName: ROLE_LABELS[String(row.role_code)] ?? String(row.role_name),
       permissions: (permissions.all(row.id) as Row[]).map((value) =>
         String(value.permission_code),
       ),
@@ -4740,7 +4740,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         entityId: id,
         action: "DRIVER_CREATED",
         permission: "users.manage",
-        after: { roleCode: "DELIVERY_DRIVER", staffNumber, loginEnabled: false },
+        after: {
+          roleCode: "DELIVERY_DRIVER",
+          staffNumber,
+          loginEnabled: false,
+        },
         authorizerUserId: String(authorizer.id),
       });
       return requireRow(
@@ -4892,13 +4896,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           .prepare(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`)
           .get(input.userId),
       );
-      if (hasHistory)
-        throw new Error(
-          "El usuario tiene actividad o historial asociado. Podés marcarlo inactivo desde Editar.",
-        );
-      const result = this.db
-        .prepare("DELETE FROM users WHERE id = ?")
-        .run(input.userId);
+      const result = hasHistory
+        ? this.db
+            .prepare(
+              "UPDATE users SET active = 0, archived = 1, updated_at = ? WHERE id = ? AND archived = 0",
+            )
+            .run(nowIso(), input.userId)
+        : this.db.prepare("DELETE FROM users WHERE id = ?").run(input.userId);
       if (!result.changes) throw new Error("El usuario no existe.");
       this.audit({
         entityType: "USER",

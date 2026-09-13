@@ -715,4 +715,12 @@ CREATE INDEX IF NOT EXISTS floor_plan_shapes_sector_idx ON floor_plan_shapes(sec
 ALTER TABLE categories ADD COLUMN stock_control_enabled INTEGER NOT NULL DEFAULT 1;
 `,
   },
+  {
+    version: 22,
+    name: "archive_users_with_history",
+    sql: String.raw`
+ALTER TABLE users ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS users_archived_idx ON users(archived, full_name);
+`,
+  },
 ];

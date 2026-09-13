@@ -1270,6 +1270,35 @@ describe("API de demostración", () => {
     ).resolves.toMatchObject({ active: false });
   });
 
+  it("elimina de la lista un usuario aunque conserve pedidos históricos", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const driver = await api.createDriver({
+      fullName: "Repartidor archivado demo",
+      authorizerPin: "1234",
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente del repartidor archivado",
+      customerPhone: "11 4000-7000",
+      deliveryAddress: "Calle archivada 100",
+      driverUserId: driver.id,
+    });
+
+    await expect(
+      api.deleteUser({
+        userId: driver.id,
+        reason: "Baja definitiva",
+        authorizerPin: "1234",
+      }),
+    ).resolves.toEqual({ deleted: true });
+
+    const bootstrap = await api.bootstrap();
+    expect(bootstrap.users.some((user) => user.id === driver.id)).toBe(false);
+    expect(bootstrap.orders).toContainEqual(
+      expect.objectContaining({ id: order.id, driverUserId: driver.id }),
+    );
+  });
+
   it("devuelve un pago completo y vuelve a dejar el pedido impago", async () => {
     const api = createDemoApi(new MemoryStorage());
     const baseline = await api.bootstrap();

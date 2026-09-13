@@ -404,8 +404,8 @@ function EditUserModal({
           <div className="grid gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
             <p className="text-xs font-semibold text-rose-700">
               Escribí el número {user?.staffNumber} para confirmar la
-              eliminación. Si tiene historial, se bloqueará y podrás marcarlo
-              inactivo.
+              eliminación. Si tiene historial, se conservará para auditoría,
+              pero desaparecerá de la lista de usuarios.
             </p>
             <Input
               value={deleteConfirmation}

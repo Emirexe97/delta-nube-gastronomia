@@ -160,7 +160,10 @@ test("las mesas se listan siempre ordenadas por número", () => {
     repository.ensureTable(20);
 
     const numbers = repository.bootstrap().tables.map((table) => table.number);
-    assert.deepEqual(numbers, [...numbers].sort((left, right) => left - right));
+    assert.deepEqual(
+      numbers,
+      [...numbers].sort((left, right) => left - right),
+    );
   });
 });
 
@@ -2310,7 +2313,7 @@ test("alta y cambios de usuario requieren users.manage y quedan auditados", () =
   });
 });
 
-test("usuario usa el primer número libre, permite editarlo y elimina sólo sin historial", () => {
+test("usuario usa el primer número libre y al eliminar conserva su historial archivado", () => {
   withRepository((repository) => {
     const third = repository.createUser({
       staffNumber: 3,
@@ -2377,14 +2380,23 @@ test("usuario usa el primer número libre, permite editarlo y elimina sólo sin 
          VALUES (?, ?, ?, 'USER', ?, 'USED')`,
       )
       .run(randomUUID(), new Date().toISOString(), third.id, third.id);
-    assert.throws(
-      () =>
-        repository.deleteUser({
-          userId: third.id,
-          reason: "Tiene historial",
-          authorizerPin: "2468",
-        }),
-      /historial/i,
+    assert.deepEqual(
+      repository.deleteUser({
+        userId: third.id,
+        reason: "Tiene historial",
+        authorizerPin: "2468",
+      }),
+      { deleted: true },
+    );
+    assert.equal(
+      repository.bootstrap().users.some((user) => user.id === third.id),
+      false,
+    );
+    assert.deepEqual(
+      repository.db
+        .prepare("SELECT active, archived FROM users WHERE id = ?")
+        .get(third.id),
+      { active: 0, archived: 1 },
     );
     assert.throws(
       () =>
