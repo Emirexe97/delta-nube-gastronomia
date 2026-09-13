@@ -351,7 +351,7 @@ async function executePrintJob(
 }
 
 function registerIpcHandlers() {
-  const methods: Exclude<
+  type ForwardedDesktopMethod = Exclude<
     keyof DesktopApi,
     | "printOrder"
     | "printCashSessionReport"
@@ -361,7 +361,14 @@ function registerIpcHandlers() {
     | "restoreBackup"
     | "listPrinters"
     | "testPrinter"
-  >[] = [
+  >;
+  const completeMethodList = <T extends readonly ForwardedDesktopMethod[]>(
+    methods: T &
+      (Exclude<ForwardedDesktopMethod, T[number]> extends never
+        ? unknown
+        : { missing: Exclude<ForwardedDesktopMethod, T[number]> }),
+  ) => methods;
+  const methods = completeMethodList([
     "bootstrap",
     "ensureTable",
     "openCashSession",
@@ -406,6 +413,7 @@ function registerIpcHandlers() {
     "createUser",
     "createDriver",
     "updateUser",
+    "deleteUser",
     "settleDelivery",
     "reverseCashMovement",
     "reverseDeliverySettlement",
@@ -422,7 +430,7 @@ function registerIpcHandlers() {
     "getDashboard",
     "getDetailedReport",
     "getAuditLog",
-  ];
+  ] as const);
   for (const method of methods) {
     ipcMain.handle(`gastronomy:${method}`, async (_event, payload) => {
       const { appService } = services();
