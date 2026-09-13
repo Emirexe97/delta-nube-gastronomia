@@ -111,6 +111,20 @@ test("previsualiza el informe sin cerrar y lo conserva en el historial al cerrar
   await expect(preview.getByText("Ventas")).toBeVisible();
   await expect(preview.getByText("Pedidos", { exact: true })).toBeVisible();
   await expect(preview.getByText(/\$\s*[\d.]+/).first()).toBeVisible();
+
+  const typography = await preview.evaluate(() => {
+    const body = document.body;
+    const style = window.getComputedStyle(body);
+    return {
+      fontFamily: style.fontFamily,
+      fontWeight: style.fontWeight,
+      fontSize: parseFloat(style.fontSize),
+    };
+  });
+  expect(typography.fontFamily.toLowerCase()).toContain("arial");
+  expect(Number(typography.fontWeight)).toBeGreaterThanOrEqual(700);
+  expect(typography.fontSize).toBeGreaterThanOrEqual(12);
+
   await preview.getByRole("button", { name: "Cancelar" }).click();
 
   await expect(report).toBeVisible();

@@ -102,6 +102,7 @@ export interface CategoryDto {
   name: string;
   sortOrder: number;
   active: boolean;
+  stockControlEnabled: boolean;
 }
 
 export interface ProductPriceDto {
@@ -883,12 +884,16 @@ export interface DesktopApi {
     reason: string;
     authorizerPin: string;
   }): Promise<CustomerDto>;
-  createCategory(input: { name: string }): Promise<CategoryDto>;
+  createCategory(input: {
+    name: string;
+    stockControlEnabled?: boolean;
+  }): Promise<CategoryDto>;
   updateCategory(input: {
     categoryId: Id;
     name: string;
     active: boolean;
     sortOrder: number;
+    stockControlEnabled?: boolean;
     reason: string;
     authorizerPin: string;
   }): Promise<CategoryDto>;
@@ -934,6 +939,7 @@ export interface DesktopApi {
     authorizerPin: string;
   }): Promise<UserDto>;
   createDriver(input: {
+    staffNumber?: number;
     fullName: string;
     authorizerPin: string;
   }): Promise<UserDto>;

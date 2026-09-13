@@ -9,7 +9,10 @@ import "./styles.css";
 installDemoApi();
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { staleTime: 5_000, refetchOnWindowFocus: false }, mutations: { retry: false } }
+  defaultOptions: {
+    queries: { staleTime: 5_000, refetchOnWindowFocus: false },
+    mutations: { retry: false },
+  },
 });
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -19,5 +22,5 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <App />
       </HashRouter>
     </QueryClientProvider>
-  </React.StrictMode>
+  </React.StrictMode>,
 );

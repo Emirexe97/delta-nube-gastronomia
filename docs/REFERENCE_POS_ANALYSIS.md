@@ -32,17 +32,17 @@ escribe archivos en el repositorio de referencia.
 
 ## Estructura y responsabilidades
 
-| Área | Ubicación en el POS | Patrón relevante |
-| --- | --- | --- |
-| Renderer operativo | `apps/pos-web` | Rutas diferidas, shell persistente y páginas por dominio |
-| Shell desktop | `apps/desktop-shell` | Main/preload aislados; el renderer no accede a Node |
-| Dominio | `packages/domain` | Reglas puras, dinero en minor units y tests cercanos |
-| Runtime local | `packages/desktop-runtime` | Base local, servicios y contratos HTTP/desktop |
-| UI | `packages/ui` | Tokens, primitivas compactas y Tailwind preset |
-| Tipos | `packages/types` | DTO y contratos compartidos |
-| Web común | `packages/web-core` | Búsqueda, fechas, permisos y utilidades de formulario |
-| Persistencia central | `packages/database` | Prisma y migraciones versionadas |
-| Sincronización | `packages/sync-engine` | Outbox, idempotencia, cursores y recuperación |
+| Área                 | Ubicación en el POS        | Patrón relevante                                         |
+| -------------------- | -------------------------- | -------------------------------------------------------- |
+| Renderer operativo   | `apps/pos-web`             | Rutas diferidas, shell persistente y páginas por dominio |
+| Shell desktop        | `apps/desktop-shell`       | Main/preload aislados; el renderer no accede a Node      |
+| Dominio              | `packages/domain`          | Reglas puras, dinero en minor units y tests cercanos     |
+| Runtime local        | `packages/desktop-runtime` | Base local, servicios y contratos HTTP/desktop           |
+| UI                   | `packages/ui`              | Tokens, primitivas compactas y Tailwind preset           |
+| Tipos                | `packages/types`           | DTO y contratos compartidos                              |
+| Web común            | `packages/web-core`        | Búsqueda, fechas, permisos y utilidades de formulario    |
+| Persistencia central | `packages/database`        | Prisma y migraciones versionadas                         |
+| Sincronización       | `packages/sync-engine`     | Outbox, idempotencia, cursores y recuperación            |
 
 ## Shell, navegación y densidad visual
 
@@ -250,4 +250,3 @@ casos de uso dependen de contratos. La aplicación standalone inyecta adapters
 SQLite/Electron. Una integración futura deberá conservar `domain` y
 `application`, reemplazar adapters de productos/usuarios/caja/pagos/impresión y
 montar las rutas del renderer dentro del shell del POS.
-

@@ -708,4 +708,11 @@ DROP TABLE floor_plan_shapes_legacy;
 CREATE INDEX IF NOT EXISTS floor_plan_shapes_sector_idx ON floor_plan_shapes(sector_id, sort_order, created_at);
 `,
   },
+  {
+    version: 21,
+    name: "categories_stock_control_enabled",
+    sql: String.raw`
+ALTER TABLE categories ADD COLUMN stock_control_enabled INTEGER NOT NULL DEFAULT 1;
+`,
+  },
 ];

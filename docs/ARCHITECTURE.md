@@ -68,4 +68,3 @@ continúan pudiendo leer entidades históricas aunque el módulo esté oculto.
 La aplicación standalone compone adapters locales en `desktop-shell`. En Delta
 Nube POS, esa composition root se reemplazará por adapters que deleguen en sus
 servicios de catálogo, usuarios, turnos, pagos, impresión, stock y sync.
-

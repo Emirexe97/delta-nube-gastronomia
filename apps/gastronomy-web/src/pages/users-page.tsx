@@ -18,6 +18,7 @@ const roles = [
   ["MANAGER", "Supervisor"],
   ["CASHIER", "Cajero"],
   ["WAITER", "Mozo"],
+  ["DELIVERY_DRIVER", "Repartidor"],
 ] as const;
 type RoleCode = (typeof roles)[number][0];
 
@@ -58,42 +59,46 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
             </tr>
           </thead>
           <tbody>
-            {data.users
-              .filter((user) => user.roleCode !== "DELIVERY_DRIVER")
-              .map((user) => (
-                <tr key={user.id}>
-                  <td className="font-mono text-xs font-extrabold text-brand-700">
-                    #{user.staffNumber}
-                  </td>
-                  <td className="font-bold text-slate-900">{user.fullName}</td>
-                  <td>
-                    <Badge tone="orange">{user.roleName}</Badge>
-                  </td>
-                  <td>
-                    <span className="text-xs font-semibold">
-                      {user.permissions.length}
-                    </span>
-                    <p className="max-w-[420px] truncate text-[10px] text-slate-400">
-                      {user.permissions.join(" · ") ||
-                        "Sin capacidades operativas"}
-                    </p>
-                  </td>
-                  <td>
-                    <Badge tone={user.active ? "green" : "slate"}>
-                      {user.active ? "Activo" : "Inactivo"}
-                    </Badge>
-                  </td>
-                  <td className="text-right">
-                    <button
-                      onClick={() => setEditing(user)}
-                      className="rounded-lg p-2 text-slate-400 hover:bg-brand-50 hover:text-brand-700"
-                      aria-label={`Editar ${user.fullName}`}
-                    >
-                      <PencilSimple />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+            {data.users.map((user) => (
+              <tr key={user.id}>
+                <td className="font-mono text-xs font-extrabold text-brand-700">
+                  #{user.staffNumber}
+                </td>
+                <td className="font-bold text-slate-900">{user.fullName}</td>
+                <td>
+                  <Badge
+                    tone={
+                      user.roleCode === "DELIVERY_DRIVER" ? "blue" : "orange"
+                    }
+                  >
+                    {user.roleName}
+                  </Badge>
+                </td>
+                <td>
+                  <span className="text-xs font-semibold">
+                    {user.permissions.length}
+                  </span>
+                  <p className="max-w-[420px] truncate text-[10px] text-slate-400">
+                    {user.permissions.join(" · ") ||
+                      "Sin capacidades operativas"}
+                  </p>
+                </td>
+                <td>
+                  <Badge tone={user.active ? "green" : "slate"}>
+                    {user.active ? "Activo" : "Inactivo"}
+                  </Badge>
+                </td>
+                <td className="text-right">
+                  <button
+                    onClick={() => setEditing(user)}
+                    className="rounded-lg p-2 text-slate-400 hover:bg-brand-50 hover:text-brand-700"
+                    aria-label={`Editar ${user.fullName}`}
+                  >
+                    <PencilSimple />
+                  </button>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </Card>
@@ -128,9 +133,34 @@ function CreateUserModal({
       setError(null);
     }
   }, [open, users]);
+  const isDriver = roleCode === "DELIVERY_DRIVER";
+  const isPinValid = isDriver
+    ? pin.length === 0 || pin.length >= 4
+    : pin.length >= 4;
+
   const mutation = useApiMutation(
-    (input: Parameters<typeof window.gastronomy.createUser>[0]) =>
-      window.gastronomy.createUser(input),
+    async (input: {
+      staffNumber: number;
+      fullName: string;
+      roleCode: RoleCode;
+      pin: string;
+      authorizerPin: string;
+    }) => {
+      if (input.roleCode === "DELIVERY_DRIVER" && !input.pin) {
+        return window.gastronomy.createDriver({
+          staffNumber: input.staffNumber,
+          fullName: input.fullName,
+          authorizerPin: input.authorizerPin,
+        });
+      }
+      return window.gastronomy.createUser({
+        staffNumber: input.staffNumber,
+        fullName: input.fullName,
+        roleCode: input.roleCode,
+        pin: input.pin,
+        authorizerPin: input.authorizerPin,
+      });
+    },
     {
       onSuccess: () => {
         setStaffNumber("");
@@ -179,12 +209,19 @@ function CreateUserModal({
           </Select>
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="PIN del usuario">
+          <Field
+            label={isDriver ? "PIN del usuario (opcional)" : "PIN del usuario"}
+          >
             <Input
               type="password"
               inputMode="numeric"
               value={pin}
               maxLength={8}
+              placeholder={
+                isDriver
+                  ? "Opcional para repartidor sin acceso al POS"
+                  : undefined
+              }
               onChange={(event) =>
                 setPin(event.target.value.replace(/\D/g, ""))
               }
@@ -216,7 +253,7 @@ function CreateUserModal({
               !name.trim() ||
               !Number.isSafeInteger(Number(staffNumber)) ||
               Number(staffNumber) <= 0 ||
-              pin.length < 4 ||
+              !isPinValid ||
               authorizerPin.length < 4 ||
               mutation.isPending
             }
@@ -278,6 +315,8 @@ function EditUserModal({
       window.gastronomy.deleteUser(input),
     { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
   );
+  const isChangingFromDriverToPos =
+    user?.roleCode === "DELIVERY_DRIVER" && roleCode !== "DELIVERY_DRIVER";
   return (
     <Modal
       open={Boolean(user)}
@@ -316,12 +355,23 @@ function EditUserModal({
           />
           Usuario activo
         </label>
-        <Field label="Nuevo PIN (opcional)">
+        <Field
+          label={
+            isChangingFromDriverToPos
+              ? "Nuevo PIN (requerido al cambiar de rol)"
+              : "Nuevo PIN (opcional)"
+          }
+        >
           <Input
             type="password"
             inputMode="numeric"
             maxLength={8}
             value={newPin}
+            placeholder={
+              isChangingFromDriverToPos
+                ? "Requerido para acceder al POS"
+                : undefined
+            }
             onChange={(event) =>
               setNewPin(event.target.value.replace(/\D/g, ""))
             }
@@ -407,7 +457,9 @@ function EditUserModal({
               Number(staffNumber) <= 0 ||
               !reason.trim() ||
               authorizerPin.length < 4 ||
-              (newPin.length > 0 && newPin.length < 4) ||
+              (isChangingFromDriverToPos
+                ? newPin.length < 4
+                : newPin.length > 0 && newPin.length < 4) ||
               mutation.isPending
             }
             onClick={() =>

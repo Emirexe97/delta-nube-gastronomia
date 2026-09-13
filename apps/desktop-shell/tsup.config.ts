@@ -9,5 +9,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   noExternal: [/^@gastronomy\//],
-  external: ["electron", "better-sqlite3-multiple-ciphers"]
+  external: ["electron", "better-sqlite3-multiple-ciphers"],
 });

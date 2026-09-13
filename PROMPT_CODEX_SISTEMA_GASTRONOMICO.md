@@ -2070,48 +2070,63 @@ Todo lo relevante debe salir de datos/configuración.
 Trabajar en etapas pequeñas y comprobables.
 
 ## Etapa 0
+
 Análisis de Delta Nube POS y diseño.
 
 ## Etapa 1
+
 Shell, base local, migraciones, settings, usuarios/permisos.
 
 ## Etapa 2
+
 Productos, categorías y listas de precios.
 
 ## Etapa 3
+
 Caja, movimientos y día comercial.
 
 ## Etapa 4
+
 Motor de pedidos.
 
 ## Etapa 5
+
 Salón/mesas.
 
 ## Etapa 6
+
 Takeaway/Delivery + clientes.
 
 ## Etapa 7
+
 Mitad y mitad + modificadores.
 
 ## Etapa 8
+
 Impresión térmica.
 
 ## Etapa 9
+
 Cobros, descuentos y pagos mixtos.
 
 ## Etapa 10
+
 Repartidores y liquidaciones.
 
 ## Etapa 11
+
 Auditoría.
 
 ## Etapa 12
+
 Informes/exportación.
 
 ## Etapa 13
+
 Configuración modular y refinamiento UX.
 
 ## Etapa 14
+
 Pruebas integrales, recuperación y rendimiento.
 
 No esperar necesariamente una aprobación manual entre cada etapa. Continuar mientras no exista un bloqueo o una decisión que pueda causar una reescritura grande.

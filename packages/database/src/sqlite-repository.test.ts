@@ -518,6 +518,80 @@ test("categoría puede renombrarse y ordenarse pero no ocultar productos activos
   });
 });
 
+test("permite configurar control de stock por categoría y sincronizar productos masivamente", () => {
+  withRepository((repository) => {
+    const category = repository.createCategory({
+      name: "Cafetería",
+      stockControlEnabled: true,
+    });
+    assert.equal(category.stockControlEnabled, true);
+
+    const prodWithStock = repository.createProduct({
+      categoryId: category.id,
+      name: "Café con leche",
+      stockMinor: 5_000,
+      stockTargetMinor: 20_000,
+      stockMinMinor: 5_000,
+      stockCriticalMinor: 2_000,
+      prices: [
+        { priceListCode: "SALON", amountMinor: 1_000 },
+        { priceListCode: "TAKEAWAY", amountMinor: 900 },
+        { priceListCode: "DELIVERY", amountMinor: 900 },
+      ],
+    });
+    assert.equal(prodWithStock.stockMinor, 5_000);
+
+    const prodWithoutStock = repository.createProduct({
+      categoryId: category.id,
+      name: "Té verde",
+      stockMinor: null,
+      prices: [
+        { priceListCode: "SALON", amountMinor: 800 },
+        { priceListCode: "TAKEAWAY", amountMinor: 700 },
+        { priceListCode: "DELIVERY", amountMinor: 700 },
+      ],
+    });
+    assert.equal(prodWithoutStock.stockMinor, null);
+
+    const updatedCategory = repository.updateCategory({
+      categoryId: category.id,
+      name: "Cafetería",
+      active: true,
+      sortOrder: category.sortOrder,
+      stockControlEnabled: false,
+      reason: "Desactivar control de stock general",
+      authorizerPin: "2468",
+    });
+    assert.equal(updatedCategory.stockControlEnabled, false);
+
+    const catalog = repository.bootstrap().products;
+    const p1 = catalog.find((p) => p.id === prodWithStock.id)!;
+    const p2 = catalog.find((p) => p.id === prodWithoutStock.id)!;
+    assert.equal(p1.stockMinor, null);
+    assert.equal(p1.stockTargetMinor, null);
+    assert.equal(p1.stockMinMinor, null);
+    assert.equal(p1.stockCriticalMinor, null);
+    assert.equal(p2.stockMinor, null);
+
+    const reactivatedCategory = repository.updateCategory({
+      categoryId: category.id,
+      name: "Cafetería",
+      active: true,
+      sortOrder: category.sortOrder,
+      stockControlEnabled: true,
+      reason: "Reactivar control de stock general",
+      authorizerPin: "2468",
+    });
+    assert.equal(reactivatedCategory.stockControlEnabled, true);
+
+    const catalog2 = repository.bootstrap().products;
+    const p1Reactivated = catalog2.find((p) => p.id === prodWithStock.id)!;
+    const p2Reactivated = catalog2.find((p) => p.id === prodWithoutStock.id)!;
+    assert.equal(p1Reactivated.stockMinor, 0);
+    assert.equal(p2Reactivated.stockMinor, 0);
+  });
+});
+
 test("elimina categoría libre, audita y exige PIN", () => {
   withRepository((repository) => {
     const category = repository.createCategory({ name: "Temporal libre" });

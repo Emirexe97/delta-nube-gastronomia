@@ -443,7 +443,7 @@ function DriverModal({ open, onClose }: { open: boolean; onClose(): void }) {
       open={open}
       onClose={close}
       title="Nuevo repartidor"
-      description="Se crea sólo para asignar envíos y calcular rendiciones; no tendrá usuario, pantalla ni PIN propios."
+      description="Se crea para asignar envíos y calcular rendiciones. También estará visible y gestionable en la sección de Usuarios."
     >
       <form
         className="grid gap-4"

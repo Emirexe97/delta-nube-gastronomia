@@ -500,6 +500,7 @@ function CategoryModal({
 }) {
   const [name, setName] = useState("");
   const [active, setActive] = useState(true);
+  const [stockControlEnabled, setStockControlEnabled] = useState(true);
   const [sortOrder, setSortOrder] = useState(0);
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
@@ -508,6 +509,7 @@ function CategoryModal({
     if (!open) return;
     setName(category?.name ?? "");
     setActive(category?.active ?? true);
+    setStockControlEnabled(category?.stockControlEnabled ?? true);
     setSortOrder(category?.sortOrder ?? 0);
     setReason("");
     setPin("");
@@ -523,8 +525,12 @@ function CategoryModal({
             sortOrder,
             reason: reason.trim(),
             authorizerPin: pin,
+            stockControlEnabled,
           })
-        : window.gastronomy.createCategory({ name: name.trim() }),
+        : window.gastronomy.createCategory({
+            name: name.trim(),
+            stockControlEnabled,
+          }),
     {
       onSuccess: onClose,
       onError: (value) => setError(humanError(value)),
@@ -562,6 +568,26 @@ function CategoryModal({
             required
           />
         </Field>
+        <label className="flex items-start gap-2.5 rounded-xl border border-slate-200 p-3 text-xs text-slate-700 bg-slate-50/50 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={stockControlEnabled}
+            onChange={(event) => setStockControlEnabled(event.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
+          />
+          <div>
+            <span className="font-semibold text-slate-800 block">
+              Controlar stock en productos de esta categoría
+            </span>
+            <span className="text-slate-500 text-[11px] block mt-0.5">
+              {category
+                ? stockControlEnabled
+                  ? "Al activar, los productos sin control de stock de esta categoría pasarán a tener control activo."
+                  : "Al desactivar, todos los productos de esta categoría pasarán a estar sin control de stock."
+                : "Define si los productos nuevos de esta categoría tendrán el control de stock activado por defecto."}
+            </span>
+          </div>
+        </label>
         {category ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -1138,6 +1164,7 @@ function CategoryTable({
                 <th>Categoría</th>
                 <th className="text-right">Productos activos</th>
                 <th className="text-right">Productos totales</th>
+                <th>Control stock</th>
                 <th>Estado</th>
                 <th className="text-right">Acciones</th>
               </tr>
@@ -1157,6 +1184,19 @@ function CategoryTable({
                       {list.filter((product) => product.active).length}
                     </td>
                     <td className="text-right">{list.length}</td>
+                    <td>
+                      <Badge
+                        tone={
+                          category.stockControlEnabled !== false
+                            ? "blue"
+                            : "slate"
+                        }
+                      >
+                        {category.stockControlEnabled !== false
+                          ? "Habilitado"
+                          : "Deshabilitado"}
+                      </Badge>
+                    </td>
                     <td>
                       <Badge tone={category.active ? "green" : "slate"}>
                         {category.active ? "Activo" : "Inactivo"}
@@ -1336,6 +1376,7 @@ function ProductModal({
   const [categoryId, setCategoryId] = useState("");
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
+  const [trackStock, setTrackStock] = useState(true);
   const [stock, setStock] = useState("");
   const [stockTarget, setStockTarget] = useState("");
   const [stockMin, setStockMin] = useState("");
@@ -1364,12 +1405,17 @@ function ProductModal({
       : `new:${initialCategoryId ?? "default"}`;
     if (initializedFormKeyRef.current === formKey) return;
     initializedFormKeyRef.current = formKey;
-    setCategoryId(
+    const initialCatId =
       product?.categoryId ??
-        initialCategoryId ??
-        categories.find((item) => item.active)?.id ??
-        "",
-    );
+      initialCategoryId ??
+      categories.find((item) => item.active)?.id ??
+      "";
+    setCategoryId(initialCatId);
+    const selectedCategory = categories.find((item) => item.id === initialCatId);
+    const initialTrackStock = product
+      ? product.stockMinor != null
+      : (selectedCategory?.stockControlEnabled ?? true);
+    setTrackStock(initialTrackStock);
     setName(product?.name ?? "");
     setCode(product?.code ?? "");
     setStock(
@@ -1416,6 +1462,23 @@ function ProductModal({
     setError(null);
   }, [categories, initialCategoryId, open, product]);
 
+  const handleCategoryChange = (newCategoryId: string) => {
+    setCategoryId(newCategoryId);
+    if (!product) {
+      const selectedCategory = categories.find(
+        (item) => item.id === newCategoryId,
+      );
+      const enabled = selectedCategory?.stockControlEnabled ?? true;
+      setTrackStock(enabled);
+      if (!enabled) {
+        setStock("");
+        setStockTarget("");
+        setStockMin("");
+        setStockCritical("");
+      }
+    }
+  };
+
   useEffect(() => {
     if (!open || !product) {
       setHistory([]);
@@ -1445,28 +1508,35 @@ function ProductModal({
     };
   }, [open, product]);
 
-  const parsedStockMinor = stock.trim() ? parseStockInput(stock) : null;
+  const parsedStockMinor = trackStock
+    ? stock.trim()
+      ? parseStockInput(stock)
+      : 0
+    : null;
   const invalidPrices = visiblePriceListCodes.some(
     (codeValue) => parseMoneyInput(prices[codeValue]) == null,
   );
-  const invalidStock = Boolean(stock.trim()) && parsedStockMinor == null;
-  const parsedTarget = stockTarget.trim() ? parseStockInput(stockTarget) : null;
-  const parsedMin = stockMin.trim() ? parseStockInput(stockMin) : null;
-  const parsedCritical = stockCritical.trim()
-    ? parseStockInput(stockCritical)
-    : null;
+  const invalidStock =
+    trackStock && Boolean(stock.trim()) && parseStockInput(stock) == null;
+  const parsedTarget =
+    trackStock && stockTarget.trim() ? parseStockInput(stockTarget) : null;
+  const parsedMin =
+    trackStock && stockMin.trim() ? parseStockInput(stockMin) : null;
+  const parsedCritical =
+    trackStock && stockCritical.trim() ? parseStockInput(stockCritical) : null;
   const invalidInventory =
-    invalidStock ||
-    (Boolean(stockTarget.trim()) && parsedTarget == null) ||
-    (Boolean(stockMin.trim()) && parsedMin == null) ||
-    (Boolean(stockCritical.trim()) && parsedCritical == null) ||
-    (parsedCritical != null &&
-      parsedMin != null &&
-      parsedCritical > parsedMin) ||
-    (parsedMin != null && parsedTarget != null && parsedMin > parsedTarget) ||
-    (parsedCritical != null &&
-      parsedTarget != null &&
-      parsedCritical > parsedTarget);
+    trackStock &&
+    (invalidStock ||
+      (Boolean(stockTarget.trim()) && parsedTarget == null) ||
+      (Boolean(stockMin.trim()) && parsedMin == null) ||
+      (Boolean(stockCritical.trim()) && parsedCritical == null) ||
+      (parsedCritical != null &&
+        parsedMin != null &&
+        parsedCritical > parsedMin) ||
+      (parsedMin != null && parsedTarget != null && parsedMin > parsedTarget) ||
+      (parsedCritical != null &&
+        parsedTarget != null &&
+        parsedCritical > parsedTarget));
 
   const mutation = useApiMutation(
     async (parsedPrices: Record<VisiblePriceListCode, number>) => {
@@ -1562,7 +1632,7 @@ function ProductModal({
         <Field label="Categoría">
           <Select
             value={categoryId}
-            onChange={(event) => setCategoryId(event.target.value)}
+            onChange={(event) => handleCategoryChange(event.target.value)}
           >
             {categories
               .filter((item) => item.active)
@@ -1608,34 +1678,69 @@ function ProductModal({
           ))}
         </div>
         <section
-          className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-2 lg:grid-cols-4"
+          className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-3"
           aria-label="Inventario"
         >
-          {(
-            [
-              ["Stock actual", stock, setStock],
-              ["Objetivo", stockTarget, setStockTarget],
-              ["Mínimo", stockMin, setStockMin],
-              ["Crítico", stockCritical, setStockCritical],
-            ] as const
-          ).map(([label, value, setter]) => (
-            <Field key={label} label={label}>
-              <Input
-                inputMode="decimal"
-                value={value}
-                aria-invalid={invalidInventory}
-                placeholder="Opcional"
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-2.5">
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={trackStock}
                 onChange={(event) => {
-                  setter(event.target.value);
+                  const checked = event.target.checked;
+                  setTrackStock(checked);
+                  if (!checked) {
+                    setStock("");
+                    setStockTarget("");
+                    setStockMin("");
+                    setStockCritical("");
+                  } else if (!stock.trim()) {
+                    setStock("0");
+                  }
                   if (error) setError(null);
                 }}
+                className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
               />
-            </Field>
-          ))}
-          <p className="text-[10px] text-slate-400 sm:col-span-2 lg:col-span-4">
-            Admite hasta tres decimales. Los niveles deben respetar Crítico ≤
-            Mínimo ≤ Objetivo.
-          </p>
+              Controlar stock de este producto
+            </label>
+            <Badge tone={trackStock ? "blue" : "slate"}>
+              {trackStock ? "Con control de stock" : "Sin control de stock"}
+            </Badge>
+          </div>
+
+          {trackStock ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 pt-1">
+              {(
+                [
+                  ["Stock actual", stock, setStock],
+                  ["Objetivo", stockTarget, setStockTarget],
+                  ["Mínimo", stockMin, setStockMin],
+                  ["Crítico", stockCritical, setStockCritical],
+                ] as const
+              ).map(([label, value, setter]) => (
+                <Field key={label} label={label}>
+                  <Input
+                    inputMode="decimal"
+                    value={value}
+                    aria-invalid={invalidInventory}
+                    placeholder="0"
+                    onChange={(event) => {
+                      setter(event.target.value);
+                      if (error) setError(null);
+                    }}
+                  />
+                </Field>
+              ))}
+              <p className="text-[10px] text-slate-400 sm:col-span-2 lg:col-span-4">
+                Admite hasta tres decimales. Los niveles deben respetar Crítico ≤
+                Mínimo ≤ Objetivo.
+              </p>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500 italic py-1">
+              Este producto se venderá sin descontar inventario ni alertar por existencias mínimas.
+            </p>
+          )}
         </section>
         <section
           className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 p-3"

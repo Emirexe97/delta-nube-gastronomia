@@ -249,7 +249,9 @@ export async function printHtml(
   } catch (error) {
     throw error instanceof Error
       ? error
-      : new Error("Falló la impresión directa; revise la impresora y reintente.");
+      : new Error(
+          "Falló la impresión directa; revise la impresora y reintente.",
+        );
   } finally {
     if (!window.isDestroyed()) window.destroy();
   }

@@ -113,6 +113,14 @@ const SENSITIVE_AUDIT_ACTIONS = new Set([
   "SETTINGS_UPDATED",
 ]);
 
+const ROLE_LABELS: Record<string, string> = {
+  ADMIN: "Administrador",
+  MANAGER: "Supervisor",
+  CASHIER: "Cajero",
+  WAITER: "Mozo",
+  DELIVERY_DRIVER: "Repartidor",
+};
+
 const DEFAULT_SETTINGS: AppSettingsDto = {
   businessName: "Delta Nube Gastronomía",
   currency: "ARS",
@@ -553,7 +561,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       staffNumber: Number(row.staff_number),
       fullName: String(row.full_name),
       roleCode: String(row.role_code) as UserDto["roleCode"],
-      roleName: String(row.role_name),
+      roleName:
+        ROLE_LABELS[String(row.role_code)] ?? String(row.role_name),
       permissions,
       active: flag(row.active),
     };
@@ -1159,6 +1168,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       name: String(row.name),
       sortOrder: Number(row.sort_order),
       active: flag(row.active),
+      stockControlEnabled:
+        row.stock_control_enabled == null
+          ? true
+          : flag(row.stock_control_enabled),
     }));
   }
 
@@ -1248,7 +1261,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       staffNumber: Number(row.staff_number),
       fullName: String(row.full_name),
       roleCode: String(row.role_code) as UserDto["roleCode"],
-      roleName: String(row.role_name),
+      roleName:
+        ROLE_LABELS[String(row.role_code)] ?? String(row.role_name),
       permissions: (permissions.all(row.id) as Row[]).map((value) =>
         String(value.permission_code),
       ),
@@ -3912,7 +3926,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return run();
   }
 
-  createCategory(input: { name: string }): CategoryDto {
+  createCategory(input: {
+    name: string;
+    stockControlEnabled?: boolean;
+  }): CategoryDto {
     const run = this.db.transaction(() => {
       const name = input.name.trim();
       const existing = this.db
@@ -3921,6 +3938,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       if (existing) throw new Error("Ya existe una categoría con ese nombre.");
       const id = randomUUID();
       const timestamp = nowIso();
+      const stockControlEnabled = input.stockControlEnabled ?? true;
       const sortOrder = Number(
         (
           this.db
@@ -3932,15 +3950,22 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
       this.db
         .prepare(
-          "INSERT INTO categories(id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+          "INSERT INTO categories(id, name, sort_order, stock_control_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .run(id, name, sortOrder, timestamp, timestamp);
+        .run(
+          id,
+          name,
+          sortOrder,
+          stockControlEnabled ? 1 : 0,
+          timestamp,
+          timestamp,
+        );
       this.audit({
         entityType: "CATEGORY",
         entityId: id,
         action: "CATEGORY_CREATED",
       });
-      return { id, name, sortOrder, active: true };
+      return { id, name, sortOrder, active: true, stockControlEnabled };
     });
     return run();
   }
@@ -3952,6 +3977,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     sortOrder: number;
     reason: string;
     authorizerPin: string;
+    stockControlEnabled?: boolean;
   }): CategoryDto {
     const run = this.db.transaction(() => {
       const before = requireRow(
@@ -3981,17 +4007,48 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         input.authorizerPin,
         "prices.bulk_update",
       );
+      const stockControlEnabled =
+        input.stockControlEnabled ?? before.stockControlEnabled;
+      const timestamp = nowIso();
       this.db
         .prepare(
-          "UPDATE categories SET name = ?, active = ?, sort_order = ?, updated_at = ? WHERE id = ?",
+          "UPDATE categories SET name = ?, active = ?, sort_order = ?, stock_control_enabled = ?, updated_at = ? WHERE id = ?",
         )
         .run(
           input.name.trim(),
           input.active ? 1 : 0,
           input.sortOrder,
-          nowIso(),
+          stockControlEnabled ? 1 : 0,
+          timestamp,
           input.categoryId,
         );
+      if (
+        input.stockControlEnabled !== undefined &&
+        input.stockControlEnabled !== before.stockControlEnabled
+      ) {
+        if (!input.stockControlEnabled) {
+          this.db
+            .prepare(
+              `UPDATE products
+               SET stock_minor = NULL,
+                   stock_target_minor = NULL,
+                   stock_min_minor = NULL,
+                   stock_critical_minor = NULL,
+                   updated_at = ?
+               WHERE category_id = ?`,
+            )
+            .run(timestamp, input.categoryId);
+        } else {
+          this.db
+            .prepare(
+              `UPDATE products
+               SET stock_minor = COALESCE(stock_minor, 0),
+                   updated_at = ?
+               WHERE category_id = ? AND stock_minor IS NULL`,
+            )
+            .run(timestamp, input.categoryId);
+        }
+      }
       const after = requireRow(
         this.listCategories().find(
           (category) => category.id === input.categoryId,
@@ -4621,7 +4678,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return run();
   }
 
-  createDriver(input: { fullName: string; authorizerPin: string }): UserDto {
+  createDriver(input: {
+    staffNumber?: number;
+    fullName: string;
+    authorizerPin: string;
+  }): UserDto {
     const run = this.db.transaction(() => {
       const authorizer = this.authorizePin(input.authorizerPin, "users.manage");
       const role = requireRow(
@@ -4632,7 +4693,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
       const id = randomUUID();
       const timestamp = nowIso();
-      const staffNumber = this.nextAvailableStaffNumber();
+      const staffNumber = input.staffNumber ?? this.nextAvailableStaffNumber();
+      this.assertStaffNumberAvailable(staffNumber);
       // El hash usa un secreto no numérico e irrecuperable: este registro es una
       // identidad operativa para asignaciones, no una cuenta con acceso al POS.
       this.db
@@ -4654,7 +4716,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         entityId: id,
         action: "DRIVER_CREATED",
         permission: "users.manage",
-        after: { roleCode: "DELIVERY_DRIVER", loginEnabled: false },
+        after: { roleCode: "DELIVERY_DRIVER", staffNumber, loginEnabled: false },
         authorizerUserId: String(authorizer.id),
       });
       return requireRow(

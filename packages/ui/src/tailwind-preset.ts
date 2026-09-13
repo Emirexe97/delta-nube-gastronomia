@@ -3,7 +3,7 @@ export const deltaNubeTailwindPreset = {
     extend: {
       fontFamily: {
         sans: ["Inter", "Segoe UI", "ui-sans-serif", "system-ui", "sans-serif"],
-        mono: ["JetBrains Mono", "Cascadia Code", "ui-monospace", "monospace"]
+        mono: ["JetBrains Mono", "Cascadia Code", "ui-monospace", "monospace"],
       },
       colors: {
         brand: {
@@ -16,9 +16,9 @@ export const deltaNubeTailwindPreset = {
           600: "#EA580C",
           700: "#C2410C",
           800: "#9A3412",
-          900: "#7C2D12"
-        }
-      }
-    }
-  }
+          900: "#7C2D12",
+        },
+      },
+    },
+  },
 };

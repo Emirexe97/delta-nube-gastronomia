@@ -83,10 +83,10 @@ export const demoSettings: AppSettingsDto = {
 };
 
 export const demoCategories: CategoryDto[] = [
-  { id: "cat-pizzas", name: "Pizzas", sortOrder: 1, active: true },
-  { id: "cat-empanadas", name: "Empanadas", sortOrder: 2, active: true },
-  { id: "cat-bebidas", name: "Bebidas", sortOrder: 3, active: true },
-  { id: "cat-postres", name: "Postres", sortOrder: 4, active: true },
+  { id: "cat-pizzas", name: "Pizzas", sortOrder: 1, active: true, stockControlEnabled: true },
+  { id: "cat-empanadas", name: "Empanadas", sortOrder: 2, active: true, stockControlEnabled: true },
+  { id: "cat-bebidas", name: "Bebidas", sortOrder: 3, active: true, stockControlEnabled: true },
+  { id: "cat-postres", name: "Postres", sortOrder: 4, active: true, stockControlEnabled: true },
 ];
 
 const prices = (salon: number, offPremise = salon) => [

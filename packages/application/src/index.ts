@@ -189,12 +189,16 @@ export interface GastronomyRepository {
     reason: string;
     authorizerPin: string;
   }): CustomerDto;
-  createCategory(input: { name: string }): CategoryDto;
+  createCategory(input: {
+    name: string;
+    stockControlEnabled?: boolean;
+  }): CategoryDto;
   updateCategory(input: {
     categoryId: Id;
     name: string;
     active: boolean;
     sortOrder: number;
+    stockControlEnabled?: boolean;
     reason: string;
     authorizerPin: string;
   }): CategoryDto;
@@ -240,6 +244,7 @@ export interface GastronomyRepository {
     authorizerPin: string;
   }): import("@gastronomy/contracts").UserDto;
   createDriver(input: {
+    staffNumber?: number;
     fullName: string;
     authorizerPin: string;
   }): import("@gastronomy/contracts").UserDto;
@@ -690,10 +695,13 @@ export class GastronomyApplication {
     });
   }
 
-  createCategory(input: { name: string }) {
+  createCategory(input: { name: string; stockControlEnabled?: boolean }) {
     if (!input.name.trim())
       throw new Error("Ingresá el nombre de la categoría.");
-    return this.repository.createCategory({ name: input.name.trim() });
+    return this.repository.createCategory({
+      name: input.name.trim(),
+      stockControlEnabled: input.stockControlEnabled,
+    });
   }
 
   updateCategory(input: Parameters<GastronomyRepository["updateCategory"]>[0]) {

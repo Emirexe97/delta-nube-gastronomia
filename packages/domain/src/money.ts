@@ -20,6 +20,6 @@ export function formatMoney(amountMinor: number, currency = "ARS") {
     style: "currency",
     currency,
     minimumFractionDigits: 0,
-    maximumFractionDigits: 2
+    maximumFractionDigits: 2,
   }).format(amountMinor / 100);
 }

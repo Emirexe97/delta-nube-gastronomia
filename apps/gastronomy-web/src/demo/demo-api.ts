@@ -2340,6 +2340,7 @@ export function createDemoApi(
         name: input.name.trim(),
         sortOrder: state.data.categories.length + 1,
         active: true,
+        stockControlEnabled: input.stockControlEnabled ?? true,
       };
       state.data.categories.push(category);
       audit(state, "CATEGORY", category.id, "CATEGORY_CREATED");
@@ -2375,9 +2376,37 @@ export function createDemoApi(
           "La categoría tiene productos activos. Reasignalos o desactivalos antes.",
         );
       const before = { ...category };
+      const previousStockControl = category.stockControlEnabled ?? true;
       category.name = input.name.trim();
       category.active = input.active;
       category.sortOrder = input.sortOrder;
+      if (input.stockControlEnabled !== undefined) {
+        category.stockControlEnabled = input.stockControlEnabled;
+      }
+      if (
+        input.stockControlEnabled !== undefined &&
+        input.stockControlEnabled !== previousStockControl
+      ) {
+        if (!input.stockControlEnabled) {
+          for (const product of state.data.products) {
+            if (product.categoryId === category.id) {
+              product.stockMinor = null;
+              product.stockTargetMinor = null;
+              product.stockMinMinor = null;
+              product.stockCriticalMinor = null;
+            }
+          }
+        } else {
+          for (const product of state.data.products) {
+            if (
+              product.categoryId === category.id &&
+              product.stockMinor == null
+            ) {
+              product.stockMinor = 0;
+            }
+          }
+        }
+      }
       for (const product of state.data.products)
         if (product.categoryId === category.id)
           product.categoryName = category.name;
@@ -2751,9 +2780,23 @@ export function createDemoApi(
       requirePin(input.authorizerPin);
       if (!input.fullName.trim())
         throw new Error("Ingresá el nombre del repartidor.");
+      const staffNumber =
+        input.staffNumber ?? nextAvailableStaffNumber(state.data.users);
+      if (
+        !Number.isInteger(staffNumber) ||
+        staffNumber <= 0 ||
+        staffNumber > 9999
+      ) {
+        throw new Error(
+          "El número de usuario debe ser un entero entre 1 y 9999.",
+        );
+      }
+      if (state.data.users.some((user) => user.staffNumber === staffNumber)) {
+        throw new Error(`El número de usuario ${staffNumber} ya está ocupado.`);
+      }
       const user: UserDto = {
         id: uid("driver", state),
-        staffNumber: nextAvailableStaffNumber(state.data.users),
+        staffNumber,
         fullName: input.fullName.trim(),
         roleCode: "DELIVERY_DRIVER",
         roleName: "Repartidor",

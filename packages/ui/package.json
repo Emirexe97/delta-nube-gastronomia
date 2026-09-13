@@ -5,10 +5,21 @@
   "type": "module",
   "main": "src/index.tsx",
   "types": "src/index.tsx",
-  "exports": { ".": "./src/index.tsx", "./preset": "./src/tailwind-preset.ts" },
-  "dependencies": { "clsx": "^2.1.1" },
-  "peerDependencies": { "react": "^18.3.1", "react-dom": "^18.3.1" },
-  "devDependencies": { "@types/react": "^18.3.9", "@types/react-dom": "^18.3.0" },
+  "exports": {
+    ".": "./src/index.tsx",
+    "./preset": "./src/tailwind-preset.ts"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.9",
+    "@types/react-dom": "^18.3.0"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

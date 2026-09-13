@@ -721,6 +721,20 @@ describe("API de demostración", () => {
       roleCode: "DELIVERY_DRIVER",
       fullName: "Repartidor demo",
     });
+    expect(driver.staffNumber).toBeGreaterThan(0);
+    const customDriver = await api.createDriver({
+      staffNumber: 88,
+      fullName: "Repartidor con número",
+      authorizerPin: "1234",
+    });
+    expect(customDriver.staffNumber).toBe(88);
+    await expect(
+      api.createDriver({
+        staffNumber: 88,
+        fullName: "Repartidor duplicado",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("ya está ocupado");
     await expect(
       api.createCustomer({
         name: "Cliente desde pedido",
@@ -953,6 +967,79 @@ describe("API de demostración", () => {
         authorizerPin: "0000",
       }),
     ).rejects.toThrow(/PIN|permiso/i);
+  });
+
+  it("permite configurar control de stock por categoría y sincronizar productos masivamente", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const category = await api.createCategory({
+      name: "Cafetería Demo",
+      stockControlEnabled: true,
+    });
+    expect(category.stockControlEnabled).toBe(true);
+
+    const prodWithStock = await api.createProduct({
+      categoryId: category.id,
+      name: "Café con leche",
+      stockMinor: 5_000,
+      stockTargetMinor: 20_000,
+      stockMinMinor: 5_000,
+      stockCriticalMinor: 2_000,
+      prices: [
+        { priceListCode: "SALON", amountMinor: 1_000 },
+        { priceListCode: "TAKEAWAY", amountMinor: 900 },
+        { priceListCode: "DELIVERY", amountMinor: 900 },
+      ],
+    });
+    expect(prodWithStock.stockMinor).toBe(5_000);
+
+    const prodWithoutStock = await api.createProduct({
+      categoryId: category.id,
+      name: "Té verde",
+      stockMinor: null,
+      prices: [
+        { priceListCode: "SALON", amountMinor: 800 },
+        { priceListCode: "TAKEAWAY", amountMinor: 700 },
+        { priceListCode: "DELIVERY", amountMinor: 700 },
+      ],
+    });
+    expect(prodWithoutStock.stockMinor).toBeNull();
+
+    const updatedCategory = await api.updateCategory({
+      categoryId: category.id,
+      name: "Cafetería Demo",
+      active: true,
+      sortOrder: category.sortOrder,
+      stockControlEnabled: false,
+      reason: "Desactivar control de stock",
+      authorizerPin: "1234",
+    });
+    expect(updatedCategory.stockControlEnabled).toBe(false);
+
+    let bootstrap = await api.bootstrap();
+    let p1 = bootstrap.products.find((p) => p.id === prodWithStock.id)!;
+    let p2 = bootstrap.products.find((p) => p.id === prodWithoutStock.id)!;
+    expect(p1.stockMinor).toBeNull();
+    expect(p1.stockTargetMinor).toBeNull();
+    expect(p1.stockMinMinor).toBeNull();
+    expect(p1.stockCriticalMinor).toBeNull();
+    expect(p2.stockMinor).toBeNull();
+
+    const reactivatedCategory = await api.updateCategory({
+      categoryId: category.id,
+      name: "Cafetería Demo",
+      active: true,
+      sortOrder: category.sortOrder,
+      stockControlEnabled: true,
+      reason: "Reactivar control de stock",
+      authorizerPin: "1234",
+    });
+    expect(reactivatedCategory.stockControlEnabled).toBe(true);
+
+    bootstrap = await api.bootstrap();
+    p1 = bootstrap.products.find((p) => p.id === prodWithStock.id)!;
+    p2 = bootstrap.products.find((p) => p.id === prodWithoutStock.id)!;
+    expect(p1.stockMinor).toBe(0);
+    expect(p2.stockMinor).toBe(0);
   });
 
   it("unifica el precio de delivery y para retirar al cargar un producto", async () => {
