@@ -228,6 +228,97 @@ test("la observación del producto sólo aparece en la comanda", async () => {
   await result();
 });
 
+test("pedido y observaciones en comanda y cuenta tienen negrita, mayúsculas y mayor tamaño", async () => {
+  await launch([]);
+  const setup = await page.evaluate(async () => {
+    const api = (window as any).gastronomy;
+    const data = await api.bootstrap();
+    await api.openCashSession({ openingAmountMinor: 0 });
+    const table = await api.ensureTable({ number: 64 });
+    const product =
+      data.products.find((item: any) => item.code === "MUZG") ??
+      data.products[0];
+    const order = await api.createOrder({ type: "DINE_IN", tableId: table.id });
+    await api.addOrderItem({
+      orderId: order.id,
+      productId: product.id,
+      quantity: 1,
+    });
+    const current = await api.bootstrap();
+    const item = current.orders.find(
+      (candidate: any) => candidate.id === order.id,
+    ).items[0];
+    await api.updateOrderItemNotes({
+      orderId: order.id,
+      itemId: item.id,
+      notes: "sin cebolla",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    await api.saveSettings({
+      ...data.settings,
+      printing: {
+        ...data.settings.printing,
+        kitchen: { ...data.settings.printing.kitchen, mode: "SYSTEM_DIALOG" },
+        bill: { ...data.settings.printing.bill, mode: "SYSTEM_DIALOG" },
+      },
+    });
+    return order.id;
+  });
+
+  await page.evaluate((orderId) => {
+    (window as any).__printResult = null;
+    void (window as any).gastronomy
+      .printOrder({ orderId, kind: "KITCHEN_ORDER" })
+      .then((result: unknown) => ((window as any).__printResult = result));
+  }, setup);
+  const kitchenPreview = await previewWindow();
+  const kitchenStyles = await kitchenPreview.evaluate(() => {
+    const body = window.getComputedStyle(document.body);
+    const product = window.getComputedStyle(document.querySelector(".product")!);
+    const obs = window.getComputedStyle(document.querySelector(".order-note.item-obs")!);
+    return {
+      bodyFontSize: parseFloat(body.fontSize),
+      productWeight: Number(product.fontWeight) || product.fontWeight,
+      productTransform: product.textTransform,
+      productFontSize: parseFloat(product.fontSize),
+      obsWeight: Number(obs.fontWeight) || obs.fontWeight,
+      obsTransform: obs.textTransform,
+      obsFontSize: parseFloat(obs.fontSize),
+    };
+  });
+  expect(kitchenStyles.productTransform).toBe("uppercase");
+  expect(kitchenStyles.productWeight).toBeGreaterThanOrEqual(700);
+  expect(kitchenStyles.productFontSize).toBeGreaterThan(kitchenStyles.bodyFontSize + 2);
+  expect(kitchenStyles.obsTransform).toBe("uppercase");
+  expect(kitchenStyles.obsWeight).toBeGreaterThanOrEqual(700);
+  expect(kitchenStyles.obsFontSize).toBeGreaterThan(kitchenStyles.bodyFontSize + 2);
+  await kitchenPreview.getByRole("button", { name: "Cancelar" }).click();
+  await result();
+
+  await page.evaluate((orderId) => {
+    (window as any).__printResult = null;
+    void (window as any).gastronomy
+      .printOrder({ orderId, kind: "CUSTOMER_BILL" })
+      .then((value: unknown) => ((window as any).__printResult = value));
+  }, setup);
+  const billPreview = await previewWindow();
+  const billStyles = await billPreview.evaluate(() => {
+    const body = window.getComputedStyle(document.body);
+    const product = window.getComputedStyle(document.querySelector(".product")!);
+    return {
+      bodyFontSize: parseFloat(body.fontSize),
+      productWeight: Number(product.fontWeight) || product.fontWeight,
+      productTransform: product.textTransform,
+      productFontSize: parseFloat(product.fontSize),
+    };
+  });
+  expect(billStyles.productTransform).toBe("uppercase");
+  expect(billStyles.productWeight).toBeGreaterThanOrEqual(700);
+  expect(billStyles.productFontSize).toBeGreaterThan(billStyles.bodyFontSize + 2);
+  await billPreview.getByRole("button", { name: "Cancelar" }).click();
+  await result();
+});
+
 test("la referencia de la dirección delivery sólo aparece en la comanda", async () => {
   await launch([]);
   const setup = await page.evaluate(async () => {
