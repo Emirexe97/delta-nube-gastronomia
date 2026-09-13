@@ -1740,6 +1740,11 @@ test("no desactiva un repartidor con envíos activos hasta reasignarlos", () => 
       driverUserId: firstDriver.id,
       deliveryFeeMinor: 200_000,
     });
+    repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: order.id });
 
     assert.throws(
       () =>
@@ -1764,6 +1769,66 @@ test("no desactiva un repartidor con envíos activos hasta reasignarlos", () => 
       reason: "Pedido reasignado",
       authorizerPin: "2468",
     });
+    assert.equal(deactivated.active, false);
+  });
+});
+
+test("permite desactivar un repartidor si el pedido pendiente pertenece a una caja cerrada", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const driver = repository.createDriver({
+      fullName: "Repartidor con pedido histórico",
+      authorizerPin: "2468",
+    });
+    const order = repository.createOrder({
+      ...takeawayOrder({ type: "DELIVERY" }),
+      driverUserId: driver.id,
+      deliveryFeeMinor: 200_000,
+    });
+    repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: order.id });
+    repository.closeCashSession({
+      countedAmountMinor: 0,
+      force: true,
+      reason: "Cerrar turno de prueba",
+      authorizerPin: "2468",
+    });
+
+    const deactivated = repository.updateUser({
+      userId: driver.id,
+      roleCode: "DELIVERY_DRIVER",
+      active: false,
+      reason: "El pedido pertenece a un turno cerrado",
+      authorizerPin: "2468",
+    });
+
+    assert.equal(deactivated.active, false);
+  });
+});
+
+test("un borrador asignado no se considera un envío activo", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const driver = repository.createDriver({
+      fullName: "Repartidor con borrador",
+      authorizerPin: "2468",
+    });
+    repository.createOrder({
+      ...takeawayOrder({ type: "DELIVERY" }),
+      driverUserId: driver.id,
+    });
+
+    const deactivated = repository.updateUser({
+      userId: driver.id,
+      roleCode: "DELIVERY_DRIVER",
+      active: false,
+      reason: "Sólo conserva un borrador",
+      authorizerPin: "2468",
+    });
+
     assert.equal(deactivated.active, false);
   });
 });

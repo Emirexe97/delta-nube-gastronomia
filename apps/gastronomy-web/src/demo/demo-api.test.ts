@@ -1211,6 +1211,65 @@ describe("API de demostración", () => {
     );
   });
 
+  it("no bloquea al repartidor por pedidos pendientes de una caja cerrada", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const driver = await api.createDriver({
+      fullName: "Repartidor histórico demo",
+      authorizerPin: "1234",
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente histórico",
+      customerPhone: "11 4000-5000",
+      deliveryAddress: "Calle histórica 100",
+      deliveryFeeMinor: 200_000,
+      driverUserId: driver.id,
+    });
+    await api.addOrderItem({ orderId: order.id, productId: "prod-muzza" });
+    await api.confirmOrder({ orderId: order.id });
+    await api.closeCashSession({
+      countedAmountMinor: 7_350_000,
+      force: true,
+      reason: "Cerrar turno demo",
+      authorizerPin: "1234",
+    });
+
+    await expect(
+      api.updateUser({
+        userId: driver.id,
+        roleCode: "DELIVERY_DRIVER",
+        active: false,
+        reason: "Pedido de turno cerrado",
+        authorizerPin: "1234",
+      }),
+    ).resolves.toMatchObject({ active: false });
+  });
+
+  it("no considera activo un borrador asignado a un repartidor", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const driver = await api.createDriver({
+      fullName: "Repartidor con borrador demo",
+      authorizerPin: "1234",
+    });
+    await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente borrador",
+      customerPhone: "11 4000-6000",
+      deliveryAddress: "Calle borrador 100",
+      driverUserId: driver.id,
+    });
+
+    await expect(
+      api.updateUser({
+        userId: driver.id,
+        roleCode: "DELIVERY_DRIVER",
+        active: false,
+        reason: "Sólo conserva un borrador",
+        authorizerPin: "1234",
+      }),
+    ).resolves.toMatchObject({ active: false });
+  });
+
   it("devuelve un pago completo y vuelve a dejar el pedido impago", async () => {
     const api = createDemoApi(new MemoryStorage());
     const baseline = await api.bootstrap();

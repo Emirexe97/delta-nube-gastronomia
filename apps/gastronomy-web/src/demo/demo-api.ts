@@ -2865,6 +2865,9 @@ export function createDemoApi(
           (order) =>
             order.driverUserId === user.id &&
             order.type === "DELIVERY" &&
+            order.lifecycleStatus === "CONFIRMED" &&
+            order.cashSessionCreatedId === state.data.cashSession?.id &&
+            state.data.cashSession?.status === "OPEN" &&
             !["DELIVERED", "CANCELLED"].includes(order.operationalStatus),
         );
         if (activeDeliveries.length)

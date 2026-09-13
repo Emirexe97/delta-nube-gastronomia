@@ -4780,10 +4780,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       ) {
         const activeDeliveries = this.db
           .prepare(
-            `SELECT number FROM orders
-             WHERE driver_user_id = ? AND type = 'DELIVERY'
-               AND operational_status NOT IN ('DELIVERED','CANCELLED')
-             ORDER BY number LIMIT 10`,
+            `SELECT o.number FROM orders o
+             JOIN cash_sessions cs ON cs.id = o.cash_session_created_id
+             WHERE o.driver_user_id = ? AND o.type = 'DELIVERY'
+               AND o.lifecycle_status = 'CONFIRMED'
+               AND o.operational_status NOT IN ('DELIVERED','CANCELLED')
+               AND cs.status = 'OPEN'
+             ORDER BY o.number LIMIT 10`,
           )
           .all(input.userId) as Row[];
         if (activeDeliveries.length)
