@@ -42,6 +42,7 @@ export const halfAndHalfLabels = {
 const auditLabels: Record<string, string> = {
   ORDER_DRAFT_CREATED: "Borrador creado",
   ORDER_DRAFT_UPDATED: "Datos del borrador actualizados",
+  ORDER_DETAILS_UPDATED: "Datos del pedido actualizados",
   ORDER_DRAFT_DISCARDED: "Borrador descartado",
   ORDER_CONFIRMED: "Pedido confirmado",
   ORDER_CREATED: "Pedido creado",

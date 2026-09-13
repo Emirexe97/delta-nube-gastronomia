@@ -20,6 +20,12 @@ import {
   Select,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
+import {
+  filterDeliveryLedger,
+  filterDriverDeliveryActivity,
+  localDateKey,
+  type DeliveryHistoryScope,
+} from "../delivery-history";
 import { formatMoney, humanError } from "../lib";
 
 const formatDateTime = (value: string | null) =>
@@ -36,20 +42,35 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
   const [driverOpen, setDriverOpen] = useState(false);
   const [settleOpen, setSettleOpen] = useState(false);
   const [driverFilter, setDriverFilter] = useState("ALL");
+  const [historyScope, setHistoryScope] =
+    useState<DeliveryHistoryScope>("CURRENT_SHIFT");
+  const [selectedDate, setSelectedDate] = useState(() =>
+    localDateKey(new Date()),
+  );
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const drivers = data.users.filter(
     (user) => user.roleCode === "DELIVERY_DRIVER" && user.active,
   );
+  const scopedLedger = filterDeliveryLedger(
+    data.deliveryLedger,
+    data.cashSession,
+    historyScope,
+    selectedDate,
+  );
+  const scopedActivity = filterDriverDeliveryActivity(
+    data.driverDeliveryActivity,
+    data.cashSession,
+    historyScope,
+    selectedDate,
+  );
   const ledger =
     driverFilter === "ALL"
-      ? data.deliveryLedger
-      : data.deliveryLedger.filter((row) => row.driverUserId === driverFilter);
+      ? scopedLedger
+      : scopedLedger.filter((row) => row.driverUserId === driverFilter);
   const activity =
     driverFilter === "ALL"
-      ? data.driverDeliveryActivity
-      : data.driverDeliveryActivity.filter(
-          (row) => row.driverUserId === driverFilter,
-        );
+      ? scopedActivity
+      : scopedActivity.filter((row) => row.driverUserId === driverFilter);
   const pending = ledger.filter((row) => row.status === "PENDING");
   const selectedRows = ledger.filter(
     (row) => row.status === "PENDING" && selectedIds.includes(row.id),
@@ -58,11 +79,11 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
   useEffect(() => {
     setSelectedIds([]);
     setSettleOpen(false);
-  }, [driverFilter]);
+  }, [driverFilter, historyScope, selectedDate]);
 
   useEffect(() => {
     const valid = new Set(
-      data.deliveryLedger
+      scopedLedger
         .filter(
           (row) =>
             row.status === "PENDING" &&
@@ -71,7 +92,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         .map((row) => row.id),
     );
     setSelectedIds((current) => current.filter((id) => valid.has(id)));
-  }, [data.deliveryLedger, driverFilter]);
+  }, [scopedLedger, driverFilter]);
 
   const totals = useMemo(() => {
     const result = activity.reduce(
@@ -97,10 +118,10 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
   const driverRows = useMemo(
     () =>
       drivers.map((driver) => {
-        const activityRow = data.driverDeliveryActivity.find(
+        const rows = scopedLedger.filter(
           (row) => row.driverUserId === driver.id,
         );
-        const rows = data.deliveryLedger.filter(
+        const activityRows = scopedActivity.filter(
           (row) => row.driverUserId === driver.id,
         );
         const lastSettlement = rows
@@ -110,17 +131,28 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
           )[0]?.settledAt;
         return {
           driver,
-          deliveries: activityRow?.deliveryCount ?? 0,
-          earnings: activityRow?.earningsMinor ?? 0,
+          deliveries: activityRows.reduce(
+            (sum, row) => sum + row.deliveryCount,
+            0,
+          ),
+          earnings: activityRows.reduce(
+            (sum, row) => sum + row.earningsMinor,
+            0,
+          ),
           pendingCount: rows.filter((row) => row.status === "PENDING").length,
           pendingAmount: rows
             .filter((row) => row.status === "PENDING")
             .reduce((sum, row) => sum + row.amountDueMinor, 0),
-          lastDelivery: activityRow?.lastDeliveryAt ?? null,
+          lastDelivery:
+            activityRows
+              .slice()
+              .sort((left, right) =>
+                right.lastDeliveryAt.localeCompare(left.lastDeliveryAt),
+              )[0]?.lastDeliveryAt ?? null,
           lastSettlement: lastSettlement ?? null,
         };
       }),
-    [data.deliveryLedger, data.driverDeliveryActivity, drivers],
+    [scopedActivity, scopedLedger, drivers],
   );
 
   const allVisibleSelected =
@@ -164,10 +196,33 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         </div>
       ) : null}
 
-      <Card className="p-3">
+      <Card className="grid gap-3 p-3 md:grid-cols-3">
+        <Field label="Período" hint="Por defecto se limita a la caja abierta.">
+          <Select
+            value={historyScope}
+            onChange={(event) =>
+              setHistoryScope(event.target.value as DeliveryHistoryScope)
+            }
+          >
+            <option value="CURRENT_SHIFT">Turno actual</option>
+            <option value="DATE">Otro día</option>
+            <option value="ALL">Historial completo</option>
+          </Select>
+        </Field>
+        {historyScope === "DATE" ? (
+          <Field label="Día">
+            <Input
+              type="date"
+              value={selectedDate}
+              onChange={(event) => setSelectedDate(event.target.value)}
+            />
+          </Field>
+        ) : (
+          <div className="hidden md:block" />
+        )}
         <Field
           label="Repartidor"
-          hint="Las liquidaciones se preparan de a un repartidor para evitar mezclas."
+          hint="Elegí uno para preparar su liquidación."
         >
           <Select
             value={driverFilter}

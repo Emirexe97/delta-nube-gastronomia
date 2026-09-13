@@ -455,6 +455,8 @@ export interface DeliveryLedgerDto {
   id: Id;
   orderId: Id;
   orderNumber: number;
+  cashSessionId: Id;
+  businessDate: BusinessDate;
   driverUserId: Id;
   driverName: string;
   restaurantAmountMinor: MoneyMinor;
@@ -469,6 +471,8 @@ export interface DeliveryLedgerDto {
 
 export interface DriverDeliveryActivityDto {
   driverUserId: Id;
+  cashSessionId: Id;
+  businessDate: BusinessDate;
   deliveryCount: number;
   earningsMinor: MoneyMinor;
   lastDeliveryAt: IsoDateTime;

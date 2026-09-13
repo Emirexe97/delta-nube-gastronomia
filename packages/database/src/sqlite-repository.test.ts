@@ -2500,6 +2500,75 @@ test("borrador de delivery vuelve a datos y actualiza el valor de la dirección"
   });
 });
 
+test("pedido confirmado e impreso permite corregir cliente y envío antes del pago", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const draft = repository.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente original",
+      customerPhone: "11 4000-1000",
+      deliveryAddress: "Calle Uno 100",
+      deliveryFeeMinor: 200_000,
+    });
+    repository.addOrderItem({
+      orderId: draft.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: draft.id });
+    const print = repository.queuePrint(draft.id, "KITCHEN_ORDER");
+    repository.markPrintJob(print.jobId, "PRINTED");
+
+    const updated = repository.updateDraftOrder({
+      orderId: draft.id,
+      type: "DELIVERY",
+      customerName: "Cliente corregido",
+      customerPhone: "11 4000-2000",
+      deliveryAddress: "Calle Dos 200",
+      deliveryFeeMinor: 350_000,
+    });
+
+    assert.equal(updated.lifecycleStatus, "CONFIRMED");
+    assert.equal(updated.customerNameSnapshot, "Cliente corregido");
+    assert.equal(updated.deliveryAddressSnapshot, "Calle Dos 200");
+    assert.equal(updated.deliveryFeeMinor, 350_000);
+    assert.equal(
+      repository.getAuditLog({ action: "ORDER_EDITED_AFTER_PRINT" }).length,
+      1,
+    );
+  });
+});
+
+test("pedido con pagos no permite corregir datos ni costo de envío", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const draft = repository.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Cliente pago",
+      customerPhone: "11 4555-1000",
+    });
+    const populated = repository.addOrderItem({
+      orderId: draft.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: draft.id });
+    repository.payOrder({
+      orderId: draft.id,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+
+    assert.throws(
+      () =>
+        repository.updateDraftOrder({
+          orderId: draft.id,
+          type: "TAKEAWAY",
+          customerName: "Cambio inválido",
+          customerPhone: "11 4555-2000",
+        }),
+      /con pagos/i,
+    );
+  });
+});
+
 test("informe por rango usa snapshots de producto y categoría", () => {
   withRepository((repository) => {
     const cash = repository.openCashSession({ openingAmountMinor: 0 });

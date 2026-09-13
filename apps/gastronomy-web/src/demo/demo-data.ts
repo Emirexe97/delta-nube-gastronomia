@@ -527,6 +527,8 @@ export function createDemoBootstrap(): BootstrapDto {
         id: "ledger-1000",
         orderId: "order-1000",
         orderNumber: 1000,
+        cashSessionId: "cash-demo",
+        businessDate: new Date().toISOString().slice(0, 10),
         driverUserId: "user-driver",
         driverName: "Diego López",
         restaurantAmountMinor: 2_100_000,

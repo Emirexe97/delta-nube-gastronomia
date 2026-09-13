@@ -878,18 +878,21 @@ export function OrderEditor({
                   : nextOperationalLabel}
               </Button>
             </div>
+            {order.type !== "DINE_IN" &&
+            onEditDraft &&
+            !locked &&
+            order.paidMinor === 0 ? (
+              <Button
+                variant="secondary"
+                className="mt-2 w-full"
+                onClick={() => onEditDraft(order.id)}
+              >
+                <ArrowLeft size={16} />
+                Volver a datos del cliente y envío
+              </Button>
+            ) : null}
             {isDraft ? (
               <div className="mt-2 grid grid-cols-2 gap-2">
-                {order.type !== "DINE_IN" && onEditDraft ? (
-                  <Button
-                    variant="secondary"
-                    className="col-span-2"
-                    onClick={() => onEditDraft(order.id)}
-                  >
-                    <ArrowLeft size={16} />
-                    Volver a datos del cliente y envío
-                  </Button>
-                ) : null}
                 <Button
                   disabled={!canConfirm.allowed || confirm.isPending}
                   title={canConfirm.reason ?? undefined}

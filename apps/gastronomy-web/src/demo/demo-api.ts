@@ -39,6 +39,7 @@ const SENSITIVE_DEMO_AUDIT_ACTIONS = new Set([
   "CAJA_ADJUSTMENT",
   "CAJA_CERRADA",
   "ORDER_ITEM_PRICE_OVERRIDDEN",
+  "ORDER_EDITED_AFTER_PRINT",
   "PRODUCTO_QUITADO",
   "MODIFICADOR_QUITADO",
   "DESCUENTO_APLICADO",
@@ -600,8 +601,12 @@ function makeDashboard(data: BootstrapDto) {
 
 function makeDriverDeliveryActivity(
   orders: OrderDto[],
+  sessions: CashSessionDto[],
 ): DriverDeliveryActivityDto[] {
   const byDriver = new Map<string, DriverDeliveryActivityDto>();
+  const sessionsById = new Map(
+    sessions.map((session) => [session.id, session]),
+  );
   for (const order of orders) {
     if (
       order.type !== "DELIVERY" ||
@@ -609,15 +614,21 @@ function makeDriverDeliveryActivity(
       !order.driverUserId
     )
       continue;
-    const current = byDriver.get(order.driverUserId);
+    const cashSessionId = order.cashSessionPaidId ?? order.cashSessionCreatedId;
+    const businessDate =
+      sessionsById.get(cashSessionId)?.businessDate ?? today();
+    const activityKey = `${order.driverUserId}:${cashSessionId}`;
+    const current = byDriver.get(activityKey);
     if (current) {
       current.deliveryCount += 1;
       current.earningsMinor += order.deliveryFeeMinor;
       if (order.updatedAt > current.lastDeliveryAt)
         current.lastDeliveryAt = order.updatedAt;
     } else {
-      byDriver.set(order.driverUserId, {
+      byDriver.set(activityKey, {
         driverUserId: order.driverUserId,
+        cashSessionId,
+        businessDate,
         deliveryCount: 1,
         earningsMinor: order.deliveryFeeMinor,
         lastDeliveryAt: order.updatedAt,
@@ -670,6 +681,10 @@ function normalize(state: DemoState) {
   state.data.dashboard = makeDashboard(state.data);
   state.data.driverDeliveryActivity = makeDriverDeliveryActivity(
     state.data.orders,
+    [
+      ...(state.data.cashSession ? [state.data.cashSession] : []),
+      ...state.historicalSessions,
+    ],
   );
 }
 
@@ -1276,16 +1291,18 @@ export function createDemoApi(
 
     async updateDraftOrder(input) {
       const order = orderById(input.orderId);
-      if (order.lifecycleStatus !== "DRAFT")
+      if (["DELIVERED", "CANCELLED"].includes(order.operationalStatus))
         throw new Error(
-          "Solo se pueden volver a editar los datos de un borrador.",
+          "No se pueden editar los datos de un pedido finalizado.",
         );
       if (order.type === "DINE_IN" || input.type !== order.type)
-        throw new Error("El tipo del borrador no se puede modificar.");
+        throw new Error("El tipo del pedido no se puede modificar.");
       assertOffPremiseCustomer(input);
       const fee = input.deliveryFeeMinor ?? 0;
       if (!Number.isSafeInteger(fee) || fee < 0)
         throw new Error("El costo de delivery no es válido.");
+      if (order.paidMinor > 0)
+        throw new Error("Un pedido con pagos no admite esta edición.");
       const customer = input.customerId
         ? state.customers.find((candidate) => candidate.id === input.customerId)
         : null;
@@ -1329,7 +1346,19 @@ export function createDemoApi(
         notes: input.notes?.trim() || null,
         updatedAt: now(),
       });
-      audit(state, "ORDER", order.id, "ORDER_DRAFT_UPDATED");
+      audit(
+        state,
+        "ORDER",
+        order.id,
+        order.printedAt
+          ? "ORDER_EDITED_AFTER_PRINT"
+          : order.lifecycleStatus === "DRAFT"
+            ? "ORDER_DRAFT_UPDATED"
+            : "ORDER_DETAILS_UPDATED",
+        order.printedAt
+          ? "Datos del cliente o envío editados después de imprimir"
+          : undefined,
+      );
       save();
       return output(order);
     },
@@ -1613,6 +1642,9 @@ export function createDemoApi(
             id: uid("ledger", state),
             orderId: order.id,
             orderNumber: order.number,
+            cashSessionId:
+              order.cashSessionPaidId ?? order.cashSessionCreatedId,
+            businessDate: state.data.cashSession?.businessDate ?? today(),
             driverUserId: order.driverUserId,
             driverName: order.driverName ?? "Repartidor",
             restaurantAmountMinor: restaurantAmount,

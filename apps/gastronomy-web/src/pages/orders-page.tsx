@@ -550,7 +550,7 @@ function NewOrderModal({
       }
       description={
         editingOrder
-          ? `Borrador #${editingOrder.number} · los productos cargados se conservan`
+          ? `Pedido #${editingOrder.number} · los productos cargados se conservan${editingOrder.printedAt ? " · reimprimí la comanda para reflejar los cambios" : ""}`
           : "Carga rápida o pedido para una fecha y hora específicas"
       }
     >

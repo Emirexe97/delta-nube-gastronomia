@@ -653,6 +653,39 @@ describe("API de demostración", () => {
     ).toMatchObject({ deliveryFeeMinor: 575_000 });
   });
 
+  it("corrige datos de un pedido confirmado e impreso antes de cobrarlo", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const draft = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente original",
+      customerPhone: "11 4222-1000",
+      deliveryAddress: "Calle Uno 100",
+      deliveryFeeMinor: 200_000,
+    });
+    await api.addOrderItem({
+      orderId: draft.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: draft.id });
+    await api.printOrder({ orderId: draft.id, kind: "KITCHEN_ORDER" });
+
+    const updated = await api.updateDraftOrder({
+      orderId: draft.id,
+      type: "DELIVERY",
+      customerName: "Cliente corregido",
+      customerPhone: "11 4222-2000",
+      deliveryAddress: "Calle Dos 200",
+      deliveryFeeMinor: 350_000,
+    });
+
+    expect(updated).toMatchObject({
+      lifecycleStatus: "CONFIRMED",
+      customerNameSnapshot: "Cliente corregido",
+      deliveryAddressSnapshot: "Calle Dos 200",
+      deliveryFeeMinor: 350_000,
+    });
+  });
+
   it("protege acciones sensibles con el PIN de demostración", async () => {
     const api = createDemoApi(new MemoryStorage());
     await expect(
@@ -1159,12 +1192,14 @@ describe("API de demostración", () => {
     expect(
       bootstrap.deliveryLedger.some((ledger) => ledger.orderId === draft.id),
     ).toBe(false);
-    expect(bootstrap.driverDeliveryActivity).toContainEqual({
-      driverUserId: driver.id,
-      deliveryCount: 1,
-      earningsMinor: 275_000,
-      lastDeliveryAt: expect.any(String),
-    });
+    expect(bootstrap.driverDeliveryActivity).toContainEqual(
+      expect.objectContaining({
+        driverUserId: driver.id,
+        deliveryCount: 1,
+        earningsMinor: 275_000,
+        lastDeliveryAt: expect.any(String),
+      }),
+    );
   });
 
   it("devuelve un pago completo y vuelve a dejar el pedido impago", async () => {

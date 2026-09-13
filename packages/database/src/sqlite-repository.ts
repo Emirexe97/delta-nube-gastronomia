@@ -1299,8 +1299,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return (
       this.db
         .prepare(
-          `SELECT dl.*, o.number AS order_number, u.full_name AS driver_name
+          `SELECT dl.*, o.number AS order_number,
+                  COALESCE(o.cash_session_paid_id, o.cash_session_created_id) AS cash_session_id,
+                  cs.business_date, u.full_name AS driver_name
       FROM delivery_ledger dl JOIN orders o ON o.id = dl.order_id
+      JOIN cash_sessions cs ON cs.id = COALESCE(o.cash_session_paid_id, o.cash_session_created_id)
       JOIN users u ON u.id = dl.driver_user_id
       WHERE dl.status <> 'PENDING' OR dl.amount_due_minor > dl.settled_amount_minor
       ORDER BY dl.created_at DESC`,
@@ -1310,6 +1313,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       id: String(row.id),
       orderId: String(row.order_id),
       orderNumber: Number(row.order_number),
+      cashSessionId: String(row.cash_session_id),
+      businessDate: String(row.business_date),
       driverUserId: String(row.driver_user_id),
       driverName: String(row.driver_name),
       restaurantAmountMinor: Number(row.restaurant_amount_minor),
@@ -1327,19 +1332,24 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return (
       this.db
         .prepare(
-          `SELECT driver_user_id, COUNT(*) AS delivery_count,
-                  COALESCE(SUM(delivery_fee_minor), 0) AS earnings_minor,
-                  MAX(updated_at) AS last_delivery_at
-           FROM orders
-           WHERE type = 'DELIVERY'
-             AND operational_status = 'DELIVERED'
-             AND driver_user_id IS NOT NULL
-           GROUP BY driver_user_id
+          `SELECT o.driver_user_id,
+                  COALESCE(o.cash_session_paid_id, o.cash_session_created_id) AS cash_session_id,
+                  cs.business_date, COUNT(*) AS delivery_count,
+                  COALESCE(SUM(o.delivery_fee_minor), 0) AS earnings_minor,
+                  MAX(o.updated_at) AS last_delivery_at
+           FROM orders o
+           JOIN cash_sessions cs ON cs.id = COALESCE(o.cash_session_paid_id, o.cash_session_created_id)
+           WHERE o.type = 'DELIVERY'
+             AND o.operational_status = 'DELIVERED'
+             AND o.driver_user_id IS NOT NULL
+           GROUP BY o.driver_user_id, cash_session_id, cs.business_date
            ORDER BY last_delivery_at DESC`,
         )
         .all() as Row[]
     ).map((row) => ({
       driverUserId: String(row.driver_user_id),
+      cashSessionId: String(row.cash_session_id),
+      businessDate: String(row.business_date),
       deliveryCount: Number(row.delivery_count),
       earningsMinor: Number(row.earnings_minor),
       lastDeliveryAt: String(row.last_delivery_at),
@@ -1884,14 +1894,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       )
         throw new Error("El costo de delivery no es válido.");
       const before = this.getOrder(input.orderId);
-      if (before.lifecycleStatus !== "DRAFT")
+      if (["DELIVERED", "CANCELLED"].includes(before.operationalStatus))
         throw new Error(
-          "Solo se pueden volver a editar los datos de un borrador.",
+          "No se pueden editar los datos de un pedido finalizado.",
         );
       if (before.type === "DINE_IN" || input.type !== before.type)
-        throw new Error("El tipo del borrador no se puede modificar.");
+        throw new Error("El tipo del pedido no se puede modificar.");
       if (before.paidMinor > 0)
-        throw new Error("Un borrador con pagos no admite esta edición.");
+        throw new Error("Un pedido con pagos no admite esta edición.");
       const {
         customerName,
         customerPhone,
@@ -1927,23 +1937,37 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       this.audit({
         entityType: "ORDER",
         entityId: input.orderId,
-        action: "ORDER_DRAFT_UPDATED",
+        action: before.printedAt
+          ? "ORDER_EDITED_AFTER_PRINT"
+          : before.lifecycleStatus === "DRAFT"
+            ? "ORDER_DRAFT_UPDATED"
+            : "ORDER_DETAILS_UPDATED",
+        reason: before.printedAt
+          ? "Datos del cliente o envío editados después de imprimir"
+          : undefined,
         before: {
           customerId: before.customerId,
+          customerName: before.customerNameSnapshot,
+          customerPhone: before.customerPhoneSnapshot,
           address: before.deliveryAddressSnapshot,
           deliveryFeeMinor: before.deliveryFeeMinor,
           promisedAt: before.promisedAt,
+          driverUserId: before.driverUserId,
         },
         after: {
           customerId: after.customerId,
+          customerName: after.customerNameSnapshot,
+          customerPhone: after.customerPhoneSnapshot,
           address: after.deliveryAddressSnapshot,
           deliveryFeeMinor: after.deliveryFeeMinor,
           promisedAt: after.promisedAt,
+          driverUserId: after.driverUserId,
         },
       });
-      this.event("Order", input.orderId, "OrderDraftUpdated", {
+      this.event("Order", input.orderId, "OrderUpdated", {
         customerId: after.customerId,
         deliveryFeeMinor: after.deliveryFeeMinor,
+        editedAfterPrint: Boolean(before.printedAt),
       });
       return after;
     });
