@@ -732,6 +732,39 @@ describe("API de demostración", () => {
     expect((await api.bootstrap()).cashSession).toBeNull();
   });
 
+  it("informa las diferencias de caja separadas por turno", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const closed = await api.closeCashSession({
+      countedAmountMinor: 8_000_000,
+      closingFloatAmountMinor: 5_000_000,
+      force: true,
+      reason: "Diferencia de prueba",
+      authorizerPin: "1234",
+    });
+    const current = await api.openCashSession({
+      openingAmountMinor: 5_000_000,
+    });
+
+    const report = await api.getDetailedReport({
+      dateFrom: closed.businessDate,
+      dateTo: closed.businessDate,
+    });
+
+    expect(report.cash.differencesMinor).toBe(650_000);
+    expect(report.cash.sessions).toEqual([
+      expect.objectContaining({
+        id: current.id,
+        status: "OPEN",
+        differenceMinor: null,
+      }),
+      expect.objectContaining({
+        id: closed.id,
+        status: "CLOSED",
+        differenceMinor: 650_000,
+      }),
+    ]);
+  });
+
   it("restablece el almacenamiento aislado", () => {
     const storage = new MemoryStorage();
     storage.setItem(DEMO_STORAGE_KEY, "cambios");

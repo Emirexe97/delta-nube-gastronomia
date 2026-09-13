@@ -552,6 +552,17 @@ export interface DetailedReportDto {
     withdrawalMinor: MoneyMinor;
     refundMinor: MoneyMinor;
     differencesMinor: MoneyMinor;
+    sessions: Array<{
+      id: Id;
+      number: number;
+      businessDate: BusinessDate;
+      openedAt: IsoDateTime;
+      closedAt: IsoDateTime | null;
+      status: CashSessionStatus;
+      expectedAmountMinor: MoneyMinor;
+      countedAmountMinor: MoneyMinor | null;
+      differenceMinor: MoneyMinor | null;
+    }>;
   };
   delivery: {
     orderCount: number;

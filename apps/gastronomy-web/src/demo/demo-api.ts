@@ -3264,6 +3264,14 @@ export function createDemoApi(
           order.createdAt.slice(0, 10) >= filters.dateFrom &&
           order.createdAt.slice(0, 10) <= filters.dateTo,
       );
+      const reportCashSessions = [
+        ...(state.data.cashSession ? [state.data.cashSession] : []),
+        ...state.historicalSessions,
+      ].filter(
+        (session) =>
+          session.businessDate >= filters.dateFrom &&
+          session.businessDate <= filters.dateTo,
+      );
       const salesTotalMinor = orders.reduce(
         (sum, order) => sum + order.paidMinor,
         0,
@@ -3366,7 +3374,11 @@ export function createDemoApi(
             state.data.cashSession.businessDate <= filters.dateTo
               ? (state.data.cashSession.cashRefundMinor ?? 0)
               : 0,
-          differencesMinor: 0,
+          differencesMinor: reportCashSessions.reduce(
+            (sum, session) => sum + (session.differenceMinor ?? 0),
+            0,
+          ),
+          sessions: reportCashSessions,
         },
         delivery: {
           orderCount: orders.filter((order) => order.type === "DELIVERY")

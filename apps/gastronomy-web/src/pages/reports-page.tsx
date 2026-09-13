@@ -110,9 +110,9 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
             />
             <Metric
               icon={<ChartBar />}
-              label="Diferencias de caja"
+              label="Diferencias acumuladas"
               value={formatMoney(summary.cash.differencesMinor)}
-              detail={`Gastos ${formatMoney(summary.cash.expenseMinor)}`}
+              detail={`${summary.cash.sessions.length} turno${summary.cash.sessions.length === 1 ? "" : "s"} en el rango`}
               tone="text-sky-600"
             />
             <Metric
@@ -123,6 +123,31 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
               tone="text-amber-600"
             />
           </section>
+          <ReportTable
+            title="Diferencias de caja por turno"
+            headers={[
+              "Turno",
+              "Apertura",
+              "Cierre",
+              "Estado",
+              "Esperado",
+              "Contado",
+              "Diferencia",
+            ]}
+            rows={summary.cash.sessions.map((session) => [
+              `Caja #${session.number}`,
+              formatReportDateTime(session.openedAt),
+              session.closedAt ? formatReportDateTime(session.closedAt) : "—",
+              session.status === "OPEN" ? "Abierta" : "Cerrada",
+              formatMoney(session.expectedAmountMinor),
+              session.countedAmountMinor == null
+                ? "—"
+                : formatMoney(session.countedAmountMinor),
+              session.differenceMinor == null
+                ? "Pendiente"
+                : formatMoney(session.differenceMinor),
+            ])}
+          />
           <section className="grid gap-4 lg:grid-cols-2">
             <ReportTable
               title="Productos más vendidos"
@@ -225,6 +250,15 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
       )}
     </div>
   );
+}
+
+function formatReportDateTime(value: string) {
+  return new Intl.DateTimeFormat("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function Metric({

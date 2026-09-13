@@ -2689,6 +2689,51 @@ test("informe por rango usa snapshots de producto y categoría", () => {
   });
 });
 
+test("informe identifica las diferencias de caja por turno", () => {
+  withRepository((repository) => {
+    const first = repository.openCashSession({ openingAmountMinor: 100_000 });
+    repository.closeCashSession({
+      countedAmountMinor: 125_000,
+      force: true,
+      reason: "Diferencia controlada",
+      authorizerPin: "2468",
+    });
+    const second = repository.openCashSession({ openingAmountMinor: 100_000 });
+
+    const report = repository.getDetailedReport({
+      dateFrom: first.businessDate,
+      dateTo: first.businessDate,
+    });
+
+    assert.equal(report.cash.differencesMinor, 25_000);
+    assert.deepEqual(
+      report.cash.sessions.map((session) => ({
+        id: session.id,
+        status: session.status,
+        expected: session.expectedAmountMinor,
+        counted: session.countedAmountMinor,
+        difference: session.differenceMinor,
+      })),
+      [
+        {
+          id: second.id,
+          status: "OPEN",
+          expected: 100_000,
+          counted: null,
+          difference: null,
+        },
+        {
+          id: first.id,
+          status: "CLOSED",
+          expected: 100_000,
+          counted: 125_000,
+          difference: 25_000,
+        },
+      ],
+    );
+  });
+});
+
 test("informe netea devoluciones de forma coherente por medio, producto y categoría", () => {
   withRepository((repository) => {
     const cash = repository.openCashSession({ openingAmountMinor: 0 });

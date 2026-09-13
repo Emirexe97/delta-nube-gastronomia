@@ -6101,6 +6101,23 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       COALESCE(SUM(difference_minor),0) AS differences_minor FROM cash_sessions WHERE business_date BETWEEN ? AND ?`,
       )
       .get(...params) as Row;
+    const cashSessionsByTurn = this.db
+      .prepare(
+        `SELECT cs.id, cs.number, cs.business_date, cs.opened_at, cs.closed_at, cs.status,
+          COALESCE(cs.expected_amount_minor, cs.opening_amount_minor + COALESCE(SUM(
+            CASE WHEN cm.affects_cash = 0 THEN 0
+              WHEN cm.type IN ('SALE', 'INCOME', 'ADJUSTMENT') THEN cm.amount_minor
+              WHEN cm.type IN ('EXPENSE', 'WITHDRAWAL', 'REFUND') THEN -cm.amount_minor
+              ELSE 0 END
+          ), 0)) AS expected_amount_minor,
+          cs.counted_amount_minor, cs.difference_minor
+        FROM cash_sessions cs
+        LEFT JOIN cash_movements cm ON cm.cash_session_id = cs.id
+        WHERE cs.business_date BETWEEN ? AND ?
+        GROUP BY cs.id
+        ORDER BY cs.opened_at DESC`,
+      )
+      .all(...params) as Row[];
     const movements = this.db
       .prepare(
         `SELECT
@@ -6164,6 +6181,24 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         withdrawalMinor: Number(movements.withdrawal_minor),
         refundMinor: Number(movements.refund_minor),
         differencesMinor: Number(cashSessions.differences_minor),
+        sessions: cashSessionsByTurn.map((session) => ({
+          id: String(session.id),
+          number: Number(session.number),
+          businessDate: String(session.business_date),
+          openedAt: String(session.opened_at),
+          closedAt:
+            session.closed_at == null ? null : String(session.closed_at),
+          status: String(session.status) as CashSessionDto["status"],
+          expectedAmountMinor: Number(session.expected_amount_minor),
+          countedAmountMinor:
+            session.counted_amount_minor == null
+              ? null
+              : Number(session.counted_amount_minor),
+          differenceMinor:
+            session.difference_minor == null
+              ? null
+              : Number(session.difference_minor),
+        })),
       },
       delivery: {
         orderCount: Number(delivery.order_count),
