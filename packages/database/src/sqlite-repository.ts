@@ -1410,7 +1410,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
          FROM restaurant_tables t
          LEFT JOIN orders o ON o.table_id = t.id AND o.operational_status NOT IN ('DELIVERED','CANCELLED')
          LEFT JOIN users u ON u.id = o.waiter_user_id
-         ORDER BY t.sort_order, t.number`,
+         ORDER BY t.number`,
       )
       .all() as Row[];
     return rows.map((row) => ({

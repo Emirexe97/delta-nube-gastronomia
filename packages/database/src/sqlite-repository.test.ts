@@ -154,6 +154,16 @@ test("registra compras idempotentes e incrementa el stock de forma atómica", ()
   });
 });
 
+test("las mesas se listan siempre ordenadas por número", () => {
+  withRepository((repository) => {
+    repository.ensureTable(30);
+    repository.ensureTable(20);
+
+    const numbers = repository.bootstrap().tables.map((table) => table.number);
+    assert.deepEqual(numbers, [...numbers].sort((left, right) => left - right));
+  });
+});
+
 test("elimina mesa libre conservando historial y permite reactivar el mismo id", () => {
   withRepository((repository) => {
     const table = repository.ensureTable(51);

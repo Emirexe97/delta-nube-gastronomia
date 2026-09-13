@@ -642,6 +642,7 @@ function makeDriverDeliveryActivity(
 
 function normalize(state: DemoState) {
   for (const order of state.data.orders) refreshOrder(order);
+  state.data.tables.sort((left, right) => left.number - right.number);
   if (state.data.cashSession) {
     const paid = state.data.orders.filter(
       (order) =>
@@ -3192,6 +3193,7 @@ export function createDemoApi(
         layoutHeight: layout.height,
         shape,
       });
+      state.data.tables.sort((left, right) => left.number - right.number);
       audit(state, "RESTAURANT_TABLE", table.id, "MESA_ACTUALIZADA");
       save();
       return output(table);

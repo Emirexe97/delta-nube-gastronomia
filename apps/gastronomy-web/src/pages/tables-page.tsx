@@ -93,7 +93,9 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
       onError: (value) => setTableMessage(humanError(value)),
     },
   );
-  const tables = data.tables.filter((table) => table.active);
+  const tables = data.tables
+    .filter((table) => table.active)
+    .sort((left, right) => left.number - right.number);
   const occupiedCount = tables.filter((table) => table.currentOrderId).length;
 
   const requestOpen = (table: RestaurantTableDto) => {

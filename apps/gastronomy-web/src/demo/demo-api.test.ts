@@ -309,6 +309,15 @@ describe("API de demostración", () => {
     ).toHaveLength(1);
   });
 
+  it("mantiene las mesas ordenadas por número al cargarlas fuera de secuencia", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    await api.ensureTable({ number: 30 });
+    await api.ensureTable({ number: 20 });
+
+    const numbers = (await api.bootstrap()).tables.map((table) => table.number);
+    expect(numbers).toEqual([...numbers].sort((left, right) => left - right));
+  });
+
   it("migra sólo el stock seed legado y conserva ajustes previos en milésimas", async () => {
     const storage = new MemoryStorage();
     const firstApi = createDemoApi(storage);

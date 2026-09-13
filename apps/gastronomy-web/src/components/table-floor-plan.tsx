@@ -312,9 +312,9 @@ export function TableFloorPlan({
     );
   }, [selectedShape]);
 
-  const sectorTables = tables.filter(
-    (table) => table.sectorId === activeSectorId,
-  );
+  const sectorTables = tables
+    .filter((table) => table.sectorId === activeSectorId)
+    .sort((left, right) => left.number - right.number);
   const sectorShapes = data.floorPlanShapes.filter(
     (shape) => shape.sectorId === activeSectorId,
   );
