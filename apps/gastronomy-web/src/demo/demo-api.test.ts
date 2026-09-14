@@ -51,6 +51,11 @@ describe("API de demostración", () => {
       detailAvailable: true,
       filters: { cashSessionId: current.id, orderType: "DELIVERY" },
     });
+    const fullReport = await api.getCashSessionReport({
+      cashSessionId: current.id,
+    });
+    expect(fullReport.byWaiter.length).toBeGreaterThan(0);
+    expect(Array.isArray(fullReport.byWaiter[0]!.tables)).toBe(true);
     await api.closeCashSession({
       countedAmountMinor: current.expectedAmountMinor,
       force: true,
@@ -1579,5 +1584,60 @@ describe("API de demostración", () => {
         (product) => product.id === before.id,
       )?.stockMinor,
     ).toBe((before.stockMinor ?? 0) + 2_500);
+  });
+
+  it("traslada un pedido a otra mesa libre con PIN y actualiza ocupación de mesas", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const order = await api.createOrder({
+      type: "DINE_IN",
+      tableId: "table-1",
+      waiterUserId: "user-waiter",
+    });
+    await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+
+    // Rechaza PIN incorrecto
+    await expect(
+      api.changeOrderTable({
+        orderId: order.id,
+        targetTableId: "table-3",
+        authorizerPin: "0000",
+      }),
+    ).rejects.toThrow("1234");
+
+    // Rechaza misma mesa
+    await expect(
+      api.changeOrderTable({
+        orderId: order.id,
+        targetTableId: "table-1",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow(/ya se encuentra en esa mesa/i);
+
+    // Rechaza si la mesa de destino está ocupada (table-2 tiene order-1001)
+    await expect(
+      api.changeOrderTable({
+        orderId: order.id,
+        targetTableId: "table-2",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow(/ya está ocupada/i);
+
+    // Traslado exitoso a mesa 3 (libre)
+    const moved = await api.changeOrderTable({
+      orderId: order.id,
+      targetTableId: "table-3",
+      authorizerPin: "1234",
+      reason: "Traslado a mesa 3",
+    });
+
+    expect(moved.tableId).toBe("table-3");
+    const data = await api.bootstrap();
+    const t1 = data.tables.find((t) => t.id === "table-1");
+    const t3 = data.tables.find((t) => t.id === "table-3");
+    expect(t1?.currentOrderId).toBeNull();
+    expect(t3?.currentOrderId).toBe(order.id);
   });
 });

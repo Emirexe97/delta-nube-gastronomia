@@ -13,6 +13,7 @@ import type {
   BulkUpdateProductsInput,
   BusinessDate,
   CancelOrderInput,
+  ChangeOrderTableInput,
   CashMovementInput,
   CashSessionDto,
   CashMovementType,
@@ -94,6 +95,7 @@ const SENSITIVE_AUDIT_ACTIONS = new Set([
   "ORDER_DISCOUNT_APPLIED",
   "PAYMENT_REFUNDED",
   "ORDER_CANCELLED",
+  "ORDER_TABLE_CHANGED",
   "CUSTOMER_ARCHIVED",
   "CUSTOMER_MERGED",
   "CUSTOMER_MERGE_RECEIVED",
@@ -3030,6 +3032,87 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return run();
   }
 
+  changeOrderTable(input: ChangeOrderTableInput): OrderDto {
+    const run = this.db.transaction(() => {
+      const order = requireRow(
+        this.db
+          .prepare("SELECT * FROM orders WHERE id = ?")
+          .get(input.orderId) as Row | undefined,
+        "El pedido no existe.",
+      );
+      if (["DELIVERED", "CANCELLED"].includes(String(order.operational_status))) {
+        throw new Error("El pedido ya no admite modificaciones.");
+      }
+      const targetTable = requireRow(
+        this.db
+          .prepare("SELECT * FROM restaurant_tables WHERE id = ? AND active = 1")
+          .get(input.targetTableId) as Row | undefined,
+        "La mesa de destino no existe o está inactiva.",
+      );
+      if (String(order.table_id) === String(input.targetTableId)) {
+        throw new Error("El pedido ya se encuentra en esa mesa.");
+      }
+      const occupied = this.db
+        .prepare(
+          "SELECT id FROM orders WHERE table_id = ? AND operational_status NOT IN ('DELIVERED','CANCELLED')",
+        )
+        .get(input.targetTableId) as Row | undefined;
+      if (occupied) {
+        throw new Error("La mesa de destino ya está ocupada.");
+      }
+      const authorizer = this.authorizePin(
+        input.authorizerPin,
+        "orders.edit",
+      );
+
+      const previousTableId =
+        order.table_id == null ? null : String(order.table_id);
+      let previousTableNumber: number | null = null;
+      if (previousTableId) {
+        const prevTableRow = this.db
+          .prepare("SELECT number FROM restaurant_tables WHERE id = ?")
+          .get(previousTableId) as Row | undefined;
+        if (prevTableRow) {
+          previousTableNumber = Number(prevTableRow.number);
+        }
+      }
+
+      const timestamp = nowIso();
+      this.db
+        .prepare(
+          `UPDATE orders SET table_id = ?, type = 'DINE_IN', version = version + 1, updated_at = ? WHERE id = ?`,
+        )
+        .run(input.targetTableId, timestamp, input.orderId);
+
+      const reason = input.reason?.trim() || "Cambio de mesa";
+      this.audit({
+        entityType: "ORDER",
+        entityId: input.orderId,
+        action: "ORDER_TABLE_CHANGED",
+        permission: "orders.edit",
+        reason,
+        before: {
+          tableId: previousTableId,
+          tableNumber: previousTableNumber,
+        },
+        after: {
+          tableId: String(targetTable.id),
+          tableNumber: Number(targetTable.number),
+        },
+        authorizerUserId: String(authorizer.id),
+      });
+      this.event("Order", input.orderId, "OrderTableChanged", {
+        fromTableId: previousTableId,
+        fromTableNumber: previousTableNumber,
+        toTableId: String(targetTable.id),
+        toTableNumber: Number(targetTable.number),
+        reason,
+      });
+      return this.getOrder(input.orderId);
+    });
+    return run();
+  }
+
   queuePrint(orderId: Id, kind: "KITCHEN_ORDER" | "CUSTOMER_BILL") {
     const run = this.db.transaction(() => {
       const order = this.getOrder(orderId);
@@ -5890,6 +5973,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         name: string;
         orderCount: number;
         amountMinor: number;
+        tables: Map<
+          string,
+          {
+            tableId: Id | null;
+            name: string;
+            orderCount: number;
+            amountMinor: number;
+          }
+        >;
       }
     >();
     const byType = new Map<
@@ -5930,9 +6022,20 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         name: o.waiterName ?? "Sin asignar",
         orderCount: 0,
         amountMinor: 0,
+        tables: new Map(),
       };
       w.orderCount++;
       w.amountMinor += o.paidMinor;
+      const waiterTableKey = o.tableId ?? "none";
+      const wt = w.tables.get(waiterTableKey) ?? {
+        tableId: o.tableId,
+        name: o.tableNumber == null ? "Sin mesa" : `Mesa ${o.tableNumber}`,
+        orderCount: 0,
+        amountMinor: 0,
+      };
+      wt.orderCount++;
+      wt.amountMinor += o.paidMinor;
+      w.tables.set(waiterTableKey, wt);
       byWaiter.set(waiterKey, w);
       const ty = byType.get(o.type) ?? {
         type: o.type,
@@ -6016,7 +6119,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         refundsMinor: refunds,
       },
       byTable: detailAvailable ? [...byTable.values()] : [],
-      byWaiter: detailAvailable ? [...byWaiter.values()] : [],
+      byWaiter: detailAvailable
+        ? [...byWaiter.values()].map((w) => ({
+            waiterUserId: w.waiterUserId,
+            name: w.name,
+            orderCount: w.orderCount,
+            amountMinor: w.amountMinor,
+            tables: [...w.tables.values()],
+          }))
+        : [],
       byProduct: detailAvailable ? [...byProduct.values()] : [],
       byCategory: detailAvailable ? [...byCategory.values()] : [],
       byType: detailAvailable ? [...byType.values()] : [],

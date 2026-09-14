@@ -7,6 +7,7 @@ import type {
   BulkUpdateProductsInput,
   BusinessDate,
   CancelOrderInput,
+  ChangeOrderTableInput,
   CashMovementInput,
   CashSessionDto,
   CategoryDto,
@@ -147,6 +148,7 @@ export interface GastronomyRepository {
   refundPayment(input: RefundPaymentInput): OrderDto;
   completeOrder(input: PayOrderInput & { finalStatus: "DELIVERED" }): OrderDto;
   cancelOrder(input: CancelOrderInput): OrderDto;
+  changeOrderTable(input: ChangeOrderTableInput): OrderDto;
   queuePrint(
     orderId: Id,
     kind: "KITCHEN_ORDER" | "CUSTOMER_BILL",
@@ -568,6 +570,17 @@ export class GastronomyApplication {
     return this.repository.cancelOrder({
       ...input,
       reason: input.reason.trim(),
+    });
+  }
+
+  changeOrderTable(input: ChangeOrderTableInput) {
+    if (!input.targetTableId?.trim())
+      throw new Error("Seleccioná la mesa de destino.");
+    if (!/^\d{4,8}$/.test(input.authorizerPin))
+      throw new Error("El PIN no es válido.");
+    return this.repository.changeOrderTable({
+      ...input,
+      reason: input.reason?.trim() || "Cambio de mesa",
     });
   }
 

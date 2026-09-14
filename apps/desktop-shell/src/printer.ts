@@ -6,6 +6,7 @@ type PrinterInfo = { name: string; isDefault?: boolean };
 type PrintOptions = {
   getPrinters?: () => Promise<PrinterInfo[]>;
   parent?: BrowserWindow | null;
+  forcePreview?: boolean;
 };
 
 export type PrintOutcome = "PRINTED" | "SKIPPED";
@@ -201,7 +202,7 @@ export async function printHtml(
       if (!owner) return [];
       return (await owner.webContents.getPrintersAsync()) as PrinterInfo[];
     });
-  if (profile.mode === "SYSTEM_DIALOG") {
+  if (options.forcePreview || profile.mode === "SYSTEM_DIALOG") {
     return showPreview(html, profile, options.parent);
   }
   let target: string | null = null;

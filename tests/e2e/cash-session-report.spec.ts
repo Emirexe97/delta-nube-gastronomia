@@ -104,6 +104,12 @@ test("previsualiza el informe sin cerrar y lo conserva en el historial al cerrar
   ).toBeVisible();
   await report.getByRole("button", { name: "Imprimir informe" }).click();
 
+  const printModal = page.getByRole("dialog", {
+    name: "Imprimir informe de caja",
+  });
+  await expect(printModal).toBeVisible();
+  await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
+
   const preview = await previewWindow();
   await expect(
     preview.getByText(`INFORME DE CAJA #${setup.sessionNumber}`),
@@ -163,3 +169,87 @@ test("previsualiza el informe sin cerrar y lo conserva en el historial al cerrar
     page.getByText(`#${setup.sessionNumber}`, { exact: true }),
   ).toBeVisible();
 });
+
+test("permite seleccionar secciones del informe y desglosa mesas por mozo con vista previa", async () => {
+  await launch();
+  const setup = await page.evaluate(async () => {
+    const api = (window as any).gastronomy;
+    const data = await api.bootstrap();
+    const session = await api.openCashSession({ openingAmountMinor: 0 });
+    const product = data.products[0];
+    const table = await api.ensureTable({ number: 15 });
+    const order = await api.createOrder({
+      type: "DINE_IN",
+      tableId: table.id,
+      waiterUserId: "user-admin",
+    });
+    await api.addOrderItem({
+      orderId: order.id,
+      productId: product.id,
+      quantity: 2,
+    });
+    const withItem = (await api.bootstrap()).orders.find(
+      (candidate: any) => candidate.id === order.id,
+    );
+    await api.confirmOrder({ orderId: order.id });
+    await api.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "CASH", amountMinor: withItem.totalMinor }],
+    });
+    await api.saveSettings({
+      ...data.settings,
+      printing: {
+        ...data.settings.printing,
+        bill: { ...data.settings.printing.bill, mode: "SYSTEM_DIALOG" },
+      },
+    });
+    return { sessionNumber: session.number, total: withItem.totalMinor, tableNumber: 15 };
+  });
+
+  await page.reload();
+  await page.getByRole("link", { name: "Caja" }).click();
+  await page.getByRole("button", { name: "Cerrar caja" }).click();
+  await page
+    .getByRole("dialog", { name: "Cerrar caja" })
+    .getByRole("button", { name: /Ver informe del turno/ })
+    .click();
+
+  const report = page.getByRole("dialog", { name: "Informe de caja" });
+  await expect(report).toBeVisible();
+  await expect(report.locator("span", { hasText: "Mesa 15" })).toBeVisible();
+
+  await report.getByRole("button", { name: "Imprimir informe" }).click();
+
+  const printModal = page.getByRole("dialog", {
+    name: "Imprimir informe de caja",
+  });
+  await expect(printModal).toBeVisible();
+
+  await expect(printModal.getByText("Resumen de ventas")).toBeVisible();
+  await expect(printModal.getByText("Arqueo de caja")).toBeVisible();
+  await expect(printModal.getByText("Por tipo (canales)")).toBeVisible();
+  await expect(
+    printModal.getByText("Por medio de pago", { exact: true }),
+  ).toBeVisible();
+
+  await expect(
+    printModal.locator("span", { hasText: "Mesa 15" }).first(),
+  ).toBeVisible();
+  await expect(printModal.getByText(/Total Administrador:/)).toBeVisible();
+
+  await printModal.getByRole("button", { name: "Solo obligatorias" }).click();
+  await printModal.locator("label", { hasText: "Por mozo" }).locator("input[type='checkbox']").check();
+
+  await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
+
+  const preview = await previewWindow();
+  await expect(
+    preview.getByText(`INFORME DE CAJA #${setup.sessionNumber}`),
+  ).toBeVisible();
+  await expect(preview.getByRole("heading", { name: "Por mozo" })).toBeVisible();
+  await expect(preview.locator("span", { hasText: "Mesa 15" }).first()).toBeVisible();
+  await expect(preview.getByText(/Total Administrador:/)).toBeVisible();
+
+  await preview.getByRole("button", { name: "Cancelar" }).click();
+});
+

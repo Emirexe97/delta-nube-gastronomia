@@ -813,7 +813,29 @@ function sessionReport(
       amount: o.paidMinor,
       count: 1,
     })),
-  ).map(({ key, ...v }) => ({ waiterUserId: key || null, ...v }));
+  ).map(({ key, ...v }) => {
+    const waiterOrders = orders.filter((o) => (o.waiterUserId ?? "") === key);
+    const tables = grouped(
+      waiterOrders.map((o) => ({
+        key: o.tableId ?? "",
+        name:
+          state.data.tables.find((t) => t.id === o.tableId)?.name ??
+          (o.tableId
+            ? `Mesa ${state.data.tables.find((t) => t.id === o.tableId)?.number ?? ""}`
+            : "Sin mesa"),
+        amount: o.paidMinor,
+        count: 1,
+      })),
+    ).map(({ key: tKey, ...tVal }) => ({
+      tableId: tKey || null,
+      ...tVal,
+    }));
+    return {
+      waiterUserId: key || null,
+      ...v,
+      tables,
+    };
+  });
   const byType = (["DINE_IN", "TAKEAWAY", "DELIVERY"] as const).map((type) => ({
     type,
     orderCount: detailAvailable
@@ -1892,6 +1914,50 @@ export function createDemoApi(
         "PEDIDO_CANCELADO",
         input.reason,
         "orders.cancel",
+      );
+      save();
+      return output(order);
+    },
+
+    async changeOrderTable(input) {
+      requirePin(input.authorizerPin);
+      const order = orderById(input.orderId);
+      if (["DELIVERED", "CANCELLED"].includes(order.operationalStatus)) {
+        throw new Error("El pedido ya no admite modificaciones.");
+      }
+      const targetTable = state.data.tables.find(
+        (t) => t.id === input.targetTableId && t.active,
+      );
+      if (!targetTable) {
+        throw new Error("La mesa de destino no existe o está inactiva.");
+      }
+      if (order.tableId === input.targetTableId) {
+        throw new Error("El pedido ya se encuentra en esa mesa.");
+      }
+      const isOccupied = state.data.orders.some(
+        (o) =>
+          o.id !== order.id &&
+          o.tableId === input.targetTableId &&
+          !["DELIVERED", "CANCELLED"].includes(o.operationalStatus),
+      );
+      if (isOccupied) {
+        throw new Error("La mesa de destino ya está ocupada.");
+      }
+
+      const previousTableNumber = order.tableNumber;
+      order.tableId = targetTable.id;
+      order.tableNumber = targetTable.number;
+      order.type = "DINE_IN";
+      order.updatedAt = new Date().toISOString();
+
+      refreshTables(state.data);
+      audit(
+        state,
+        "ORDER",
+        order.id,
+        "ORDER_TABLE_CHANGED",
+        `Cambio de mesa de ${previousTableNumber ?? "s/n"} a ${targetTable.number}. ${input.reason ?? ""}`.trim(),
+        "orders.edit",
       );
       save();
       return output(order);

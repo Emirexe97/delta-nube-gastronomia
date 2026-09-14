@@ -29,6 +29,7 @@ const api: DesktopApi = {
   refundPayment: (input) => invoke("refundPayment", input),
   completeOrder: (input) => invoke("completeOrder", input),
   cancelOrder: (input) => invoke("cancelOrder", input),
+  changeOrderTable: (input) => invoke("changeOrderTable", input),
   printOrder: (input) => invoke("printOrder", input),
   printCashSessionReport: (input) => invoke("printCashSessionReport", input),
   retryPrint: (input) => invoke("retryPrint", input),

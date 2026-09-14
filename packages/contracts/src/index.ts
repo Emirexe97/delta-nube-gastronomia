@@ -393,6 +393,29 @@ export interface CashSessionReportFilters {
   operationalStatus?: OrderOperationalStatus;
 }
 
+export interface CashSessionReportPrintSections {
+  byProduct?: boolean;
+  byCategory?: boolean;
+  byTable?: boolean;
+  byWaiter?: boolean;
+  orderDetails?: boolean;
+}
+
+export interface CashSessionReportWaiterTableDto {
+  tableId: Id | null;
+  name: string;
+  orderCount: number;
+  amountMinor: MoneyMinor;
+}
+
+export interface CashSessionReportWaiterDto {
+  waiterUserId: Id | null;
+  name: string;
+  orderCount: number;
+  amountMinor: MoneyMinor;
+  tables?: CashSessionReportWaiterTableDto[];
+}
+
 export interface CashSessionReportDto {
   session: CashSessionDto;
   detailAvailable: boolean;
@@ -410,12 +433,7 @@ export interface CashSessionReportDto {
     orderCount: number;
     amountMinor: MoneyMinor;
   }>;
-  byWaiter: Array<{
-    waiterUserId: Id | null;
-    name: string;
-    orderCount: number;
-    amountMinor: MoneyMinor;
-  }>;
+  byWaiter: CashSessionReportWaiterDto[];
   byProduct: Array<{
     productId: Id | null;
     name: string;
@@ -800,6 +818,13 @@ export interface CancelOrderInput extends IdempotentRequest {
   authorizerPin: string;
 }
 
+export interface ChangeOrderTableInput extends IdempotentRequest {
+  orderId: Id;
+  targetTableId: Id;
+  authorizerPin: string;
+  reason?: string;
+}
+
 export interface SettleDeliveryInput extends IdempotentRequest {
   ledgerIds: Id[];
   reason: string;
@@ -859,6 +884,7 @@ export interface DesktopApi {
   refundPayment(input: RefundPaymentInput): Promise<OrderDto>;
   completeOrder(input: CompleteOrderInput): Promise<OrderDto>;
   cancelOrder(input: CancelOrderInput): Promise<OrderDto>;
+  changeOrderTable(input: ChangeOrderTableInput): Promise<OrderDto>;
   printOrder(input: {
     orderId: Id;
     kind: "KITCHEN_ORDER" | "CUSTOMER_BILL";
@@ -866,6 +892,7 @@ export interface DesktopApi {
   retryPrint(input: { jobId: Id }): Promise<{ jobId: Id; status: string }>;
   printCashSessionReport(input: {
     filters: CashSessionReportFilters;
+    sections?: CashSessionReportPrintSections;
   }): Promise<{ printed: boolean; message: string }>;
   searchCustomers(query: string): Promise<CustomerDto[]>;
   searchCustomersPage(

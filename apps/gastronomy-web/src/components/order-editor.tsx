@@ -9,6 +9,7 @@ import {
   Check,
   ArrowLeft,
   ArrowCounterClockwise,
+  ArrowsLeftRight,
   CookingPot,
   CreditCard,
   MagnifyingGlass,
@@ -64,6 +65,7 @@ export function OrderEditor({
   const [refundOpen, setRefundOpen] = useState(false);
   const [halfOpen, setHalfOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [changeTableOpen, setChangeTableOpen] = useState(false);
   const [modifierItemId, setModifierItemId] = useState<string | null>(null);
   const [notesItemId, setNotesItemId] = useState<string | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
@@ -284,6 +286,7 @@ export function OrderEditor({
         refundOpen ||
         halfOpen ||
         cancelOpen ||
+        changeTableOpen ||
         discountOpen ||
         discardConfirmOpen ||
         driverOpen ||
@@ -305,6 +308,7 @@ export function OrderEditor({
     return () => window.removeEventListener("keydown", handler);
   }, [
     cancelOpen,
+    changeTableOpen,
     addingProduct,
     discardConfirmOpen,
     discountOpen,
@@ -918,15 +922,40 @@ export function OrderEditor({
                 </Button>
               </div>
             ) : null}
-            {!locked && order.items.length ? (
-              <Button
-                variant="secondary"
-                className="mt-2 w-full"
-                onClick={() => setDiscountOpen(true)}
+            {!locked &&
+            (order.items.length ||
+              (order.type === "DINE_IN" && order.tableId)) ? (
+              <div
+                className={cn(
+                  "mt-2 grid gap-2",
+                  order.items.length &&
+                    order.type === "DINE_IN" &&
+                    order.tableId
+                    ? "grid-cols-2"
+                    : "grid-cols-1",
+                )}
               >
-                <Percent size={15} />
-                Aplicar descuento
-              </Button>
+                {order.items.length ? (
+                  <Button
+                    variant="secondary"
+                    className="w-full"
+                    onClick={() => setDiscountOpen(true)}
+                  >
+                    <Percent size={15} />
+                    Aplicar descuento
+                  </Button>
+                ) : null}
+                {order.type === "DINE_IN" && order.tableId ? (
+                  <Button
+                    variant="secondary"
+                    className="w-full"
+                    onClick={() => setChangeTableOpen(true)}
+                  >
+                    <ArrowsLeftRight size={15} />
+                    Cambiar de mesa
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
             {!locked && !isDraft ? (
               <button
@@ -1106,6 +1135,13 @@ export function OrderEditor({
         order={order}
         onClose={() => setCancelOpen(false)}
         onCancelled={onClose}
+        onError={setError}
+      />
+      <ChangeTableModal
+        open={changeTableOpen}
+        order={order}
+        data={data}
+        onClose={() => setChangeTableOpen(false)}
         onError={setError}
       />
       <Modal
@@ -2211,3 +2247,151 @@ function CancelModal({
     </Modal>
   );
 }
+
+function ChangeTableModal({
+  open,
+  order,
+  data,
+  onClose,
+  onError,
+}: {
+  open: boolean;
+  order: OrderDto;
+  data: BootstrapDto;
+  onClose(): void;
+  onError(value: string): void;
+}) {
+  const [targetTableId, setTargetTableId] = useState("");
+  const [reason, setReason] = useState("Cambio de mesa");
+  const [pin, setPin] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const availableTables = useMemo(() => {
+    return data.tables
+      .filter(
+        (table) =>
+          table.active &&
+          table.id !== order.tableId &&
+          !table.currentOrderId,
+      )
+      .sort((a, b) => a.number - b.number);
+  }, [data.tables, order.tableId]);
+
+  useEffect(() => {
+    if (!open) return;
+    setTargetTableId("");
+    setReason("Cambio de mesa");
+    setPin("");
+    setLocalError(null);
+  }, [open, order.id]);
+
+  const mutation = useApiMutation(
+    (input: Parameters<typeof window.gastronomy.changeOrderTable>[0]) =>
+      window.gastronomy.changeOrderTable(input),
+    {
+      onSuccess: () => {
+        onClose();
+      },
+      onError: (value) => {
+        const message = humanError(value);
+        setLocalError(message);
+        onError(message);
+      },
+    },
+  );
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      closeDisabled={mutation.isPending}
+      title="Cambiar de mesa"
+      description={`Trasladar los consumos del pedido #${order.number} (Mesa ${order.tableNumber ?? "s/n"}) a otra mesa disponible.`}
+    >
+      <form
+        className="grid gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!targetTableId || pin.length < 4 || mutation.isPending) return;
+          mutation.mutate({
+            orderId: order.id,
+            targetTableId,
+            authorizerPin: pin,
+            reason: reason.trim() || undefined,
+          });
+        }}
+      >
+        <Field label="Mesa de destino">
+          <Select
+            value={targetTableId}
+            onChange={(event) => {
+              setTargetTableId(event.target.value);
+              setLocalError(null);
+            }}
+          >
+            <option value="">Seleccionar mesa libre…</option>
+            {availableTables.map((table) => (
+              <option key={table.id} value={table.id}>
+                Mesa {table.number}
+                {table.name ? ` (${table.name})` : ""}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        {availableTables.length === 0 ? (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
+            No hay otras mesas libres en el salón para realizar el traslado.
+          </p>
+        ) : null}
+
+        <Field label="Motivo (opcional)">
+          <Input
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Cambio de mesa"
+          />
+        </Field>
+
+        <Field label="PIN de autorización">
+          <Input
+            type="password"
+            inputMode="numeric"
+            maxLength={8}
+            value={pin}
+            onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
+            placeholder="••••"
+          />
+        </Field>
+
+        {localError ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700"
+          >
+            {localError}
+          </p>
+        ) : null}
+
+        <div className="flex justify-end gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            disabled={mutation.isPending}
+          >
+            Volver
+          </Button>
+          <Button
+            type="submit"
+            disabled={!targetTableId || pin.length < 4 || mutation.isPending}
+          >
+            <ArrowsLeftRight size={16} />
+            {mutation.isPending ? "Trasladando…" : "Confirmar traslado"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+

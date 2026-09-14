@@ -3577,6 +3577,12 @@ test("informe de caja aplica filtros combinables de mesa, mozo y producto", () =
     assert.equal(report.totals.orderCount, 1);
     assert.equal(report.byTable[0]?.tableId, table.id);
     assert.equal(report.byWaiter[0]?.waiterUserId, waiter.id);
+    assert.equal(report.byWaiter[0]?.tables?.length, 1);
+    assert.equal(report.byWaiter[0]?.tables?.[0]?.tableId, table.id);
+    assert.equal(
+      report.byWaiter[0]?.tables?.[0]?.amountMinor,
+      populated.totalMinor,
+    );
     assert.equal(report.byProduct[0]?.productId, "starter-muzza-grande");
     const empty = repository.getCashSessionReport({
       cashSessionId: session.id,
@@ -3619,3 +3625,92 @@ test("historial lista cajas cerradas y sesión antigua queda sólo en resumen", 
     assert.equal(report.retentionCutoff, cutoff.toISOString().slice(0, 10));
   });
 });
+
+test("cambio de mesa traslada el pedido a otra mesa libre con PIN y registra auditoría", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 10000 });
+    const table1 = repository.ensureTable(71);
+    const table2 = repository.ensureTable(72);
+    const table3 = repository.ensureTable(73);
+
+    const order = repository.createOrder({
+      type: "DINE_IN",
+      tableId: table1.id,
+    });
+    repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+
+    // Rechaza PIN inválido
+    assert.throws(
+      () =>
+        repository.changeOrderTable({
+          orderId: order.id,
+          targetTableId: table2.id,
+          authorizerPin: "9999",
+        }),
+      /PIN incorrecto/i,
+    );
+
+    // Rechaza misma mesa
+    assert.throws(
+      () =>
+        repository.changeOrderTable({
+          orderId: order.id,
+          targetTableId: table1.id,
+          authorizerPin: "2468",
+        }),
+      /ya se encuentra en esa mesa/i,
+    );
+
+    // Si la mesa destino ya está ocupada, debe rechazar
+    const order2 = repository.createOrder({
+      type: "DINE_IN",
+      tableId: table3.id,
+    });
+    assert.throws(
+      () =>
+        repository.changeOrderTable({
+          orderId: order.id,
+          targetTableId: table3.id,
+          authorizerPin: "2468",
+        }),
+      /ya está ocupada/i,
+    );
+
+    // Traslado exitoso de mesa 1 a mesa 2
+    const moved = repository.changeOrderTable({
+      orderId: order.id,
+      targetTableId: table2.id,
+      authorizerPin: "2468",
+      reason: "Comensales solicitaron mesa más amplia",
+    });
+
+    assert.equal(moved.tableId, table2.id);
+    assert.equal(moved.tableNumber, 72);
+    assert.equal(moved.items.length, 1);
+    assert.equal(moved.items[0]?.productId, "starter-muzza-grande");
+
+    // Verificar que mesa 1 se liberó y mesa 2 quedó ocupada
+    const tables = repository.bootstrap().tables;
+    const t1 = tables.find((t) => t.id === table1.id);
+    const t2 = tables.find((t) => t.id === table2.id);
+    assert.equal(t1?.currentOrderId, null);
+    assert.equal(t1?.currentTotalMinor, 0);
+    assert.equal(t2?.currentOrderId, order.id);
+    assert.equal(t2?.currentTotalMinor, moved.totalMinor);
+
+    // Verificar auditoría sensible
+    const audit = repository.getAuditLog({ action: "ORDER_TABLE_CHANGED" });
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0]?.entityId, order.id);
+    assert.equal(audit[0]?.permissionUsed, "orders.edit");
+    assert.equal(audit[0]?.reason, "Comensales solicitaron mesa más amplia");
+    const before = JSON.parse(audit[0]?.beforeJson ?? "{}");
+    const after = JSON.parse(audit[0]?.afterJson ?? "{}");
+    assert.equal(before.tableNumber, 71);
+    assert.equal(after.tableNumber, 72);
+  });
+});
+
