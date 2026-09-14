@@ -415,9 +415,21 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       for (let number = 1; number <= 10; number += 1) {
         this.db
           .prepare(
-            "INSERT OR IGNORE INTO restaurant_tables(id, number, sort_order) VALUES (?, ?, ?)",
+            `INSERT OR IGNORE INTO restaurant_tables(
+              id, number, sort_order, sector_id, layout_x, layout_y, layout_width, layout_height, shape
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run(`table-${number}`, number, number);
+          .run(
+            `table-${number}`,
+            number,
+            number,
+            "sector-main",
+            4 + ((number - 1) % 5) * 19,
+            6 + Math.floor((number - 1) / 5) * 23,
+            14,
+            17,
+            "SQUARE",
+          );
       }
       this.db
         .prepare(
@@ -1422,8 +1434,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       active: flag(row.active),
       sortOrder: Number(row.sort_order),
       sectorId: String(row.sector_id ?? "sector-main"),
-      layoutX: Number(row.layout_x ?? 4),
-      layoutY: Number(row.layout_y ?? 6),
+      layoutX: Number(
+        row.layout_x ?? 4 + ((Number(row.number) - 1) % 5) * 19,
+      ),
+      layoutY: Number(
+        row.layout_y ?? 6 + (Math.floor((Number(row.number) - 1) / 5) % 4) * 23,
+      ),
       layoutWidth: Number(row.layout_width ?? 14),
       layoutHeight: Number(row.layout_height ?? 17),
       shape: ["ROUND", "SQUARE", "RECTANGLE"].includes(String(row.shape))

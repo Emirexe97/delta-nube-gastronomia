@@ -12,8 +12,11 @@ import type {
   TableSectorDto,
 } from "@gastronomy/contracts";
 import {
+  ArrowCounterClockwise,
   ArrowsOutCardinal,
   FloppyDisk,
+  MagnifyingGlassMinus,
+  MagnifyingGlassPlus,
   MapTrifold,
   PencilSimple,
   Plus,
@@ -257,7 +260,281 @@ export function TableFloorPlan({
   );
   const [addTableOpen, setAddTableOpen] = useState(false);
   const [newTableNumber, setNewTableNumber] = useState("");
+  const viewportRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState<Position>({ x: 0, y: 0 });
+  const [panDrag, setPanDrag] = useState<{
+    startX: number;
+    startY: number;
+    initialPanX: number;
+    initialPanY: number;
+  } | null>(null);
+  const pinchRef = useRef<{
+    distance: number;
+    zoom: number;
+    pan: Position;
+    center: Position;
+  } | null>(null);
+
+  const clampPan = (
+    panX: number,
+    panY: number,
+    currentZoom: number,
+    viewportWidth: number,
+    viewportHeight: number,
+  ): Position => {
+    if (currentZoom <= 1) {
+      const maxOffsetW = viewportWidth * 0.35;
+      const maxOffsetH = viewportHeight * 0.35;
+      return {
+        x: Math.round(clamp(panX, -maxOffsetW, maxOffsetW)),
+        y: Math.round(clamp(panY, -maxOffsetH, maxOffsetH)),
+      };
+    }
+    const boardW = viewportWidth * currentZoom;
+    const boardH = viewportHeight * currentZoom;
+    const minX = viewportWidth * 0.2 - boardW;
+    const maxX = viewportWidth * 0.8;
+    const minY = viewportHeight * 0.2 - boardH;
+    const maxY = viewportHeight * 0.8;
+    return {
+      x: Math.round(clamp(panX, minX, maxX)),
+      y: Math.round(clamp(panY, minY, maxY)),
+    };
+  };
+
+  const adjustZoom = (factor: number) => {
+    const viewport = viewportRef.current;
+    const bounds = viewport?.getBoundingClientRect();
+    const centerX = bounds ? bounds.width / 2 : 0;
+    const centerY = bounds ? bounds.height / 2 : 0;
+
+    setZoom((prevZoom) => {
+      const nextZoom = clamp(
+        Math.round(prevZoom * factor * 100) / 100,
+        0.5,
+        3.0,
+      );
+      if (nextZoom === prevZoom) return prevZoom;
+
+      setPan((prevPan) => {
+        if (!bounds) return prevPan;
+        if (nextZoom === 1 && prevZoom === 1) return { x: 0, y: 0 };
+        const nextPanX =
+          centerX - (centerX - prevPan.x) * (nextZoom / prevZoom);
+        const nextPanY =
+          centerY - (centerY - prevPan.y) * (nextZoom / prevZoom);
+        return clampPan(
+          nextPanX,
+          nextPanY,
+          nextZoom,
+          bounds.width,
+          bounds.height,
+        );
+      });
+
+      return nextZoom;
+    });
+  };
+
+  const resetZoom = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [activeSectorId]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const bounds = viewport.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
+
+      const cursorX = event.clientX - bounds.left;
+      const cursorY = event.clientY - bounds.top;
+
+      setZoom((prevZoom) => {
+        const factor = event.deltaY < 0 ? 1.15 : 0.87;
+        const nextZoom = clamp(
+          Math.round(prevZoom * factor * 100) / 100,
+          0.5,
+          3.0,
+        );
+        if (nextZoom === prevZoom) return prevZoom;
+
+        setPan((prevPan) => {
+          if (nextZoom === 1 && prevZoom === 1) return { x: 0, y: 0 };
+          const nextPanX =
+            cursorX - (cursorX - prevPan.x) * (nextZoom / prevZoom);
+          const nextPanY =
+            cursorY - (cursorY - prevPan.y) * (nextZoom / prevZoom);
+          return clampPan(
+            nextPanX,
+            nextPanY,
+            nextZoom,
+            bounds.width,
+            bounds.height,
+          );
+        });
+
+        return nextZoom;
+      });
+    };
+
+    const handleTouchStart = (event: TouchEvent) => {
+      if (event.touches.length === 2) {
+        const t1 = event.touches[0];
+        const t2 = event.touches[1];
+        if (!t1 || !t2) return;
+        event.preventDefault();
+        setPanDrag(null);
+        const distance = Math.hypot(
+          t2.clientX - t1.clientX,
+          t2.clientY - t1.clientY,
+        );
+        const bounds = viewport.getBoundingClientRect();
+        const center = {
+          x: (t1.clientX + t2.clientX) / 2 - bounds.left,
+          y: (t1.clientY + t2.clientY) / 2 - bounds.top,
+        };
+        setZoom((currentZoom) => {
+          setPan((currentPan) => {
+            pinchRef.current = {
+              distance,
+              zoom: currentZoom,
+              pan: currentPan,
+              center,
+            };
+            return currentPan;
+          });
+          return currentZoom;
+        });
+      }
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      if (event.touches.length === 2 && pinchRef.current) {
+        const t1 = event.touches[0];
+        const t2 = event.touches[1];
+        if (!t1 || !t2) return;
+        event.preventDefault();
+        const currentDist = Math.hypot(
+          t2.clientX - t1.clientX,
+          t2.clientY - t1.clientY,
+        );
+        const bounds = viewport.getBoundingClientRect();
+        const currentCenter = {
+          x: (t1.clientX + t2.clientX) / 2 - bounds.left,
+          y: (t1.clientY + t2.clientY) / 2 - bounds.top,
+        };
+        const initial = pinchRef.current;
+        const ratio = currentDist / Math.max(1, initial.distance);
+        const nextZoom = clamp(
+          Math.round(initial.zoom * ratio * 100) / 100,
+          0.5,
+          3.0,
+        );
+
+        const nextPanX =
+          currentCenter.x -
+          (initial.center.x - initial.pan.x) * (nextZoom / initial.zoom);
+        const nextPanY =
+          currentCenter.y -
+          (initial.center.y - initial.pan.y) * (nextZoom / initial.zoom);
+
+        setZoom(nextZoom);
+        setPan(
+          clampPan(
+            nextPanX,
+            nextPanY,
+            nextZoom,
+            bounds.width,
+            bounds.height,
+          ),
+        );
+      }
+    };
+
+    const handleTouchEnd = (event: TouchEvent) => {
+      if (event.touches.length < 2) {
+        pinchRef.current = null;
+      }
+    };
+
+    viewport.addEventListener("wheel", handleWheel, { passive: false });
+    viewport.addEventListener("touchstart", handleTouchStart, {
+      passive: false,
+    });
+    viewport.addEventListener("touchmove", handleTouchMove, {
+      passive: false,
+    });
+    viewport.addEventListener("touchend", handleTouchEnd, { passive: true });
+    viewport.addEventListener("touchcancel", handleTouchEnd, {
+      passive: true,
+    });
+    return () => {
+      viewport.removeEventListener("wheel", handleWheel);
+      viewport.removeEventListener("touchstart", handleTouchStart);
+      viewport.removeEventListener("touchmove", handleTouchMove);
+      viewport.removeEventListener("touchend", handleTouchEnd);
+      viewport.removeEventListener("touchcancel", handleTouchEnd);
+    };
+  }, []);
+
+  const onViewportPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (drawKind) return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target?.closest(
+        "button, select, input, [data-floor-drawing-toolbar], [data-testid='floor-plan-zoom-controls']",
+      )
+    ) {
+      return;
+    }
+    setPanDrag({
+      startX: event.clientX,
+      startY: event.clientY,
+      initialPanX: pan.x,
+      initialPanY: pan.y,
+    });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onViewportPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!panDrag) return;
+    const bounds = viewportRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const dx = event.clientX - panDrag.startX;
+    const dy = event.clientY - panDrag.startY;
+    setPan(
+      clampPan(
+        panDrag.initialPanX + dx,
+        panDrag.initialPanY + dy,
+        zoom,
+        bounds.width,
+        bounds.height,
+      ),
+    );
+  };
+
+  const onViewportPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!panDrag) return;
+    const dx = Math.abs(event.clientX - panDrag.startX);
+    const dy = Math.abs(event.clientY - panDrag.startY);
+    setPanDrag(null);
+    if (dx < 3 && dy < 3 && editing) {
+      setSelectedTableId(null);
+      setSelectedShapeId(null);
+    }
+  };
 
   useEffect(() => {
     if (!sectors.some((sector) => sector.id === activeSectorId))
@@ -979,30 +1256,99 @@ export function TableFloorPlan({
       >
         <Card className="overflow-hidden p-0">
           <div
-            ref={canvasRef}
+            ref={viewportRef}
             role="region"
             aria-label="Editor del plano"
-            tabIndex={editing ? 0 : -1}
+            tabIndex={0}
             onKeyDown={(event) => {
-              if (!drawKind) return;
-              if (event.key === "Escape") cancelDrawing();
-              if (event.key === "Enter") finishDrawing();
-              if (event.key === "Backspace") {
+              if (drawKind) {
+                if (event.key === "Escape") cancelDrawing();
+                if (event.key === "Enter") finishDrawing();
+                if (event.key === "Backspace") {
+                  event.preventDefault();
+                  setDrawingPoints((current) => current.slice(0, -1));
+                }
+                return;
+              }
+              if (event.key === "+" || event.key === "=") {
                 event.preventDefault();
-                setDrawingPoints((current) => current.slice(0, -1));
+                adjustZoom(1.15);
+              } else if (event.key === "-" || event.key === "_") {
+                event.preventDefault();
+                adjustZoom(0.87);
+              } else if (event.key === "0") {
+                event.preventDefault();
+                resetZoom();
               }
             }}
-            className="relative min-h-[420px] overflow-hidden bg-slate-50 sm:min-h-[480px] lg:min-h-[540px]"
-            style={{
-              backgroundImage:
-                "linear-gradient(to right, rgb(226 232 240 / .75) 1px, transparent 1px), linear-gradient(to bottom, rgb(226 232 240 / .75) 1px, transparent 1px)",
-              backgroundSize: "28px 28px",
-            }}
+            onPointerDown={onViewportPointerDown}
+            onPointerMove={onViewportPointerMove}
+            onPointerUp={onViewportPointerUp}
+            onPointerCancel={() => setPanDrag(null)}
+            className={`relative min-h-[420px] overflow-hidden bg-slate-100 sm:min-h-[480px] lg:min-h-[540px] select-none touch-none ${panDrag ? "cursor-grabbing" : drawKind ? "cursor-crosshair" : zoom > 1 || !editing ? "cursor-grab" : "cursor-default"}`}
           >
             <div className="pointer-events-none absolute left-4 top-4 z-20 flex items-center gap-2 rounded-xl bg-white/90 px-3 py-2 text-xs font-extrabold text-slate-600 shadow-sm backdrop-blur">
               <MapTrifold size={17} className="text-brand-600" />
               {activeSector?.name ?? "Sector"}
             </div>
+
+            <div
+              data-testid="floor-plan-zoom-controls"
+              className="absolute bottom-4 right-4 z-30 flex items-center gap-1 rounded-xl border border-slate-200 bg-white/95 p-1 shadow-lg backdrop-blur"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                aria-label="Alejar plano"
+                title="Alejar plano (-)"
+                onClick={() => adjustZoom(0.85)}
+                disabled={zoom <= 0.5}
+                className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 disabled:opacity-30"
+              >
+                <MagnifyingGlassMinus size={17} weight="bold" />
+              </button>
+              <button
+                type="button"
+                aria-label="Restablecer zoom"
+                title="Restablecer a 100%"
+                onClick={resetZoom}
+                className="px-2 py-1 text-xs font-bold text-slate-700 hover:text-brand-600 transition"
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                type="button"
+                aria-label="Acercar plano"
+                title="Acercar plano (+)"
+                onClick={() => adjustZoom(1.18)}
+                disabled={zoom >= 3.0}
+                className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 disabled:opacity-30"
+              >
+                <MagnifyingGlassPlus size={17} weight="bold" />
+              </button>
+              <button
+                type="button"
+                aria-label="Centrar y restablecer"
+                title="Centrar vista"
+                onClick={resetZoom}
+                className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-brand-600"
+              >
+                <ArrowCounterClockwise size={15} weight="bold" />
+              </button>
+            </div>
+
+            <div
+              ref={canvasRef}
+              data-floor-canvas
+              className="absolute inset-0 h-full w-full bg-slate-50 shadow-sm"
+              style={{
+                transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                transformOrigin: "0 0",
+                backgroundImage:
+                  "linear-gradient(to right, rgb(226 232 240 / .75) 1px, transparent 1px), linear-gradient(to bottom, rgb(226 232 240 / .75) 1px, transparent 1px)",
+                backgroundSize: "28px 28px",
+              }}
+            >
             {drawKind ? (
               <div
                 data-floor-drawing-toolbar
@@ -1515,6 +1861,7 @@ export function TableFloorPlan({
                 </div>
               );
             })}
+            </div>
           </div>
         </Card>
 
