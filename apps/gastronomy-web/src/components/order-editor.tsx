@@ -33,7 +33,7 @@ import {
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { isDemoMode } from "../demo/install-demo";
-import { guardOrderAction } from "@gastronomy/domain";
+import { calculateHalfAndHalfBase, guardOrderAction } from "@gastronomy/domain";
 import {
   formatMoney,
   humanError,
@@ -1788,6 +1788,249 @@ function DiscountModal({
   );
 }
 
+export function PizzaHalfSelector({
+  label,
+  pizzas,
+  priceListCode,
+  selectedId,
+  onSelect,
+  onClear,
+  autoFocus = false,
+  inputRef,
+  onEnterNext,
+}: {
+  label: string;
+  pizzas: ProductDto[];
+  priceListCode: string;
+  selectedId: string;
+  onSelect(product: ProductDto): void;
+  onClear(): void;
+  autoFocus?: boolean;
+  inputRef?: React.RefObject<HTMLInputElement>;
+  onEnterNext?(): void;
+}) {
+  const [query, setQuery] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const localInputRef = useRef<HTMLInputElement>(null);
+  const actualInputRef = inputRef ?? localInputRef;
+  const blurTimerRef = useRef<number | null>(null);
+
+  const selectedProduct = useMemo(
+    () => pizzas.find((p) => p.id === selectedId),
+    [pizzas, selectedId],
+  );
+
+  const suggestions = useMemo(() => {
+    return rankProducts(pizzas, query);
+  }, [pizzas, query]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setQuery("");
+      setActiveIndex(0);
+    }
+  }, [selectedId]);
+
+  useEffect(() => {
+    return () => {
+      if (blurTimerRef.current !== null) {
+        window.clearTimeout(blurTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleSelect = (product: ProductDto) => {
+    onSelect(product);
+    setIsOpen(false);
+    setQuery("");
+    onEnterNext?.();
+  };
+
+  const getPrice = (product: ProductDto) =>
+    product.prices.find((p) => p.priceListCode === priceListCode)?.amountMinor;
+
+  if (selectedProduct) {
+    const price = getPrice(selectedProduct);
+    return (
+      <Field label={label}>
+        <div className="flex items-center justify-between rounded-xl border border-brand-200 bg-brand-50/50 p-3 transition">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-xs font-bold text-slate-800">
+                {selectedProduct.name}
+              </span>
+              {selectedProduct.code ? (
+                <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-600">
+                  {selectedProduct.code}
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-0.5 flex items-center gap-2 text-xs">
+              <span className="font-bold text-brand-700">
+                {price != null ? formatMoney(price) : "Sin precio"}
+              </span>
+              <span className="text-[10px] text-slate-400">
+                {selectedProduct.categoryName}
+              </span>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-8 shrink-0 px-2.5 text-xs text-slate-600 hover:text-brand-700"
+            onClick={() => {
+              onClear();
+              setIsOpen(true);
+              window.setTimeout(() => actualInputRef.current?.focus(), 0);
+            }}
+          >
+            Cambiar
+          </Button>
+        </div>
+      </Field>
+    );
+  }
+
+  return (
+    <Field label={label}>
+      <div className="relative">
+        <div className="relative">
+          <MagnifyingGlass
+            size={16}
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+          />
+          <Input
+            ref={actualInputRef}
+            autoFocus={autoFocus}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={isOpen}
+            placeholder={`Buscar ${label.toLocaleLowerCase("es-AR")} (ej. Muzzarella, Jamón...)`}
+            className="pl-9 pr-8"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setIsOpen(true);
+              setActiveIndex(0);
+            }}
+            onFocus={() => {
+              if (blurTimerRef.current !== null) {
+                window.clearTimeout(blurTimerRef.current);
+                blurTimerRef.current = null;
+              }
+              setIsOpen(true);
+            }}
+            onBlur={() => {
+              blurTimerRef.current = window.setTimeout(() => {
+                setIsOpen(false);
+                blurTimerRef.current = null;
+              }, 150);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setIsOpen(true);
+                setActiveIndex((prev) =>
+                  suggestions.length > 0 ? (prev + 1) % suggestions.length : 0,
+                );
+              } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setIsOpen(true);
+                setActiveIndex((prev) =>
+                  suggestions.length > 0
+                    ? (prev - 1 + suggestions.length) % suggestions.length
+                    : 0,
+                );
+              } else if (event.key === "Enter") {
+                if (isOpen && suggestions[activeIndex]) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  handleSelect(suggestions[activeIndex]!);
+                } else if (suggestions.length === 1) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  handleSelect(suggestions[0]!);
+                }
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                setIsOpen(false);
+              }
+            }}
+          />
+          {query ? (
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => {
+                setQuery("");
+                setActiveIndex(0);
+                actualInputRef.current?.focus();
+              }}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              aria-label="Limpiar búsqueda"
+            >
+              <X size={14} />
+            </button>
+          ) : null}
+        </div>
+
+        {isOpen ? (
+          <div
+            role="listbox"
+            onMouseDown={(event) => event.preventDefault()}
+            className="absolute inset-x-0 top-[calc(100%+4px)] z-40 max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl"
+          >
+            {suggestions.length > 0 ? (
+              suggestions.map((product, idx) => {
+                const price = getPrice(product);
+                const isHighlighted = idx === activeIndex;
+                return (
+                  <button
+                    key={product.id}
+                    type="button"
+                    role="option"
+                    aria-selected={isHighlighted}
+                    onClick={() => handleSelect(product)}
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition",
+                      isHighlighted
+                        ? "bg-brand-50 font-semibold text-brand-900"
+                        : "text-slate-700 hover:bg-slate-50",
+                    )}
+                  >
+                    <div className="min-w-0 pr-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate">{product.name}</span>
+                        {product.code ? (
+                          <span className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[9px] text-slate-500">
+                            {product.code}
+                          </span>
+                        ) : null}
+                      </div>
+                      <span className="block truncate text-[10px] text-slate-400">
+                        {product.categoryName}
+                      </span>
+                    </div>
+                    <span className="shrink-0 font-bold text-brand-700">
+                      {price != null ? formatMoney(price) : "Sin precio"}
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="p-3 text-center text-xs text-slate-500">
+                No encontramos variedades con &ldquo;{query}&rdquo;
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </Field>
+  );
+}
+
 function HalfAndHalfModal({
   open,
   order,
@@ -1804,12 +2047,16 @@ function HalfAndHalfModal({
   const [first, setFirst] = useState("");
   const [second, setSecond] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
+  const firstInputRef = useRef<HTMLInputElement>(null);
+  const secondInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     if (!open) return;
     setFirst("");
     setSecond("");
     setLocalError(null);
   }, [open, order.id]);
+
   const mutation = useApiMutation(
     (input: {
       orderId: string;
@@ -1825,9 +2072,46 @@ function HalfAndHalfModal({
       },
     },
   );
-  const pizzas = data.products.filter((product) =>
-    product.categoryName.toLocaleLowerCase().includes("pizza"),
+
+  const priceListCode = order.type === "DINE_IN" ? "SALON" : order.type;
+  const pizzas = useMemo(() => {
+    const activeWithPrice = data.products.filter(
+      (product) =>
+        product.active &&
+        product.prices.some((p) => p.priceListCode === priceListCode),
+    );
+    const pizzaCategoryOrName = activeWithPrice.filter(
+      (product) =>
+        product.categoryName.toLocaleLowerCase("es-AR").includes("pizza") ||
+        product.name.toLocaleLowerCase("es-AR").includes("pizza"),
+    );
+    return pizzaCategoryOrName.length > 0 ? pizzaCategoryOrName : activeWithPrice;
+  }, [data.products, priceListCode]);
+
+  const firstProduct = useMemo(
+    () => pizzas.find((p) => p.id === first),
+    [pizzas, first],
   );
+  const secondProduct = useMemo(
+    () => pizzas.find((p) => p.id === second),
+    [pizzas, second],
+  );
+  const firstPrice = firstProduct?.prices.find(
+    (p) => p.priceListCode === priceListCode,
+  )?.amountMinor;
+  const secondPrice = secondProduct?.prices.find(
+    (p) => p.priceListCode === priceListCode,
+  )?.amountMinor;
+
+  const estimatedPrice = useMemo(() => {
+    if (firstPrice == null || secondPrice == null) return null;
+    return calculateHalfAndHalfBase(
+      firstPrice,
+      secondPrice,
+      data.settings.halfAndHalfPricingMode,
+    );
+  }, [firstPrice, secondPrice, data.settings.halfAndHalfPricingMode]);
+
   return (
     <Modal
       open={open}
@@ -1848,36 +2132,60 @@ function HalfAndHalfModal({
           });
         }}
       >
-        <Field label="Primera mitad">
-          <Select
-            autoFocus
-            value={first}
-            onChange={(event) => {
-              setFirst(event.target.value);
-              setLocalError(null);
-            }}
-          >
-            <option value="">Seleccionar variedad</option>
-            {pizzas.map((product) => (
-              <option key={product.id} value={product.id}>
-                {product.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="Segunda mitad">
-          <Select
-            value={second}
-            onChange={(event) => setSecond(event.target.value)}
-          >
-            <option value="">Seleccionar variedad</option>
-            {pizzas.map((product) => (
-              <option key={product.id} value={product.id}>
-                {product.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
+        <PizzaHalfSelector
+          label="Primera mitad"
+          pizzas={pizzas}
+          priceListCode={priceListCode}
+          selectedId={first}
+          onSelect={(product) => {
+            setFirst(product.id);
+            setLocalError(null);
+          }}
+          onClear={() => {
+            setFirst("");
+            setLocalError(null);
+          }}
+          autoFocus
+          inputRef={firstInputRef}
+          onEnterNext={() => {
+            window.setTimeout(() => secondInputRef.current?.focus(), 50);
+          }}
+        />
+
+        <PizzaHalfSelector
+          label="Segunda mitad"
+          pizzas={pizzas}
+          priceListCode={priceListCode}
+          selectedId={second}
+          onSelect={(product) => {
+            setSecond(product.id);
+            setLocalError(null);
+          }}
+          onClear={() => {
+            setSecond("");
+            setLocalError(null);
+          }}
+          inputRef={secondInputRef}
+        />
+
+        {estimatedPrice != null ? (
+          <div className="flex items-center justify-between rounded-xl border border-brand-200 bg-brand-50/70 p-3">
+            <div>
+              <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700">
+                Precio final calculado
+              </span>
+              <p className="text-[11px] text-slate-500">
+                {data.settings.halfAndHalfPricingMode === "MOST_EXPENSIVE"
+                  ? "Se cobra la variedad más cara"
+                  : "Promedio (50% de cada mitad)"}
+              </p>
+            </div>
+            <span className="text-base font-extrabold text-brand-800">
+              {formatMoney(estimatedPrice)}
+            </span>
+          </div>
+        ) : null}
+
         {localError ? (
           <p
             role="alert"
@@ -1886,6 +2194,7 @@ function HalfAndHalfModal({
             {localError}
           </p>
         ) : null}
+
         <div className="flex justify-end gap-2">
           <Button
             type="button"
@@ -1900,7 +2209,7 @@ function HalfAndHalfModal({
             disabled={!first || !second || mutation.isPending}
           >
             <Pizza size={16} />
-            Agregar
+            {mutation.isPending ? "Agregando…" : "Agregar pizza"}
           </Button>
         </div>
       </form>

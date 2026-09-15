@@ -84,6 +84,36 @@ describe("rankProducts", () => {
       rankProducts(products, "especial", "Empanadas").map((item) => item.id),
     ).toEqual(["3"]);
   });
+
+  it("permite buscar pizzas por coincidencia parcial y palabras separadas sin búsqueda exacta", () => {
+    const pizzaCatalog = [
+      product("p1", "Pizza Muzzarella Clásica", "MUZ"),
+      product("p2", "Pizza Jamón y Morrones", "JAM"),
+      product("p3", "Pizza Fugazzeta Rellena con Panceta", "FUG"),
+      product("p4", "Pizza Cuatro Quesos", "4QUE"),
+      product("p5", "Pizza Calabresa Artesanal", "CAL"),
+      product("p6", "Pizza Napolitana con Ajo", "NAP"),
+    ];
+
+    // Búsqueda por múltiples tokens sin orden estricto y sin tildes
+    expect(rankProducts(pizzaCatalog, "jam morr").map((p) => p.id)).toEqual(["p2"]);
+    expect(rankProducts(pizzaCatalog, "morron jamon").map((p) => p.id)).toEqual(["p2"]);
+
+    // Búsqueda por fragmento de palabra ("calab", "fugaz", "muzza")
+    expect(rankProducts(pizzaCatalog, "calab").map((p) => p.id)).toEqual(["p5"]);
+    expect(rankProducts(pizzaCatalog, "fugaz").map((p) => p.id)).toEqual(["p3"]);
+    expect(rankProducts(pizzaCatalog, "muzza").map((p) => p.id)).toEqual(["p1"]);
+
+    // Búsqueda por código en mayúsculas o minúsculas
+    expect(rankProducts(pizzaCatalog, "muz").map((p) => p.id)).toEqual(["p1"]);
+    expect(rankProducts(pizzaCatalog, "4que").map((p) => p.id)).toEqual(["p4"]);
+
+    // Búsqueda vacía devuelve todas las variedades disponibles
+    expect(rankProducts(pizzaCatalog, "").length).toBe(6);
+
+    // Consulta sin coincidencia devuelve vacío
+    expect(rankProducts(pizzaCatalog, "anchoas")).toEqual([]);
+  });
 });
 
 describe("promisedTiming", () => {

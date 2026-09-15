@@ -1698,5 +1698,29 @@ describe("API de demostración", () => {
     expect(ledger?.status).toBe("SETTLED");
     expect(ledger?.settledAmountMinor).toBe(250_000);
   });
+
+  it("permite agregar pizza mitad y mitad combinando dos variedades", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const order = await api.createOrder({
+      type: "DINE_IN",
+      tableId: "table-1",
+      waiterUserId: "user-waiter",
+    });
+
+    const updated = await api.addHalfAndHalfItem({
+      orderId: order.id,
+      firstProductId: "prod-muzza",
+      secondProductId: "prod-napo",
+    });
+
+    expect(updated.items).toHaveLength(1);
+    const item = updated.items[0]!;
+    expect(item.halves).toHaveLength(2);
+    expect(item.halves[0]?.productId).toBe("prod-muzza");
+    expect(item.halves[1]?.productId).toBe("prod-napo");
+    expect(item.productNameSnapshot).toContain("Mitad");
+    expect(item.lineTotalMinor).toBeGreaterThan(0);
+  });
 });
+
 
