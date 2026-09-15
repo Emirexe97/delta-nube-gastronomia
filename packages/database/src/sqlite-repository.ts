@@ -132,6 +132,7 @@ const DEFAULT_SETTINGS: AppSettingsDto = {
   allowCloseWithPendingOrders: false,
   touchProductPanelEnabled: false,
   deliverySettlementEnabled: false,
+  deliveryDriverPaymentMode: "ACCUMULATED",
   enabledOrderStatuses: ["IN_PREPARATION", "DELIVERED"],
   quickDelayMinutes: [20, 30, 40, 45, 60],
   modules: {
@@ -678,7 +679,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
     const salesByPaymentMethod = this.db
       .prepare(
-        "SELECT pm.code, pm.name, SUM(p.amount_minor - COALESCE(r.refunded_minor, 0)) amount_minor FROM payments p JOIN payment_methods pm ON pm.id = p.payment_method_id LEFT JOIN (SELECT payment_id, SUM(amount_minor) refunded_minor FROM payment_refunds GROUP BY payment_id) r ON r.payment_id = p.id WHERE p.cash_session_id = ? GROUP BY pm.id HAVING SUM(p.amount_minor - COALESCE(r.refunded_minor, 0)) > 0 ORDER BY pm.sort_order",
+        `SELECT pm.code, pm.name,
+          SUM(p.amount_minor - COALESCE(r.refunded_minor, 0)) -
+          COALESCE((SELECT SUM(o2.change_amount_minor) FROM orders o2 WHERE o2.cash_session_paid_id = p.cash_session_id AND o2.change_method_code = pm.code AND o2.operational_status <> 'CANCELLED'), 0) AS amount_minor
+        FROM payments p
+        JOIN payment_methods pm ON pm.id = p.payment_method_id
+        LEFT JOIN (SELECT payment_id, SUM(amount_minor) refunded_minor FROM payment_refunds GROUP BY payment_id) r ON r.payment_id = p.id
+        WHERE p.cash_session_id = ?
+        GROUP BY pm.id
+        HAVING amount_minor > 0
+        ORDER BY pm.sort_order`,
       )
       .all(row.id) as Row[];
     return {
@@ -836,8 +846,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         this.listTableSectors()[0],
         "No hay un sector disponible para la mesa.",
       );
-      const layoutX = 4 + ((number - 1) % 5) * 19;
-      const layoutY = 6 + (Math.floor((number - 1) / 5) % 4) * 23;
+      const layoutX = 5 + ((number - 1) % 10) * 9.2;
+      const layoutY = 5 + (Math.floor((number - 1) / 10) % 10) * 9.2;
       this.db
         .prepare(
           `INSERT INTO restaurant_tables(
@@ -846,7 +856,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
            ) VALUES (
              ?, ?, 1,
              (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM restaurant_tables),
-             ?, ?, ?, 14, 17, 'SQUARE'
+             ?, ?, ?, 7, 7, 'SQUARE'
            )`,
         )
         .run(id, number, defaultSector.id, layoutX, layoutY);
@@ -1435,13 +1445,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       sortOrder: Number(row.sort_order),
       sectorId: String(row.sector_id ?? "sector-main"),
       layoutX: Number(
-        row.layout_x ?? 4 + ((Number(row.number) - 1) % 5) * 19,
+        row.layout_x ?? 5 + ((Number(row.number) - 1) % 10) * 9.2,
       ),
       layoutY: Number(
-        row.layout_y ?? 6 + (Math.floor((Number(row.number) - 1) / 5) % 4) * 23,
+        row.layout_y ?? 5 + (Math.floor((Number(row.number) - 1) / 10) % 10) * 9.2,
       ),
-      layoutWidth: Number(row.layout_width ?? 14),
-      layoutHeight: Number(row.layout_height ?? 17),
+      layoutWidth: Number(row.layout_width ?? 7),
+      layoutHeight: Number(row.layout_height ?? 7),
       shape: ["ROUND", "SQUARE", "RECTANGLE"].includes(String(row.shape))
         ? (String(row.shape) as RestaurantTableDto["shape"])
         : "SQUARE",
@@ -1513,11 +1523,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const row = requireRow(
       this.db
         .prepare(
-          `SELECT o.*, t.number AS table_number, waiter.full_name AS waiter_name, driver.full_name AS driver_name
+          `SELECT o.*, t.number AS table_number, waiter.full_name AS waiter_name, driver.full_name AS driver_name,
+                  pm.name AS change_method_name
            FROM orders o
            LEFT JOIN restaurant_tables t ON t.id = o.table_id
            LEFT JOIN users waiter ON waiter.id = o.waiter_user_id
            LEFT JOIN users driver ON driver.id = o.driver_user_id
+           LEFT JOIN payment_methods pm ON pm.code = o.change_method_code
            WHERE o.id = ?`,
         )
         .get(id) as Row | undefined,
@@ -1654,6 +1666,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       discountMinor: Number(row.discount_minor),
       totalMinor: Number(row.total_minor),
       paidMinor: Number(row.paid_minor),
+      changeAmountMinor:
+        row.change_amount_minor == null ? null : Number(row.change_amount_minor),
+      changeMethodCode:
+        row.change_method_code == null ? null : String(row.change_method_code),
+      changeMethodName:
+        row.change_method_name == null ? null : String(row.change_method_name),
       printedAt: row.printed_at == null ? null : String(row.printed_at),
       printCount: Number(row.print_count),
       printAttemptCount: Number(row.print_attempt_count ?? 0),
@@ -2683,6 +2701,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             if (payment.receivedMinor != null)
               nonNegativeMoney(payment.receivedMinor, "efectivo recibido");
           }
+          const changeAmountMinor = input.change?.amountMinor ?? 0;
+          nonNegativeMoney(changeAmountMinor, "vuelto");
           const allocation = input.payments.reduce(
             (total, payment) => total + payment.amountMinor,
             0,
@@ -2691,10 +2711,41 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             Number(order.total_minor),
             Number(order.paid_minor),
             allocation,
+            changeAmountMinor,
           );
           const methodStatement = this.db.prepare(
             "SELECT * FROM payment_methods WHERE code = ? AND active = 1",
           );
+          let changeMethod: Row | null = null;
+          let incomingCash = 0;
+          for (const payment of input.payments) {
+            if (payment.methodCode === "CASH") {
+              incomingCash += payment.amountMinor;
+            }
+          }
+          const currentExpectedCash =
+            this.cashSessionDto(session).expectedAmountMinor;
+          const availableCash =
+            currentExpectedCash +
+            (input.collectedByDriver ? 0 : incomingCash);
+          if (changeAmountMinor > 0) {
+            if (!input.change?.methodCode) {
+              throw new Error("Indicá el medio de pago para el vuelto.");
+            }
+            changeMethod = requireRow(
+              methodStatement.get(input.change.methodCode) as Row | undefined,
+              `El medio de pago para vuelto ${input.change.methodCode} no está disponible.`,
+            );
+            if (
+              flag(changeMethod.affects_cash) &&
+              !input.collectedByDriver &&
+              changeAmountMinor > availableCash
+            ) {
+              throw new Error(
+                "La caja no tiene efectivo suficiente para entregar este vuelto.",
+              );
+            }
+          }
           const insertPayment = this.db.prepare(
             `INSERT INTO payments(id, order_id, cash_session_id, payment_method_id, amount_minor,
           received_minor, reference, created_by_user_id, created_at)
@@ -2703,8 +2754,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const insertMovement = this.db.prepare(
             `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash,
           payment_method_id, order_id, user_id, reason, created_at)
-         VALUES (?, ?, 'SALE', ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           );
+          const timestamp = nowIso();
           for (const payment of input.payments) {
             if (
               payment.methodCode === "CASH" &&
@@ -2722,7 +2774,6 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               `El medio de pago ${payment.methodCode} no está disponible.`,
             );
             const paymentId = randomUUID();
-            const timestamp = nowIso();
             insertPayment.run(
               paymentId,
               input.orderId,
@@ -2737,6 +2788,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             insertMovement.run(
               randomUUID(),
               session.id,
+              "SALE",
               payment.amountMinor,
               input.collectedByDriver ? 0 : method.affects_cash,
               method.id,
@@ -2746,7 +2798,22 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               timestamp,
             );
           }
-          const paidMinor = Number(order.paid_minor) + allocation;
+          if (changeAmountMinor > 0 && changeMethod) {
+            insertMovement.run(
+              randomUUID(),
+              session.id,
+              "REFUND",
+              changeAmountMinor,
+              input.collectedByDriver ? 0 : changeMethod.affects_cash,
+              changeMethod.id,
+              input.orderId,
+              this.adminUserId,
+              `Vuelto cobro pedido #${String(order.number)} (${String(changeMethod.name)})`,
+              timestamp,
+            );
+          }
+          const netPayment = allocation - changeAmountMinor;
+          const paidMinor = Number(order.paid_minor) + netPayment;
           const paymentStatus = paymentStatusFor(
             Number(order.total_minor),
             paidMinor,
@@ -2754,6 +2821,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           this.db
             .prepare(
               `UPDATE orders SET paid_minor = ?, payment_status = ?, cash_session_paid_id = ?, collected_by_driver = ?,
+           change_amount_minor = ?, change_method_code = ?,
            version = version + 1, updated_at = ? WHERE id = ?`,
             )
             .run(
@@ -2761,13 +2829,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               paymentStatus,
               session.id,
               input.collectedByDriver ? 1 : 0,
-              nowIso(),
+              changeAmountMinor > 0 ? changeAmountMinor : 0,
+              changeAmountMinor > 0 && input.change ? input.change.methodCode : null,
+              timestamp,
               input.orderId,
             );
           if (
             paymentStatus === "PAID" &&
             String(order.type) === "DELIVERY" &&
-            String(order.operational_status) === "DELIVERED" &&
             order.driver_user_id &&
             this.getSettings().deliverySettlementEnabled
           ) {
@@ -2776,29 +2845,96 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               0,
               Number(order.total_minor) - Number(order.delivery_fee_minor),
             );
-            const direction = driverCollected
-              ? "DRIVER_OWES_BUSINESS"
-              : "BUSINESS_OWES_DRIVER";
-            const amountDue = driverCollected
-              ? restaurantAmount
-              : Number(order.delivery_fee_minor);
-            this.db
-              .prepare(
-                `INSERT OR IGNORE INTO delivery_ledger(
-          id, order_id, driver_user_id, restaurant_amount_minor, delivery_fee_minor,
-          direction, amount_due_minor, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-              )
-              .run(
+            const shouldPayDriverNow =
+              input.payDriverNow === true &&
+              !driverCollected &&
+              Number(order.delivery_fee_minor) > 0;
+            if (shouldPayDriverNow) {
+              const cashAfterChange =
+                availableCash -
+                (changeMethod && flag(changeMethod.affects_cash)
+                  ? changeAmountMinor
+                  : 0);
+              if (Number(order.delivery_fee_minor) > cashAfterChange) {
+                throw new Error(
+                  "La caja no tiene efectivo suficiente para pagar el envío al repartidor.",
+                );
+              }
+              insertMovement.run(
                 randomUUID(),
-                input.orderId,
-                order.driver_user_id,
-                restaurantAmount,
+                session.id,
+                "EXPENSE",
                 order.delivery_fee_minor,
-                direction,
-                amountDue,
-                nowIso(),
+                1,
+                null,
+                input.orderId,
+                this.adminUserId,
+                `Pago de envío a repartidor: Pedido #${String(order.number)}`,
+                timestamp,
               );
+              const ledgerId = randomUUID();
+              this.db
+                .prepare(
+                  `INSERT INTO delivery_ledger(
+            id, order_id, driver_user_id, restaurant_amount_minor, delivery_fee_minor,
+            direction, amount_due_minor, settled_amount_minor, status, created_at,
+            settled_at, settled_by_user_id, settlement_reason
+          ) VALUES (?, ?, ?, ?, ?, 'BUSINESS_OWES_DRIVER', ?, ?, 'SETTLED', ?, ?, ?, ?)
+          ON CONFLICT(order_id) DO UPDATE SET
+            status = 'SETTLED',
+            settled_amount_minor = excluded.amount_due_minor,
+            settled_at = excluded.settled_at,
+            settled_by_user_id = excluded.settled_by_user_id,
+            settlement_reason = excluded.settlement_reason`,
+                )
+                .run(
+                  ledgerId,
+                  input.orderId,
+                  order.driver_user_id,
+                  restaurantAmount,
+                  order.delivery_fee_minor,
+                  order.delivery_fee_minor,
+                  order.delivery_fee_minor,
+                  timestamp,
+                  timestamp,
+                  this.adminUserId,
+                  `Pagado al cobrar pedido #${String(order.number)}`,
+                );
+              this.audit({
+                entityType: "DELIVERY_LEDGER",
+                entityId: ledgerId,
+                action: "DELIVERY_SETTLED_ON_PAYMENT",
+                reason: `Pagado al cobrar pedido #${String(order.number)}`,
+                after: { amountMinor: Number(order.delivery_fee_minor) },
+              });
+              this.event("DeliveryLedger", ledgerId, "DeliverySettled", {
+                amountMinor: Number(order.delivery_fee_minor),
+              });
+            } else if (String(order.operational_status) === "DELIVERED") {
+              const direction = driverCollected
+                ? "DRIVER_OWES_BUSINESS"
+                : "BUSINESS_OWES_DRIVER";
+              const amountDue = driverCollected
+                ? restaurantAmount
+                : Number(order.delivery_fee_minor);
+              this.db
+                .prepare(
+                  `INSERT OR IGNORE INTO delivery_ledger(
+            id, order_id, driver_user_id, restaurant_amount_minor, delivery_fee_minor,
+            direction, amount_due_minor, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                )
+                .run(
+                  randomUUID(),
+                  input.orderId,
+                  order.driver_user_id,
+                  restaurantAmount,
+                  order.delivery_fee_minor,
+                  direction,
+                  amountDue,
+                  timestamp,
+                );
+            }
           }
           this.audit({
             entityType: "ORDER",
@@ -6072,6 +6208,18 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         x.amountMinor += p.amountMinor - p.refundedMinor;
         byPayment.set(p.methodCode, x);
       }
+      if (
+        o.cashSessionPaidId === session.id &&
+        o.changeAmountMinor &&
+        o.changeAmountMinor > 0 &&
+        o.changeMethodCode
+      ) {
+        const x = byPayment.get(o.changeMethodCode);
+        if (x) {
+          x.amountMinor -= o.changeAmountMinor;
+          byPayment.set(o.changeMethodCode, x);
+        }
+      }
       for (const i of o.items) {
         const name = i.productNameSnapshot;
         const x = byProduct.get(i.productId ?? name) ?? {
@@ -6147,7 +6295,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       byProduct: detailAvailable ? [...byProduct.values()] : [],
       byCategory: detailAvailable ? [...byCategory.values()] : [],
       byType: detailAvailable ? [...byType.values()] : [],
-      byPaymentMethod: detailAvailable ? [...byPayment.values()] : [],
+      byPaymentMethod: detailAvailable
+        ? [...byPayment.values()].filter((item) => item.amountMinor > 0)
+        : [],
       orders: detailAvailable ? allOrders.filter(matches) : [],
       movements: detailAvailable ? movements : [],
       filters: effectiveFilters,
@@ -6170,7 +6320,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const byPaymentMethod = this.db
       .prepare(
         `SELECT pm.code, pm.name,
-          COALESCE(SUM(p.amount_minor - COALESCE(refunds.refunded_minor, 0)),0) AS amount_minor
+          COALESCE(SUM(p.amount_minor - COALESCE(refunds.refunded_minor, 0)),0) -
+          COALESCE((SELECT SUM(o2.change_amount_minor) FROM orders o2 JOIN cash_sessions cs2 ON cs2.id = o2.cash_session_paid_id WHERE cs2.business_date BETWEEN ? AND ? AND o2.change_method_code = pm.code AND o2.operational_status <> 'CANCELLED'), 0) AS amount_minor
       FROM payments p JOIN payment_methods pm ON pm.id = p.payment_method_id
       JOIN cash_sessions cs ON cs.id = p.cash_session_id
       LEFT JOIN (
@@ -6178,9 +6329,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         FROM payment_refunds GROUP BY payment_id
       ) refunds ON refunds.payment_id = p.id
       WHERE cs.business_date BETWEEN ? AND ?
-      GROUP BY pm.id ORDER BY pm.sort_order`,
+      GROUP BY pm.id
+      HAVING amount_minor > 0
+      ORDER BY pm.sort_order`,
       )
-      .all(...params) as Row[];
+      .all(...params, ...params) as Row[];
     const byProduct = this.db
       .prepare(
         `SELECT name, ROUND(SUM(quantity),2) AS quantity, ROUND(SUM(amount_minor)) AS amount_minor FROM (

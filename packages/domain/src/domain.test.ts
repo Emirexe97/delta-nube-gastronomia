@@ -11,6 +11,7 @@ import {
   calculateDiscountMinor,
   assertOffPremiseCustomer,
   paymentStatusFor,
+  assertPaymentAllocation,
 } from "./index";
 
 test("para retirar requiere cliente pero permite omitir la dirección", () => {
@@ -124,6 +125,26 @@ test("delivery transferencia: negocio debe fee al repartidor", () => {
       deliveryFeeMinor: 300_000,
       paymentDestination: "BUSINESS",
     }).businessOwesDriverMinor,
-    300_000,
+      300_000,
+  );
+});
+
+test("asignación de pagos con sobrepago y vuelto", () => {
+  // Pago exacto sin vuelto
+  assert.equal(assertPaymentAllocation(27_000_000, 0, 27_000_000, 0), 27_000_000);
+
+  // Pago de $30.000 con vuelto de $3.000 para saldo de $27.000
+  assert.equal(assertPaymentAllocation(27_000_000, 0, 30_000_000, 3_000_000), 27_000_000);
+
+  // Error si la resta neto no coincide con el saldo
+  assert.throws(
+    () => assertPaymentAllocation(27_000_000, 0, 30_000_000, 2_000_000),
+    /La suma de pagos menos el vuelto debe coincidir con el saldo pendiente/,
+  );
+
+  // Error si se pide vuelto pero el pago no supera el saldo pendiente
+  assert.throws(
+    () => assertPaymentAllocation(27_000_000, 0, 27_000_000, 1_000_000),
+    /La suma de pagos menos el vuelto debe coincidir con el saldo pendiente/,
   );
 });

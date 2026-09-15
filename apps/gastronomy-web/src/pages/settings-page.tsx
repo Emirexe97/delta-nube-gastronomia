@@ -13,7 +13,7 @@ import {
   SlidersHorizontal,
   TextT,
 } from "@phosphor-icons/react";
-import { Button, Card, Field, Input, Select, Textarea } from "@gastronomy/ui";
+import { Button, Card, Field, Input, Select, Textarea, cn } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { humanError } from "../lib";
 
@@ -238,6 +238,80 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             </label>
           ))}
         </div>
+        {settings.deliverySettlementEnabled ? (
+          <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50/50 p-3.5 space-y-2">
+            <label className="text-xs font-bold text-slate-800">
+              Modalidad de pago a repartidores
+            </label>
+            <p className="text-[11px] text-slate-500">
+              Elegí si los envíos se abonan en el momento del cobro o se acumulan para su rendición en lote:
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label
+                className={cn(
+                  "flex items-start gap-2.5 rounded-lg border p-2.5 text-xs font-medium cursor-pointer transition",
+                  (settings.deliveryDriverPaymentMode ?? "ACCUMULATED") ===
+                    "ACCUMULATED"
+                    ? "border-brand-500 bg-white shadow-sm text-slate-900"
+                    : "border-slate-200 bg-white/50 text-slate-600 hover:bg-white",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="deliveryDriverPaymentMode"
+                  value="ACCUMULATED"
+                  checked={
+                    (settings.deliveryDriverPaymentMode ?? "ACCUMULATED") ===
+                    "ACCUMULATED"
+                  }
+                  onChange={() =>
+                    setSettings((current) => ({
+                      ...current,
+                      deliveryDriverPaymentMode: "ACCUMULATED",
+                    }))
+                  }
+                  className="mt-0.5 h-3.5 w-3.5 accent-brand-600"
+                />
+                <div>
+                  <span className="font-bold block">Acumular en Repartidores</span>
+                  <span className="text-[11px] text-slate-500">
+                    Los envíos quedan en la cuenta del repartidor para liquidarse en lote al final del turno.
+                  </span>
+                </div>
+              </label>
+              <label
+                className={cn(
+                  "flex items-start gap-2.5 rounded-lg border p-2.5 text-xs font-medium cursor-pointer transition",
+                  settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT"
+                    ? "border-brand-500 bg-white shadow-sm text-slate-900"
+                    : "border-slate-200 bg-white/50 text-slate-600 hover:bg-white",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="deliveryDriverPaymentMode"
+                  value="ON_ORDER_PAYMENT"
+                  checked={
+                    settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT"
+                  }
+                  onChange={() =>
+                    setSettings((current) => ({
+                      ...current,
+                      deliveryDriverPaymentMode: "ON_ORDER_PAYMENT",
+                    }))
+                  }
+                  className="mt-0.5 h-3.5 w-3.5 accent-brand-600"
+                />
+                <div>
+                  <span className="font-bold block">Pagar al cobrar pedido</span>
+                  <span className="text-[11px] text-slate-500">
+                    Al cobrar o entregar, se preselecciona pagar el envío y se registra el egreso de caja en el momento.
+                  </span>
+                </div>
+              </label>
+            </div>
+          </div>
+        ) : null}
       </Card>
       <PrintingSettingsCard
         settings={settings}

@@ -52,13 +52,23 @@ export function assertPaymentAllocation(
   totalMinor: number,
   alreadyPaidMinor: number,
   newPaymentMinor: number,
+  changeMinor: number = 0,
 ) {
   nonNegativeMoney(totalMinor, "total");
   nonNegativeMoney(alreadyPaidMinor, "importe ya pagado");
   nonNegativeMoney(newPaymentMinor, "nuevo pago");
+  nonNegativeMoney(changeMinor, "vuelto");
   const remaining = Math.max(0, totalMinor - alreadyPaidMinor);
-  if (newPaymentMinor !== remaining) {
-    throw new Error("La suma de pagos debe coincidir con el saldo pendiente.");
+  const netPayment = newPaymentMinor - changeMinor;
+  if (netPayment !== remaining) {
+    throw new Error(
+      "La suma de pagos menos el vuelto debe coincidir con el saldo pendiente.",
+    );
+  }
+  if (changeMinor > 0 && newPaymentMinor <= remaining) {
+    throw new Error(
+      "El vuelto sólo corresponde si el pago supera el saldo pendiente.",
+    );
   }
   return remaining;
 }

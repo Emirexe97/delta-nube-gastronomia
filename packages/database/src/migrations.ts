@@ -723,4 +723,12 @@ ALTER TABLE users ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS users_archived_idx ON users(archived, full_name);
 `,
   },
+  {
+    version: 23,
+    name: "order_change_and_delivery_payment",
+    sql: String.raw`
+ALTER TABLE orders ADD COLUMN change_amount_minor INTEGER DEFAULT 0;
+ALTER TABLE orders ADD COLUMN change_method_code TEXT;
+`,
+  },
 ];

@@ -3714,3 +3714,134 @@ test("cambio de mesa traslada el pedido a otra mesa libre con PIN y registra aud
   });
 });
 
+test("cobro con sobrepago y vuelto multimedio concilia caja y pedido", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 10_000_000 });
+    const order = repository.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Cliente Sobrepago",
+      customerPhone: "11 3333-4444",
+    });
+    const populated = repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: order.id });
+    const remaining = populated.totalMinor;
+
+    // Paga por TRANSFER con exceso y recibe vuelto en CASH
+    const paid = repository.payOrder({
+      orderId: order.id,
+      payments: [
+        {
+          methodCode: "TRANSFER",
+          amountMinor: remaining + 500_000,
+          reference: "TRANSF-123",
+        },
+      ],
+      change: { methodCode: "CASH", amountMinor: 500_000 },
+    });
+
+    assert.equal(paid.paymentStatus, "PAID");
+    assert.equal(paid.paidMinor, remaining);
+    assert.equal(paid.changeAmountMinor, 500_000);
+    assert.equal(paid.changeMethodCode, "CASH");
+    assert.equal(paid.changeMethodName, "Efectivo");
+
+    // Caja: apertura 10.000.000 - 500.000 vuelto = 9.500.000
+    const session = repository.bootstrap().cashSession!;
+    assert.equal(session.expectedAmountMinor, 9_500_000);
+    assert.equal(session.cashRefundMinor, 500_000);
+    assert.equal(session.salesTotalMinor, remaining);
+    assert.equal(
+      session.salesByPaymentMethod?.find((m) => m.code === "TRANSFER")
+        ?.amountMinor,
+      remaining + 500_000,
+    );
+  });
+});
+
+test("pago a repartidor al cobrar pedido es configurable (inmediato vs acumulado)", () => {
+  withRepository((repository) => {
+    repository.saveSettings({
+      ...repository.bootstrap().settings,
+      deliverySettlementEnabled: true,
+      deliveryDriverPaymentMode: "ON_ORDER_PAYMENT",
+    });
+    repository.openCashSession({ openingAmountMinor: 10_000_000 });
+    const driver = repository.createUser({
+      fullName: "Repartidor Express",
+      roleCode: "DELIVERY_DRIVER",
+      pin: "9876",
+      authorizerPin: "2468",
+    });
+
+    // 1. Pedido con payDriverNow = true: se paga el fee en el momento
+    const order1 = repository.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente Delivery 1",
+      customerPhone: "11 5555-1111",
+      deliveryAddress: "Av Siempreviva 123",
+      deliveryFeeMinor: 400_000,
+      driverUserId: driver.id,
+    });
+    const populated1 = repository.addOrderItem({
+      orderId: order1.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: order1.id });
+
+    // Se cobra por Transferencia y se paga el repartidor al momento en efectivo
+    repository.payOrder({
+      orderId: order1.id,
+      payDriverNow: true,
+      payments: [{ methodCode: "TRANSFER", amountMinor: populated1.totalMinor }],
+    });
+
+    const bootstrap1 = repository.bootstrap();
+    const ledger1 = bootstrap1.deliveryLedger.find(
+      (l) => l.orderId === order1.id,
+    );
+    assert.ok(ledger1);
+    assert.equal(ledger1.status, "SETTLED");
+    assert.equal(ledger1.settledAmountMinor, 400_000);
+    assert.equal(
+      bootstrap1.cashSession?.expectedAmountMinor,
+      10_000_000 - 400_000,
+    );
+    assert.equal(bootstrap1.cashSession?.cashExpenseMinor, 400_000);
+
+    // 2. Pedido con payDriverNow = false: se acumula para la sección Repartidores
+    const order2 = repository.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente Delivery 2",
+      customerPhone: "11 5555-2222",
+      deliveryAddress: "Av Siempreviva 456",
+      deliveryFeeMinor: 500_000,
+      driverUserId: driver.id,
+    });
+    const populated2 = repository.addOrderItem({
+      orderId: order2.id,
+      productId: "starter-muzza-grande",
+    });
+    repository.confirmOrder({ orderId: order2.id });
+
+    repository.payOrder({
+      orderId: order2.id,
+      payDriverNow: false,
+      payments: [{ methodCode: "TRANSFER", amountMinor: populated2.totalMinor }],
+    });
+    repository.updateOrderStatus(order2.id, "DELIVERED");
+
+    const bootstrap2 = repository.bootstrap();
+    const ledger2 = bootstrap2.deliveryLedger.find(
+      (l) => l.orderId === order2.id,
+    );
+    assert.ok(ledger2);
+    assert.equal(ledger2.status, "PENDING");
+    assert.equal(ledger2.amountDueMinor, 500_000);
+    assert.equal(bootstrap2.cashSession?.cashExpenseMinor, 400_000);
+  });
+});
+
+

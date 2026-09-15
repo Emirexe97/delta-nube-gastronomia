@@ -74,6 +74,7 @@ export interface AppSettingsDto {
   allowCloseWithPendingOrders: boolean;
   touchProductPanelEnabled: boolean;
   deliverySettlementEnabled: boolean;
+  deliveryDriverPaymentMode?: "ON_ORDER_PAYMENT" | "ACCUMULATED";
   enabledOrderStatuses: OrderOperationalStatus[];
   quickDelayMinutes: number[];
   modules: {
@@ -336,6 +337,9 @@ export interface OrderDto {
   discountMinor: MoneyMinor;
   totalMinor: MoneyMinor;
   paidMinor: MoneyMinor;
+  changeAmountMinor?: MoneyMinor | null;
+  changeMethodCode?: string | null;
+  changeMethodName?: string | null;
   printedAt: IsoDateTime | null;
   printCount: number;
   /** Intentos físicos de impresión, exitosos o fallidos. */
@@ -791,15 +795,22 @@ export interface AddHalfAndHalfItemInput {
   notes?: string | null;
 }
 
+export interface ChangeOutput {
+  methodCode: string;
+  amountMinor: MoneyMinor;
+}
+
 export interface PayOrderInput extends IdempotentRequest {
   orderId: Id;
   collectedByDriver?: boolean;
+  payDriverNow?: boolean;
   payments: Array<{
     methodCode: string;
     amountMinor: MoneyMinor;
     receivedMinor?: MoneyMinor | null;
     reference?: string | null;
   }>;
+  change?: ChangeOutput | null;
 }
 
 export interface OrderActionGuardDto {

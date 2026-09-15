@@ -158,3 +158,104 @@ export function svgPoints(
 // Explicit aliases make the intent discoverable at call sites.
 export const pointsToLocalGeometry = globalPointsToLocalGeometry;
 export const toSvgPoints = svgPoints;
+
+export const FLOOR_CANVAS_WIDTH = 1800;
+export const FLOOR_CANVAS_HEIGHT = 1200;
+export const DEFAULT_TABLE_WIDTH = 7;
+export const DEFAULT_TABLE_HEIGHT = 7;
+export const DEFAULT_RECT_TABLE_WIDTH = 10;
+export const DEFAULT_RECT_TABLE_HEIGHT = 7;
+
+/** Check if two normalized rectangles overlap, with an optional safety margin. */
+export function rectsOverlap(
+  a: NormalizedRect,
+  b: NormalizedRect,
+  margin = 0.5,
+): boolean {
+  return (
+    a.x < b.x + b.width + margin &&
+    a.x + a.width > b.x - margin &&
+    a.y < b.y + b.height + margin &&
+    a.y + a.height > b.y - margin
+  );
+}
+
+export type GridPlacementOptions = {
+  cols?: number;
+  rows?: number;
+  startX?: number;
+  startY?: number;
+  gapX?: number;
+  gapY?: number;
+};
+
+/**
+ * Find the next available non-overlapping position for a table.
+ * Primary scan: 10x10 grid (allowing 100 non-overlapping tables with comfortable margins).
+ * Secondary scan: fine-grained canvas scan in 2% steps.
+ * Fallback: staggered position within bounds so it is never hidden or lost.
+ */
+export function findAvailableTablePosition(
+  existingElements: readonly NormalizedRect[],
+  tableWidth = DEFAULT_TABLE_WIDTH,
+  tableHeight = DEFAULT_TABLE_HEIGHT,
+  options?: GridPlacementOptions,
+): NormalizedPoint {
+  const cols = options?.cols ?? 10;
+  const rows = options?.rows ?? 10;
+  const startX = options?.startX ?? 5;
+  const startY = options?.startY ?? 5;
+  const stepX = options?.gapX ?? 9.2;
+  const stepY = options?.gapY ?? 9.2;
+
+  // 1. Primary scan: 10x10 grid
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const candidate: NormalizedRect = {
+        x: Math.round((startX + c * stepX) * 10) / 10,
+        y: Math.round((startY + r * stepY) * 10) / 10,
+        width: tableWidth,
+        height: tableHeight,
+      };
+      if (
+        candidate.x + candidate.width > 99 ||
+        candidate.y + candidate.height > 99
+      ) {
+        continue;
+      }
+      const hasOverlap = existingElements.some((elem) =>
+        rectsOverlap(candidate, elem),
+      );
+      if (!hasOverlap) {
+        return { x: candidate.x, y: candidate.y };
+      }
+    }
+  }
+
+  // 2. Secondary scan: fine 2% grid search across full canvas
+  for (let y = 2; y <= 98 - tableHeight; y += 2) {
+    for (let x = 2; x <= 98 - tableWidth; x += 2) {
+      const candidate: NormalizedRect = {
+        x,
+        y,
+        width: tableWidth,
+        height: tableHeight,
+      };
+      const hasOverlap = existingElements.some((elem) =>
+        rectsOverlap(candidate, elem),
+      );
+      if (!hasOverlap) {
+        return { x: candidate.x, y: candidate.y };
+      }
+    }
+  }
+
+  // 3. Fallback: staggered offset so tables never stack directly on each other
+  const count = existingElements.length;
+  const fallbackX = clamp(5 + (count % 10) * 2, 0, 100 - tableWidth);
+  const fallbackY = clamp(5 + (count % 8) * 2, 0, 100 - tableHeight);
+  return {
+    x: Math.round(fallbackX * 10) / 10,
+    y: Math.round(fallbackY * 10) / 10,
+  };
+}

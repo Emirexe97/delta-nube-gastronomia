@@ -1929,7 +1929,20 @@ function PaymentModal({
   const [received, setReceived] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
+  const defaultChangeMethod = useMemo(
+    () =>
+      data.paymentMethods.find((m) => m.code === "CASH" && m.active)?.code ??
+      data.paymentMethods.find((m) => m.active)?.code ??
+      "CASH",
+    [data.paymentMethods],
+  );
+  const [changeMethodCode, setChangeMethodCode] =
+    useState<string>(defaultChangeMethod);
+  const [payDriverNow, setPayDriverNow] = useState(
+    data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
+  );
   const firstPaymentInputRef = useRef<HTMLInputElement>(null);
+
   useLayoutEffect(() => {
     if (!open) {
       setInitialized(false);
@@ -1938,21 +1951,33 @@ function PaymentModal({
     const exact = String(remaining / 100);
     setValues({ CASH: exact });
     setReferences({});
-    setReceived(exact);
+    setChangeMethodCode(defaultChangeMethod);
+    setPayDriverNow(
+      data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
+    );
     setLocalError(null);
     setInitialized(true);
     const focusFrame = window.requestAnimationFrame(() =>
       firstPaymentInputRef.current?.focus(),
     );
     return () => window.cancelAnimationFrame(focusFrame);
-  }, [open, remaining]);
+  }, [
+    open,
+    remaining,
+    defaultChangeMethod,
+    data.settings.deliveryDriverPaymentMode,
+  ]);
+
   const mutation = useApiMutation(
     (input: Parameters<typeof window.gastronomy.payOrder>[0]) => {
+      const cashMinor = input.payments
+        .filter((payment) => payment.methodCode === "CASH")
+        .reduce((sum, payment) => sum + payment.amountMinor, 0);
+      const nonCashMinor = input.payments
+        .filter((payment) => payment.methodCode !== "CASH")
+        .reduce((sum, payment) => sum + payment.amountMinor, 0);
       const collectedByDriver =
-        order.type === "DELIVERY" &&
-        input.payments.some(
-          (payment) => payment.methodCode === "CASH" && payment.amountMinor > 0,
-        );
+        order.type === "DELIVERY" && cashMinor > 0 && nonCashMinor === 0;
       return completeOnPay
         ? window.gastronomy.completeOrder({
             ...input,
@@ -1970,7 +1995,7 @@ function PaymentModal({
       },
     },
   );
-  const receivedMinor = parseMoneyInput(received) ?? 0;
+
   const payments = data.paymentMethods
     .map((method) => {
       const amountMinor = parseMoneyInput(values[method.code] ?? "") ?? 0;
@@ -1980,25 +2005,50 @@ function PaymentModal({
         ...(method.code !== "CASH"
           ? { reference: references[method.code]?.trim() || null }
           : {}),
-        ...(method.code === "CASH" ? { receivedMinor } : {}),
       };
     })
     .filter((item) => item.amountMinor > 0);
+
   const allocated = payments.reduce((sum, item) => sum + item.amountMinor, 0);
-  const cashAmount =
+  const changeDue = Math.max(0, allocated - remaining);
+
+  const selectedChangeMethod = data.paymentMethods.find(
+    (m) => m.code === changeMethodCode,
+  );
+  const incomingCashMinor =
     payments.find((item) => item.methodCode === "CASH")?.amountMinor ?? 0;
-  const change = cashAmount > 0 ? receivedMinor - cashAmount : 0;
-  const cashValid = cashAmount === 0 || receivedMinor >= cashAmount;
+  const drawerCashAvailable =
+    (data.cashSession?.expectedAmountMinor ?? 0) + incomingCashMinor;
+  const isCashChangeInsufficient =
+    changeDue > 0 &&
+    Boolean(selectedChangeMethod?.affectsCash) &&
+    changeDue > drawerCashAvailable;
+
+  const isDeliveryWithDriver =
+    order.type === "DELIVERY" &&
+    Boolean(order.driverUserId) &&
+    data.settings.deliverySettlementEnabled &&
+    order.deliveryFeeMinor > 0;
+
+  const canSubmit =
+    initialized &&
+    allocated >= remaining &&
+    !isCashChangeInsufficient &&
+    !mutation.isPending;
+
   const submitPayment = () => {
-    if (
-      !initialized ||
-      allocated !== remaining ||
-      !cashValid ||
-      mutation.isPending
-    )
-      return;
-    mutation.mutate({ orderId: order.id, payments });
+    if (!canSubmit) return;
+    mutation.mutate({
+      orderId: order.id,
+      payments,
+      change:
+        changeDue > 0
+          ? { methodCode: changeMethodCode, amountMinor: changeDue }
+          : null,
+      payDriverNow: isDeliveryWithDriver ? payDriverNow : false,
+    });
   };
+
   return (
     <Modal
       open={open}
@@ -2014,7 +2064,7 @@ function PaymentModal({
       description={
         completeOnPay
           ? "El cobro y el cierre se guardan como una única operación"
-          : "Podés combinar medios y calcular el vuelto"
+          : "Podés sobrepagar y entregar el vuelto en el medio que desees"
       }
     >
       <form
@@ -2067,44 +2117,100 @@ function PaymentModal({
               </div>
             ))}
         </div>
-        {cashAmount > 0 ? (
-          <div className="mt-3 grid gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 sm:grid-cols-2">
-            <Field label="Efectivo recibido">
-              <Input
-                inputMode="decimal"
-                value={received}
-                onChange={(event) => {
-                  setReceived(event.target.value);
-                  setLocalError(null);
-                }}
-              />
-            </Field>
-            <div className="flex items-center justify-between rounded-lg bg-white px-3">
-              <span className="text-xs font-bold text-slate-500">Vuelto</span>
-              <span
-                className={cn(
-                  "text-lg font-extrabold",
-                  cashValid ? "text-emerald-700" : "text-rose-600",
-                )}
-              >
-                {cashValid ? formatMoney(change) : "Efectivo insuficiente"}
+
+        {changeDue > 0 ? (
+          <div className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50/80 p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-xs font-bold uppercase tracking-wider text-emerald-800">
+                  Vuelto a entregar
+                </span>
+                <p className="text-[11px] text-emerald-700">
+                  Sobrepago recibido: {formatMoney(changeDue)}
+                </p>
+              </div>
+              <span className="text-2xl font-black text-emerald-700">
+                {formatMoney(changeDue)}
               </span>
             </div>
+            <Field label="Entregar vuelto en:">
+              <Select
+                value={changeMethodCode}
+                onChange={(event) => {
+                  setChangeMethodCode(event.target.value);
+                  setLocalError(null);
+                }}
+              >
+                {data.paymentMethods
+                  .filter((method) => method.active)
+                  .map((method) => (
+                    <option key={method.code} value={method.code}>
+                      {method.name}{" "}
+                      {method.affectsCash
+                        ? "(Efectivo de caja)"
+                        : "(Electrónico / No caja)"}
+                    </option>
+                  ))}
+              </Select>
+            </Field>
+            {isCashChangeInsufficient ? (
+              <p
+                role="alert"
+                className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs font-semibold text-rose-700"
+              >
+                La caja no cuenta con efectivo suficiente ({formatMoney(drawerCashAvailable)}) para entregar este vuelto ({formatMoney(changeDue)}).
+              </p>
+            ) : null}
           </div>
         ) : null}
+
+        {isDeliveryWithDriver ? (
+          <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/70 p-3">
+            <label className="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={payDriverNow}
+                onChange={(event) => setPayDriverNow(event.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded accent-brand-600"
+              />
+              <div className="text-xs">
+                <span className="font-bold text-slate-800">
+                  Pagar envío al repartidor ahora ({formatMoney(order.deliveryFeeMinor)})
+                </span>
+                <p className="text-slate-500 mt-0.5">
+                  {payDriverNow
+                    ? `Se registrará el egreso de caja (${formatMoney(order.deliveryFeeMinor)}) y el reparto quedará liquidado.`
+                    : "El envío se acumulará en la cuenta corriente del repartidor para liquidarse luego en la sección Repartidores."}
+                </p>
+              </div>
+            </label>
+          </div>
+        ) : null}
+
         <div
           className={cn(
             "mt-4 flex items-center justify-between rounded-lg p-3 text-xs font-bold",
-            allocated === remaining && cashValid
+            allocated === remaining
               ? "bg-emerald-50 text-emerald-700"
-              : "bg-amber-50 text-amber-700",
+              : allocated > remaining
+                ? "bg-blue-50 text-blue-800"
+                : "bg-amber-50 text-amber-700",
           )}
         >
-          <span>Asignado</span>
           <span>
-            {formatMoney(allocated)} / {formatMoney(remaining)}
+            {allocated > remaining
+              ? "Total abonado (con sobrepago)"
+              : allocated === remaining
+                ? "Asignado"
+                : "Falta abonar"}
+          </span>
+          <span>
+            {allocated > remaining
+              ? `${formatMoney(allocated)} · Vuelto: ${formatMoney(changeDue)}`
+              : `${formatMoney(allocated)} / ${formatMoney(remaining)}`}
           </span>
         </div>
+
         {localError ? (
           <p
             role="alert"
@@ -2113,6 +2219,7 @@ function PaymentModal({
             {localError}
           </p>
         ) : null}
+
         <div className="mt-4 flex justify-end gap-2">
           <Button
             type="button"
@@ -2122,15 +2229,7 @@ function PaymentModal({
           >
             Cancelar
           </Button>
-          <Button
-            type="submit"
-            disabled={
-              !initialized ||
-              allocated !== remaining ||
-              !cashValid ||
-              mutation.isPending
-            }
-          >
+          <Button type="submit" disabled={!canSubmit}>
             <CreditCard size={16} />
             {completeOnPay
               ? order.type === "DINE_IN"

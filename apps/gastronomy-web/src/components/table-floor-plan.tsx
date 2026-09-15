@@ -14,6 +14,7 @@ import type {
 import {
   ArrowCounterClockwise,
   ArrowsOutCardinal,
+  CornersOut,
   FloppyDisk,
   MagnifyingGlassMinus,
   MagnifyingGlassPlus,
@@ -33,6 +34,13 @@ import {
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import {
+  DEFAULT_RECT_TABLE_HEIGHT,
+  DEFAULT_RECT_TABLE_WIDTH,
+  DEFAULT_TABLE_HEIGHT,
+  DEFAULT_TABLE_WIDTH,
+  FLOOR_CANVAS_HEIGHT,
+  FLOOR_CANVAS_WIDTH,
+  findAvailableTablePosition,
   globalPointsToLocalGeometry,
   resizeNormalizedRect,
   svgPoints,
@@ -284,20 +292,14 @@ export function TableFloorPlan({
     viewportWidth: number,
     viewportHeight: number,
   ): Position => {
-    if (currentZoom <= 1) {
-      const maxOffsetW = viewportWidth * 0.35;
-      const maxOffsetH = viewportHeight * 0.35;
-      return {
-        x: Math.round(clamp(panX, -maxOffsetW, maxOffsetW)),
-        y: Math.round(clamp(panY, -maxOffsetH, maxOffsetH)),
-      };
-    }
-    const boardW = viewportWidth * currentZoom;
-    const boardH = viewportHeight * currentZoom;
-    const minX = viewportWidth * 0.2 - boardW;
-    const maxX = viewportWidth * 0.8;
-    const minY = viewportHeight * 0.2 - boardH;
-    const maxY = viewportHeight * 0.8;
+    const boardW = FLOOR_CANVAS_WIDTH * currentZoom;
+    const boardH = FLOOR_CANVAS_HEIGHT * currentZoom;
+    const marginX = viewportWidth * 0.25;
+    const marginY = viewportHeight * 0.25;
+    const minX = Math.min(0, viewportWidth - boardW) - marginX;
+    const maxX = Math.max(0, viewportWidth - boardW) + marginX;
+    const minY = Math.min(0, viewportHeight - boardH) - marginY;
+    const maxY = Math.max(0, viewportHeight - boardH) + marginY;
     return {
       x: Math.round(clamp(panX, minX, maxX)),
       y: Math.round(clamp(panY, minY, maxY)),
@@ -313,7 +315,7 @@ export function TableFloorPlan({
     setZoom((prevZoom) => {
       const nextZoom = clamp(
         Math.round(prevZoom * factor * 100) / 100,
-        0.5,
+        0.35,
         3.0,
       );
       if (nextZoom === prevZoom) return prevZoom;
@@ -343,6 +345,32 @@ export function TableFloorPlan({
     setPan({ x: 0, y: 0 });
   };
 
+  const fitToView = () => {
+    const viewport = viewportRef.current;
+    const bounds = viewport?.getBoundingClientRect();
+    if (!bounds || !bounds.width || !bounds.height) {
+      resetZoom();
+      return;
+    }
+    const fitZoom = clamp(
+      Math.round(
+        Math.min(
+          (bounds.width * 0.95) / FLOOR_CANVAS_WIDTH,
+          (bounds.height * 0.95) / FLOOR_CANVAS_HEIGHT,
+        ) * 100,
+      ) / 100,
+      0.35,
+      1.0,
+    );
+    const boardW = FLOOR_CANVAS_WIDTH * fitZoom;
+    const boardH = FLOOR_CANVAS_HEIGHT * fitZoom;
+    setZoom(fitZoom);
+    setPan({
+      x: Math.round((bounds.width - boardW) / 2),
+      y: Math.round((bounds.height - boardH) / 2),
+    });
+  };
+
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
@@ -365,7 +393,7 @@ export function TableFloorPlan({
         const factor = event.deltaY < 0 ? 1.15 : 0.87;
         const nextZoom = clamp(
           Math.round(prevZoom * factor * 100) / 100,
-          0.5,
+          0.35,
           3.0,
         );
         if (nextZoom === prevZoom) return prevZoom;
@@ -439,7 +467,7 @@ export function TableFloorPlan({
         const ratio = currentDist / Math.max(1, initial.distance);
         const nextZoom = clamp(
           Math.round(initial.zoom * ratio * 100) / 100,
-          0.5,
+          0.35,
           3.0,
         );
 
@@ -651,6 +679,33 @@ export function TableFloorPlan({
       const table = await window.gastronomy.ensureTable({
         number: input.number,
       });
+
+      const sectorTables = tables.filter(
+        (t) => t.sectorId === input.sectorId && t.active && t.id !== table.id,
+      );
+      const sectorShapes = data.floorPlanShapes.filter(
+        (s) => s.sectorId === input.sectorId,
+      );
+      const existingElements: NormalizedRect[] = [
+        ...sectorTables.map((t) => ({
+          x: positions[t.id]?.x ?? t.layoutX,
+          y: positions[t.id]?.y ?? t.layoutY,
+          width: t.layoutWidth,
+          height: t.layoutHeight,
+        })),
+        ...sectorShapes.map((s) => ({
+          x: shapePositions[s.id]?.x ?? s.layoutX,
+          y: shapePositions[s.id]?.y ?? s.layoutY,
+          width: s.layoutWidth,
+          height: s.layoutHeight,
+        })),
+      ];
+      const targetPos = findAvailableTablePosition(
+        existingElements,
+        DEFAULT_TABLE_WIDTH,
+        DEFAULT_TABLE_HEIGHT,
+      );
+
       return window.gastronomy.updateTable({
         tableId: table.id,
         number: table.number,
@@ -658,15 +713,19 @@ export function TableFloorPlan({
         active: true,
         sortOrder: table.sortOrder,
         sectorId: input.sectorId,
-        layoutX: 5,
-        layoutY: 7,
-        layoutWidth: 14,
-        layoutHeight: 17,
+        layoutX: targetPos.x,
+        layoutY: targetPos.y,
+        layoutWidth: DEFAULT_TABLE_WIDTH,
+        layoutHeight: DEFAULT_TABLE_HEIGHT,
         shape: "SQUARE",
       });
     },
     {
       onSuccess: (table) => {
+        setPositions((current) => ({
+          ...current,
+          [table.id]: { x: table.layoutX, y: table.layoutY },
+        }));
         setSelectedTableId(table.id);
         setAddTableOpen(false);
         setNewTableNumber("");
@@ -935,8 +994,8 @@ export function TableFloorPlan({
       state.startRect,
       state.handle,
       pointer,
-      state.target === "TABLE" ? 6 : 2,
-      state.target === "TABLE" ? 8 : 2,
+      state.target === "TABLE" ? 4 : 2,
+      state.target === "TABLE" ? 4 : 2,
       state.target === "TABLE" ? 40 : 100,
       state.target === "TABLE" ? 40 : 100,
     );
@@ -1285,7 +1344,7 @@ export function TableFloorPlan({
             onPointerMove={onViewportPointerMove}
             onPointerUp={onViewportPointerUp}
             onPointerCancel={() => setPanDrag(null)}
-            className={`relative min-h-[420px] overflow-hidden bg-slate-100 sm:min-h-[480px] lg:min-h-[540px] select-none touch-none ${panDrag ? "cursor-grabbing" : drawKind ? "cursor-crosshair" : zoom > 1 || !editing ? "cursor-grab" : "cursor-default"}`}
+            className={`relative min-h-[420px] overflow-hidden bg-slate-200/70 sm:min-h-[480px] lg:min-h-[540px] select-none touch-none ${panDrag ? "cursor-grabbing" : drawKind ? "cursor-crosshair" : "cursor-grab"}`}
           >
             <div className="pointer-events-none absolute left-4 top-4 z-20 flex items-center gap-2 rounded-xl bg-white/90 px-3 py-2 text-xs font-extrabold text-slate-600 shadow-sm backdrop-blur">
               <MapTrifold size={17} className="text-brand-600" />
@@ -1302,7 +1361,7 @@ export function TableFloorPlan({
                 aria-label="Alejar plano"
                 title="Alejar plano (-)"
                 onClick={() => adjustZoom(0.85)}
-                disabled={zoom <= 0.5}
+                disabled={zoom <= 0.35}
                 className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 disabled:opacity-30"
               >
                 <MagnifyingGlassMinus size={17} weight="bold" />
@@ -1328,6 +1387,15 @@ export function TableFloorPlan({
               </button>
               <button
                 type="button"
+                aria-label="Ajustar al área"
+                title="Ajustar al tamaño visible"
+                onClick={fitToView}
+                className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100"
+              >
+                <CornersOut size={16} weight="bold" />
+              </button>
+              <button
+                type="button"
                 aria-label="Centrar y restablecer"
                 title="Centrar vista"
                 onClick={resetZoom}
@@ -1340,8 +1408,10 @@ export function TableFloorPlan({
             <div
               ref={canvasRef}
               data-floor-canvas
-              className="absolute inset-0 h-full w-full bg-slate-50 shadow-sm"
+              className="absolute left-0 top-0 border border-slate-300/80 bg-slate-50 shadow-md"
               style={{
+                width: `${FLOOR_CANVAS_WIDTH}px`,
+                height: `${FLOOR_CANVAS_HEIGHT}px`,
                 transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
                 transformOrigin: "0 0",
                 backgroundImage:
@@ -1446,18 +1516,18 @@ export function TableFloorPlan({
               </svg>
             ) : null}
             {!sectorTables.length && !sectorShapes.length ? (
-              <div className="pointer-events-none absolute inset-0 grid place-items-center p-8 text-center">
+              <div className="pointer-events-none absolute left-10 top-16 z-20 flex items-center gap-4 rounded-2xl border border-dashed border-slate-300 bg-white/90 p-6 shadow-sm backdrop-blur">
+                <MapTrifold
+                  className="shrink-0 text-slate-400"
+                  size={40}
+                  weight="duotone"
+                />
                 <div>
-                  <MapTrifold
-                    className="mx-auto text-slate-300"
-                    size={44}
-                    weight="duotone"
-                  />
-                  <p className="mt-3 text-sm font-bold text-slate-500">
+                  <p className="text-sm font-bold text-slate-700">
                     Este sector todavía no tiene elementos
                   </p>
                   {canManageTables ? (
-                    <p className="mt-1 text-xs text-slate-400">
+                    <p className="mt-0.5 text-xs text-slate-500">
                       Activá “Editar plano” para agregar mesas y figuras.
                     </p>
                   ) : null}
@@ -1917,8 +1987,14 @@ export function TableFloorPlan({
                       setDraft({
                         ...draft,
                         shape,
-                        layoutWidth: shape === "RECTANGLE" ? 22 : 14,
-                        layoutHeight: shape === "RECTANGLE" ? 14 : 17,
+                        layoutWidth:
+                          shape === "RECTANGLE"
+                            ? DEFAULT_RECT_TABLE_WIDTH
+                            : DEFAULT_TABLE_WIDTH,
+                        layoutHeight:
+                          shape === "RECTANGLE"
+                            ? DEFAULT_RECT_TABLE_HEIGHT
+                            : DEFAULT_TABLE_HEIGHT,
                       });
                     }}
                   >
@@ -1933,7 +2009,7 @@ export function TableFloorPlan({
                   <Field label="Ancho %">
                     <Input
                       type="number"
-                      min={6}
+                      min={4}
                       max={40}
                       value={draft.layoutWidth}
                       onChange={(event) =>
@@ -1947,7 +2023,7 @@ export function TableFloorPlan({
                   <Field label="Alto %">
                     <Input
                       type="number"
-                      min={8}
+                      min={4}
                       max={40}
                       value={draft.layoutHeight}
                       onChange={(event) =>

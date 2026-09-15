@@ -112,7 +112,11 @@ function orderTicketHtml(
             (payment) =>
               `<div class="row"><span>${escapeHtml(payment.methodName)}</span><span>${escapeHtml(formatMoney(payment.refundableMinor))}</span></div>`,
           )
-          .join("")}</section>`
+          .join("")}${
+            order.changeAmountMinor && order.changeAmountMinor > 0
+              ? `<div class="row"><span>Vuelto (${escapeHtml(order.changeMethodName || "Efectivo")})</span><span>${escapeHtml(formatMoney(order.changeAmountMinor))}</span></div>`
+              : ""
+          }</section>`
       : ""
   }
   ${(isKitchen && template.kitchenFooter) || (!isKitchen && (template.footer || template.nonFiscalLegend)) ? `<footer class="footer">${isKitchen && template.kitchenFooter ? lineBreaks(template.kitchenFooter) : ""}${!isKitchen && template.footer ? `<strong>${lineBreaks(template.footer)}</strong>` : ""}${!isKitchen && template.nonFiscalLegend ? `<br>${lineBreaks(template.nonFiscalLegend)}` : ""}</footer>` : ""}<div aria-hidden="true" style="height:${feedHeightMm}mm"></div></body></html>`;

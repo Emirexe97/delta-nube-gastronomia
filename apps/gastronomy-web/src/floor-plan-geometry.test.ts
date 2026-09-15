@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   clampNormalizedRect,
+  findAvailableTablePosition,
   globalPointsToLocalGeometry,
   moveLocalNode,
+  rectsOverlap,
   resizeNormalizedRect,
   svgPoints,
 } from "./floor-plan-geometry";
@@ -147,5 +149,103 @@ describe("moveLocalNode and svgPoints", () => {
         { x: 12.345, y: 99.999 },
       ]),
     ).toBe("0,0 12.35,100");
+  });
+});
+
+describe("rectsOverlap", () => {
+  it("detects direct intersection", () => {
+    expect(
+      rectsOverlap(
+        { x: 5, y: 5, width: 7, height: 7 },
+        { x: 8, y: 8, width: 7, height: 7 },
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false for distant rectangles", () => {
+    expect(
+      rectsOverlap(
+        { x: 5, y: 5, width: 7, height: 7 },
+        { x: 20, y: 5, width: 7, height: 7 },
+      ),
+    ).toBe(false);
+  });
+
+  it("considers safety margin", () => {
+    // 5 + 7 = 12. Next starts at 12.2 (distance 0.2 < margin 0.5)
+    expect(
+      rectsOverlap(
+        { x: 5, y: 5, width: 7, height: 7 },
+        { x: 12.2, y: 5, width: 7, height: 7 },
+        0.5,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("findAvailableTablePosition", () => {
+  it("places the first table at (5, 5)", () => {
+    const pos = findAvailableTablePosition([]);
+    expect(pos).toEqual({ x: 5, y: 5 });
+  });
+
+  it("places the second table in the adjacent slot without overlapping", () => {
+    const first = { x: 5, y: 5, width: 7, height: 7 };
+    const pos = findAvailableTablePosition([first]);
+    expect(pos.x).toBeGreaterThan(5);
+    expect(
+      rectsOverlap(first, { x: pos.x, y: pos.y, width: 7, height: 7 }),
+    ).toBe(false);
+  });
+
+  it("supports placing 100 consecutive tables without any pair overlapping", () => {
+    const placed: Array<{ x: number; y: number; width: number; height: number }> =
+      [];
+    for (let i = 0; i < 100; i++) {
+      const pos = findAvailableTablePosition(placed, 7, 7);
+      const newRect = { x: pos.x, y: pos.y, width: 7, height: 7 };
+
+      // Ensure it does not overlap any previously placed table
+      for (let j = 0; j < placed.length; j++) {
+        expect(
+          rectsOverlap(newRect, placed[j]!, 0.3),
+          `Table ${i + 1} overlaps with Table ${j + 1}`,
+        ).toBe(false);
+      }
+
+      // Ensure it stays fully within the canvas bounds (0..100)
+      expect(newRect.x).toBeGreaterThanOrEqual(0);
+      expect(newRect.y).toBeGreaterThanOrEqual(0);
+      expect(newRect.x + newRect.width).toBeLessThanOrEqual(100);
+      expect(newRect.y + newRect.height).toBeLessThanOrEqual(100);
+
+      placed.push(newRect);
+    }
+    expect(placed.length).toBe(100);
+  });
+
+  it("reuses holes when a table is removed", () => {
+    const table1 = { x: 5, y: 5, width: 7, height: 7 };
+    const table2 = { x: 14.2, y: 5, width: 7, height: 7 };
+    const table3 = { x: 23.4, y: 5, width: 7, height: 7 };
+
+    // table2 is deleted, so (14.2, 5) should be filled next
+    const pos = findAvailableTablePosition([table1, table3]);
+    expect(pos).toEqual({ x: 14.2, y: 5 });
+  });
+
+  it("gracefully provides a fallback position when canvas is saturated", () => {
+    const pos = findAvailableTablePosition(
+      Array.from({ length: 110 }, (_, i) => ({
+        x: (i % 10) * 9,
+        y: Math.floor(i / 10) * 8,
+        width: 8,
+        height: 7,
+      })),
+    );
+    expect(pos.x).toBeGreaterThanOrEqual(0);
+    expect(pos.y).toBeGreaterThanOrEqual(0);
+    expect(pos.x + 7).toBeLessThanOrEqual(100);
+    expect(pos.y + 7).toBeLessThanOrEqual(100);
   });
 });

@@ -1640,4 +1640,63 @@ describe("API de demostración", () => {
     expect(t1?.currentOrderId).toBeNull();
     expect(t3?.currentOrderId).toBe(order.id);
   });
+
+  it("permite cobrar con sobrepago y vuelto multimedio en demo", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Demo Sobrepago",
+      customerPhone: "11 9999-8888",
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    const remaining = populated.totalMinor;
+
+    const paid = await api.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "TRANSFER", amountMinor: remaining + 100_000 }],
+      change: { methodCode: "CASH", amountMinor: 100_000 },
+    });
+
+    expect(paid.paymentStatus).toBe("PAID");
+    expect(paid.paidMinor).toBe(remaining);
+    expect(paid.changeAmountMinor).toBe(100_000);
+    expect(paid.changeMethodCode).toBe("CASH");
+  });
+
+  it("permite pagar al repartidor en el momento al cobrar en demo", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const bootstrap = await api.bootstrap();
+    const driver = bootstrap.users.find((u) => u.roleCode === "DELIVERY_DRIVER")!;
+
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Demo Delivery",
+      customerPhone: "11 7777-6666",
+      deliveryAddress: "Calle Falsa 123",
+      deliveryFeeMinor: 250_000,
+      driverUserId: driver.id,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+
+    await api.payOrder({
+      orderId: order.id,
+      payDriverNow: true,
+      payments: [{ methodCode: "TRANSFER", amountMinor: populated.totalMinor }],
+    });
+
+    const after = await api.bootstrap();
+    const ledger = after.deliveryLedger.find((l) => l.orderId === order.id);
+    expect(ledger).toBeDefined();
+    expect(ledger?.status).toBe("SETTLED");
+    expect(ledger?.settledAmountMinor).toBe(250_000);
+  });
 });
+

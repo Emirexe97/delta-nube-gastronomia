@@ -431,10 +431,10 @@ function loadState(storage: DemoStorage): DemoState {
     }
     for (const table of parsed.data.tables) {
       table.sectorId ??= parsed.data.tableSectors[0]!.id;
-      table.layoutX ??= 4 + ((table.number - 1) % 5) * 19;
-      table.layoutY ??= 6 + (Math.floor((table.number - 1) / 5) % 4) * 23;
-      table.layoutWidth ??= 14;
-      table.layoutHeight ??= 17;
+      table.layoutX ??= 5 + ((table.number - 1) % 10) * 9.2;
+      table.layoutY ??= 5 + (Math.floor((table.number - 1) / 10) % 10) * 9.2;
+      table.layoutWidth ??= 7;
+      table.layoutHeight ??= 7;
       table.shape ??= "SQUARE";
     }
     for (const product of parsed.data.products) {
@@ -531,9 +531,12 @@ function refreshOrder(order: OrderDto) {
     0,
     order.subtotalMinor + order.deliveryFeeMinor - order.discountMinor,
   );
-  order.paidMinor = order.payments.reduce(
-    (sum, payment) => sum + payment.amountMinor - payment.refundedMinor,
+  order.paidMinor = Math.max(
     0,
+    order.payments.reduce(
+      (sum, payment) => sum + payment.amountMinor - payment.refundedMinor,
+      0,
+    ) - (order.changeAmountMinor ?? 0),
   );
   order.paymentStatus =
     order.paidMinor === 0
@@ -1042,10 +1045,10 @@ export function createDemoApi(
           active: true,
           sortOrder: number,
           sectorId: sector.id,
-          layoutX: 4 + ((number - 1) % 5) * 19,
-          layoutY: 6 + (Math.floor((number - 1) / 5) % 4) * 23,
-          layoutWidth: 14,
-          layoutHeight: 17,
+          layoutX: 5 + ((number - 1) % 10) * 9.2,
+          layoutY: 5 + (Math.floor((number - 1) / 10) % 10) * 9.2,
+          layoutWidth: 7,
+          layoutHeight: 7,
           shape: "SQUARE",
           currentOrderId: null,
           currentTotalMinor: 0,
@@ -1732,15 +1735,32 @@ export function createDemoApi(
       assertOrderAction(order, "PAY");
       if (!input.payments.length)
         throw new Error("Agregá al menos un medio de pago.");
+      const changeAmountMinor = input.change?.amountMinor ?? 0;
       const amount = input.payments.reduce(
         (sum, payment) => sum + payment.amountMinor,
         0,
       );
       const remaining = order.totalMinor - order.paidMinor;
-      if (amount !== remaining)
+      const netPayment = amount - changeAmountMinor;
+      if (netPayment !== remaining)
         throw new Error(
-          "La suma de los pagos debe coincidir con el saldo pendiente.",
+          "La suma de los pagos menos el vuelto debe coincidir con el saldo pendiente.",
         );
+      if (changeAmountMinor > 0 && amount <= remaining) {
+        throw new Error(
+          "El vuelto sólo corresponde si el pago supera el saldo pendiente.",
+        );
+      }
+      let changeMethod: (typeof state.data.paymentMethods)[number] | undefined;
+      if (changeAmountMinor > 0) {
+        if (!input.change?.methodCode)
+          throw new Error("Indicá el medio de pago para el vuelto.");
+        changeMethod = state.data.paymentMethods.find(
+          (m) => m.code === input.change!.methodCode && m.active,
+        );
+        if (!changeMethod)
+          throw new Error("El medio de pago para vuelto no está disponible.");
+      }
       for (const payment of input.payments) {
         if (payment.amountMinor <= 0)
           throw new Error("Los importes deben ser mayores que cero.");
@@ -1764,18 +1784,52 @@ export function createDemoApi(
           status: "ACTIVE",
         });
       }
+      order.changeAmountMinor = changeAmountMinor > 0 ? changeAmountMinor : null;
+      order.changeMethodCode =
+        changeAmountMinor > 0 && input.change ? input.change.methodCode : null;
+      order.changeMethodName = changeMethod ? changeMethod.name : null;
       refreshOrder(order);
       order.cashSessionPaidId = state.data.cashSession?.id ?? null;
       order.collectedByDriver = input.collectedByDriver === true;
       const cashAmount = input.payments
         .filter((payment) => payment.methodCode === "CASH")
         .reduce((sum, payment) => sum + payment.amountMinor, 0);
-      if (state.data.cashSession)
+      const availableCash =
+        (state.data.cashSession?.expectedAmountMinor ?? 0) +
+        (input.collectedByDriver ? 0 : cashAmount);
+      if (
+        changeAmountMinor > 0 &&
+        changeMethod?.affectsCash &&
+        !input.collectedByDriver &&
+        changeAmountMinor > availableCash
+      ) {
+        throw new Error(
+          "La caja no tiene efectivo suficiente para entregar este vuelto.",
+        );
+      }
+      if (state.data.cashSession) {
         state.data.cashSession.expectedAmountMinor += cashAmount;
-      if (state.data.cashSession)
         state.data.cashSession.cashSalesMinor =
           (state.data.cashSession.cashSalesMinor ?? 0) + cashAmount;
-      if (state.data.cashSession)
+        if (changeAmountMinor > 0 && changeMethod) {
+          if (changeMethod.affectsCash && !input.collectedByDriver) {
+            state.data.cashSession.expectedAmountMinor -= changeAmountMinor;
+            state.data.cashSession.cashRefundMinor =
+              (state.data.cashSession.cashRefundMinor ?? 0) + changeAmountMinor;
+          }
+          state.movements.push({
+            id: uid("movement", state),
+            sessionId: state.data.cashSession.id,
+            type: "REFUND",
+            amountMinor: changeAmountMinor,
+            affectsCash: input.collectedByDriver ? false : changeMethod.affectsCash,
+            paymentMethodCode: changeMethod.code,
+            orderId: order.id,
+            userId: state.data.currentUser.id,
+            reason: `Vuelto cobro pedido #${order.number} (${changeMethod.name})`,
+            createdAt: now(),
+          });
+        }
         for (const payment of input.payments) {
           const method = state.data.paymentMethods.find(
             (m) => m.code === payment.methodCode,
@@ -1793,6 +1847,79 @@ export function createDemoApi(
             createdAt: now(),
           });
         }
+      }
+      if (
+        order.type === "DELIVERY" &&
+        order.driverUserId &&
+        state.data.settings.deliverySettlementEnabled
+      ) {
+        const driverCollected = input.collectedByDriver === true;
+        const restaurantAmount = Math.max(
+          0,
+          order.totalMinor - order.deliveryFeeMinor,
+        );
+        const shouldPayDriverNow =
+          input.payDriverNow === true &&
+          !driverCollected &&
+          order.deliveryFeeMinor > 0;
+        if (shouldPayDriverNow) {
+          if (
+            state.data.cashSession &&
+            order.deliveryFeeMinor > state.data.cashSession.expectedAmountMinor
+          ) {
+            throw new Error(
+              "La caja no tiene efectivo suficiente para pagar el envío al repartidor.",
+            );
+          }
+          if (state.data.cashSession) {
+            state.data.cashSession.expectedAmountMinor -= order.deliveryFeeMinor;
+            state.data.cashSession.cashExpenseMinor =
+              (state.data.cashSession.cashExpenseMinor ?? 0) +
+              order.deliveryFeeMinor;
+            state.movements.push({
+              id: uid("movement", state),
+              sessionId: state.data.cashSession.id,
+              type: "EXPENSE",
+              amountMinor: order.deliveryFeeMinor,
+              affectsCash: true,
+              paymentMethodCode: "CASH",
+              orderId: order.id,
+              userId: state.data.currentUser.id,
+              reason: `Pago de envío a repartidor: Pedido #${order.number}`,
+              createdAt: now(),
+            });
+          }
+          const existingLedger = state.data.deliveryLedger.find(
+            (l) => l.orderId === order.id,
+          );
+          if (existingLedger) {
+            existingLedger.status = "SETTLED";
+            existingLedger.settledAmountMinor = order.deliveryFeeMinor;
+            existingLedger.settledAt = now();
+          } else {
+            state.data.deliveryLedger.unshift({
+              id: uid("ledger", state),
+              orderId: order.id,
+              orderNumber: order.number,
+              cashSessionId:
+                order.cashSessionPaidId ?? order.cashSessionCreatedId,
+              businessDate: state.data.cashSession?.businessDate ?? today(),
+              driverUserId: order.driverUserId,
+              driverName:
+                state.data.users.find((u) => u.id === order.driverUserId)
+                  ?.fullName ?? "Repartidor",
+              restaurantAmountMinor: restaurantAmount,
+              deliveryFeeMinor: order.deliveryFeeMinor,
+              direction: "BUSINESS_OWES_DRIVER",
+              amountDueMinor: order.deliveryFeeMinor,
+              settledAmountMinor: order.deliveryFeeMinor,
+              status: "SETTLED",
+              createdAt: now(),
+              settledAt: now(),
+            });
+          }
+        }
+      }
       audit(state, "ORDER", order.id, "PEDIDO_COBRADO");
       save();
       return output(order);
