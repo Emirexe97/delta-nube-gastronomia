@@ -7,6 +7,7 @@ import type {
 } from "@gastronomy/contracts";
 import {
   ClockCounterClockwise,
+  Copy,
   MagnifyingGlass,
   Package,
   PencilSimple,
@@ -24,6 +25,7 @@ import {
   Input,
   Modal,
   Select,
+  cn,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { convertProductImageToWebp } from "../product-image";
@@ -73,6 +75,8 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     new Set(),
   );
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [variantBaseProduct, setVariantBaseProduct] =
+    useState<ProductDto | null>(null);
   const products = useMemo(
     () =>
       data.products.filter((product) =>
@@ -348,6 +352,16 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                         <div className="flex justify-end gap-1.5">
                           <button
                             type="button"
+                            aria-label={`Generar variante de ${product.name}`}
+                            title="Generar variante con precios propios"
+                            onClick={() => setVariantBaseProduct(product)}
+                            className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                          >
+                            <Copy size={14} />
+                            Variante
+                          </button>
+                          <button
+                            type="button"
                             aria-label={`Ajustar inventario de ${product.name}`}
                             title="Registrar un ajuste de inventario"
                             onClick={() => setStockProduct(product)}
@@ -447,6 +461,15 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         categories={data.categories}
         initialCategoryId={newProductCategoryId}
         onClose={closeProduct}
+        onRequestVariant={(product) => {
+          closeProduct();
+          setVariantBaseProduct(product);
+        }}
+      />
+      <CreateVariantModal
+        baseProduct={variantBaseProduct}
+        categories={data.categories}
+        onClose={() => setVariantBaseProduct(null)}
       />
       <CategoryModal
         open={categoryOpen || Boolean(editingCategory)}
@@ -1365,12 +1388,14 @@ function ProductModal({
   categories,
   initialCategoryId,
   onClose,
+  onRequestVariant,
 }: {
   open: boolean;
   product: ProductDto | null;
   categories: CategoryDto[];
   initialCategoryId: string | null;
   onClose(): void;
+  onRequestVariant?: (product: ProductDto) => void;
 }) {
   const editing = Boolean(product);
   const [categoryId, setCategoryId] = useState("");
@@ -1872,6 +1897,630 @@ function ProductModal({
             {error}
           </p>
         ) : null}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            {editing && product && onRequestVariant ? (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => onRequestVariant(product)}
+                title="Generar una variante de este producto con sus propios precios"
+                className="gap-1.5"
+              >
+                <Copy size={16} />
+                Generar variante
+              </Button>
+            ) : null}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={onClose}
+              disabled={mutation.isPending}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="submit"
+              disabled={
+                !name.trim() ||
+                !categoryId ||
+                invalidPrices ||
+                invalidInventory ||
+                (editing && (pin.length < 4 || !reason.trim())) ||
+                imageProcessing ||
+                mutation.isPending
+              }
+            >
+              {mutation.isPending
+                ? "Guardando…"
+                : editing
+                  ? "Guardar cambios"
+                  : "Guardar producto"}
+            </Button>
+          </div>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+const commonVariantAttributes = [
+  "Chica",
+  "Mediana",
+  "Grande",
+  "Porción",
+  "Simple",
+  "Doble",
+  "Triple",
+  "500 cc",
+  "1 Litro",
+  "Lata",
+  "Docena",
+  "Media docena",
+] as const;
+
+const variantPriceShortcuts = [
+  { label: "Mismo precio", multiplier: 1 },
+  { label: "+10%", multiplier: 1.1 },
+  { label: "+20%", multiplier: 1.2 },
+  { label: "+30%", multiplier: 1.3 },
+  { label: "+50%", multiplier: 1.5 },
+  { label: "-10%", multiplier: 0.9 },
+  { label: "-20%", multiplier: 0.8 },
+] as const;
+
+function CreateVariantModal({
+  baseProduct,
+  categories,
+  onClose,
+}: {
+  baseProduct: ProductDto | null;
+  categories: CategoryDto[];
+  onClose(): void;
+}) {
+  const open = Boolean(baseProduct);
+  const [categoryId, setCategoryId] = useState("");
+  const [name, setName] = useState("");
+  const [selectedAttribute, setSelectedAttribute] = useState("");
+  const [code, setCode] = useState("");
+  const [trackStock, setTrackStock] = useState(false);
+  const [stock, setStock] = useState("");
+  const [stockTarget, setStockTarget] = useState("");
+  const [stockMin, setStockMin] = useState("");
+  const [stockCritical, setStockCritical] = useState("");
+  const [copyImage, setCopyImage] = useState(true);
+  const [customImageDataUrl, setCustomImageDataUrl] = useState<string | null>(
+    null,
+  );
+  const [imageProcessing, setImageProcessing] = useState(false);
+  const [prices, setPrices] = useState<VisibleProductPrices>({
+    SALON: "",
+    OFF_PREMISE: "",
+  });
+  const [error, setError] = useState<string | null>(null);
+  const initializedKeyRef = useRef("");
+
+  const baseSalonPriceMinor = useMemo(() => {
+    if (!baseProduct) return 0;
+    return (
+      baseProduct.prices.find((p) => p.priceListCode === "SALON")
+        ?.amountMinor ?? 0
+    );
+  }, [baseProduct]);
+
+  const baseOffPremisePriceMinor = useMemo(() => {
+    if (!baseProduct) return 0;
+    return (
+      baseProduct.prices.find(
+        (p) =>
+          p.priceListCode === "TAKEAWAY" || p.priceListCode === "DELIVERY",
+      )?.amountMinor ?? 0
+    );
+  }, [baseProduct]);
+
+  useEffect(() => {
+    if (!baseProduct || !open) {
+      initializedKeyRef.current = "";
+      return;
+    }
+    if (initializedKeyRef.current === baseProduct.id) return;
+    initializedKeyRef.current = baseProduct.id;
+
+    const initialCatId =
+      baseProduct.categoryId ||
+      categories.find((category) => category.active)?.id ||
+      "";
+    setCategoryId(initialCatId);
+    setName(`${baseProduct.name} `);
+    setSelectedAttribute("");
+    setCode(baseProduct.code ? `${baseProduct.code}-` : "");
+    const initialTrack = baseProduct.stockMinor != null;
+    setTrackStock(initialTrack);
+    setStock("");
+    setStockTarget(
+      baseProduct.stockTargetMinor != null
+        ? String(baseProduct.stockTargetMinor / 1000)
+        : "",
+    );
+    setStockMin(
+      baseProduct.stockMinMinor != null
+        ? String(baseProduct.stockMinMinor / 1000)
+        : "",
+    );
+    setStockCritical(
+      baseProduct.stockCriticalMinor != null
+        ? String(baseProduct.stockCriticalMinor / 1000)
+        : "",
+    );
+    setCopyImage(Boolean(baseProduct.imageDataUrl));
+    setCustomImageDataUrl(null);
+    setImageProcessing(false);
+    setPrices({
+      SALON: moneyInput(baseSalonPriceMinor),
+      OFF_PREMISE: moneyInput(baseOffPremisePriceMinor),
+    });
+    setError(null);
+  }, [baseProduct, open, categories, baseSalonPriceMinor, baseOffPremisePriceMinor]);
+
+  const handleSelectAttribute = (attr: string) => {
+    setSelectedAttribute(attr);
+    if (baseProduct) {
+      setName(`${baseProduct.name} ${attr}`.trim());
+      if (baseProduct.code) {
+        const cleanAttr = attr
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-zA-Z0-9]/g, "")
+          .toUpperCase()
+          .slice(0, 4);
+        setCode(`${baseProduct.code}-${cleanAttr}`);
+      }
+    }
+  };
+
+  const applyPriceMultiplier = (multiplier: number) => {
+    if (!baseProduct) return;
+    if (multiplier === 1) {
+      setPrices({
+        SALON: moneyInput(baseSalonPriceMinor),
+        OFF_PREMISE: moneyInput(baseOffPremisePriceMinor),
+      });
+      return;
+    }
+    const newSalonMinor =
+      Math.round((baseSalonPriceMinor * multiplier) / 100) * 100;
+    const newOffPremiseMinor =
+      Math.round((baseOffPremisePriceMinor * multiplier) / 100) * 100;
+    setPrices({
+      SALON: moneyInput(newSalonMinor),
+      OFF_PREMISE: moneyInput(newOffPremiseMinor),
+    });
+  };
+
+  const activeImageDataUrl = copyImage
+    ? baseProduct?.imageDataUrl ?? null
+    : customImageDataUrl;
+
+  const parsedStockMinor = trackStock
+    ? stock.trim()
+      ? parseStockInput(stock)
+      : 0
+    : null;
+
+  const invalidPrices = visiblePriceListCodes.some(
+    (codeValue) => parseMoneyInput(prices[codeValue]) == null,
+  );
+  const invalidStock =
+    trackStock && Boolean(stock.trim()) && parseStockInput(stock) == null;
+  const parsedTarget =
+    trackStock && stockTarget.trim() ? parseStockInput(stockTarget) : null;
+  const parsedMin =
+    trackStock && stockMin.trim() ? parseStockInput(stockMin) : null;
+  const parsedCritical =
+    trackStock && stockCritical.trim() ? parseStockInput(stockCritical) : null;
+  const invalidInventory =
+    trackStock &&
+    (invalidStock ||
+      (Boolean(stockTarget.trim()) && parsedTarget == null) ||
+      (Boolean(stockMin.trim()) && parsedMin == null) ||
+      (Boolean(stockCritical.trim()) && parsedCritical == null) ||
+      (parsedCritical != null &&
+        parsedMin != null &&
+        parsedCritical > parsedMin) ||
+      (parsedMin != null && parsedTarget != null && parsedMin > parsedTarget) ||
+      (parsedCritical != null &&
+        parsedTarget != null &&
+        parsedCritical > parsedTarget));
+
+  const mutation = useApiMutation(
+    async (parsedPrices: Record<VisiblePriceListCode, number>) => {
+      const normalizedPrices = [
+        { priceListCode: "SALON" as const, amountMinor: parsedPrices.SALON },
+        {
+          priceListCode: "TAKEAWAY" as const,
+          amountMinor: parsedPrices.OFF_PREMISE,
+        },
+        {
+          priceListCode: "DELIVERY" as const,
+          amountMinor: parsedPrices.OFF_PREMISE,
+        },
+      ];
+      return window.gastronomy.createProduct({
+        categoryId,
+        name: name.trim(),
+        code: code.trim() || null,
+        stockMinor: parsedStockMinor,
+        stockTargetMinor: parsedTarget,
+        stockMinMinor: parsedMin,
+        stockCriticalMinor: parsedCritical,
+        imageDataUrl: activeImageDataUrl,
+        prices: normalizedPrices,
+      });
+    },
+    { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
+  );
+
+  const submit = () => {
+    if (!name.trim()) {
+      setError("Indicá el nombre de la variante.");
+      return;
+    }
+    const parsed = Object.fromEntries(
+      visiblePriceListCodes.map((codeValue) => [
+        codeValue,
+        parseMoneyInput(prices[codeValue]),
+      ]),
+    ) as Record<VisiblePriceListCode, number | null>;
+    if (Object.values(parsed).some((value) => value == null)) {
+      setError("Completá precios válidos.");
+      return;
+    }
+    if (invalidInventory) {
+      setError(
+        "Revisá el inventario: usá valores positivos de hasta tres decimales y respetá Crítico ≤ Mínimo ≤ Objetivo.",
+      );
+      return;
+    }
+    mutation.mutate(parsed as Record<VisiblePriceListCode, number>);
+  };
+
+  if (!baseProduct) return null;
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      closeDisabled={mutation.isPending}
+      width="max-w-4xl"
+      title={`Generar variante · ${baseProduct.name}`}
+      description="Creá una nueva presentación o tamaño derivado manteniendo la categoría y definiendo sus propios precios e inventario."
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+        className="grid gap-4"
+      >
+        <section
+          aria-label="Información del producto base"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-brand-200 bg-brand-50/50 p-3"
+        >
+          <div className="flex items-center gap-3">
+            {baseProduct.imageDataUrl ? (
+              <img
+                src={baseProduct.imageDataUrl}
+                alt={baseProduct.name}
+                className="h-11 w-11 shrink-0 rounded-lg border border-brand-200 object-cover"
+              />
+            ) : (
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-brand-200 bg-white text-brand-600">
+                <Package size={22} />
+              </div>
+            )}
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-brand-700">
+                  Producto base
+                </span>
+                <Badge tone="blue">{baseProduct.categoryName}</Badge>
+                {baseProduct.code ? (
+                  <span className="font-mono text-[11px] text-slate-500">
+                    {baseProduct.code}
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-sm font-bold text-slate-900">
+                {baseProduct.name}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs">
+            <div className="rounded-lg border border-brand-100 bg-white/80 px-2.5 py-1">
+              <span className="text-slate-500">Salón base: </span>
+              <strong className="text-slate-800">
+                {formatMoney(baseSalonPriceMinor)}
+              </strong>
+            </div>
+            <div className="rounded-lg border border-brand-100 bg-white/80 px-2.5 py-1">
+              <span className="text-slate-500">Delivery base: </span>
+              <strong className="text-slate-800">
+                {formatMoney(baseOffPremisePriceMinor)}
+              </strong>
+            </div>
+          </div>
+        </section>
+
+        <Field
+          label="Categoría"
+          hint="Por defecto se conserva la misma categoría del producto base"
+        >
+          <Select
+            value={categoryId}
+            onChange={(event) => setCategoryId(event.target.value)}
+          >
+            {categories
+              .filter((item) => item.active)
+              .map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+          </Select>
+        </Field>
+
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-slate-700">
+            Presentación / Tamaño rápido sugerido:
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {commonVariantAttributes.map((attr) => (
+              <button
+                key={attr}
+                type="button"
+                onClick={() => handleSelectAttribute(attr)}
+                className={cn(
+                  "rounded-lg border px-2.5 py-1 text-xs font-medium transition",
+                  selectedAttribute === attr
+                    ? "border-brand-500 bg-brand-50 font-bold text-brand-700 ring-1 ring-brand-400"
+                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50",
+                )}
+              >
+                {attr}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-[1fr_170px]">
+          <Field
+            label="Nombre de la nueva variante"
+            hint="Nombre completo con el que aparecerá en pedidos y tickets"
+          >
+            <Input
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={`Ej.: ${baseProduct.name} Grande`}
+              required
+            />
+          </Field>
+          <Field label="Código SKU / PLU" hint="Identificador opcional">
+            <Input
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              placeholder="Ej.: MUZ-G"
+            />
+          </Field>
+        </div>
+
+        <section
+          className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5"
+          aria-label="Precios propios de la variante"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-2.5">
+            <div>
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                Precios propios de la variante
+              </h4>
+              <p className="text-[11px] text-slate-500">
+                Definí el precio independiente para cada lista de precios de esta
+                variante.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="mr-1 text-[11px] font-semibold text-slate-500">
+                Ajuste rápido:
+              </span>
+              {variantPriceShortcuts.map(({ label, multiplier }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => applyPriceMultiplier(multiplier)}
+                  className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {visiblePriceListCodes.map((key) => (
+              <Field key={key} label={visiblePriceListLabels[key]}>
+                <Input
+                  inputMode="decimal"
+                  value={prices[key]}
+                  onChange={(event) =>
+                    setPrices((current) => ({
+                      ...current,
+                      [key]: event.target.value,
+                    }))
+                  }
+                  required
+                />
+              </Field>
+            ))}
+          </div>
+        </section>
+
+        <section
+          className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+          aria-label="Inventario"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-2.5">
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-800">
+              <input
+                type="checkbox"
+                checked={trackStock}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setTrackStock(checked);
+                  if (!checked) {
+                    setStock("");
+                    setStockTarget("");
+                    setStockMin("");
+                    setStockCritical("");
+                  } else if (!stock.trim()) {
+                    setStock("0");
+                  }
+                  if (error) setError(null);
+                }}
+                className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
+              />
+              Controlar stock de esta variante
+            </label>
+            <Badge tone={trackStock ? "blue" : "slate"}>
+              {trackStock ? "Con control de stock" : "Sin control de stock"}
+            </Badge>
+          </div>
+
+          {trackStock ? (
+            <div className="grid gap-3 pt-1 sm:grid-cols-2 lg:grid-cols-4">
+              {(
+                [
+                  ["Stock actual", stock, setStock],
+                  ["Objetivo", stockTarget, setStockTarget],
+                  ["Mínimo", stockMin, setStockMin],
+                  ["Crítico", stockCritical, setStockCritical],
+                ] as const
+              ).map(([label, value, setter]) => (
+                <Field key={label} label={label}>
+                  <Input
+                    inputMode="decimal"
+                    value={value}
+                    aria-invalid={invalidInventory}
+                    placeholder="0"
+                    onChange={(event) => {
+                      setter(event.target.value);
+                      if (error) setError(null);
+                    }}
+                  />
+                </Field>
+              ))}
+              <p className="text-[10px] text-slate-400 sm:col-span-2 lg:col-span-4">
+                Admite hasta tres decimales. Los niveles deben respetar Crítico ≤
+                Mínimo ≤ Objetivo.
+              </p>
+            </div>
+          ) : (
+            <p className="py-1 text-xs italic text-slate-500">
+              Esta variante se venderá sin descontar inventario.
+            </p>
+          )}
+        </section>
+
+        <section
+          className="space-y-3 rounded-xl border border-slate-200 p-3"
+          aria-label="Fotografía del producto"
+        >
+          {baseProduct.imageDataUrl ? (
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-800">
+              <input
+                type="checkbox"
+                checked={copyImage}
+                onChange={(event) => {
+                  setCopyImage(event.target.checked);
+                  if (!event.target.checked) setCustomImageDataUrl(null);
+                }}
+                className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
+              />
+              Copiar foto del producto base
+            </label>
+          ) : null}
+
+          {baseProduct.imageDataUrl && copyImage ? (
+            <div className="flex items-center gap-3">
+              <img
+                src={baseProduct.imageDataUrl}
+                alt="Foto heredada"
+                className="h-14 w-14 shrink-0 rounded-lg border border-slate-200 object-cover"
+              />
+              <p className="text-xs text-slate-500">
+                Se utilizará la foto del producto base ({baseProduct.name}).
+                Si querés asignar una foto distinta, desmarcá la casilla arriba.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-3">
+              {customImageDataUrl ? (
+                <img
+                  src={customImageDataUrl}
+                  alt="Vista previa de la variante"
+                  className="h-16 w-16 shrink-0 rounded-lg border border-slate-200 object-cover"
+                />
+              ) : null}
+              <Field
+                label="Foto propia de la variante (opcional)"
+                hint="JPG, PNG o WebP hasta 10 MiB. Se optimiza automáticamente."
+                className="min-w-[240px] flex-1"
+              >
+                <Input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  disabled={imageProcessing}
+                  onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    setImageProcessing(true);
+                    setError(null);
+                    try {
+                      setCustomImageDataUrl(
+                        (await convertProductImageToWebp(file)).dataUrl,
+                      );
+                    } catch (value) {
+                      setError(humanError(value));
+                    } finally {
+                      setImageProcessing(false);
+                      event.target.value = "";
+                    }
+                  }}
+                />
+              </Field>
+              {customImageDataUrl ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={imageProcessing}
+                  onClick={() => setCustomImageDataUrl(null)}
+                >
+                  Quitar
+                </Button>
+              ) : null}
+            </div>
+          )}
+        </section>
+
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700"
+          >
+            {error}
+          </p>
+        ) : null}
+
         <div className="flex justify-end gap-2">
           <Button
             type="button"
@@ -1888,16 +2537,11 @@ function ProductModal({
               !categoryId ||
               invalidPrices ||
               invalidInventory ||
-              (editing && (pin.length < 4 || !reason.trim())) ||
               imageProcessing ||
               mutation.isPending
             }
           >
-            {mutation.isPending
-              ? "Guardando…"
-              : editing
-                ? "Guardar cambios"
-                : "Guardar producto"}
+            {mutation.isPending ? "Creando variante…" : "Crear variante"}
           </Button>
         </div>
       </form>

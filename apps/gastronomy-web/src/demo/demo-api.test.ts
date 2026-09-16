@@ -1721,6 +1721,65 @@ describe("API de demostración", () => {
     expect(item.productNameSnapshot).toContain("Mitad");
     expect(item.lineTotalMinor).toBeGreaterThan(0);
   });
+
+  it("permite generar una variante de un producto con precios y stock propios", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const bootstrap = await api.bootstrap();
+    const baseProduct = bootstrap.products.find((p) => p.id === "prod-muzza")!;
+    expect(baseProduct).toBeDefined();
+
+    const baseSalonPrice =
+      baseProduct.prices.find((p) => p.priceListCode === "SALON")
+        ?.amountMinor ?? 0;
+    const variantSalonPrice = baseSalonPrice + 300_000;
+    const variantDeliveryPrice = variantSalonPrice + 50_000;
+
+    const variantName = `${baseProduct.name} Doble`;
+    const variantCode = "MUZ-DOBLE";
+
+    const variantProduct = await api.createProduct({
+      categoryId: baseProduct.categoryId,
+      name: variantName,
+      code: variantCode,
+      stockMinor: 15_000,
+      stockMinMinor: 2_000,
+      imageDataUrl: baseProduct.imageDataUrl,
+      prices: [
+        { priceListCode: "SALON", amountMinor: variantSalonPrice },
+        { priceListCode: "TAKEAWAY", amountMinor: variantDeliveryPrice },
+        { priceListCode: "DELIVERY", amountMinor: variantDeliveryPrice },
+      ],
+    });
+
+    expect(variantProduct.name).toBe(variantName);
+    expect(variantProduct.code).toBe(variantCode);
+    expect(variantProduct.categoryId).toBe(baseProduct.categoryId);
+    expect(variantProduct.stockMinor).toBe(15_000);
+    expect(
+      variantProduct.prices.find((p) => p.priceListCode === "SALON")
+        ?.amountMinor,
+    ).toBe(variantSalonPrice);
+    expect(
+      variantProduct.prices.find((p) => p.priceListCode === "DELIVERY")
+        ?.amountMinor,
+    ).toBe(variantDeliveryPrice);
+
+    const order = await api.createOrder({
+      type: "DINE_IN",
+      tableId: "table-1",
+      waiterUserId: "user-waiter",
+    });
+    const orderWithVariant = await api.addOrderItem({
+      orderId: order.id,
+      productId: variantProduct.id,
+    });
+    expect(orderWithVariant.items).toHaveLength(1);
+    expect(orderWithVariant.items[0]?.productNameSnapshot).toBe(variantName);
+    expect(orderWithVariant.items[0]?.unitPriceMinorSnapshot).toBe(
+      variantSalonPrice,
+    );
+    expect(orderWithVariant.items[0]?.lineTotalMinor).toBe(variantSalonPrice);
+  });
 });
 
 
