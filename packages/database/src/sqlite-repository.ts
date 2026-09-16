@@ -1216,6 +1216,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       categoryName: String(row.category_name),
       name: String(row.name),
       code: row.code == null ? null : String(row.code),
+      parentProductId:
+        row.parent_product_id == null ? null : String(row.parent_product_id),
       sortOrder: Number(row.sort_order),
       active: flag(row.active),
       stockMinor: row.stock_minor == null ? null : Number(row.stock_minor),
@@ -4375,6 +4377,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     categoryId: Id;
     name: string;
     code?: string | null;
+    parentProductId?: Id | null;
     stockMinor?: number | null;
     stockTargetMinor?: number | null;
     stockMinMinor?: number | null;
@@ -4406,14 +4409,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
       this.db
         .prepare(
-          `INSERT INTO products(id, category_id, name, code, sort_order, stock_minor, stock_target_minor, stock_min_minor, stock_critical_minor, image_data_url, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO products(id, category_id, name, code, parent_product_id, sort_order, stock_minor, stock_target_minor, stock_min_minor, stock_critical_minor, image_data_url, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
           input.categoryId,
           input.name.trim(),
           input.code?.trim() || null,
+          input.parentProductId ?? null,
           sortOrder,
           input.stockMinor ?? null,
           input.stockTargetMinor ?? null,
@@ -4485,12 +4489,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         input.imageDataUrl === undefined
           ? before.imageDataUrl
           : input.imageDataUrl;
+      const parentProductId =
+        input.parentProductId === undefined
+          ? (before.parentProductId ?? null)
+          : input.parentProductId;
       if (stockMinor !== before.stockMinor)
         this.authorizePin(input.authorizerPin, "stock.adjust");
       this.db
         .prepare(
           `UPDATE products
-           SET category_id = ?, name = ?, code = ?, active = ?, stock_minor = ?,
+           SET category_id = ?, name = ?, code = ?, parent_product_id = ?, active = ?, stock_minor = ?,
                stock_target_minor = ?, stock_min_minor = ?, stock_critical_minor = ?,
                image_data_url = ?, updated_at = ?
            WHERE id = ?`,
@@ -4499,6 +4507,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           input.categoryId,
           input.name.trim(),
           input.code?.trim() || null,
+          parentProductId,
           input.active ? 1 : 0,
           stockMinor,
           stockTargetMinor,
@@ -5187,10 +5196,6 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               "La liquidación ya no está pendiente.",
             ),
           );
-          if (new Set(rows.map((row) => String(row.driver_user_id))).size !== 1)
-            throw new Error(
-              "Liquidá un repartidor por vez para conservar una rendición clara y auditable.",
-            );
           const incomingMinor = rows
             .filter((row) => String(row.direction) === "DRIVER_OWES_BUSINESS")
             .reduce((total, row) => total + Number(row.amount_due_minor), 0);
@@ -5204,12 +5209,22 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             throw new Error(
               "La caja no tiene efectivo suficiente para pagar esta rendición.",
             );
+          const getDriver = this.db.prepare(
+            "SELECT full_name FROM users WHERE id = ?",
+          );
           for (const row of rows) {
             const id = String(row.id);
             const movementType =
               String(row.direction) === "DRIVER_OWES_BUSINESS"
                 ? "INCOME"
                 : "EXPENSE";
+            const driverRow = getDriver.get(row.driver_user_id) as
+              | Row
+              | undefined;
+            const driverName = driverRow ? String(driverRow.full_name) : "";
+            const movementReason = driverName
+              ? `Liquidación de reparto (${driverName}): ${reason}`
+              : `Liquidación de reparto: ${reason}`;
             this.db
               .prepare(
                 `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, user_id, reason, created_at)
@@ -5221,7 +5236,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
                 movementType,
                 row.amount_due_minor,
                 this.adminUserId,
-                `Liquidación de reparto: ${reason}`,
+                movementReason,
                 timestamp,
               );
             this.db

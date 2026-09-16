@@ -37,6 +37,7 @@ import { calculateHalfAndHalfBase, guardOrderAction } from "@gastronomy/domain";
 import {
   formatMoney,
   humanError,
+  normalizeSearch,
   paymentStatusLabels,
   halfAndHalfLabels,
   parseMoneyInput,
@@ -83,6 +84,8 @@ export function OrderEditor({
     "KITCHEN_ORDER" | "CUSTOMER_BILL" | null
   >(null);
   const [addingProduct, setAddingProduct] = useState<ProductDto | null>(null);
+  const [variantPickerProduct, setVariantPickerProduct] =
+    useState<ProductDto | null>(null);
   const [addingQuantity, setAddingQuantity] = useState("1");
   const [addingPrice, setAddingPrice] = useState("");
   const [addingPin, setAddingPin] = useState("");
@@ -94,10 +97,73 @@ export function OrderEditor({
     if (orderId) window.setTimeout(() => searchRef.current?.focus(), 80);
   }, [orderId]);
 
-  const products = useMemo(
-    () => rankProducts(data.products, search, categoryId).slice(0, 30),
-    [data.products, search, categoryId],
-  );
+  const products = useMemo(() => {
+    // En la grilla principal sólo se muestran los productos base/padres
+    const baseProducts = data.products.filter(
+      (p) =>
+        !p.parentProductId ||
+        !data.products.some((cand) => cand.id === p.parentProductId),
+    );
+
+    if (!search.trim()) {
+      return rankProducts(baseProducts, search, categoryId).slice(0, 30);
+    }
+
+    const normalizedQuery = normalizeSearch(search);
+    const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+
+    return baseProducts
+      .filter(
+        (product) =>
+          product.active && (!categoryId || product.categoryId === categoryId),
+      )
+      .map((product, index) => {
+        const variants = data.products.filter(
+          (v) => v.parentProductId === product.id && v.active,
+        );
+        const code = normalizeSearch(product.code ?? "");
+        const name = normalizeSearch(product.name);
+        const variantHaystack = variants
+          .map(
+            (v) =>
+              `${normalizeSearch(v.code ?? "")} ${normalizeSearch(v.name)}`,
+          )
+          .join(" ");
+        const haystack = `${code} ${name} ${variantHaystack} ${normalizeSearch(product.categoryName)}`;
+
+        if (!tokens.every((token) => haystack.includes(token))) return null;
+
+        let bestScore = 5;
+        const candidates = [product, ...variants];
+        for (const cand of candidates) {
+          const cCode = normalizeSearch(cand.code ?? "");
+          const cName = normalizeSearch(cand.name);
+          const score =
+            cCode === normalizedQuery
+              ? 0
+              : cCode.startsWith(normalizedQuery)
+                ? 1
+                : cName.startsWith(normalizedQuery)
+                  ? 2
+                  : cName
+                        .split(/\s+/)
+                        .some((w) => w.startsWith(normalizedQuery))
+                    ? 3
+                    : 4;
+          if (score < bestScore) bestScore = score;
+        }
+        return { product, score: bestScore, index };
+      })
+      .filter(
+        (
+          entry,
+        ): entry is { product: ProductDto; score: number; index: number } =>
+          Boolean(entry),
+      )
+      .sort((a, b) => a.score - b.score || a.index - b.index)
+      .slice(0, 30)
+      .map((entry) => entry.product);
+  }, [data.products, search, categoryId]);
   const addItem = useApiMutation(
     (input: Parameters<typeof window.gastronomy.addOrderItem>[0]) =>
       window.gastronomy.addOrderItem(input),
@@ -141,6 +207,17 @@ export function OrderEditor({
       addingPriceRef.current?.focus();
       addingPriceRef.current?.select();
     }, 50);
+  };
+  const handleProductCardClick = (product: ProductDto) => {
+    if (locked || addItem.isPending) return;
+    const variants = data.products.filter(
+      (p) => p.parentProductId === product.id && p.active,
+    );
+    if (variants.length > 0) {
+      setVariantPickerProduct(product);
+    } else {
+      openProduct(product);
+    }
   };
   const addProduct = () => {
     if (!order || addItemLockRef.current || addItem.isPending) return;
@@ -272,6 +349,7 @@ export function OrderEditor({
     setPrintConfirmKind(null);
     setSkippedPrintKind(null);
     setAddingProduct(null);
+    setVariantPickerProduct(null);
     setAddingError(null);
     setNotesItemId(null);
     setNotesError(null);
@@ -291,6 +369,7 @@ export function OrderEditor({
         discardConfirmOpen ||
         driverOpen ||
         Boolean(addingProduct) ||
+        Boolean(variantPickerProduct) ||
         Boolean(modifierItemId) ||
         Boolean(notesItemId);
       const canOpenPayment =
@@ -310,6 +389,7 @@ export function OrderEditor({
     cancelOpen,
     changeTableOpen,
     addingProduct,
+    variantPickerProduct,
     discardConfirmOpen,
     discountOpen,
     driverOpen,
@@ -425,7 +505,7 @@ export function OrderEditor({
                   !addItem.isPending
                 ) {
                   event.preventDefault();
-                  openProduct(products[0]);
+                  handleProductCardClick(products[0]);
                 }
               }}
               placeholder="Código, nombre, categoría… · Enter agrega"
@@ -468,27 +548,108 @@ export function OrderEditor({
               const price = product.prices.find(
                 (item) => item.priceListCode === code,
               )?.amountMinor;
+              const variants = data.products.filter(
+                (p) => p.parentProductId === product.id && p.active,
+              );
+              const hasVariants = variants.length > 0;
+              const disabled =
+                locked ||
+                addItem.isPending ||
+                (!hasVariants && price == null);
+
               return (
-                <button
+                <div
                   key={product.id}
-                  disabled={locked || addItem.isPending || price == null}
+                  role="button"
+                  tabIndex={disabled ? -1 : 0}
+                  aria-disabled={disabled}
                   onClick={() => {
-                    openProduct(product);
+                    if (!disabled) handleProductCardClick(product);
                   }}
-                  className="focus-ring min-h-[76px] rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-300 hover:shadow-sm disabled:opacity-50"
+                  onKeyDown={(event) => {
+                    if (disabled) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      handleProductCardClick(product);
+                    }
+                  }}
+                  className={cn(
+                    "focus-ring group flex min-h-[76px] cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-300 hover:shadow-sm",
+                    disabled && "cursor-not-allowed opacity-50",
+                  )}
                 >
-                  <p className="line-clamp-2 text-[12px] font-bold text-slate-800">
-                    {product.name}
-                  </p>
-                  <div className="mt-2 flex items-center justify-between">
+                  <div>
+                    <div className="flex items-start justify-between gap-1">
+                      <p className="line-clamp-2 text-[12px] font-bold text-slate-800 group-hover:text-brand-800">
+                        {product.name}
+                      </p>
+                      {hasVariants ? (
+                        <span className="inline-flex shrink-0 items-center rounded bg-brand-50 px-1.5 py-0.5 text-[9px] font-bold text-brand-700">
+                          {variants.length + 1} opciones
+                        </span>
+                      ) : null}
+                    </div>
                     <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
                       {product.categoryName}
                     </span>
-                    <span className="text-xs font-extrabold text-brand-700">
-                      {price == null ? "Sin precio" : formatMoney(price)}
-                    </span>
                   </div>
-                </button>
+
+                  {hasVariants ? (
+                    <div
+                      className="mt-2 flex flex-wrap gap-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {price != null ? (
+                        <button
+                          type="button"
+                          disabled={locked || addItem.isPending}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openProduct(product);
+                          }}
+                          title={`Agregar ${product.name} (Base) - ${formatMoney(price)}`}
+                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800"
+                        >
+                          <span>Base</span>
+                          <span className="text-brand-700">{formatMoney(price)}</span>
+                        </button>
+                      ) : null}
+                      {variants.map((v) => {
+                        const vPrice = productPrice(v);
+                        const vLabel = getVariantShortName(v, product);
+                        return (
+                          <button
+                            key={v.id}
+                            type="button"
+                            disabled={
+                              locked || addItem.isPending || vPrice == null
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openProduct(v);
+                            }}
+                            title={`Agregar ${v.name} - ${vPrice == null ? "Sin precio" : formatMoney(vPrice)}`}
+                            className="inline-flex items-center gap-1 rounded-md border border-brand-200 bg-brand-50/70 px-1.5 py-0.5 text-[10px] font-bold text-brand-800 transition hover:border-brand-400 hover:bg-brand-100"
+                          >
+                            <span>{vLabel}</span>
+                            <span className="text-brand-700">
+                              {vPrice == null ? "—" : formatMoney(vPrice)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="mt-2 flex items-center justify-between">
+                      <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+                        {product.code ? `#${product.code}` : ""}
+                      </span>
+                      <span className="text-xs font-extrabold text-brand-700">
+                        {price == null ? "Sin precio" : formatMoney(price)}
+                      </span>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -1071,11 +1232,33 @@ export function OrderEditor({
               }
             >
               <Plus size={16} />
-              {addItem.isPending ? "Agregando…" : "Agregar a la mesa"}
+              {addItem.isPending
+                ? "Agregando…"
+                : order.type === "DINE_IN"
+                  ? "Agregar a la mesa"
+                  : "Agregar al pedido"}
             </Button>
           </div>
         </form>
       </Modal>
+      <SelectVariantModal
+        open={Boolean(variantPickerProduct)}
+        parentProduct={variantPickerProduct}
+        variants={
+          variantPickerProduct
+            ? data.products.filter(
+                (p) =>
+                  p.parentProductId === variantPickerProduct.id && p.active,
+              )
+            : []
+        }
+        orderType={order.type}
+        onSelect={(product) => {
+          setVariantPickerProduct(null);
+          openProduct(product);
+        }}
+        onClose={() => setVariantPickerProduct(null)}
+      />
       <HalfAndHalfModal
         open={halfOpen}
         order={order}
@@ -2802,4 +2985,119 @@ function ChangeTableModal({
     </Modal>
   );
 }
+
+function getVariantShortName(variant: ProductDto, parent: ProductDto): string {
+  const pName = parent.name.trim();
+  const vName = variant.name.trim();
+  if (vName.toLowerCase().startsWith(pName.toLowerCase())) {
+    let remainder = vName.slice(pName.length).trim();
+    while (
+      remainder.length > 0 &&
+      (remainder.startsWith("-") ||
+        remainder.startsWith(":") ||
+        remainder.startsWith("·"))
+    ) {
+      remainder = remainder.slice(1).trim();
+    }
+    if (remainder.length > 0) return remainder;
+  }
+  return vName;
+}
+
+function SelectVariantModal({
+  open,
+  parentProduct,
+  variants,
+  orderType,
+  onSelect,
+  onClose,
+}: {
+  open: boolean;
+  parentProduct: ProductDto | null;
+  variants: ProductDto[];
+  orderType: OrderDto["type"];
+  onSelect: (product: ProductDto) => void;
+  onClose: () => void;
+}) {
+  if (!parentProduct) return null;
+  const channelCode = orderType === "DINE_IN" ? "SALON" : orderType;
+  const channelLabel =
+    orderType === "DINE_IN"
+      ? "Salón"
+      : orderType === "DELIVERY"
+        ? "Delivery"
+        : "Para retirar";
+
+  const allOptions = [parentProduct, ...variants];
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      width="max-w-lg"
+      title={`Seleccionar variante · ${parentProduct.name}`}
+      description={`Elegí la presentación o tamaño a incorporar para ${channelLabel}`}
+    >
+      <div className="space-y-2">
+        {allOptions.map((product) => {
+          const isBase = product.id === parentProduct.id;
+          const price = product.prices.find(
+            (p) => p.priceListCode === channelCode,
+          )?.amountMinor;
+          const shortName = isBase
+            ? `${parentProduct.name} (Base)`
+            : getVariantShortName(product, parentProduct);
+
+          return (
+            <button
+              key={product.id}
+              type="button"
+              disabled={price == null}
+              onClick={() => onSelect(product)}
+              className={cn(
+                "flex w-full items-center justify-between rounded-xl border p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-brand-500",
+                isBase
+                  ? "border-slate-200 bg-slate-50/80 hover:border-brand-400 hover:bg-brand-50/40"
+                  : "border-brand-200 bg-white hover:border-brand-400 hover:bg-brand-50/60",
+                price == null && "cursor-not-allowed opacity-50",
+              )}
+            >
+              <div className="min-w-0 pr-3">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-slate-800">{shortName}</span>
+                  {isBase ? (
+                    <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">
+                      Original
+                    </span>
+                  ) : (
+                    <span className="rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-bold text-brand-800">
+                      Variante
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
+                  {product.code ? <span>Cód: {product.code}</span> : null}
+                  {product.stockMinor != null ? (
+                    <span>
+                      Stock: {(product.stockMinor / 1000).toLocaleString("es-AR")} u.
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="text-sm font-extrabold text-brand-700">
+                  {price == null ? "Sin precio" : formatMoney(price)}
+                </div>
+                <span className="text-[11px] font-bold text-brand-600">
+                  Elegir →
+                </span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </Modal>
+  );
+}
+
 

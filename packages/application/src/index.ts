@@ -213,6 +213,7 @@ export interface GastronomyRepository {
     categoryId: Id;
     name: string;
     code?: string | null;
+    parentProductId?: Id | null;
     stockMinor?: number | null;
     stockTargetMinor?: number | null;
     stockMinMinor?: number | null;

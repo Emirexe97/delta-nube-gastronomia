@@ -2688,6 +2688,7 @@ export function createDemoApi(
         categoryName: category.name,
         name: input.name.trim(),
         code: input.code?.trim() || null,
+        parentProductId: input.parentProductId ?? null,
         sortOrder:
           state.data.products.filter(
             (candidate) => candidate.categoryId === category.id,
@@ -2720,6 +2721,10 @@ export function createDemoApi(
         categoryName: category.name,
         name: input.name.trim(),
         code: input.code?.trim() || null,
+        parentProductId:
+          input.parentProductId === undefined
+            ? product.parentProductId
+            : input.parentProductId,
         active: input.active,
         stockMinor:
           input.stockMinor === undefined
@@ -3124,10 +3129,6 @@ export function createDemoApi(
         if (!ledger) throw new Error("La liquidación ya no está pendiente.");
         return ledger;
       });
-      if (new Set(selected.map((ledger) => ledger.driverUserId)).size !== 1)
-        throw new Error(
-          "Liquidá un repartidor por vez para conservar una rendición clara y auditable.",
-        );
       const incomingMinor = selected
         .filter((ledger) => ledger.direction === "DRIVER_OWES_BUSINESS")
         .reduce((total, ledger) => total + ledger.amountDueMinor, 0);

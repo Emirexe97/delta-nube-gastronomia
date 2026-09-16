@@ -605,6 +605,29 @@ test("permite configurar control de stock por categoría y sincronizar productos
   });
 });
 
+test("crea y persiste producto variante con parentProductId", () => {
+  withRepository((repository) => {
+    const category = repository.bootstrap().categories[0]!;
+    const parent = repository.createProduct({
+      categoryId: category.id,
+      name: "Pizza Especial Base",
+      prices: [{ priceListCode: "SALON", amountMinor: 10_000 }],
+    });
+    assert.equal(parent.parentProductId, null);
+    const variant = repository.createProduct({
+      categoryId: category.id,
+      name: "Pizza Especial Chica",
+      parentProductId: parent.id,
+      prices: [{ priceListCode: "SALON", amountMinor: 7_000 }],
+    });
+    assert.equal(variant.parentProductId, parent.id);
+    const fromList = repository
+      .bootstrap()
+      .products.find((p) => p.id === variant.id);
+    assert.equal(fromList?.parentProductId, parent.id);
+  });
+});
+
 test("elimina categoría libre, audita y exige PIN", () => {
   withRepository((repository) => {
     const category = repository.createCategory({ name: "Temporal libre" });
@@ -1419,15 +1442,12 @@ test("rendición rechaza duplicados, caja cerrada y mezcla de repartidores sin c
         }),
       /repetidas/i,
     );
-    assert.throws(
-      () =>
-        repository.settleDelivery({
-          ledgerIds: [first.id, second.id],
-          reason: "Mezcla accidental",
-          authorizerPin: "2468",
-        }),
-      /repartidor por vez/i,
-    );
+    const settled = repository.settleDelivery({
+      ledgerIds: [first.id, second.id],
+      reason: "Liquidación conjunta",
+      authorizerPin: "2468",
+    });
+    assert.equal(settled.length, 2);
     assert.deepEqual(
       repository
         .bootstrap()
@@ -1435,7 +1455,7 @@ test("rendición rechaza duplicados, caja cerrada y mezcla de repartidores sin c
           [first.id, second.id].includes(ledger.id),
         )
         .map((ledger) => ledger.status),
-      ["PENDING", "PENDING"],
+      ["SETTLED", "SETTLED"],
     );
     repository.closeCashSession({
       countedAmountMinor: 0,

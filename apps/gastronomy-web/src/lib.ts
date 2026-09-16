@@ -164,7 +164,7 @@ export function humanError(error: unknown) {
     : "Ocurrió un error inesperado.";
 }
 
-function normalizeSearch(value: string) {
+export function normalizeSearch(value: string) {
   return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")

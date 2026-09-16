@@ -118,6 +118,7 @@ export interface ProductDto {
   categoryName: string;
   name: string;
   code: string | null;
+  parentProductId?: Id | null;
   sortOrder: number;
   active: boolean;
   stockMinor: number | null;
@@ -697,6 +698,7 @@ export interface UpdateProductInput {
   categoryId: Id;
   name: string;
   code?: string | null;
+  parentProductId?: Id | null;
   active: boolean;
   stockMinor?: number | null;
   stockTargetMinor?: number | null;
@@ -959,6 +961,7 @@ export interface DesktopApi {
     categoryId: Id;
     name: string;
     code?: string | null;
+    parentProductId?: Id | null;
     stockMinor?: number | null;
     stockTargetMinor?: number | null;
     stockMinMinor?: number | null;

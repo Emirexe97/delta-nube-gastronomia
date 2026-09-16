@@ -180,7 +180,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
               !data.cashSession
                 ? "Abrí caja para registrar la liquidación"
                 : selectedRows.length === 0
-                  ? "Seleccioná movimientos de un repartidor"
+                  ? "Seleccioná movimientos para liquidar"
                   : undefined
             }
           >
@@ -222,7 +222,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         )}
         <Field
           label="Repartidor"
-          hint="Elegí uno para preparar su liquidación."
+          hint="Filtrá por repartidor o liquidá movimientos de todos."
         >
           <Select
             value={driverFilter}
@@ -336,16 +336,12 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
               La ganancia es el costo de envío; el importe a rendir lo excluye.
             </p>
           </div>
-          {driverFilter !== "ALL" && pending.length ? (
+          {pending.length ? (
             <Button variant="secondary" onClick={toggleAllVisible}>
               {allVisibleSelected
                 ? "Quitar selección"
                 : `Seleccionar ${pending.length} pendiente(s)`}
             </Button>
-          ) : driverFilter === "ALL" ? (
-            <span className="rounded-lg bg-slate-100 px-3 py-2 text-[11px] font-semibold text-slate-500">
-              Elegí un repartidor para preparar una liquidación
-            </span>
           ) : null}
         </div>
         {ledger.length ? (
@@ -353,7 +349,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
             <table className="dn-table min-w-[640px]">
               <thead>
                 <tr>
-                  {driverFilter !== "ALL" ? <th>Elegir</th> : null}
+                  <th>Elegir</th>
                   <th>Pedido</th>
                   <th>Repartidor</th>
                   <th>Entrega registrada</th>
@@ -366,25 +362,23 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
               <tbody>
                 {ledger.map((row) => (
                   <tr key={row.id}>
-                    {driverFilter !== "ALL" ? (
-                      <td>
-                        {row.status === "PENDING" ? (
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4 accent-brand-600"
-                            aria-label={`Seleccionar movimiento del pedido ${row.orderNumber}`}
-                            checked={selectedIds.includes(row.id)}
-                            onChange={() =>
-                              setSelectedIds((current) =>
-                                current.includes(row.id)
-                                  ? current.filter((id) => id !== row.id)
-                                  : [...current, row.id],
-                              )
-                            }
-                          />
-                        ) : null}
-                      </td>
-                    ) : null}
+                    <td>
+                      {row.status === "PENDING" ? (
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-brand-600"
+                          aria-label={`Seleccionar movimiento del pedido ${row.orderNumber}`}
+                          checked={selectedIds.includes(row.id)}
+                          onChange={() =>
+                            setSelectedIds((current) =>
+                              current.includes(row.id)
+                                ? current.filter((id) => id !== row.id)
+                                : [...current, row.id],
+                            )
+                          }
+                        />
+                      ) : null}
+                    </td>
                     <td className="font-extrabold text-slate-900">
                       #{row.orderNumber}
                     </td>
@@ -604,12 +598,20 @@ function SettlementModal({
       authorizerPin: pin,
     });
 
+  const distinctDrivers = Array.from(
+    new Set(rows.map((r) => r.driverName || "Repartidor")),
+  );
+  const driverDescription =
+    distinctDrivers.length === 1
+      ? distinctDrivers[0]
+      : `${distinctDrivers.length} repartidores`;
+
   return (
     <Modal
       open={open}
       onClose={close}
       title={reviewing ? "Confirmar liquidación" : "Revisar rendición"}
-      description={`${rows.length} movimiento(s) de ${rows[0]?.driverName ?? "un repartidor"}`}
+      description={`${rows.length} movimiento(s) de ${driverDescription}`}
     >
       {reviewing ? (
         <div className="grid gap-4">
@@ -666,6 +668,7 @@ function SettlementModal({
               <thead>
                 <tr>
                   <th>Pedido</th>
+                  <th>Repartidor</th>
                   <th>Movimiento</th>
                   <th className="text-right">Importe</th>
                 </tr>
@@ -674,6 +677,7 @@ function SettlementModal({
                 {rows.map((row) => (
                   <tr key={row.id}>
                     <td className="font-bold">#{row.orderNumber}</td>
+                    <td className="font-semibold">{row.driverName || "Repartidor"}</td>
                     <td>
                       {row.direction === "DRIVER_OWES_BUSINESS"
                         ? "Ingresa a caja"

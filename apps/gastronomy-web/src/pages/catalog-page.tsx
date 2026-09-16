@@ -314,7 +314,27 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                         />
                       </td>
                       <td className="font-bold text-slate-900">
-                        {product.name}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span>{product.name}</span>
+                          {product.parentProductId ? (
+                            <span className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                              Variante de{" "}
+                              {products.find((p) => p.id === product.parentProductId)
+                                ?.name ?? "producto base"}
+                            </span>
+                          ) : (
+                            (() => {
+                              const variantCount = products.filter(
+                                (p) => p.parentProductId === product.id,
+                              ).length;
+                              return variantCount > 0 ? (
+                                <span className="inline-flex items-center rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
+                                  {variantCount} variante{variantCount > 1 ? "s" : ""}
+                                </span>
+                              ) : null;
+                            })()
+                          )}
+                        </div>
                       </td>
                       <td>{product.categoryName}</td>
                       <td className="font-mono text-[11px]">
@@ -1582,6 +1602,7 @@ function ProductModal({
           categoryId,
           name,
           code: code || null,
+          parentProductId: product.parentProductId ?? null,
           active,
           stockMinor: parsedStockMinor,
           stockTargetMinor: parsedTarget,
@@ -2136,6 +2157,7 @@ function CreateVariantModal({
 
   const mutation = useApiMutation(
     async (parsedPrices: Record<VisiblePriceListCode, number>) => {
+      if (!baseProduct) throw new Error("Producto base requerido");
       const normalizedPrices = [
         { priceListCode: "SALON" as const, amountMinor: parsedPrices.SALON },
         {
@@ -2151,6 +2173,7 @@ function CreateVariantModal({
         categoryId,
         name: name.trim(),
         code: code.trim() || null,
+        parentProductId: baseProduct.parentProductId ?? baseProduct.id,
         stockMinor: parsedStockMinor,
         stockTargetMinor: parsedTarget,
         stockMinMinor: parsedMin,

@@ -731,4 +731,12 @@ ALTER TABLE orders ADD COLUMN change_amount_minor INTEGER DEFAULT 0;
 ALTER TABLE orders ADD COLUMN change_method_code TEXT;
 `,
   },
+  {
+    version: 24,
+    name: "products_parent_product_id",
+    sql: String.raw`
+ALTER TABLE products ADD COLUMN parent_product_id TEXT REFERENCES products(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS products_parent_product_idx ON products(parent_product_id);
+`,
+  },
 ];

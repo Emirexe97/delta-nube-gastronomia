@@ -1741,6 +1741,7 @@ describe("API de demostración", () => {
       categoryId: baseProduct.categoryId,
       name: variantName,
       code: variantCode,
+      parentProductId: baseProduct.id,
       stockMinor: 15_000,
       stockMinMinor: 2_000,
       imageDataUrl: baseProduct.imageDataUrl,
@@ -1753,6 +1754,7 @@ describe("API de demostración", () => {
 
     expect(variantProduct.name).toBe(variantName);
     expect(variantProduct.code).toBe(variantCode);
+    expect(variantProduct.parentProductId).toBe(baseProduct.id);
     expect(variantProduct.categoryId).toBe(baseProduct.categoryId);
     expect(variantProduct.stockMinor).toBe(15_000);
     expect(
@@ -1779,6 +1781,81 @@ describe("API de demostración", () => {
       variantSalonPrice,
     );
     expect(orderWithVariant.items[0]?.lineTotalMinor).toBe(variantSalonPrice);
+  });
+
+  it("permite liquidar envíos de múltiples repartidores en una misma operación", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const driverA = await api.createDriver({
+      fullName: "Repartidor Alpha",
+      authorizerPin: "1234",
+    });
+    const driverB = await api.createDriver({
+      fullName: "Repartidor Beta",
+      authorizerPin: "1234",
+    });
+
+    const order1 = await api.createOrder({
+      type: "DELIVERY",
+      deliveryFeeMinor: 200_000,
+      driverUserId: driverA.id,
+      customerName: "Cliente A",
+      customerPhone: "1122334455",
+      deliveryAddress: "Calle Falsa 123",
+    });
+    const order2 = await api.createOrder({
+      type: "DELIVERY",
+      deliveryFeeMinor: 300_000,
+      driverUserId: driverB.id,
+      customerName: "Cliente B",
+      customerPhone: "1122334466",
+      deliveryAddress: "Calle Falsa 456",
+    });
+
+    await api.addOrderItem({ orderId: order1.id, productId: "prod-muzza" });
+    await api.addOrderItem({ orderId: order2.id, productId: "prod-muzza" });
+
+    await api.confirmOrder({ orderId: order1.id });
+    await api.confirmOrder({ orderId: order2.id });
+
+    const currentOrders = (await api.bootstrap()).orders;
+    const freshOrder1 = currentOrders.find((o) => o.id === order1.id)!;
+    const freshOrder2 = currentOrders.find((o) => o.id === order2.id)!;
+
+    await api.payOrder({
+      orderId: order1.id,
+      payments: [{ methodCode: "TRANSFER", amountMinor: freshOrder1.totalMinor }],
+    });
+    await api.payOrder({
+      orderId: order2.id,
+      payments: [{ methodCode: "TRANSFER", amountMinor: freshOrder2.totalMinor }],
+    });
+
+    await api.updateOrderStatus({ orderId: order1.id, status: "DELIVERED" });
+    await api.updateOrderStatus({ orderId: order2.id, status: "DELIVERED" });
+
+    const before = await api.bootstrap();
+    const ledger1 = before.deliveryLedger.find((l) => l.orderId === order1.id)!;
+    const ledger2 = before.deliveryLedger.find((l) => l.orderId === order2.id)!;
+    expect(ledger1.status).toBe("PENDING");
+    expect(ledger2.status).toBe("PENDING");
+    expect(ledger1.driverUserId).not.toBe(ledger2.driverUserId);
+
+    const settled = await api.settleDelivery({
+      ledgerIds: [ledger1.id, ledger2.id],
+      reason: "Liquidación combinada fin de turno",
+      authorizerPin: "1234",
+    });
+
+    expect(settled).toHaveLength(2);
+    expect(settled.every((s) => s.status === "SETTLED")).toBe(true);
+
+    const after = await api.bootstrap();
+    expect(
+      after.deliveryLedger.find((l) => l.id === ledger1.id)?.status,
+    ).toBe("SETTLED");
+    expect(
+      after.deliveryLedger.find((l) => l.id === ledger2.id)?.status,
+    ).toBe("SETTLED");
   });
 });
 
