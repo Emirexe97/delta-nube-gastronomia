@@ -91,8 +91,10 @@ export function OrderEditor({
   const [addingPin, setAddingPin] = useState("");
   const [addingError, setAddingError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const addingQuantityRef = useRef<HTMLInputElement>(null);
   const addingPriceRef = useRef<HTMLInputElement>(null);
   const addItemLockRef = useRef(false);
+  const [activeProductIndex, setActiveProductIndex] = useState(0);
   useEffect(() => {
     if (orderId) window.setTimeout(() => searchRef.current?.focus(), 80);
   }, [orderId]);
@@ -164,6 +166,16 @@ export function OrderEditor({
       .slice(0, 30)
       .map((entry) => entry.product);
   }, [data.products, search, categoryId]);
+
+  useEffect(() => {
+    setActiveProductIndex(0);
+  }, [search, categoryId]);
+
+  useEffect(() => {
+    const el = document.getElementById(`order-editor-product-${activeProductIndex}`);
+    el?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeProductIndex]);
+
   const addItem = useApiMutation(
     (input: Parameters<typeof window.gastronomy.addOrderItem>[0]) =>
       window.gastronomy.addOrderItem(input),
@@ -204,8 +216,8 @@ export function OrderEditor({
     setAddingPin("");
     setAddingError(null);
     window.setTimeout(() => {
-      addingPriceRef.current?.focus();
-      addingPriceRef.current?.select();
+      addingQuantityRef.current?.focus();
+      addingQuantityRef.current?.select();
     }, 50);
   };
   const handleProductCardClick = (product: ProductDto) => {
@@ -214,6 +226,7 @@ export function OrderEditor({
       (p) => p.parentProductId === product.id && p.active,
     );
     if (variants.length > 0) {
+      searchRef.current?.blur();
       setVariantPickerProduct(product);
     } else {
       openProduct(product);
@@ -355,10 +368,39 @@ export function OrderEditor({
     setNotesError(null);
   }, [orderId]);
 
+  const pendingPrint = order
+    ? data.printJobs.find(
+        (job) =>
+          job.orderId === order.id &&
+          ["FAILED", "QUEUED", "RECOVERING"].includes(job.status),
+      )
+    : undefined;
+  const printedKinds = new Set(
+    order
+      ? data.printJobs
+          .filter((job) => job.orderId === order.id && job.status === "PRINTED")
+          .map((job) => job.kind)
+      : [],
+  );
+  const requestPrint = (kind: "KITCHEN_ORDER" | "CUSTOMER_BILL") => {
+    if (!order || print.isPending || pendingPrint) return;
+    setPrintFeedback(null);
+    setError(null);
+    if (printedKinds.has(kind)) {
+      setPrintConfirmKind(kind);
+      return;
+    }
+    print.mutate({
+      orderId: order.id,
+      kind,
+      confirmFirst: kind === "KITCHEN_ORDER" && order.lifecycleStatus === "DRAFT",
+    });
+  };
+
   useEffect(() => {
     if (!orderId || !order) return;
     const handler = (event: KeyboardEvent) => {
-      if (event.key !== "F8" || event.repeat) return;
+      if (event.repeat) return;
       const nestedDialogOpen =
         payOpen ||
         refundOpen ||
@@ -372,24 +414,41 @@ export function OrderEditor({
         Boolean(variantPickerProduct) ||
         Boolean(modifierItemId) ||
         Boolean(notesItemId);
-      const canOpenPayment =
-        order.lifecycleStatus !== "DRAFT" &&
-        order.items.length > 0 &&
-        order.paymentStatus !== "PAID" &&
-        order.operationalStatus !== "CANCELLED";
-      if (nestedDialogOpen || !canOpenPayment) return;
-      event.preventDefault();
-      setError(null);
-      setCompleteOnPay(false);
-      setPayOpen(true);
+      if (nestedDialogOpen) return;
+
+      if (event.key === "F7") {
+        const canPrintComanda =
+          order.items.length > 0 &&
+          !print.isPending &&
+          !Boolean(pendingPrint);
+        if (canPrintComanda) {
+          event.preventDefault();
+          requestPrint("KITCHEN_ORDER");
+        }
+        return;
+      }
+
+      if (event.key === "F8") {
+        const canOpenPayment =
+          order.lifecycleStatus !== "DRAFT" &&
+          order.items.length > 0 &&
+          order.paymentStatus !== "PAID" &&
+          order.operationalStatus !== "CANCELLED";
+        if (canOpenPayment) {
+          event.preventDefault();
+          setError(null);
+          setCompleteOnPay(false);
+          setPayOpen(true);
+        }
+        return;
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [
+    addingProduct,
     cancelOpen,
     changeTableOpen,
-    addingProduct,
-    variantPickerProduct,
     discardConfirmOpen,
     discountOpen,
     driverOpen,
@@ -399,7 +458,10 @@ export function OrderEditor({
     order,
     orderId,
     payOpen,
+    pendingPrint,
+    print.isPending,
     refundOpen,
+    variantPickerProduct,
   ]);
 
   if (!order) return null;
@@ -413,30 +475,6 @@ export function OrderEditor({
     addingParsedPrice !== addingCatalogPrice;
   const canConfirm = guardOrderAction(order, "CONFIRM");
   const canDeliver = guardOrderAction(order, "DELIVER");
-  const pendingPrint = data.printJobs.find(
-    (job) =>
-      job.orderId === order.id &&
-      ["FAILED", "QUEUED", "RECOVERING"].includes(job.status),
-  );
-  const printedKinds = new Set(
-    data.printJobs
-      .filter((job) => job.orderId === order.id && job.status === "PRINTED")
-      .map((job) => job.kind),
-  );
-  const requestPrint = (kind: "KITCHEN_ORDER" | "CUSTOMER_BILL") => {
-    if (print.isPending || pendingPrint) return;
-    setPrintFeedback(null);
-    setError(null);
-    if (printedKinds.has(kind)) {
-      setPrintConfirmKind(kind);
-      return;
-    }
-    print.mutate({
-      orderId: order.id,
-      kind,
-      confirmFirst: kind === "KITCHEN_ORDER" && isDraft,
-    });
-  };
   const confirmReprint = () => {
     if (!printConfirmKind) return;
     setPrintFeedback(null);
@@ -498,17 +536,36 @@ export function OrderEditor({
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               onKeyDown={(event) => {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setActiveProductIndex((prev) =>
+                    products.length ? (prev + 1) % products.length : 0,
+                  );
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActiveProductIndex((prev) =>
+                    products.length ? (prev - 1 + products.length) % products.length : 0,
+                  );
+                  return;
+                }
                 if (
                   event.key === "Enter" &&
-                  products[0] &&
                   !locked &&
-                  !addItem.isPending
+                  !addItem.isPending &&
+                  !variantPickerProduct &&
+                  !addingProduct
                 ) {
-                  event.preventDefault();
-                  handleProductCardClick(products[0]);
+                  const targetProduct = products[activeProductIndex] ?? products[0];
+                  if (targetProduct) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handleProductCardClick(targetProduct);
+                  }
                 }
               }}
-              placeholder="Código, nombre, categoría… · Enter agrega"
+              placeholder="Código, nombre, categoría… · Enter agrega · ↑ ↓ navega"
               className="bg-white pl-9"
               disabled={locked}
             />
@@ -542,8 +599,8 @@ export function OrderEditor({
                 </button>
               ))}
           </div>
-          <div className="mt-2 grid min-h-0 flex-1 auto-rows-min grid-cols-2 gap-2 overflow-y-auto pr-1 xl:grid-cols-3">
-            {products.map((product) => {
+          <div className="mt-2 grid min-h-0 flex-1 auto-rows-min grid-cols-2 gap-2 overflow-y-auto p-1.5 xl:grid-cols-3">
+            {products.map((product, index) => {
               const code = order.type === "DINE_IN" ? "SALON" : order.type;
               const price = product.prices.find(
                 (item) => item.priceListCode === code,
@@ -556,13 +613,16 @@ export function OrderEditor({
                 locked ||
                 addItem.isPending ||
                 (!hasVariants && price == null);
+              const isSelected = index === activeProductIndex;
 
               return (
                 <div
                   key={product.id}
+                  id={`order-editor-product-${index}`}
                   role="button"
                   tabIndex={disabled ? -1 : 0}
                   aria-disabled={disabled}
+                  onMouseEnter={() => setActiveProductIndex(index)}
                   onClick={() => {
                     if (!disabled) handleProductCardClick(product);
                   }}
@@ -570,11 +630,13 @@ export function OrderEditor({
                     if (disabled) return;
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
+                      event.stopPropagation();
                       handleProductCardClick(product);
                     }
                   }}
                   className={cn(
-                    "focus-ring group flex min-h-[76px] cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-300 hover:shadow-sm",
+                    "focus-ring group m-1 flex min-h-[76px] cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-300 hover:shadow-sm scroll-m-2",
+                    isSelected && "border-brand-500 ring-2 ring-brand-500/80 shadow-md bg-brand-50/20",
                     disabled && "cursor-not-allowed opacity-50",
                   )}
                 >
@@ -966,7 +1028,8 @@ export function OrderEditor({
                       ? "Confirmar e imprimir"
                       : printedKinds.has("KITCHEN_ORDER")
                         ? "Reimprimir comanda"
-                        : "Comanda"}
+                        : "Comanda"}{" "}
+                <kbd className="text-[9px] opacity-70">F7</kbd>
               </Button>
               <Button
                 variant="secondary"
@@ -1134,6 +1197,7 @@ export function OrderEditor({
         onClose={() => {
           setAddingProduct(null);
           setAddingError(null);
+          window.setTimeout(() => searchRef.current?.focus(), 50);
         }}
         closeDisabled={addItem.isPending}
         title={
@@ -1151,9 +1215,12 @@ export function OrderEditor({
           <div className="grid gap-3 sm:grid-cols-[120px_1fr]">
             <Field label="Cantidad">
               <Input
+                ref={addingQuantityRef}
+                autoFocus
                 inputMode="numeric"
                 value={addingQuantity}
                 disabled={addItem.isPending}
+                onFocus={(event) => event.currentTarget.select()}
                 onChange={(event) => {
                   setAddingQuantity(event.target.value.replace(/\D/g, ""));
                   setAddingError(null);
@@ -1172,7 +1239,6 @@ export function OrderEditor({
             >
               <Input
                 ref={addingPriceRef}
-                autoFocus
                 inputMode="decimal"
                 value={addingPrice}
                 disabled={addItem.isPending}
@@ -1218,7 +1284,10 @@ export function OrderEditor({
               type="button"
               variant="secondary"
               disabled={addItem.isPending}
-              onClick={() => setAddingProduct(null)}
+              onClick={() => {
+                setAddingProduct(null);
+                window.setTimeout(() => searchRef.current?.focus(), 50);
+              }}
             >
               Cancelar
             </Button>
@@ -1253,11 +1322,15 @@ export function OrderEditor({
             : []
         }
         orderType={order.type}
+        initialQuery={search}
         onSelect={(product) => {
           setVariantPickerProduct(null);
           openProduct(product);
         }}
-        onClose={() => setVariantPickerProduct(null)}
+        onClose={() => {
+          setVariantPickerProduct(null);
+          window.setTimeout(() => searchRef.current?.focus(), 50);
+        }}
       />
       <HalfAndHalfModal
         open={halfOpen}
@@ -3009,6 +3082,7 @@ function SelectVariantModal({
   parentProduct,
   variants,
   orderType,
+  initialQuery,
   onSelect,
   onClose,
 }: {
@@ -3016,10 +3090,20 @@ function SelectVariantModal({
   parentProduct: ProductDto | null;
   variants: ProductDto[];
   orderType: OrderDto["type"];
+  initialQuery?: string;
   onSelect: (product: ProductDto) => void;
   onClose: () => void;
 }) {
-  if (!parentProduct) return null;
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const buttonRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const openedAtRef = useRef(0);
+
+  useEffect(() => {
+    if (open) {
+      openedAtRef.current = Date.now();
+    }
+  }, [open]);
+
   const channelCode = orderType === "DINE_IN" ? "SALON" : orderType;
   const channelLabel =
     orderType === "DINE_IN"
@@ -3028,73 +3112,229 @@ function SelectVariantModal({
         ? "Delivery"
         : "Para retirar";
 
-  const allOptions = [parentProduct, ...variants];
+  const allOptions = useMemo(() => {
+    if (!parentProduct) return [];
+    const validVariants = variants.filter((v) => v.active);
+    return [parentProduct, ...validVariants];
+  }, [parentProduct, variants]);
+
+  useEffect(() => {
+    if (!parentProduct || !allOptions.length) {
+      setSelectedIndex(0);
+      return;
+    }
+    if (initialQuery?.trim()) {
+      const q = normalizeSearch(initialQuery);
+      const matchIndex = allOptions.findIndex((opt) => {
+        const name = normalizeSearch(opt.name);
+        const code = normalizeSearch(opt.code ?? "");
+        const hasPrice = opt.prices.some(
+          (p) => p.priceListCode === channelCode && p.amountMinor != null,
+        );
+        return hasPrice && (name.includes(q) || code.includes(q));
+      });
+      if (matchIndex >= 0) {
+        setSelectedIndex(matchIndex);
+        return;
+      }
+    }
+    const firstValidIndex = allOptions.findIndex((opt) =>
+      opt.prices.some(
+        (p) => p.priceListCode === channelCode && p.amountMinor != null,
+      ),
+    );
+    setSelectedIndex(firstValidIndex >= 0 ? firstValidIndex : 0);
+  }, [parentProduct, allOptions, initialQuery, channelCode]);
+
+  useEffect(() => {
+    if (!open || !allOptions.length) return;
+    const timer = window.setTimeout(() => {
+      const idx = Math.min(Math.max(0, selectedIndex), allOptions.length - 1);
+      buttonRefs.current[idx]?.focus();
+      buttonRefs.current[idx]?.scrollIntoView({ block: "nearest" });
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !allOptions.length) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) {
+        event.preventDefault();
+        return;
+      }
+
+      if (event.key === "Tab") {
+        event.preventDefault();
+        const next = event.shiftKey
+          ? (selectedIndex - 1 + allOptions.length) % allOptions.length
+          : (selectedIndex + 1) % allOptions.length;
+        setSelectedIndex(next);
+        buttonRefs.current[next]?.focus();
+        buttonRefs.current[next]?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        event.preventDefault();
+        const next = (selectedIndex + 1) % allOptions.length;
+        setSelectedIndex(next);
+        buttonRefs.current[next]?.focus();
+        buttonRefs.current[next]?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+
+      if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        const prev = (selectedIndex - 1 + allOptions.length) % allOptions.length;
+        setSelectedIndex(prev);
+        buttonRefs.current[prev]?.focus();
+        buttonRefs.current[prev]?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        // Prevent accidental confirm from the Enter key that opened this modal
+        if (Date.now() - openedAtRef.current < 250) {
+          return;
+        }
+        const selected = allOptions[selectedIndex];
+        if (selected) {
+          const price = selected.prices.find(
+            (p) => p.priceListCode === channelCode,
+          )?.amountMinor;
+          if (price != null) {
+            onSelect(selected);
+          }
+        }
+        return;
+      }
+
+      if (event.key >= "1" && event.key <= "9") {
+        const num = Number(event.key);
+        const selected = allOptions[num - 1];
+        if (selected) {
+          const price = selected.prices.find(
+            (p) => p.priceListCode === channelCode,
+          )?.amountMinor;
+          if (price != null) {
+            event.preventDefault();
+            onSelect(selected);
+          }
+        }
+        return;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, allOptions, selectedIndex, onSelect, channelCode]);
+
+  if (!parentProduct) return null;
 
   return (
     <Modal
       open={open}
       onClose={onClose}
       width="max-w-lg"
-      title={`Seleccionar variante · ${parentProduct.name}`}
-      description={`Elegí la presentación o tamaño a incorporar para ${channelLabel}`}
+      title={`Seleccionar variante / opción · ${parentProduct.name}`}
+      description={`Elegí con ↑ / ↓, Tab o 1-${Math.min(allOptions.length, 9)} y presioná Enter (${channelLabel})`}
     >
       <div className="space-y-2">
-        {allOptions.map((product) => {
-          const isBase = product.id === parentProduct.id;
-          const price = product.prices.find(
-            (p) => p.priceListCode === channelCode,
-          )?.amountMinor;
-          const shortName = isBase
-            ? `${parentProduct.name} (Base)`
-            : getVariantShortName(product, parentProduct);
+        {allOptions.length === 0 ? (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-center text-xs font-semibold text-amber-800">
+            No hay opciones disponibles para este producto en el canal actual.
+          </p>
+        ) : (
+          allOptions.map((product, idx) => {
+            const isBase = product.id === parentProduct.id;
+            const price = product.prices.find(
+              (p) => p.priceListCode === channelCode,
+            )?.amountMinor;
+            const shortName = isBase
+              ? `${parentProduct.name} (Base)`
+              : getVariantShortName(product, parentProduct);
+            const isSelected = idx === selectedIndex;
 
-          return (
-            <button
-              key={product.id}
-              type="button"
-              disabled={price == null}
-              onClick={() => onSelect(product)}
-              className={cn(
-                "flex w-full items-center justify-between rounded-xl border p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-brand-500",
-                isBase
-                  ? "border-slate-200 bg-slate-50/80 hover:border-brand-400 hover:bg-brand-50/40"
-                  : "border-brand-200 bg-white hover:border-brand-400 hover:bg-brand-50/60",
-                price == null && "cursor-not-allowed opacity-50",
-              )}
-            >
-              <div className="min-w-0 pr-3">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-slate-800">{shortName}</span>
-                  {isBase ? (
-                    <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">
-                      Original
-                    </span>
-                  ) : (
-                    <span className="rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-bold text-brand-800">
-                      Variante
-                    </span>
-                  )}
+            return (
+              <button
+                key={product.id}
+                ref={(el) => {
+                  buttonRefs.current[idx] = el;
+                }}
+                type="button"
+                disabled={price == null}
+                onMouseEnter={() => {
+                  setSelectedIndex(idx);
+                }}
+                onFocus={() => setSelectedIndex(idx)}
+                onClick={() => {
+                  if (Date.now() - openedAtRef.current < 250) return;
+                  if (price != null) onSelect(product);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    if (e.repeat || Date.now() - openedAtRef.current < 250) return;
+                    if (price != null) onSelect(product);
+                  }
+                }}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-xl border p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-brand-500",
+                  isSelected
+                    ? "border-brand-500 ring-2 ring-brand-500 bg-brand-50/70"
+                    : isBase
+                      ? "border-slate-300 bg-slate-50/70 hover:border-brand-300 hover:bg-brand-50/30"
+                      : "border-slate-200 bg-white hover:border-brand-300 hover:bg-brand-50/30",
+                  price == null && "cursor-not-allowed opacity-50",
+                )}
+              >
+                <div className="min-w-0 pr-3">
+                  <div className="flex items-center gap-2">
+                    {idx < 9 ? (
+                      <kbd
+                        className={cn(
+                          "inline-flex h-5 min-w-[20px] items-center justify-center rounded border px-1 font-mono text-[10px] font-bold shadow-sm",
+                          isSelected
+                            ? "border-brand-300 bg-brand-200 text-brand-900"
+                            : "border-slate-300 bg-white text-slate-600",
+                        )}
+                      >
+                        {idx + 1}
+                      </kbd>
+                    ) : null}
+                    <span className="font-bold text-slate-800">{shortName}</span>
+                    {isBase ? (
+                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">
+                        Padre / Base
+                      </span>
+                    ) : (
+                      <span className="rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-bold text-brand-800">
+                        Variante
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
+                    {product.code ? <span>Cód: {product.code}</span> : null}
+                    {product.stockMinor != null ? (
+                      <span>
+                        Stock: {(product.stockMinor / 1000).toLocaleString("es-AR")} u.
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
-                  {product.code ? <span>Cód: {product.code}</span> : null}
-                  {product.stockMinor != null ? (
-                    <span>
-                      Stock: {(product.stockMinor / 1000).toLocaleString("es-AR")} u.
-                    </span>
-                  ) : null}
+                <div className="shrink-0 text-right">
+                  <div className="text-sm font-extrabold text-brand-700">
+                    {price == null ? "Sin precio" : formatMoney(price)}
+                  </div>
+                  <span className="text-[11px] font-bold text-brand-600">
+                    Elegir →
+                  </span>
                 </div>
-              </div>
-              <div className="shrink-0 text-right">
-                <div className="text-sm font-extrabold text-brand-700">
-                  {price == null ? "Sin precio" : formatMoney(price)}
-                </div>
-                <span className="text-[11px] font-bold text-brand-600">
-                  Elegir →
-                </span>
-              </div>
-            </button>
-          );
-        })}
+              </button>
+            );
+          })
+        )}
       </div>
     </Modal>
   );

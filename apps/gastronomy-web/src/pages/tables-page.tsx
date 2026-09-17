@@ -187,6 +187,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         data={data}
         onOpenFullOrder={setSelectedOrderId}
         removedEvent={removedEvent}
+        isEditorOpen={Boolean(selectedOrderId)}
       />
 
       {view === "CLASSIC" ? (
@@ -434,10 +435,12 @@ function QuickEntry({
   data,
   onOpenFullOrder,
   removedEvent,
+  isEditorOpen,
 }: {
   data: BootstrapDto;
   onOpenFullOrder(orderId: string): void;
   removedEvent?: { tableId: string; revision: number } | null;
+  isEditorOpen?: boolean;
 }) {
   const [step, setStep] = useState<QuickStep>("TABLE");
   const [tableNumber, setTableNumber] = useState("");
@@ -473,6 +476,14 @@ function QuickEntry({
   const tableAdvanceRef = useRef(false);
   const waiterAdvanceRef = useRef(false);
   const preferredWaiterFocusRef = useRef<"number" | "name">("number");
+  const previousEditorOpenRef = useRef(false);
+
+  useEffect(() => {
+    if (previousEditorOpenRef.current && !isEditorOpen) {
+      window.setTimeout(() => focus(tableRef), 50);
+    }
+    previousEditorOpenRef.current = Boolean(isEditorOpen);
+  }, [isEditorOpen]);
 
   const activeProducts = useMemo(
     () =>
@@ -685,16 +696,8 @@ function QuickEntry({
           tableAdvanceRef.current = false;
           return;
         }
-        const assignedWaiter = eligibleWaiters.find(
-          (user) => user.id === currentOrder.waiterUserId,
-        );
-        setWaiterUserId(assignedWaiter?.id ?? "");
-        setWaiterNumber(
-          assignedWaiter ? String(assignedWaiter.staffNumber) : "",
-        );
-        setOrder(currentOrder);
-        setStatus(`Mesa ${number} abierta · pedido #${currentOrder.number}`);
-        setStep("WAITER");
+        onOpenFullOrder(currentOrder.id);
+        resetFlow();
         return;
       }
       setStatus(existed ? `Mesa ${number} lista` : `Mesa ${number} creada`);
@@ -722,9 +725,8 @@ function QuickEntry({
       return;
     }
     if (order) {
-      setError(null);
-      setStep("ITEM");
-      focus(quantityRef);
+      onOpenFullOrder(order.id);
+      resetFlow();
       return;
     }
     waiterAdvanceRef.current = true;
@@ -733,13 +735,8 @@ function QuickEntry({
         tableId: table.id,
         waiterUserId: waiter.id,
       });
-      setOrder(created);
-      setError(null);
-      setStatus(
-        `Mesa ${table.number} · ${waiter.fullName} (#${waiter.staffNumber})`,
-      );
-      setStep("ITEM");
-      focus(quantityRef);
+      onOpenFullOrder(created.id);
+      resetFlow();
     } catch (value) {
       fail(humanError(value), waiterRef);
     } finally {
@@ -1064,7 +1061,11 @@ function QuickEntry({
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
-                    focus(waiterNameRef);
+                    if (waiterUserId) {
+                      void submitWaiter();
+                    } else {
+                      focus(waiterNameRef);
+                    }
                   } else if (event.key === "Enter" && event.shiftKey) {
                     event.preventDefault();
                     setStep("TABLE");
