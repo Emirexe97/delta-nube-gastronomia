@@ -47,7 +47,7 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
         </Button>
       </div>
       <Card className="overflow-x-auto">
-        <table className="dn-table min-w-[640px]">
+        <table className="dn-table min-w-[720px]">
           <thead>
             <tr>
               <th>N.º</th>

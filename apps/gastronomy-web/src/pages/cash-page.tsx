@@ -176,7 +176,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
             </div>
             {paidOrders.length ? (
               <div className="overflow-auto">
-                <table className="dn-table">
+                <table className="dn-table min-w-[640px]">
                   <thead>
                     <tr>
                       <th>Pedido</th>
@@ -184,7 +184,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                       <th>Mesa / cliente</th>
                       <th>Medios</th>
                       <th>Estado</th>
-                      <th className="text-right">Cobrado</th>
+                      <th className="text-right whitespace-nowrap">Cobrado</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -206,7 +206,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                               : statusLabels[order.operationalStatus]}
                           </Badge>
                         </td>
-                        <td className="text-right font-bold">
+                        <td className="whitespace-nowrap text-right font-bold">
                           {formatMoney(order.paidMinor)}
                         </td>
                       </tr>

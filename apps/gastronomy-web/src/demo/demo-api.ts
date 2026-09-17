@@ -49,6 +49,7 @@ const SENSITIVE_DEMO_AUDIT_ACTIONS = new Set([
   "CUSTOMER_MERGED",
   "CUSTOMER_MERGE_RECEIVED",
   "CATEGORY_DELETED",
+  "PRODUCT_DELETED",
   "PRODUCTO_ACTUALIZADO",
   "PRODUCTOS_ACTUALIZADOS_EN_LOTE",
   "STOCK_AJUSTADO",
@@ -2682,6 +2683,14 @@ export function createDemoApi(
       const category = categoryById(input.categoryId);
       const prices = normalizeProductPrices(input.prices);
       validateProductInventory(input);
+      if (input.parentProductId) {
+        const parent = state.data.products.find(
+          (p) => p.id === input.parentProductId,
+        );
+        if (!parent) throw new Error("El producto base indicado no existe.");
+        if (parent.parentProductId)
+          throw new Error("Una variante no puede tener variantes.");
+      }
       const product: ProductDto = {
         id: uid("product", state),
         categoryId: category.id,
@@ -2716,15 +2725,31 @@ export function createDemoApi(
       validateProductInventory(input);
       const product = productById(input.productId);
       const category = categoryById(input.categoryId);
+      const nextParentId =
+        input.parentProductId === undefined
+          ? product.parentProductId
+          : input.parentProductId;
+      if (nextParentId) {
+        if (nextParentId === product.id)
+          throw new Error("Un producto no puede ser variante de sí mismo.");
+        const parent = state.data.products.find((p) => p.id === nextParentId);
+        if (!parent) throw new Error("El producto base indicado no existe.");
+        if (parent.parentProductId)
+          throw new Error("Una variante no puede tener variantes.");
+        const hasChildren = state.data.products.some(
+          (p) => p.parentProductId === product.id,
+        );
+        if (hasChildren)
+          throw new Error(
+            "Un producto con variantes no puede convertirse en variante.",
+          );
+      }
       Object.assign(product, {
         categoryId: category.id,
         categoryName: category.name,
         name: input.name.trim(),
         code: input.code?.trim() || null,
-        parentProductId:
-          input.parentProductId === undefined
-            ? product.parentProductId
-            : input.parentProductId,
+        parentProductId: nextParentId,
         active: input.active,
         stockMinor:
           input.stockMinor === undefined
@@ -2761,6 +2786,46 @@ export function createDemoApi(
       );
       save();
       return output(product);
+    },
+
+    async deleteProduct(input) {
+      requirePin(input.authorizerPin);
+      if (!input.reason.trim())
+        throw new Error("La eliminación requiere un motivo.");
+      const index = state.data.products.findIndex(
+        (candidate) => candidate.id === input.productId,
+      );
+      if (index < 0) throw new Error("El producto no existe.");
+      const product = state.data.products[index]!;
+      const hasOrder = state.data.orders.some((order) =>
+        order.items.some(
+          (item) =>
+            item.productId === input.productId ||
+            item.halves.some((half) => half.productId === input.productId),
+        ),
+      );
+      const hasPurchase = (state.purchases ?? []).some((purchase) =>
+        purchase.items.some((item) => item.productId === input.productId),
+      );
+      const hasChildren = state.data.products.some(
+        (child) => child.parentProductId === input.productId,
+      );
+      if (hasOrder || hasPurchase || hasChildren) {
+        throw new Error(
+          "El producto tiene ventas, compras o variantes asociadas. Podés desactivarlo desde Editar.",
+        );
+      }
+      state.data.products.splice(index, 1);
+      audit(
+        state,
+        "PRODUCT",
+        product.id,
+        "PRODUCT_DELETED",
+        input.reason.trim(),
+        "prices.bulk_update",
+      );
+      save();
+      return { deleted: true as const };
     },
 
     async bulkUpdateProducts(input) {

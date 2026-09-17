@@ -161,7 +161,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
             Una sola bandeja operativa, estados y cobros separados
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant="secondary"
             onClick={() => setNewType("TAKEAWAY")}
@@ -185,10 +185,10 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
         </div>
       ) : null}
       <Card className="overflow-hidden">
-        <div className="grid items-center gap-2 border-b border-slate-100 p-3 sm:grid-cols-[minmax(220px,1fr)_auto]">
-          <div className="relative min-w-0 flex-1 sm:min-w-[240px]">
+        <div className="flex flex-col gap-2.5 border-b border-slate-100 p-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="relative w-full min-w-0 flex-1 xl:max-w-xs">
             <MagnifyingGlass
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               size={16}
             />
             <Input
@@ -199,7 +199,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
               className="pl-9"
             />
           </div>
-          <div className="flex min-w-0 gap-1 overflow-x-auto pb-0.5">
+          <div className="flex min-w-0 max-w-full gap-1 overflow-x-auto pb-0.5">
             {(
               [
                 ["ALL", "Todos"],
@@ -215,7 +215,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
                 key={value}
                 onClick={() => setFilter(value)}
                 className={cn(
-                  "h-9 whitespace-nowrap rounded-lg px-3 text-[11px] font-bold",
+                  "h-9 shrink-0 whitespace-nowrap rounded-lg px-3 text-[11px] font-bold transition",
                   filter === value
                     ? "bg-brand-600 text-white"
                     : "bg-slate-100 text-slate-500 hover:bg-slate-200",
@@ -228,16 +228,16 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
         </div>
         <div className="max-h-[calc(100vh-270px)] overflow-auto">
           {orders.length ? (
-            <table className="dn-table">
+            <table className="dn-table min-w-[720px]">
               <thead>
                 <tr>
-                  <th>Pedido</th>
-                  <th>Tipo</th>
-                  <th>Cliente / destino</th>
-                  <th>Hora de entrega</th>
-                  <th>Estado</th>
-                  <th>Pago</th>
-                  <th className="text-right">Total</th>
+                  <th className="whitespace-nowrap">Pedido</th>
+                  <th className="whitespace-nowrap">Tipo</th>
+                  <th className="min-w-[180px]">Cliente / destino</th>
+                  <th className="whitespace-nowrap">Hora de entrega</th>
+                  <th className="whitespace-nowrap">Estado</th>
+                  <th className="whitespace-nowrap">Pago</th>
+                  <th className="whitespace-nowrap text-right">Total</th>
                 </tr>
               </thead>
               <tbody>
@@ -337,7 +337,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
                         {paymentStatusLabels[order.paymentStatus]}
                       </Badge>
                     </td>
-                    <td className="text-right text-sm font-extrabold">
+                    <td className="whitespace-nowrap text-right text-sm font-extrabold">
                       {formatMoney(order.totalMinor)}
                     </td>
                   </tr>

@@ -45,6 +45,7 @@ const api: DesktopApi = {
   deleteCategory: (input) => invoke("deleteCategory", input),
   createProduct: (input) => invoke("createProduct", input),
   updateProduct: (input) => invoke("updateProduct", input),
+  deleteProduct: (input) => invoke("deleteProduct", input),
   bulkUpdateProducts: (input) => invoke("bulkUpdateProducts", input),
   createModifier: (input) => invoke("createModifier", input),
   listPurchases: () => invoke("listPurchases"),

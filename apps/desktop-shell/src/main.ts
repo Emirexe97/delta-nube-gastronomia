@@ -455,6 +455,7 @@ function registerIpcHandlers() {
     "deleteCategory",
     "createProduct",
     "updateProduct",
+    "deleteProduct",
     "bulkUpdateProducts",
     "createModifier",
     "listPurchases",

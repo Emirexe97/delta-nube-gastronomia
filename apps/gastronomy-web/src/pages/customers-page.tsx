@@ -179,7 +179,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
 
   return (
     <div className="panel-enter mx-auto max-w-[1200px] space-y-3">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-extrabold">Clientes</h2>
           <p className="text-xs text-slate-400">

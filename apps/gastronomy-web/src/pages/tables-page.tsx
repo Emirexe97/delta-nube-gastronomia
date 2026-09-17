@@ -6,14 +6,17 @@ import type {
 } from "@gastronomy/contracts";
 import {
   CheckCircle,
+  ClockCounterClockwise,
   Eye,
   Keyboard,
   LockKey,
+  MagnifyingGlass,
   MapTrifold,
   Plus,
   SquaresFour,
   UserCircle,
   Trash,
+  X,
 } from "@phosphor-icons/react";
 import {
   Badge,
@@ -31,9 +34,11 @@ import { useDebouncedValue } from "../hooks/use-debounced-value";
 import {
   formatElapsed,
   formatMoney,
+  formatTime,
   humanError,
   parseMoneyInput,
 } from "../lib";
+import { filterClosedTableOrders } from "../closed-tables-history";
 
 type OpenTableInput = { tableId: string; waiterUserId: string };
 const waiterRoleLabels = {
@@ -274,6 +279,12 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
           onRequestDeleteTable={requestDeleteTable}
         />
       )}
+
+      <ClosedTablesHistorySection
+        orders={data.orders}
+        cashSessionId={data.cashSession?.id}
+        onSelectOrder={setSelectedOrderId}
+      />
 
       <Modal
         open={Boolean(openingTable)}
@@ -1139,7 +1150,7 @@ function QuickEntry({
                   {order.number} · {order.waiterName || "Mozo asignado"}
                 </span>
                 <div className="flex items-center gap-3">
-                  <span className="text-slate-500">
+                  <span className="whitespace-nowrap text-slate-500">
                     {itemCount} unidades ·{" "}
                     <strong className="text-brand-700">
                       {formatMoney(order.totalMinor)}
@@ -1148,11 +1159,11 @@ function QuickEntry({
                   <Button
                     type="button"
                     variant="secondary"
-                    className="h-8 px-2.5 text-xs"
+                    className="h-8 px-2.5 text-xs whitespace-nowrap shrink-0"
                     onClick={() => onOpenFullOrder(order.id)}
                   >
-                    <Eye size={15} />
-                    Ver pedido
+                    <Eye size={15} className="shrink-0" />
+                    <span>Ver pedido</span>
                   </Button>
                 </div>
               </div>
@@ -1161,9 +1172,9 @@ function QuickEntry({
                   event.preventDefault();
                   void submitItem();
                 }}
-                className="grid grid-cols-1 items-end gap-2 sm:grid-cols-12"
+                className="grid grid-cols-1 items-end gap-2 sm:grid-cols-2 lg:grid-cols-12"
               >
-                <Field label="Cantidad" className="sm:col-span-1">
+                <Field label="Cantidad" className="sm:col-span-1 lg:col-span-1">
                   <Input
                     className="h-9 px-2"
                     ref={quantityRef}
@@ -1187,7 +1198,7 @@ function QuickEntry({
                     placeholder="0"
                   />
                 </Field>
-                <Field label="Código / ID" className="sm:col-span-2">
+                <Field label="Código / ID" className="sm:col-span-1 lg:col-span-2">
                   <Input
                     className="h-9"
                     ref={codeRef}
@@ -1224,7 +1235,7 @@ function QuickEntry({
                     ])}
                   </datalist>
                 </Field>
-                <div className="grid gap-1.5 text-[12px] font-semibold text-slate-600 sm:col-span-4">
+                <div className="grid gap-1.5 text-[12px] font-semibold text-slate-600 sm:col-span-2 lg:col-span-4">
                   <label htmlFor="quick-product-name">Producto</label>
                   <div className="relative">
                     <Input
@@ -1375,7 +1386,7 @@ function QuickEntry({
                     ) : null}
                   </div>
                 </div>
-                <Field label="Precio salón" className="sm:col-span-2">
+                <Field label="Precio salón" className="sm:col-span-1 lg:col-span-2">
                   <Input
                     ref={priceRef}
                     inputMode="decimal"
@@ -1410,7 +1421,7 @@ function QuickEntry({
                 </Field>
                 <Button
                   type="submit"
-                  className="h-9 w-full sm:col-span-3"
+                  className="h-9 w-full sm:col-span-1 lg:col-span-3"
                   disabled={
                     !quantity ||
                     !selectedProduct ||
@@ -1543,5 +1554,222 @@ function QuickEntry({
         </form>
       </Modal>
     </>
+  );
+}
+
+function ClosedTablesHistorySection({
+  orders,
+  cashSessionId,
+  onSelectOrder,
+}: {
+  orders: OrderDto[];
+  cashSessionId?: string;
+  onSelectOrder: (orderId: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+
+  const allClosedOrders = useMemo(
+    () => filterClosedTableOrders(orders, cashSessionId, ""),
+    [orders, cashSessionId],
+  );
+
+  const filteredOrders = useMemo(
+    () => filterClosedTableOrders(orders, cashSessionId, query),
+    [orders, cashSessionId, query],
+  );
+
+  const totalBilledMinor = useMemo(
+    () =>
+      allClosedOrders
+        .filter((order) => order.operationalStatus === "DELIVERED")
+        .reduce((sum, order) => sum + (order.totalMinor ?? 0), 0),
+    [allClosedOrders],
+  );
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex flex-col gap-3 border-b border-slate-100 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold text-slate-900">
+            Historial de mesas cerradas
+          </h3>
+          <p className="text-[10px] text-slate-400">
+            Mesas cobradas o canceladas en este turno
+            {allClosedOrders.length > 0 ? (
+              <>
+                {" "}· Total cobrado:{" "}
+                <strong className="whitespace-nowrap font-extrabold text-brand-700">
+                  {formatMoney(totalBilledMinor)}
+                </strong>
+              </>
+            ) : null}
+          </p>
+        </div>
+
+        <div className="relative w-full sm:w-80 sm:flex-initial">
+          <MagnifyingGlass
+            size={16}
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+          />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar por mozo, mesa o producto..."
+            className="h-9 w-full pl-9 pr-8 text-xs"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              aria-label="Limpiar búsqueda"
+            >
+              <X size={14} />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {filteredOrders.length ? (
+        <div className="max-h-[460px] overflow-auto">
+          <table className="dn-table min-w-[780px]">
+            <thead>
+              <tr>
+                <th className="whitespace-nowrap">Mesa</th>
+                <th className="whitespace-nowrap">Pedido</th>
+                <th className="whitespace-nowrap">Mozo</th>
+                <th className="min-w-[200px]">Productos vendidos</th>
+                <th className="whitespace-nowrap">Medio de pago</th>
+                <th className="whitespace-nowrap">Cierre</th>
+                <th className="whitespace-nowrap text-right">Total</th>
+                <th className="whitespace-nowrap">Estado</th>
+                <th className="w-28 whitespace-nowrap text-right"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredOrders.map((order) => {
+                const isCancelled = order.operationalStatus === "CANCELLED";
+                const activePayments = order.payments?.filter(
+                  (payment) => payment.status !== "REFUNDED",
+                );
+                const paymentMethodsText = activePayments?.length
+                  ? Array.from(
+                      new Set(activePayments.map((payment) => payment.methodName)),
+                    ).join(", ")
+                  : isCancelled
+                    ? "Cancelada"
+                    : "—";
+
+                return (
+                  <tr
+                    key={order.id}
+                    tabIndex={0}
+                    className="cursor-pointer"
+                    onClick={() => onSelectOrder(order.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") onSelectOrder(order.id);
+                    }}
+                  >
+                    <td className="whitespace-nowrap font-bold text-slate-900">
+                      {order.tableNumber != null
+                        ? `Mesa ${order.tableNumber}`
+                        : "Salón"}
+                    </td>
+                    <td className="whitespace-nowrap">
+                      <span className="font-mono text-xs font-extrabold text-slate-950">
+                        #{order.number}
+                      </span>
+                      <p className="text-[9px] text-slate-400">
+                        {formatTime(order.createdAt)}
+                      </p>
+                    </td>
+                    <td className="whitespace-nowrap font-semibold text-slate-700">
+                      {order.waiterName || "Sin mozo"}
+                    </td>
+                    <td className="min-w-[200px] max-w-[320px]">
+                      <div className="space-y-0.5 text-xs text-slate-700">
+                        {order.items?.length ? (
+                          order.items.map((item, idx) => {
+                            const halves = item.halves?.length
+                              ? ` (${item.halves.map((h) => h.nameSnapshot).join(" / ")})`
+                              : "";
+                            const mods = item.modifiers?.length
+                              ? ` [+ ${item.modifiers.map((m) => m.nameSnapshot).join(", ")}]`
+                              : "";
+                            return (
+                              <div
+                                key={item.id || idx}
+                                className="truncate"
+                                title={`${item.quantity}× ${item.productNameSnapshot}${halves}${mods}`}
+                              >
+                                <span className="font-semibold text-slate-900">
+                                  {item.quantity}×
+                                </span>{" "}
+                                {item.productNameSnapshot}
+                                {halves ? (
+                                  <span className="text-[10px] text-slate-400">
+                                    {halves}
+                                  </span>
+                                ) : null}
+                                {mods ? (
+                                  <span className="text-[10px] text-slate-400">
+                                    {mods}
+                                  </span>
+                                ) : null}
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <span className="text-[10px] italic text-slate-400">
+                            Sin productos
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap text-slate-600">
+                      {paymentMethodsText}
+                    </td>
+                    <td className="whitespace-nowrap font-medium text-slate-600">
+                      {formatTime(order.updatedAt)}
+                    </td>
+                    <td className="whitespace-nowrap text-right font-mono text-xs font-extrabold text-slate-900">
+                      {formatMoney(order.totalMinor)}
+                    </td>
+                    <td className="whitespace-nowrap">
+                      <Badge tone={isCancelled ? "rose" : "green"}>
+                        {isCancelled ? "Cancelada" : "Cobrada"}
+                      </Badge>
+                    </td>
+                    <td className="w-28 whitespace-nowrap text-right">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="h-7 px-2.5 text-[11px] whitespace-nowrap shrink-0"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectOrder(order.id);
+                        }}
+                        aria-label={`Ver pedido #${order.number}`}
+                      >
+                        <Eye size={13} className="shrink-0" />
+                        <span className="whitespace-nowrap">Ver pedido</span>
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="grid h-32 place-items-center text-xs text-slate-400">
+          {!cashSessionId
+            ? "No hay una caja abierta actualmente."
+            : allClosedOrders.length === 0
+              ? "No hay mesas cerradas en este turno aún."
+              : `No se encontraron mesas cerradas para "${query}".`}
+        </div>
+      )}
+    </Card>
   );
 }

@@ -91,6 +91,7 @@ button {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   text-align: left;
+  white-space: nowrap;
 }
 .dn-table tbody td {
   padding: 11px 12px;

@@ -973,6 +973,11 @@ export interface DesktopApi {
     }>;
   }): Promise<ProductDto>;
   updateProduct(input: UpdateProductInput): Promise<ProductDto>;
+  deleteProduct(input: {
+    productId: Id;
+    reason: string;
+    authorizerPin: string;
+  }): Promise<{ deleted: true }>;
   bulkUpdateProducts(input: BulkUpdateProductsInput): Promise<ProductDto[]>;
   createModifier(input: {
     groupName: string;

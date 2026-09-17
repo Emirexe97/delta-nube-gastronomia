@@ -169,7 +169,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
             Actividad, ganancias y movimientos que caja debe conciliar
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="secondary" onClick={() => setDriverOpen(true)}>
             <Plus size={17} /> Nuevo repartidor
           </Button>
@@ -346,7 +346,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         </div>
         {ledger.length ? (
           <div className="max-h-[460px] overflow-auto">
-            <table className="dn-table min-w-[640px]">
+            <table className="dn-table min-w-[760px]">
               <thead>
                 <tr>
                   <th>Elegir</th>

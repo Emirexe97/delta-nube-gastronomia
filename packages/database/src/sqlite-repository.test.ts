@@ -628,6 +628,66 @@ test("crea y persiste producto variante con parentProductId", () => {
   });
 });
 
+test("rechaza que una variante tenga variantes y que un producto con variantes se convierta en variante", () => {
+  withRepository((repository) => {
+    const category = repository.bootstrap().categories[0]!;
+    const parent = repository.createProduct({
+      categoryId: category.id,
+      name: "Empanada Base",
+      prices: [{ priceListCode: "SALON", amountMinor: 1_500 }],
+    });
+    const variant1 = repository.createProduct({
+      categoryId: category.id,
+      name: "Empanada Carne",
+      parentProductId: parent.id,
+      prices: [{ priceListCode: "SALON", amountMinor: 1_600 }],
+    });
+    assert.throws(
+      () =>
+        repository.createProduct({
+          categoryId: category.id,
+          name: "Empanada Carne Picante Subvariante",
+          parentProductId: variant1.id,
+          prices: [{ priceListCode: "SALON", amountMinor: 1_700 }],
+        }),
+      /Una variante no puede tener variantes/,
+    );
+    assert.throws(
+      () =>
+        repository.updateProduct({
+          productId: parent.id,
+          categoryId: category.id,
+          name: "Empanada Base Modificada",
+          parentProductId: variant1.id,
+          active: true,
+          prices: [{ priceListCode: "SALON", amountMinor: 1_500 }],
+          reason: "Intento de convertir en subvariante",
+          authorizerPin: "2468",
+        }),
+      /Una variante no puede tener variantes/,
+    );
+    const otherParent = repository.createProduct({
+      categoryId: category.id,
+      name: "Docena Empanadas",
+      prices: [{ priceListCode: "SALON", amountMinor: 15_000 }],
+    });
+    assert.throws(
+      () =>
+        repository.updateProduct({
+          productId: parent.id,
+          categoryId: category.id,
+          name: "Empanada Base Convertida",
+          parentProductId: otherParent.id,
+          active: true,
+          prices: [{ priceListCode: "SALON", amountMinor: 1_500 }],
+          reason: "Intento de convertir padre en variante",
+          authorizerPin: "2468",
+        }),
+      /Un producto con variantes no puede convertirse en variante/,
+    );
+  });
+});
+
 test("elimina categoría libre, audita y exige PIN", () => {
   withRepository((repository) => {
     const category = repository.createCategory({ name: "Temporal libre" });
@@ -664,6 +724,90 @@ test("bloquea eliminar categoría con productos asociados", () => {
           authorizerPin: "2468",
         }),
       /productos o historial/i,
+    );
+  });
+});
+
+test("elimina producto libre, audita y exige PIN", () => {
+  withRepository((repository) => {
+    const category = repository.createCategory({ name: "Categoría temporal" });
+    const product = repository.createProduct({
+      categoryId: category.id,
+      name: "Producto temporal libre",
+      prices: [
+        { priceListCode: "SALON", amountMinor: 1_000 },
+        { priceListCode: "TAKEAWAY", amountMinor: 900 },
+        { priceListCode: "DELIVERY", amountMinor: 900 },
+      ],
+    });
+    assert.throws(
+      () =>
+        repository.deleteProduct({
+          productId: product.id,
+          reason: "Limpieza",
+          authorizerPin: "0000",
+        }),
+      /PIN|permiso/i,
+    );
+    assert.deepEqual(
+      repository.deleteProduct({
+        productId: product.id,
+        reason: "Limpieza de catálogo",
+        authorizerPin: "2468",
+      }),
+      { deleted: true },
+    );
+    const audit = repository.getAuditLog({ action: "PRODUCT_DELETED" })[0];
+    assert.equal(audit?.authorizerName, "Administrador");
+    assert.equal(audit?.permissionUsed, "prices.bulk_update");
+    assert.equal(
+      repository.bootstrap().products.some((p) => p.id === product.id),
+      false,
+    );
+  });
+});
+
+test("bloquea eliminar producto con ventas, compras o variantes asociadas", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 5_000_000 });
+    const order = repository.createOrder(takeawayOrder());
+    repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+      quantity: 1,
+    });
+
+    assert.throws(
+      () =>
+        repository.deleteProduct({
+          productId: "starter-muzza-grande",
+          reason: "Limpieza",
+          authorizerPin: "2468",
+        }),
+      /ventas, compras o variantes/i,
+    );
+
+    const category = repository.createCategory({ name: "Cat Variantes" });
+    const parent = repository.createProduct({
+      categoryId: category.id,
+      name: "Hamburguesa Base",
+      prices: [{ priceListCode: "SALON", amountMinor: 5_000 }],
+    });
+    repository.createProduct({
+      categoryId: category.id,
+      name: "Hamburguesa Doble",
+      parentProductId: parent.id,
+      prices: [{ priceListCode: "SALON", amountMinor: 6_500 }],
+    });
+
+    assert.throws(
+      () =>
+        repository.deleteProduct({
+          productId: parent.id,
+          reason: "Limpieza",
+          authorizerPin: "2468",
+        }),
+      /ventas, compras o variantes/i,
     );
   });
 });

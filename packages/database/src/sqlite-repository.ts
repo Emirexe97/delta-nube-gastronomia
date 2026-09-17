@@ -100,6 +100,7 @@ const SENSITIVE_AUDIT_ACTIONS = new Set([
   "CUSTOMER_MERGED",
   "CUSTOMER_MERGE_RECEIVED",
   "CATEGORY_DELETED",
+  "PRODUCT_DELETED",
   "PRODUCT_UPDATED",
   "PRODUCTS_BULK_UPDATED",
   "STOCK_ADJUSTED",
@@ -1513,11 +1514,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return (
       this.db
         .prepare(
-          `SELECT id FROM orders
-           WHERE cash_session_created_id = ?
+          `SELECT DISTINCT id, created_at FROM orders
+           WHERE cash_session_created_id = ? OR cash_session_paid_id = ?
            ORDER BY created_at DESC`,
         )
-        .all(cashSessionId) as Row[]
+        .all(cashSessionId, cashSessionId) as Row[]
     ).map((row) => this.getOrder(String(row.id)));
   }
 
@@ -4396,6 +4397,19 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         "La categoría no existe.",
       );
       void category;
+      if (input.parentProductId) {
+        const parentRow = this.db
+          .prepare("SELECT id, parent_product_id FROM products WHERE id = ?")
+          .get(input.parentProductId) as
+          | { id: string; parent_product_id: string | null }
+          | undefined;
+        if (!parentRow) {
+          throw new Error("El producto base indicado no existe.");
+        }
+        if (parentRow.parent_product_id) {
+          throw new Error("Una variante no puede tener variantes.");
+        }
+      }
       const id = randomUUID();
       const timestamp = nowIso();
       const sortOrder = Number(
@@ -4493,6 +4507,36 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         input.parentProductId === undefined
           ? (before.parentProductId ?? null)
           : input.parentProductId;
+      if (parentProductId) {
+        if (parentProductId === input.productId) {
+          throw new Error("Un producto no puede ser variante de sí mismo.");
+        }
+        const parentRow = this.db
+          .prepare("SELECT id, parent_product_id FROM products WHERE id = ?")
+          .get(parentProductId) as
+          | { id: string; parent_product_id: string | null }
+          | undefined;
+        if (!parentRow) {
+          throw new Error("El producto base indicado no existe.");
+        }
+        if (parentRow.parent_product_id) {
+          throw new Error("Una variante no puede tener variantes.");
+        }
+        const childCount = Number(
+          (
+            this.db
+              .prepare(
+                "SELECT COUNT(*) as count FROM products WHERE parent_product_id = ?",
+              )
+              .get(input.productId) as { count: number }
+          )?.count ?? 0,
+        );
+        if (childCount > 0) {
+          throw new Error(
+            "Un producto con variantes no puede convertirse en variante.",
+          );
+        }
+      }
       if (stockMinor !== before.stockMinor)
         this.authorizePin(input.authorizerPin, "stock.adjust");
       this.db
@@ -4553,6 +4597,92 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         stockCriticalMinor: after.stockCriticalMinor,
       });
       return after;
+    });
+    return run();
+  }
+
+  deleteProduct(input: {
+    productId: Id;
+    reason: string;
+    authorizerPin: string;
+  }): { deleted: true } {
+    const run = this.db.transaction(() => {
+      const before = requireRow(
+        this.listProducts().find((product) => product.id === input.productId),
+        "El producto no existe.",
+      );
+      if (!input.reason.trim())
+        throw new Error("La eliminación requiere un motivo.");
+      const orderCount = Number(
+        (
+          this.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM order_items WHERE product_id = ?",
+            )
+            .get(input.productId) as Row
+        )?.count ?? 0,
+      );
+      const halfCount = Number(
+        (
+          this.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM order_item_halves WHERE product_id = ?",
+            )
+            .get(input.productId) as Row
+        )?.count ?? 0,
+      );
+      const purchaseCount = Number(
+        (
+          this.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM purchase_items WHERE product_id = ?",
+            )
+            .get(input.productId) as Row
+        )?.count ?? 0,
+      );
+      const variantCount = Number(
+        (
+          this.db
+            .prepare(
+              "SELECT COUNT(*) AS count FROM products WHERE parent_product_id = ?",
+            )
+            .get(input.productId) as Row
+        )?.count ?? 0,
+      );
+      if (
+        orderCount > 0 ||
+        halfCount > 0 ||
+        purchaseCount > 0 ||
+        variantCount > 0
+      ) {
+        throw new Error(
+          "El producto tiene ventas, compras o variantes asociadas. Podés desactivarlo desde Editar.",
+        );
+      }
+      const authorizer = this.authorizePin(
+        input.authorizerPin,
+        "prices.bulk_update",
+      );
+      this.db
+        .prepare("DELETE FROM product_prices WHERE product_id = ?")
+        .run(input.productId);
+      const result = this.db
+        .prepare("DELETE FROM products WHERE id = ?")
+        .run(input.productId);
+      if (!result.changes) throw new Error("El producto no existe.");
+      this.audit({
+        entityType: "PRODUCT",
+        entityId: input.productId,
+        action: "PRODUCT_DELETED",
+        permission: "prices.bulk_update",
+        reason: input.reason.trim(),
+        before,
+        authorizerUserId: String(authorizer.id),
+      });
+      this.event("Product", input.productId, "ProductDeleted", {
+        name: before.name,
+      });
+      return { deleted: true as const };
     });
     return run();
   }

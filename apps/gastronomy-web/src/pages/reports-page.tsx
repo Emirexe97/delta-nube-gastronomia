@@ -58,7 +58,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
         </Button>
       </div>
       <Card className="p-3">
-        <div className="grid gap-3 sm:grid-cols-[minmax(170px,180px)_minmax(170px,180px)_1fr]">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[180px_180px_1fr]">
           <Field label="Día comercial desde">
             <Input
               type="date"
@@ -73,7 +73,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
               onChange={(event) => setDateTo(event.target.value)}
             />
           </Field>
-          <div className="self-end pb-1 text-xs leading-5 text-slate-400">
+          <div className="self-end pb-1 text-xs leading-5 text-slate-400 sm:col-span-2 lg:col-span-1">
             Las ventas se muestran netas en su día original; las devoluciones de
             caja se muestran en el día en que se realizaron.
           </div>
@@ -301,11 +301,11 @@ function ReportTable({
       </div>
       {rows.length ? (
         <div className="overflow-x-auto">
-          <table className="dn-table">
+          <table className="dn-table min-w-[640px]">
             <thead>
               <tr>
                 {headers.map((header, index) => (
-                  <th key={header} className={index ? "text-right" : ""}>
+                  <th key={header} className={index ? "text-right whitespace-nowrap" : "whitespace-nowrap"}>
                     {header}
                   </th>
                 ))}
@@ -318,7 +318,7 @@ function ReportTable({
                     <td
                       key={cellIndex}
                       className={
-                        cellIndex ? "text-right font-semibold" : "font-semibold"
+                        cellIndex ? "whitespace-nowrap text-right font-semibold" : "font-semibold"
                       }
                     >
                       {cell}

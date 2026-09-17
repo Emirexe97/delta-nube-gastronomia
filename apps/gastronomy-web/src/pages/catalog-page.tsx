@@ -66,6 +66,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     null,
   );
   const [editingProduct, setEditingProduct] = useState<ProductDto | null>(null);
+  const [deletingProduct, setDeletingProduct] = useState<ProductDto | null>(
+    null,
+  );
   const [newProductCategoryId, setNewProductCategoryId] = useState<
     string | null
   >(null);
@@ -263,7 +266,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           ) : null}
           {products.length ? (
             <div className="max-h-[calc(100vh-260px)] overflow-auto">
-              <table className="dn-table min-w-[640px]">
+              <table className="dn-table min-w-[920px]">
                 <thead>
                   <tr>
                     <th className="w-10">
@@ -370,16 +373,18 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                       </td>
                       <td className="text-right">
                         <div className="flex justify-end gap-1.5">
-                          <button
-                            type="button"
-                            aria-label={`Generar variante de ${product.name}`}
-                            title="Generar variante con precios propios"
-                            onClick={() => setVariantBaseProduct(product)}
-                            className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                          >
-                            <Copy size={14} />
-                            Variante
-                          </button>
+                          {!product.parentProductId ? (
+                            <button
+                              type="button"
+                              aria-label={`Generar variante de ${product.name}`}
+                              title="Generar variante con precios propios"
+                              onClick={() => setVariantBaseProduct(product)}
+                              className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                            >
+                              <Copy size={14} />
+                              Variante
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             aria-label={`Ajustar inventario de ${product.name}`}
@@ -399,6 +404,15 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                           >
                             <PencilSimple size={14} />
                             Editar
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Eliminar ${product.name}`}
+                            title={`Eliminar producto ${product.name}`}
+                            onClick={() => setDeletingProduct(product)}
+                            className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 text-rose-700 transition hover:bg-rose-50"
+                          >
+                            <Trash size={14} />
                           </button>
                         </div>
                       </td>
@@ -502,6 +516,10 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       <DeleteCategoryModal
         category={deletingCategory}
         onClose={() => setDeletingCategory(null)}
+      />
+      <DeleteProductModal
+        product={deletingProduct}
+        onClose={() => setDeletingProduct(null)}
       />
       <ModifierModal
         open={modifierOpen}
@@ -1200,7 +1218,7 @@ function CategoryTable({
       </div>
       {rows.length ? (
         <div className="max-h-[calc(100vh-260px)] overflow-auto">
-          <table className="dn-table min-w-[640px]">
+          <table className="dn-table min-w-[760px]">
             <thead>
               <tr>
                 <th>Orden</th>
@@ -1264,11 +1282,12 @@ function CategoryTable({
                         </Button>
                         <button
                           type="button"
+                          title={`Eliminar categoría ${category.name}`}
                           aria-label={`Eliminar categoría ${category.name}`}
                           onClick={() => onDelete(category)}
-                          className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-rose-200 px-2.5 text-[11px] font-bold text-rose-700 hover:bg-rose-50"
+                          className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 text-rose-700 transition hover:bg-rose-50"
                         >
-                          <Trash size={14} /> Eliminar
+                          <Trash size={14} />
                         </button>
                       </div>
                     </td>
@@ -1378,6 +1397,94 @@ function DeleteCategoryModal({
             disabled={!reason.trim() || pin.length < 4 || mutation.isPending}
           >
             Eliminar categoría
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function DeleteProductModal({
+  product,
+  onClose,
+}: {
+  product: ProductDto | null;
+  onClose(): void;
+}) {
+  const [reason, setReason] = useState("");
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (product) {
+      setReason("");
+      setPin("");
+      setError(null);
+    }
+  }, [product]);
+  const mutation = useApiMutation(
+    () =>
+      window.gastronomy.deleteProduct({
+        productId: product!.id,
+        reason: reason.trim(),
+        authorizerPin: pin,
+      }),
+    { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
+  );
+  return (
+    <Modal
+      open={Boolean(product)}
+      onClose={onClose}
+      closeDisabled={mutation.isPending}
+      title={`Eliminar producto · ${product?.name ?? ""}`}
+      description="Esta acción es irreversible y no elimina ventas ni compras históricas."
+    >
+      <form
+        className="grid gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!product || !reason.trim() || pin.length < 4) return;
+          mutation.mutate();
+        }}
+      >
+        <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
+          Sólo se puede eliminar un producto sin ventas, compras ni variantes
+          asociadas. Si tiene relaciones, desactivalo desde Editar.
+        </p>
+        <Field label="Motivo">
+          <Input
+            autoFocus
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            required
+          />
+        </Field>
+        <Field label="PIN de autorización">
+          <Input
+            type="password"
+            inputMode="numeric"
+            maxLength={8}
+            value={pin}
+            onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
+            required
+          />
+        </Field>
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700"
+          >
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={onClose}>
+            Volver
+          </Button>
+          <Button
+            type="submit"
+            disabled={!reason.trim() || pin.length < 4 || mutation.isPending}
+          >
+            Eliminar producto
           </Button>
         </div>
       </form>
@@ -1920,7 +2027,7 @@ function ProductModal({
         ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            {editing && product && onRequestVariant ? (
+            {editing && product && !product.parentProductId && onRequestVariant ? (
               <Button
                 type="button"
                 variant="secondary"
@@ -2158,6 +2265,9 @@ function CreateVariantModal({
   const mutation = useApiMutation(
     async (parsedPrices: Record<VisiblePriceListCode, number>) => {
       if (!baseProduct) throw new Error("Producto base requerido");
+      if (baseProduct.parentProductId) {
+        throw new Error("Una variante no puede tener variantes.");
+      }
       const normalizedPrices = [
         { priceListCode: "SALON" as const, amountMinor: parsedPrices.SALON },
         {
@@ -2173,7 +2283,7 @@ function CreateVariantModal({
         categoryId,
         name: name.trim(),
         code: code.trim() || null,
-        parentProductId: baseProduct.parentProductId ?? baseProduct.id,
+        parentProductId: baseProduct.id,
         stockMinor: parsedStockMinor,
         stockTargetMinor: parsedTarget,
         stockMinMinor: parsedMin,
@@ -2186,6 +2296,10 @@ function CreateVariantModal({
   );
 
   const submit = () => {
+    if (!baseProduct || baseProduct.parentProductId) {
+      setError("Una variante no puede tener variantes.");
+      return;
+    }
     if (!name.trim()) {
       setError("Indicá el nombre de la variante.");
       return;
@@ -2209,7 +2323,7 @@ function CreateVariantModal({
     mutation.mutate(parsed as Record<VisiblePriceListCode, number>);
   };
 
-  if (!baseProduct) return null;
+  if (!baseProduct || baseProduct.parentProductId) return null;
 
   return (
     <Modal

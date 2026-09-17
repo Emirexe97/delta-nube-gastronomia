@@ -47,7 +47,7 @@ export function CashSessionHistory({
         </p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="dn-table">
+          <table className="dn-table min-w-[720px]">
             <thead>
               <tr>
                 <th>Caja</th>
@@ -71,8 +71,8 @@ export function CashSessionHistory({
                       ? new Date(row.session.closedAt).toLocaleString("es-AR")
                       : "—"}
                   </td>
-                  <td>{formatMoney(row.session.salesTotalMinor ?? 0)}</td>
-                  <td className="text-right">
+                  <td className="whitespace-nowrap">{formatMoney(row.session.salesTotalMinor ?? 0)}</td>
+                  <td className="text-right whitespace-nowrap">
                     <Button
                       variant="secondary"
                       onClick={() => onReport(row.session.id)}
@@ -317,7 +317,7 @@ export function CashSessionReportModal({
               <>
                 <Aggregates data={data} />
                 <div className="overflow-x-auto">
-                  <table className="dn-table">
+                  <table className="dn-table min-w-[640px]">
                     <thead>
                       <tr>
                         <th>Pedido</th>
@@ -325,7 +325,7 @@ export function CashSessionReportModal({
                         <th>Mozo</th>
                         <th>Tipo</th>
                         <th>Estado</th>
-                        <th className="text-right">Importe</th>
+                        <th className="text-right whitespace-nowrap">Importe</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -340,7 +340,7 @@ export function CashSessionReportModal({
                               {statusLabels[o.operationalStatus]}
                             </Badge>
                           </td>
-                          <td className="text-right font-bold">
+                          <td className="whitespace-nowrap text-right font-bold">
                             {formatMoney(o.paidMinor)}
                           </td>
                         </tr>
@@ -349,7 +349,7 @@ export function CashSessionReportModal({
                   </table>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="dn-table">
+                  <table className="dn-table min-w-[640px]">
                     <thead>
                       <tr>
                         <th>Movimiento</th>

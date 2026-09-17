@@ -225,6 +225,11 @@ export interface GastronomyRepository {
     }>;
   }): ProductDto;
   updateProduct(input: UpdateProductInput): ProductDto;
+  deleteProduct(input: {
+    productId: Id;
+    reason: string;
+    authorizerPin: string;
+  }): { deleted: true };
   bulkUpdateProducts(input: BulkUpdateProductsInput): ProductDto[];
   createModifier(input: {
     groupName: string;
@@ -766,6 +771,17 @@ export class GastronomyApplication {
       ...input,
       name: input.name.trim(),
       prices,
+      reason: input.reason.trim(),
+    });
+  }
+
+  deleteProduct(input: Parameters<GastronomyRepository["deleteProduct"]>[0]) {
+    if (!input.reason.trim())
+      throw new Error("La eliminación requiere un motivo.");
+    if (!/^\d{4,8}$/.test(input.authorizerPin))
+      throw new Error("El PIN de autorización no es válido.");
+    return this.repository.deleteProduct({
+      ...input,
       reason: input.reason.trim(),
     });
   }

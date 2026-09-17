@@ -1049,6 +1049,60 @@ describe("API de demostración", () => {
     ).rejects.toThrow(/PIN|permiso/i);
   });
 
+  it("elimina un producto libre, audita y persiste el cambio", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    const category = await api.createCategory({ name: "Temporal Cat" });
+    const product = await api.createProduct({
+      categoryId: category.id,
+      name: "Producto libre",
+      prices: [
+        { priceListCode: "SALON", amountMinor: 1000 },
+        { priceListCode: "TAKEAWAY", amountMinor: 900 },
+        { priceListCode: "DELIVERY", amountMinor: 900 },
+      ],
+    });
+    await expect(
+      api.deleteProduct({
+        productId: product.id,
+        reason: "Limpieza",
+        authorizerPin: "1234",
+      }),
+    ).resolves.toEqual({ deleted: true });
+    expect(
+      (await createDemoApi(storage).bootstrap()).products.some(
+        (item) => item.id === product.id,
+      ),
+    ).toBe(false);
+  });
+
+  it("bloquea eliminar producto con relaciones o PIN inválido", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    await expect(
+      api.deleteProduct({
+        productId: "prod-muzza",
+        reason: "Quitar",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("ventas, compras o variantes");
+    const category = await api.createCategory({ name: "Cat Temp" });
+    const product = await api.createProduct({
+      categoryId: category.id,
+      name: "Prod Temp",
+      prices: [
+        { priceListCode: "SALON", amountMinor: 500 },
+        { priceListCode: "DELIVERY", amountMinor: 500 },
+      ],
+    });
+    await expect(
+      api.deleteProduct({
+        productId: product.id,
+        reason: "Quitar",
+        authorizerPin: "0000",
+      }),
+    ).rejects.toThrow(/PIN/i);
+  });
+
   it("permite configurar control de stock por categoría y sincronizar productos masivamente", async () => {
     const api = createDemoApi(new MemoryStorage());
     const category = await api.createCategory({
@@ -1781,6 +1835,73 @@ describe("API de demostración", () => {
       variantSalonPrice,
     );
     expect(orderWithVariant.items[0]?.lineTotalMinor).toBe(variantSalonPrice);
+  });
+
+  it("rechaza que una variante tenga variantes y que un producto con variantes se convierta en variante", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const baseProduct = (await api.bootstrap()).products[0]!;
+
+    const variant = await api.createProduct({
+      categoryId: baseProduct.categoryId,
+      name: "Variante Nivel 1",
+      parentProductId: baseProduct.id,
+      prices: [
+        { priceListCode: "SALON", amountMinor: 10_000 },
+        { priceListCode: "TAKEAWAY", amountMinor: 10_000 },
+        { priceListCode: "DELIVERY", amountMinor: 10_000 },
+      ],
+    });
+
+    await expect(
+      api.createProduct({
+        categoryId: baseProduct.categoryId,
+        name: "Subvariante Nivel 2",
+        parentProductId: variant.id,
+        prices: [
+          { priceListCode: "SALON", amountMinor: 10_000 },
+          { priceListCode: "TAKEAWAY", amountMinor: 10_000 },
+          { priceListCode: "DELIVERY", amountMinor: 10_000 },
+        ],
+      }),
+    ).rejects.toThrow("Una variante no puede tener variantes.");
+
+    const validPrices = [
+      { priceListCode: "SALON" as const, amountMinor: 10_000 },
+      { priceListCode: "TAKEAWAY" as const, amountMinor: 10_000 },
+      { priceListCode: "DELIVERY" as const, amountMinor: 10_000 },
+    ];
+
+    await expect(
+      api.updateProduct({
+        productId: baseProduct.id,
+        categoryId: baseProduct.categoryId,
+        name: baseProduct.name,
+        active: true,
+        parentProductId: variant.id,
+        prices: validPrices,
+        reason: "Prueba subvariante",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("Una variante no puede tener variantes.");
+
+    const anotherBase = (await api.bootstrap()).products.find(
+      (p) => p.id !== baseProduct.id && !p.parentProductId,
+    )!;
+
+    await expect(
+      api.updateProduct({
+        productId: baseProduct.id,
+        categoryId: baseProduct.categoryId,
+        name: baseProduct.name,
+        active: true,
+        parentProductId: anotherBase.id,
+        prices: validPrices,
+        reason: "Prueba convertir padre con hijos en variante",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow(
+      "Un producto con variantes no puede convertirse en variante.",
+    );
   });
 
   it("permite liquidar envíos de múltiples repartidores en una misma operación", async () => {

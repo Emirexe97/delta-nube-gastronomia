@@ -71,7 +71,7 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex h-10 max-w-full min-w-0 items-center justify-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 disabled:cursor-not-allowed",
+        "inline-flex h-10 max-w-full min-w-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 text-[13px] font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 disabled:cursor-not-allowed shrink-0",
         variants[variant],
         className,
       )}
@@ -181,7 +181,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-wide",
+        "inline-flex items-center whitespace-nowrap shrink-0 rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-wide",
         tones[tone],
       )}
     >

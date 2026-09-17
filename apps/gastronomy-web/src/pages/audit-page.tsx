@@ -93,7 +93,7 @@ export function AuditPage() {
           </div>
         ) : rows.length ? (
           <div className="max-h-[calc(100vh-270px)] overflow-auto">
-            <table className="dn-table">
+            <table className="dn-table min-w-[700px]">
               <thead>
                 <tr>
                   <th>Fecha</th>
