@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   BootstrapDto,
   OrderDto,
@@ -98,6 +98,17 @@ export function OrderEditor({
   useEffect(() => {
     if (orderId) window.setTimeout(() => searchRef.current?.focus(), 80);
   }, [orderId]);
+
+  const isHalfAndHalfSearch = useMemo(() => {
+    if (!search.trim()) return false;
+    const q = normalizeSearch(search);
+    return (
+      q.includes("mitad") ||
+      q.includes("media") ||
+      q === "mm" ||
+      q === "mym"
+    );
+  }, [search]);
 
   const products = useMemo(() => {
     // En la grilla principal sólo se muestran los productos base/padres
@@ -416,6 +427,17 @@ export function OrderEditor({
         Boolean(notesItemId);
       if (nestedDialogOpen) return;
 
+      if (event.key === "F6") {
+        const canOpenHalf =
+          !locked &&
+          data.products.length >= 2;
+        if (canOpenHalf) {
+          event.preventDefault();
+          setHalfOpen(true);
+        }
+        return;
+      }
+
       if (event.key === "F7") {
         const canPrintComanda =
           order.items.length > 0 &&
@@ -555,8 +577,18 @@ export function OrderEditor({
                   !locked &&
                   !addItem.isPending &&
                   !variantPickerProduct &&
-                  !addingProduct
+                  !addingProduct &&
+                  !halfOpen
                 ) {
+                  if (
+                    isHalfAndHalfSearch &&
+                    (!products.length || activeProductIndex === 0)
+                  ) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setHalfOpen(true);
+                    return;
+                  }
                   const targetProduct = products[activeProductIndex] ?? products[0];
                   if (targetProduct) {
                     event.preventDefault();
@@ -565,7 +597,7 @@ export function OrderEditor({
                   }
                 }
               }}
-              placeholder="Código, nombre, categoría… · Enter agrega · ↑ ↓ navega"
+              placeholder="Código, nombre, categoría… · Enter agrega · F6 mitad y mitad · ↑ ↓ navega"
               className="bg-white pl-9"
               disabled={locked}
             />
@@ -600,6 +632,51 @@ export function OrderEditor({
               ))}
           </div>
           <div className="mt-2 grid min-h-0 flex-1 auto-rows-min grid-cols-2 gap-2 overflow-y-auto p-1.5 xl:grid-cols-3">
+            {isHalfAndHalfSearch ? (
+              <div
+                id="order-editor-half-and-half-card"
+                role="button"
+                tabIndex={0}
+                onClick={() => setHalfOpen(true)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setHalfOpen(true);
+                  }
+                }}
+                className={cn(
+                  "focus-ring group m-1 flex min-h-[76px] cursor-pointer flex-col justify-between rounded-xl border border-brand-300 bg-brand-50/50 p-3 text-left transition hover:border-brand-400 hover:bg-brand-50/80 hover:shadow-sm scroll-m-2",
+                  activeProductIndex === 0 &&
+                    "border-brand-500 ring-2 ring-brand-500/80 shadow-md bg-brand-50/70",
+                )}
+              >
+                <div>
+                  <div className="flex items-start justify-between gap-1">
+                    <div className="flex items-center gap-1.5">
+                      <Pizza className="text-brand-600 shrink-0" size={16} />
+                      <p className="line-clamp-2 text-[12px] font-bold text-brand-900">
+                        Pizza mitad y mitad
+                      </p>
+                    </div>
+                    <span className="inline-flex shrink-0 items-center rounded bg-brand-200/80 px-1.5 py-0.5 text-[9px] font-bold text-brand-800">
+                      F6
+                    </span>
+                  </div>
+                  <span className="text-[9px] font-semibold uppercase tracking-wide text-brand-600/80">
+                    Pizzas combinadas
+                  </span>
+                </div>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="text-[10px] font-medium text-slate-500">
+                    Elegir 2 variedades
+                  </span>
+                  <span className="text-xs font-bold text-brand-700">
+                    Configurar →
+                  </span>
+                </div>
+              </div>
+            ) : null}
             {products.map((product, index) => {
               const code = order.type === "DINE_IN" ? "SALON" : order.type;
               const price = product.prices.find(
@@ -721,7 +798,8 @@ export function OrderEditor({
             onClick={() => setHalfOpen(true)}
             disabled={locked || data.products.length < 2}
           >
-            <Pizza size={17} /> Pizza mitad y mitad
+            <Pizza size={17} /> Pizza mitad y mitad{" "}
+            <kbd className="text-[9px] opacity-70">F6</kbd>
           </Button>
         </section>
         <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-white">
@@ -1336,7 +1414,11 @@ export function OrderEditor({
         open={halfOpen}
         order={order}
         data={data}
-        onClose={() => setHalfOpen(false)}
+        onClose={() => {
+          setHalfOpen(false);
+          setSearch("");
+          window.setTimeout(() => searchRef.current?.focus(), 50);
+        }}
         onError={setError}
       />
       <ModifierModal
@@ -2065,6 +2147,7 @@ export function PizzaHalfSelector({
   inputRef?: React.RefObject<HTMLInputElement>;
   onEnterNext?(): void;
 }) {
+  const optionIdPrefix = useId();
   const [query, setQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -2087,6 +2170,12 @@ export function PizzaHalfSelector({
       setActiveIndex(0);
     }
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const el = document.getElementById(`${optionIdPrefix}-opt-${activeIndex}`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, isOpen, optionIdPrefix]);
 
   useEffect(() => {
     return () => {
@@ -2199,18 +2288,23 @@ export function PizzaHalfSelector({
                     : 0,
                 );
               } else if (event.key === "Enter") {
-                if (isOpen && suggestions[activeIndex]) {
+                const target =
+                  isOpen && suggestions[activeIndex]
+                    ? suggestions[activeIndex]
+                    : suggestions.length > 0
+                      ? suggestions[0]
+                      : null;
+                if (target) {
                   event.preventDefault();
                   event.stopPropagation();
-                  handleSelect(suggestions[activeIndex]!);
-                } else if (suggestions.length === 1) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  handleSelect(suggestions[0]!);
+                  handleSelect(target);
                 }
               } else if (event.key === "Escape") {
-                event.preventDefault();
-                setIsOpen(false);
+                if (isOpen) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setIsOpen(false);
+                }
               }
             }}
           />
@@ -2244,6 +2338,7 @@ export function PizzaHalfSelector({
                 return (
                   <button
                     key={product.id}
+                    id={`${optionIdPrefix}-opt-${idx}`}
                     type="button"
                     role="option"
                     aria-selected={isHighlighted}
@@ -2305,12 +2400,17 @@ function HalfAndHalfModal({
   const [localError, setLocalError] = useState<string | null>(null);
   const firstInputRef = useRef<HTMLInputElement>(null);
   const secondInputRef = useRef<HTMLInputElement>(null);
+  const submitButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
     setFirst("");
     setSecond("");
     setLocalError(null);
+    const timer = window.setTimeout(() => {
+      firstInputRef.current?.focus();
+    }, 60);
+    return () => window.clearTimeout(timer);
   }, [open, order.id]);
 
   const mutation = useApiMutation(
@@ -2404,7 +2504,7 @@ function HalfAndHalfModal({
           autoFocus
           inputRef={firstInputRef}
           onEnterNext={() => {
-            window.setTimeout(() => secondInputRef.current?.focus(), 50);
+            window.setTimeout(() => secondInputRef.current?.focus(), 60);
           }}
         />
 
@@ -2422,6 +2522,9 @@ function HalfAndHalfModal({
             setLocalError(null);
           }}
           inputRef={secondInputRef}
+          onEnterNext={() => {
+            window.setTimeout(() => submitButtonRef.current?.focus(), 60);
+          }}
         />
 
         {estimatedPrice != null ? (
@@ -2461,6 +2564,7 @@ function HalfAndHalfModal({
             Volver
           </Button>
           <Button
+            ref={submitButtonRef}
             type="submit"
             disabled={!first || !second || mutation.isPending}
           >

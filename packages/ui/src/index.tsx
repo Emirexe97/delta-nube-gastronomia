@@ -51,13 +51,12 @@ export function cn(...values: ClassValue[]) {
   return clsx(values);
 }
 
-export function Button({
-  variant = "primary",
-  className,
-  ...props
-}: React.ComponentPropsWithoutRef<"button"> & {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-}) {
+export const Button = React.forwardRef<
+  HTMLButtonElement,
+  React.ComponentPropsWithoutRef<"button"> & {
+    variant?: "primary" | "secondary" | "ghost" | "danger";
+  }
+>(({ variant = "primary", className, ...props }, ref) => {
   const variants = {
     primary:
       "bg-brand-600 text-white shadow-sm hover:bg-brand-700 disabled:bg-slate-300 disabled:text-white disabled:shadow-none",
@@ -70,6 +69,7 @@ export function Button({
   };
   return (
     <button
+      ref={ref}
       className={cn(
         "inline-flex h-10 max-w-full min-w-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 text-[13px] font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 disabled:cursor-not-allowed shrink-0",
         variants[variant],
@@ -78,7 +78,8 @@ export function Button({
       {...props}
     />
   );
-}
+});
+Button.displayName = "Button";
 
 export const Input = React.forwardRef<
   HTMLInputElement,
