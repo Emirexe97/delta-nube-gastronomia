@@ -490,18 +490,17 @@ export function OrderEditor({
   const locked = ["DELIVERED", "CANCELLED"].includes(order.operationalStatus);
   const isDraft = order.lifecycleStatus === "DRAFT";
 
-  const isPizzaCategory = useMemo(() => {
-    if (!categoryId) return false;
-    const cat = data.categories.find((c) => c.id === categoryId);
-    return cat ? cat.name.toLocaleLowerCase("es-AR").includes("pizza") : false;
-  }, [data.categories, categoryId]);
-
-  const showHalfAndHalfCard = useMemo(() => {
-    if (locked || data.products.length < 2) return false;
-    if (isHalfAndHalfSearch) return true;
-    if (isPizzaCategory && !search.trim()) return true;
-    return false;
-  }, [locked, data.products.length, isHalfAndHalfSearch, isPizzaCategory, search]);
+  const isPizzaCategory = Boolean(
+    categoryId &&
+      data.categories
+        .find((category) => category.id === categoryId)
+        ?.name.toLocaleLowerCase("es-AR")
+        .includes("pizza"),
+  );
+  const showHalfAndHalfCard =
+    !locked &&
+    data.products.length >= 2 &&
+    (isHalfAndHalfSearch || (isPizzaCategory && !search.trim()));
   const addingCatalogPrice = addingProduct ? productPrice(addingProduct) : null;
   const addingParsedPrice = parseMoneyInput(addingPrice);
   const addingPriceChanged =

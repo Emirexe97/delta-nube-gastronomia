@@ -45,6 +45,21 @@ test.afterEach(async () => {
   await rm(userData, { recursive: true, force: true });
 });
 
+test("abre una mesa y muestra el editor del pedido", async () => {
+  await page.getByRole("button", { name: "Abrir mesa 51" }).click();
+  await page
+    .getByRole("dialog", { name: "Abrir mesa 51" })
+    .getByRole("button", { name: "Abrir mesa" })
+    .click();
+
+  await expect(
+    page.getByRole("dialog", { name: /Pedido #\d+ · Salón/ }),
+  ).toBeVisible();
+  await expect(
+    page.getByPlaceholder(/Código, nombre, categoría/),
+  ).toBeVisible();
+});
+
 test("cancelar modal no elimina mesa y confirmar elimina sólo la mesa elegida", async () => {
   const card = page.getByText("Mesa 51", { exact: true }).locator("..");
   await card.getByRole("button", { name: "Eliminar mesa 51" }).click();
