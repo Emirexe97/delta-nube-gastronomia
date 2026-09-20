@@ -489,6 +489,19 @@ export function OrderEditor({
   if (!order) return null;
   const locked = ["DELIVERED", "CANCELLED"].includes(order.operationalStatus);
   const isDraft = order.lifecycleStatus === "DRAFT";
+
+  const isPizzaCategory = useMemo(() => {
+    if (!categoryId) return false;
+    const cat = data.categories.find((c) => c.id === categoryId);
+    return cat ? cat.name.toLocaleLowerCase("es-AR").includes("pizza") : false;
+  }, [data.categories, categoryId]);
+
+  const showHalfAndHalfCard = useMemo(() => {
+    if (locked || data.products.length < 2) return false;
+    if (isHalfAndHalfSearch) return true;
+    if (isPizzaCategory && !search.trim()) return true;
+    return false;
+  }, [locked, data.products.length, isHalfAndHalfSearch, isPizzaCategory, search]);
   const addingCatalogPrice = addingProduct ? productPrice(addingProduct) : null;
   const addingParsedPrice = parseMoneyInput(addingPrice);
   const addingPriceChanged =
@@ -632,7 +645,7 @@ export function OrderEditor({
               ))}
           </div>
           <div className="mt-2 grid min-h-0 flex-1 auto-rows-min grid-cols-2 gap-2 overflow-y-auto p-1.5 xl:grid-cols-3">
-            {isHalfAndHalfSearch ? (
+            {showHalfAndHalfCard ? (
               <div
                 id="order-editor-half-and-half-card"
                 role="button"
@@ -647,7 +660,8 @@ export function OrderEditor({
                 }}
                 className={cn(
                   "focus-ring group m-1 flex min-h-[76px] cursor-pointer flex-col justify-between rounded-xl border border-brand-300 bg-brand-50/50 p-3 text-left transition hover:border-brand-400 hover:bg-brand-50/80 hover:shadow-sm scroll-m-2",
-                  activeProductIndex === 0 &&
+                  isHalfAndHalfSearch &&
+                    activeProductIndex === 0 &&
                     "border-brand-500 ring-2 ring-brand-500/80 shadow-md bg-brand-50/70",
                 )}
               >
@@ -2154,6 +2168,8 @@ export function PizzaHalfSelector({
   const localInputRef = useRef<HTMLInputElement>(null);
   const actualInputRef = inputRef ?? localInputRef;
   const blurTimerRef = useRef<number | null>(null);
+  const isInteractingRef = useRef(false);
+  const selectingLockRef = useRef(false);
 
   const selectedProduct = useMemo(
     () => pizzas.find((p) => p.id === selectedId),
@@ -2186,10 +2202,16 @@ export function PizzaHalfSelector({
   }, []);
 
   const handleSelect = (product: ProductDto) => {
+    if (selectingLockRef.current) return;
+    selectingLockRef.current = true;
+    isInteractingRef.current = false;
     onSelect(product);
     setIsOpen(false);
     setQuery("");
     onEnterNext?.();
+    window.setTimeout(() => {
+      selectingLockRef.current = false;
+    }, 150);
   };
 
   const getPrice = (product: ProductDto) =>
@@ -2254,6 +2276,13 @@ export function PizzaHalfSelector({
             placeholder={`Buscar ${label.toLocaleLowerCase("es-AR")} (ej. Muzzarella, Jamón...)`}
             className="pl-9 pr-8"
             value={query}
+            onClick={() => {
+              if (blurTimerRef.current !== null) {
+                window.clearTimeout(blurTimerRef.current);
+                blurTimerRef.current = null;
+              }
+              setIsOpen(true);
+            }}
             onChange={(event) => {
               setQuery(event.target.value);
               setIsOpen(true);
@@ -2267,10 +2296,12 @@ export function PizzaHalfSelector({
               setIsOpen(true);
             }}
             onBlur={() => {
+              if (isInteractingRef.current) return;
               blurTimerRef.current = window.setTimeout(() => {
+                if (isInteractingRef.current) return;
                 setIsOpen(false);
                 blurTimerRef.current = null;
-              }, 150);
+              }, 200);
             }}
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
@@ -2328,7 +2359,19 @@ export function PizzaHalfSelector({
         {isOpen ? (
           <div
             role="listbox"
-            onMouseDown={(event) => event.preventDefault()}
+            onMouseEnter={() => {
+              isInteractingRef.current = true;
+            }}
+            onMouseLeave={() => {
+              isInteractingRef.current = false;
+            }}
+            onPointerDown={() => {
+              isInteractingRef.current = true;
+            }}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              isInteractingRef.current = true;
+            }}
             className="absolute inset-x-0 top-[calc(100%+4px)] z-40 max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl"
           >
             {suggestions.length > 0 ? (
@@ -2341,11 +2384,24 @@ export function PizzaHalfSelector({
                     id={`${optionIdPrefix}-opt-${idx}`}
                     type="button"
                     role="option"
+                    tabIndex={-1}
                     aria-selected={isHighlighted}
-                    onClick={() => handleSelect(product)}
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      isInteractingRef.current = true;
+                    }}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      isInteractingRef.current = true;
+                      handleSelect(product);
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      handleSelect(product);
+                    }}
                     onMouseEnter={() => setActiveIndex(idx)}
                     className={cn(
-                      "flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition",
+                      "flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition",
                       isHighlighted
                         ? "bg-brand-50 font-semibold text-brand-900"
                         : "text-slate-700 hover:bg-slate-50",

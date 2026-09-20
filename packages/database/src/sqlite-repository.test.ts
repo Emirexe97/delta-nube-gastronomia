@@ -4008,4 +4008,73 @@ test("pago a repartidor al cobrar pedido es configurable (inmediato vs acumulado
   });
 });
 
+test("permite registrar movimientos de caja con diferentes medios de pago y valida affects_cash", () => {
+  withRepository((repository) => {
+    const session = repository.openCashSession({ openingAmountMinor: 5_000_000 });
+
+    // 1. Gasto por Transferencia por importe superior al efectivo en caja:
+    // Debe permitirlo ya que no consume efectivo físico del cajón.
+    const afterTransfer = repository.registerCashMovement({
+      type: "EXPENSE",
+      amountMinor: 10_000_000,
+      reason: "Pago a proveedor por transferencia",
+      paymentMethodCode: "TRANSFER",
+    });
+    assert.equal(afterTransfer.expectedAmountMinor, 5_000_000);
+    assert.equal(afterTransfer.cashExpenseMinor, 0);
+
+    // 2. Gasto en Efectivo por importe superior al disponible: debe fallar
+    assert.throws(
+      () =>
+        repository.registerCashMovement({
+          type: "EXPENSE",
+          amountMinor: 6_000_000,
+          reason: "Gasto en efectivo excesivo",
+          paymentMethodCode: "CASH",
+        }),
+      /efectivo suficiente/,
+    );
+
+    // 3. Gasto en Efectivo válido: descuenta efectivo esperado
+    const afterCash = repository.registerCashMovement({
+      type: "EXPENSE",
+      amountMinor: 2_000_000,
+      reason: "Artículos de limpieza en efectivo",
+      paymentMethodCode: "CASH",
+    });
+    assert.equal(afterCash.expectedAmountMinor, 3_000_000);
+    assert.equal(afterCash.cashExpenseMinor, 2_000_000);
+
+    // 4. Informe de caja incluye medios de pago y nombres (OPENING + 2 EXPENSE)
+    const report = repository.getCashSessionReport({
+      cashSessionId: session.id,
+    });
+    assert.equal(report.movements.length, 3);
+
+    const transferMovement = report.movements.find(
+      (m) => m.paymentMethodCode === "TRANSFER",
+    );
+    assert.ok(transferMovement);
+    assert.equal(transferMovement.paymentMethodName, "Transferencia");
+    assert.equal(transferMovement.affectsCash, false);
+    assert.equal(transferMovement.amountMinor, 10_000_000);
+
+    const cashMovement = report.movements.find(
+      (m) => m.paymentMethodCode === "CASH",
+    );
+    assert.ok(cashMovement);
+    assert.equal(cashMovement.paymentMethodName, "Efectivo");
+    assert.equal(cashMovement.affectsCash, true);
+    assert.equal(cashMovement.amountMinor, 2_000_000);
+
+    // 5. Anulación de movimiento por transferencia no altera el efectivo físico
+    const afterReversal = repository.reverseCashMovement({
+      movementId: transferMovement.id,
+      reason: "Error de carga",
+      authorizerPin: "2468",
+    });
+    assert.equal(afterReversal.expectedAmountMinor, 3_000_000);
+  });
+});
+
 

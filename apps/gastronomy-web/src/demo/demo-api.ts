@@ -681,6 +681,33 @@ function normalize(state: DemoState) {
         byMethod.set(payment.methodCode, item);
       }
     state.data.cashSession.salesByPaymentMethod = [...byMethod.values()];
+    state.data.cashSession.movements = state.movements
+      .filter((m) => m.sessionId === state.data.cashSession?.id)
+      .map((m) => {
+        const method = state.data.paymentMethods.find(
+          (p) => p.code === m.paymentMethodCode,
+        );
+        return {
+          id: m.id,
+          type: m.type,
+          amountMinor: m.amountMinor,
+          affectsCash: m.affectsCash,
+          paymentMethodCode: m.paymentMethodCode,
+          paymentMethodName:
+            method?.name ??
+            (m.paymentMethodCode === "CASH" ? "Efectivo" : m.paymentMethodCode),
+          orderId: m.orderId,
+          userId: m.userId,
+          reason: m.reason,
+          createdAt: m.createdAt,
+          referenceId: (m as any).referenceId ?? null,
+          reversedById:
+            state.movements.find(
+              (other) => (other as any).referenceId === m.id,
+            )?.id ?? null,
+        };
+      })
+      .reverse();
   }
   refreshTables(state.data);
   state.data.dashboard = makeDashboard(state.data);
@@ -908,7 +935,18 @@ function sessionReport(
     byPaymentMethod,
     orders: detailAvailable ? orders : [],
     movements: detailAvailable
-      ? state.movements.filter((m) => m.sessionId === session.id)
+      ? state.movements
+          .filter((m) => m.sessionId === session.id)
+          .map((m) => ({
+            ...m,
+            paymentMethodName:
+              state.data.paymentMethods.find(
+                (p) => p.code === m.paymentMethodCode,
+              )?.name ??
+              (m.paymentMethodCode === "CASH"
+                ? "Efectivo"
+                : m.paymentMethodCode),
+          }))
       : [],
     filters,
   });
@@ -1110,31 +1148,42 @@ export function createDemoApi(
         throw new Error("Abrí una caja antes de registrar movimientos.");
       if (input.amountMinor <= 0)
         throw new Error("El importe debe ser mayor que cero.");
+      const methodCode = input.paymentMethodCode || "CASH";
+      const method = state.data.paymentMethods.find(
+        (m) => m.code === methodCode && m.active,
+      );
+      if (!method) {
+        throw new Error(`El medio de pago ${methodCode} no está disponible.`);
+      }
+      const affectsCash = method.affectsCash;
       if (
+        affectsCash &&
         ["EXPENSE", "WITHDRAWAL"].includes(input.type) &&
         input.amountMinor > cash.expectedAmountMinor
       )
         throw new Error(
           "La caja no tiene efectivo suficiente. Registrá un ingreso o corregí el importe antes de continuar.",
         );
-      cash.expectedAmountMinor += ["EXPENSE", "WITHDRAWAL"].includes(input.type)
-        ? -input.amountMinor
-        : input.amountMinor;
-      if (input.type === "INCOME")
-        cash.cashIncomeMinor = (cash.cashIncomeMinor ?? 0) + input.amountMinor;
-      if (input.type === "EXPENSE")
-        cash.cashExpenseMinor =
-          (cash.cashExpenseMinor ?? 0) + input.amountMinor;
-      if (input.type === "WITHDRAWAL")
-        cash.cashWithdrawalMinor =
-          (cash.cashWithdrawalMinor ?? 0) + input.amountMinor;
+      if (affectsCash) {
+        cash.expectedAmountMinor += ["EXPENSE", "WITHDRAWAL"].includes(input.type)
+          ? -input.amountMinor
+          : input.amountMinor;
+        if (input.type === "INCOME")
+          cash.cashIncomeMinor = (cash.cashIncomeMinor ?? 0) + input.amountMinor;
+        if (input.type === "EXPENSE")
+          cash.cashExpenseMinor =
+            (cash.cashExpenseMinor ?? 0) + input.amountMinor;
+        if (input.type === "WITHDRAWAL")
+          cash.cashWithdrawalMinor =
+            (cash.cashWithdrawalMinor ?? 0) + input.amountMinor;
+      }
       state.movements.push({
         id: uid("movement", state),
         sessionId: cash.id,
         type: input.type,
         amountMinor: input.amountMinor,
-        affectsCash: true,
-        paymentMethodCode: null,
+        affectsCash,
+        paymentMethodCode: method.code,
         orderId: null,
         userId: state.data.currentUser.id,
         reason: input.reason ?? null,
@@ -3720,8 +3769,63 @@ export function createDemoApi(
       save();
       return output(state.data.settings);
     },
-    async reverseCashMovement() {
-      throw new Error("No implementado en modo demo.");
+    async reverseCashMovement(input) {
+      const cash = state.data.cashSession;
+      if (!cash || cash.status !== "OPEN")
+        throw new Error("Abrí una caja antes de anular movimientos.");
+      const original = state.movements.find((m) => m.id === input.movementId);
+      if (!original) throw new Error("El movimiento no existe.");
+      if (
+        state.movements.some(
+          (m) => (m as any).referenceId === input.movementId,
+        )
+      ) {
+        throw new Error("Este movimiento ya fue anulado.");
+      }
+      if (["OPENING", "CLOSING", "SALE", "REFUND"].includes(original.type)) {
+        throw new Error(
+          "No podés anular este tipo de movimiento directamente.",
+        );
+      }
+      const reversedType =
+        original.type === "INCOME"
+          ? "EXPENSE"
+          : original.type === "EXPENSE"
+            ? "INCOME"
+            : original.type === "WITHDRAWAL"
+              ? "INCOME"
+              : "EXPENSE";
+      if (original.affectsCash) {
+        cash.expectedAmountMinor += [
+          "EXPENSE",
+          "WITHDRAWAL",
+        ].includes(reversedType)
+          ? -original.amountMinor
+          : original.amountMinor;
+      }
+      const newMovement = {
+        id: uid("movement", state),
+        sessionId: cash.id,
+        type: reversedType as CashMovementType,
+        amountMinor: original.amountMinor,
+        affectsCash: original.affectsCash,
+        paymentMethodCode: original.paymentMethodCode,
+        orderId: original.orderId,
+        userId: state.data.currentUser.id,
+        reason: `Anulación: ${input.reason.trim()}`,
+        createdAt: now(),
+        referenceId: input.movementId,
+      };
+      state.movements.push(newMovement);
+      audit(
+        state,
+        "CASH_MOVEMENT",
+        newMovement.id,
+        "CASH_REVERSED",
+        input.reason,
+      );
+      save();
+      return output(cash);
     },
     async reverseDeliverySettlement() {
       throw new Error("No implementado en modo demo.");

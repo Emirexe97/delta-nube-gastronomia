@@ -15,6 +15,7 @@ import type {
   CancelOrderInput,
   ChangeOrderTableInput,
   CashMovementInput,
+  CashMovementDto,
   CashSessionDto,
   CashMovementType,
   CashSessionHistoryItemDto,
@@ -640,7 +641,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   private cashSessionDto(row: Row): CashSessionDto {
     const movements = this.db
       .prepare(
-        "SELECT type, amount_minor, affects_cash FROM cash_movements WHERE cash_session_id = ?",
+        `SELECT cm.*, pm.code AS payment_method_code, pm.name AS payment_method_name,
+           (SELECT id FROM cash_movements WHERE reference_id = cm.id) AS reversed_by_id
+         FROM cash_movements cm
+         LEFT JOIN payment_methods pm ON pm.id = cm.payment_method_id
+         WHERE cm.cash_session_id = ?
+         ORDER BY cm.created_at DESC`,
       )
       .all(row.id) as Row[];
     const expected =
@@ -734,6 +740,22 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         code: String(sale.code),
         name: String(sale.name),
         amountMinor: Number(sale.amount_minor),
+      })),
+      movements: movements.map((m) => ({
+        id: String(m.id),
+        type: String(m.type) as CashMovementType,
+        amountMinor: Number(m.amount_minor),
+        affectsCash: flag(m.affects_cash),
+        paymentMethodCode:
+          m.payment_method_code == null ? null : String(m.payment_method_code),
+        paymentMethodName:
+          m.payment_method_name == null ? null : String(m.payment_method_name),
+        orderId: m.order_id == null ? null : String(m.order_id),
+        userId: String(m.user_id),
+        reason: m.reason == null ? null : String(m.reason),
+        createdAt: String(m.created_at),
+        referenceId: m.reference_id == null ? null : String(m.reference_id),
+        reversedById: m.reversed_by_id == null ? null : String(m.reversed_by_id),
       })),
       status: String(row.status) as CashSessionDto["status"],
     };
@@ -957,25 +979,38 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         const run = this.db.transaction(() => {
           const session = this.requireOpenCashSessionRow();
           const currentCash = this.cashSessionDto(session);
+          const methodCode = input.paymentMethodCode || "CASH";
+          const method = requireRow(
+            this.db
+              .prepare(
+                "SELECT * FROM payment_methods WHERE code = ? AND active = 1",
+              )
+              .get(methodCode) as Row | undefined,
+            `El medio de pago ${methodCode} no está disponible.`,
+          );
+          const affectsCash = flag(method.affects_cash);
           if (
-            (["EXPENSE", "WITHDRAWAL"].includes(input.type) &&
+            affectsCash &&
+            ((["EXPENSE", "WITHDRAWAL"].includes(input.type) &&
               input.amountMinor > currentCash.expectedAmountMinor) ||
-            (input.type === "ADJUSTMENT" &&
-              currentCash.expectedAmountMinor + input.amountMinor < 0)
+              (input.type === "ADJUSTMENT" &&
+                currentCash.expectedAmountMinor + input.amountMinor < 0))
           )
             throw new Error(
               "La caja no tiene efectivo suficiente. Registrá un ingreso o corregí el importe antes de continuar.",
             );
           this.db
             .prepare(
-              `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, user_id, reason, created_at)
-           VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+              `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, payment_method_id, user_id, reason, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             )
             .run(
               randomUUID(),
               session.id,
               input.type,
               input.amountMinor,
+              affectsCash ? 1 : 0,
+              method.id,
               this.adminUserId,
               reason,
               nowIso(),
@@ -987,7 +1022,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             permission:
               input.type === "WITHDRAWAL" ? "cash.withdraw" : "cash.expense",
             reason,
-            after: { amountMinor: input.amountMinor },
+            after: {
+              amountMinor: input.amountMinor,
+              paymentMethodCode: String(method.code),
+              affectsCash,
+            },
           });
           this.event(
             "CashSession",
@@ -995,6 +1034,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             "CashMovementRecorded",
             {
               ...input,
+              paymentMethodCode: String(method.code),
+              affectsCash,
               reason,
             },
           );
@@ -6399,7 +6440,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const movements = (
       this.db
         .prepare(
-          `SELECT cm.*, pm.code AS payment_method_code FROM cash_movements cm LEFT JOIN payment_methods pm ON pm.id = cm.payment_method_id WHERE cm.cash_session_id = ? ORDER BY cm.created_at`,
+          `SELECT cm.*, pm.code AS payment_method_code, pm.name AS payment_method_name,
+             (SELECT id FROM cash_movements WHERE reference_id = cm.id) AS reversed_by_id
+           FROM cash_movements cm
+           LEFT JOIN payment_methods pm ON pm.id = cm.payment_method_id
+           WHERE cm.cash_session_id = ?
+           ORDER BY cm.created_at DESC`,
         )
         .all(session.id) as Row[]
     ).map((m) => ({
@@ -6409,10 +6455,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       affectsCash: flag(m.affects_cash),
       paymentMethodCode:
         m.payment_method_code == null ? null : String(m.payment_method_code),
+      paymentMethodName:
+        m.payment_method_name == null ? null : String(m.payment_method_name),
       orderId: m.order_id == null ? null : String(m.order_id),
       userId: String(m.user_id),
       reason: m.reason == null ? null : String(m.reason),
       createdAt: String(m.created_at),
+      referenceId: m.reference_id == null ? null : String(m.reference_id),
+      reversedById: m.reversed_by_id == null ? null : String(m.reversed_by_id),
     }));
     return {
       session,
@@ -6546,9 +6596,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const movements = this.db
       .prepare(
         `SELECT
-      COALESCE(SUM(CASE WHEN cm.type='INCOME' THEN cm.amount_minor ELSE 0 END),0) AS income_minor,
-      COALESCE(SUM(CASE WHEN cm.type='EXPENSE' THEN cm.amount_minor ELSE 0 END),0) AS expense_minor,
-      COALESCE(SUM(CASE WHEN cm.type='WITHDRAWAL' THEN cm.amount_minor ELSE 0 END),0) AS withdrawal_minor,
+      COALESCE(SUM(CASE WHEN cm.type='INCOME' AND cm.affects_cash=1 THEN cm.amount_minor ELSE 0 END),0) AS income_minor,
+      COALESCE(SUM(CASE WHEN cm.type='EXPENSE' AND cm.affects_cash=1 THEN cm.amount_minor ELSE 0 END),0) AS expense_minor,
+      COALESCE(SUM(CASE WHEN cm.type='WITHDRAWAL' AND cm.affects_cash=1 THEN cm.amount_minor ELSE 0 END),0) AS withdrawal_minor,
       COALESCE(SUM(CASE WHEN cm.type='REFUND' AND cm.affects_cash=1 THEN cm.amount_minor ELSE 0 END),0) AS refund_minor
       FROM cash_movements cm JOIN cash_sessions cs ON cs.id = cm.cash_session_id WHERE cs.business_date BETWEEN ? AND ?`,
       )

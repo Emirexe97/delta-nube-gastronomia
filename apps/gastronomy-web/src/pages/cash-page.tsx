@@ -2,10 +2,13 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   BootstrapDto,
+  CashMovementDto,
   CashMovementInput,
+  CashMovementType,
   CashSessionDto,
   CloseCashSessionInput,
   DashboardSummaryDto,
+  ReverseCashMovementInput,
 } from "@gastronomy/contracts";
 import {
   ArrowDown,
@@ -50,7 +53,13 @@ export function CashPage({ data }: { data: BootstrapDto }) {
   const [closeOpen, setCloseOpen] = useState(false);
   const [reportSessionId, setReportSessionId] = useState<string | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  const [reverseMovement, setReverseMovement] = useState<CashMovementDto | null>(
+    null,
+  );
   const session = data.cashSession;
+  const manualMovements = (session?.movements ?? []).filter(
+    (m) => m.type !== "SALE",
+  );
   const paidOrders = paidOrdersForSession(data.orders, session);
   const channelTotals = salesByChannel(paidOrders);
   const paymentTotals = paidOrders
@@ -139,13 +148,15 @@ export function CashPage({ data }: { data: BootstrapDto }) {
             <CashBreakdown session={session} />
             <div className="space-y-2">
               <PaymentMethodSummary
-                paymentMethods={
+                salesByPaymentMethod={
                   session.salesByPaymentMethod ??
                   [...paymentTotals].map(([code, value]) => ({
                     code,
                     ...value,
                   }))
                 }
+                movements={session.movements}
+                allPaymentMethods={data.paymentMethods}
               />
               <p className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-[11px] text-sky-800">
                 Las ventas con tarjeta o transferencia impactan el resumen, pero
@@ -220,6 +231,101 @@ export function CashPage({ data }: { data: BootstrapDto }) {
               </p>
             )}
           </Card>
+          <Card className="overflow-hidden">
+            <div className="border-b border-slate-100 px-4 py-3">
+              <h2 className="text-sm font-bold">Movimientos de caja del turno</h2>
+              <p className="text-[11px] text-slate-400">
+                Total movimientos manuales: {manualMovements.length}
+              </p>
+            </div>
+            {manualMovements.length ? (
+              <div className="overflow-auto">
+                <table className="dn-table min-w-[640px]">
+                  <thead>
+                    <tr>
+                      <th>Tipo</th>
+                      <th>Medio</th>
+                      <th>Motivo</th>
+                      <th>Hora</th>
+                      <th className="text-right whitespace-nowrap">Importe</th>
+                      <th className="text-center">Estado / Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {manualMovements.map((movement) => {
+                      const isReversal = Boolean(movement.referenceId);
+                      const isReversed = Boolean(movement.reversedById);
+                      const isIncome =
+                        movement.type === "INCOME" ||
+                        (movement.type === "ADJUSTMENT" && movement.amountMinor >= 0);
+                      const canReverse =
+                        !isReversal &&
+                        !isReversed &&
+                        ["INCOME", "EXPENSE", "WITHDRAWAL", "ADJUSTMENT"].includes(
+                          movement.type,
+                        );
+                      return (
+                        <tr
+                          key={movement.id}
+                          className={isReversed ? "opacity-50 line-through" : ""}
+                        >
+                          <td>
+                            <Badge tone={movementTone(movement.type)}>
+                              {movementTypeLabel(movement.type)}
+                            </Badge>
+                          </td>
+                          <td className="font-medium">
+                            {movement.paymentMethodName ||
+                              movement.paymentMethodCode ||
+                              "Efectivo"}
+                          </td>
+                          <td className="max-w-[260px] truncate text-slate-600">
+                            {movement.reason}
+                          </td>
+                          <td className="whitespace-nowrap text-slate-400">
+                            {new Date(movement.createdAt).toLocaleTimeString(
+                              "es-AR",
+                              { hour: "2-digit", minute: "2-digit" },
+                            )}
+                          </td>
+                          <td
+                            className={`whitespace-nowrap text-right font-bold ${
+                              isIncome ? "text-emerald-600" : "text-rose-600"
+                            }`}
+                          >
+                            {isIncome ? "+" : "-"}
+                            {formatMoney(movement.amountMinor)}
+                          </td>
+                          <td className="whitespace-nowrap text-center">
+                            {isReversed ? (
+                              <Badge tone="slate">Anulado</Badge>
+                            ) : isReversal ? (
+                              <Badge tone="amber">Anulación</Badge>
+                            ) : canReverse ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                                onClick={() => setReverseMovement(movement)}
+                              >
+                                Anular
+                              </Button>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="p-8 text-center text-sm text-slate-500">
+                No hay movimientos manuales en este turno.
+              </p>
+            )}
+          </Card>
           {pendingDeliveryLedger.length ? (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
               <div>
@@ -264,6 +370,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
       <OpenCashModal open={openModal} onClose={() => setOpenModal(false)} />
       <MovementModal
         open={movementOpen}
+        paymentMethods={data.paymentMethods}
         onClose={() => setMovementOpen(false)}
       />
       {session ? (
@@ -271,6 +378,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
           open={closeOpen}
           session={session}
           paymentMethods={data.dashboard.byPaymentMethod}
+          allPaymentMethods={data.paymentMethods}
           pendingDeliveryCount={pendingDeliveryLedger.length}
           pendingDriverOwesMinor={pendingDriverOwesMinor}
           pendingBusinessOwesMinor={pendingBusinessOwesMinor}
@@ -301,6 +409,10 @@ export function CashPage({ data }: { data: BootstrapDto }) {
         open={reportOpen}
         sessionId={reportSessionId}
         onClose={() => setReportOpen(false)}
+      />
+      <ReverseMovementModal
+        movement={reverseMovement}
+        onClose={() => setReverseMovement(null)}
       />
     </div>
   );
@@ -410,11 +522,35 @@ function OpenCashModal({ open, onClose }: { open: boolean; onClose(): void }) {
   );
 }
 
-function MovementModal({ open, onClose }: { open: boolean; onClose(): void }) {
+function MovementModal({
+  open,
+  paymentMethods,
+  onClose,
+}: {
+  open: boolean;
+  paymentMethods: BootstrapDto["paymentMethods"];
+  onClose(): void;
+}) {
+  const defaultMethodCode =
+    paymentMethods.find((m) => m.code === "CASH" && m.active)?.code ??
+    paymentMethods.find((m) => m.active)?.code ??
+    "CASH";
   const [type, setType] = useState<CashMovementInput["type"]>("EXPENSE");
+  const [paymentMethodCode, setPaymentMethodCode] = useState(defaultMethodCode);
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setType("EXPENSE");
+      setPaymentMethodCode(defaultMethodCode);
+      setAmount("");
+      setReason("");
+      setError(null);
+    }
+  }, [open, defaultMethodCode]);
+
   const mutation = useApiMutation(
     (input: CashMovementInput) => window.gastronomy.registerCashMovement(input),
     { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
@@ -431,23 +567,44 @@ function MovementModal({ open, onClose }: { open: boolean; onClose(): void }) {
           event.preventDefault();
           const value = parseMoneyInput(amount);
           if (value == null) return setError("Importe inválido.");
-          mutation.mutate({ type, amountMinor: value, reason });
+          mutation.mutate({
+            type,
+            paymentMethodCode,
+            amountMinor: value,
+            reason,
+          });
         }}
         className="grid gap-4"
       >
-        <Field label="Tipo">
-          <Select
-            value={type}
-            onChange={(event) =>
-              setType(event.target.value as CashMovementInput["type"])
-            }
-          >
-            <option value="INCOME">Ingreso</option>
-            <option value="EXPENSE">Gasto</option>
-            <option value="WITHDRAWAL">Retiro</option>
-            <option value="ADJUSTMENT">Ajuste</option>
-          </Select>
-        </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Tipo">
+            <Select
+              value={type}
+              onChange={(event) =>
+                setType(event.target.value as CashMovementInput["type"])
+              }
+            >
+              <option value="INCOME">Ingreso</option>
+              <option value="EXPENSE">Gasto</option>
+              <option value="WITHDRAWAL">Retiro</option>
+              <option value="ADJUSTMENT">Ajuste</option>
+            </Select>
+          </Field>
+          <Field label="Medio">
+            <Select
+              value={paymentMethodCode}
+              onChange={(event) => setPaymentMethodCode(event.target.value)}
+            >
+              {paymentMethods
+                .filter((m) => m.active)
+                .map((m) => (
+                  <option key={m.code} value={m.code}>
+                    {m.name}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+        </div>
         <Field label="Importe">
           <Input
             autoFocus
@@ -481,6 +638,7 @@ function CloseCashModal({
   open,
   session,
   paymentMethods,
+  allPaymentMethods,
   pendingDeliveryCount,
   pendingDriverOwesMinor,
   pendingBusinessOwesMinor,
@@ -491,6 +649,7 @@ function CloseCashModal({
   open: boolean;
   session: CashSessionDto;
   paymentMethods: DashboardSummaryDto["byPaymentMethod"];
+  allPaymentMethods?: BootstrapDto["paymentMethods"];
   pendingDeliveryCount: number;
   pendingDriverOwesMinor: number;
   pendingBusinessOwesMinor: number;
@@ -731,7 +890,11 @@ function CloseCashModal({
               ) : null}
             </div>
           ) : null}
-          <PaymentMethodSummary paymentMethods={paymentMethods} />
+          <PaymentMethodSummary
+            salesByPaymentMethod={session.salesByPaymentMethod ?? paymentMethods}
+            movements={session.movements}
+            allPaymentMethods={allPaymentMethods}
+          />
           <label className="flex items-start gap-2 text-xs text-slate-600">
             <input
               type="checkbox"
@@ -796,27 +959,271 @@ function CashBreakdown({ session }: { session: CashSessionDto }) {
 }
 
 function PaymentMethodSummary({
-  paymentMethods,
+  salesByPaymentMethod,
+  movements = [],
+  allPaymentMethods = [],
 }: {
-  paymentMethods: DashboardSummaryDto["byPaymentMethod"];
+  salesByPaymentMethod: Array<{ code: string; name: string; amountMinor: number }>;
+  movements?: CashMovementDto[];
+  allPaymentMethods?: BootstrapDto["paymentMethods"];
 }) {
-  const methods = paymentMethods.filter((method) => method.amountMinor !== 0);
-  if (!methods.length) return null;
+  const methodMap = new Map<
+    string,
+    {
+      code: string;
+      name: string;
+      salesMinor: number;
+      incomeMinor: number;
+      outMinor: number;
+      netMinor: number;
+    }
+  >();
+
+  for (const pm of allPaymentMethods) {
+    methodMap.set(pm.code, {
+      code: pm.code,
+      name: pm.name,
+      salesMinor: 0,
+      incomeMinor: 0,
+      outMinor: 0,
+      netMinor: 0,
+    });
+  }
+
+  for (const s of salesByPaymentMethod) {
+    const item = methodMap.get(s.code) ?? {
+      code: s.code,
+      name: s.name,
+      salesMinor: 0,
+      incomeMinor: 0,
+      outMinor: 0,
+      netMinor: 0,
+    };
+    item.salesMinor += s.amountMinor;
+    item.name = s.name || item.name;
+    methodMap.set(s.code, item);
+  }
+
+  for (const m of movements) {
+    if (m.type === "SALE" || m.type === "OPENING" || m.type === "CLOSING") continue;
+    if (m.reversedById) continue;
+    const code = m.paymentMethodCode || "CASH";
+    const item = methodMap.get(code) ?? {
+      code,
+      name: m.paymentMethodName || code,
+      salesMinor: 0,
+      incomeMinor: 0,
+      outMinor: 0,
+      netMinor: 0,
+    };
+    if (m.type === "INCOME") {
+      item.incomeMinor += m.amountMinor;
+    } else if (m.type === "EXPENSE" || m.type === "WITHDRAWAL") {
+      item.outMinor += m.amountMinor;
+    } else if (m.type === "ADJUSTMENT") {
+      if (m.amountMinor >= 0) {
+        item.incomeMinor += m.amountMinor;
+      } else {
+        item.outMinor += Math.abs(m.amountMinor);
+      }
+    }
+    methodMap.set(code, item);
+  }
+
+  const items = Array.from(methodMap.values())
+    .map((item) => ({
+      ...item,
+      netMinor: item.salesMinor + item.incomeMinor - item.outMinor,
+    }))
+    .filter((item) => item.salesMinor !== 0 || item.incomeMinor !== 0 || item.outMinor !== 0);
+
+  if (!items.length) return null;
+
   return (
     <div className="rounded-xl bg-slate-50 p-3">
-      <SmallLabel>Medios cobrados · informativo</SmallLabel>
+      <SmallLabel>Medios de cobro y movimiento · informativo</SmallLabel>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
-        {methods.map((method) => (
-          <div
-            key={method.code}
-            className="flex justify-between rounded-lg bg-white px-3 py-2 text-xs"
-          >
-            <span className="text-slate-500">{method.name}</span>
-            <strong>{formatMoney(method.amountMinor)}</strong>
-          </div>
-        ))}
+        {items.map((item) => {
+          const hasManual = item.incomeMinor !== 0 || item.outMinor !== 0;
+          return (
+            <div
+              key={item.code}
+              className="flex flex-col justify-between rounded-lg bg-white p-3 text-xs"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-slate-700">{item.name}</span>
+                <strong
+                  className={
+                    item.netMinor < 0
+                      ? "text-rose-600"
+                      : "text-slate-900"
+                  }
+                >
+                  {formatMoney(item.netMinor)}
+                </strong>
+              </div>
+              {hasManual ? (
+                <div className="mt-1 flex flex-wrap gap-x-2 text-[10px] text-slate-400">
+                  <span>Ventas: {formatMoney(item.salesMinor)}</span>
+                  {item.incomeMinor > 0 ? (
+                    <span className="text-emerald-600">
+                      +Ingresos: {formatMoney(item.incomeMinor)}
+                    </span>
+                  ) : null}
+                  {item.outMinor > 0 ? (
+                    <span className="text-rose-600">
+                      -Retiros/Gastos: {formatMoney(item.outMinor)}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </div>
+  );
+}
+
+function movementTypeLabel(type: CashMovementType): string {
+  switch (type) {
+    case "OPENING":
+      return "Apertura";
+    case "CLOSING":
+      return "Cierre";
+    case "SALE":
+      return "Venta";
+    case "INCOME":
+      return "Ingreso";
+    case "EXPENSE":
+      return "Gasto";
+    case "WITHDRAWAL":
+      return "Retiro";
+    case "REFUND":
+      return "Devolución";
+    case "ADJUSTMENT":
+      return "Ajuste";
+  }
+}
+
+function movementTone(
+  type: CashMovementType,
+): "green" | "rose" | "amber" | "slate" {
+  switch (type) {
+    case "INCOME":
+      return "green";
+    case "EXPENSE":
+    case "WITHDRAWAL":
+      return "rose";
+    case "ADJUSTMENT":
+      return "amber";
+    default:
+      return "slate";
+  }
+}
+
+function ReverseMovementModal({
+  movement,
+  onClose,
+}: {
+  movement: CashMovementDto | null;
+  onClose(): void;
+}) {
+  const [reason, setReason] = useState("");
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (movement) {
+      setReason("");
+      setPin("");
+      setError(null);
+    }
+  }, [movement]);
+
+  const mutation = useApiMutation(
+    (input: ReverseCashMovementInput) =>
+      window.gastronomy.reverseCashMovement(input),
+    {
+      onSuccess: () => {
+        onClose();
+      },
+      onError: (value) => setError(humanError(value)),
+    },
+  );
+
+  if (!movement) return null;
+
+  return (
+    <Modal
+      open={Boolean(movement)}
+      onClose={onClose}
+      title="Anular movimiento de caja"
+      description={`Se generará un contra-movimiento para revertir el importe de ${formatMoney(movement.amountMinor)}.`}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!reason.trim()) return setError("Ingresá el motivo de anulación.");
+          if (pin.length < 4) return setError("Ingresá el PIN de autorización.");
+          mutation.mutate({
+            movementId: movement.id,
+            reason: reason.trim(),
+            authorizerPin: pin,
+          });
+        }}
+        className="grid gap-4"
+      >
+        <div className="space-y-1 rounded-xl bg-slate-50 p-3 text-xs text-slate-700">
+          <p>
+            <strong>Movimiento:</strong> {movementTypeLabel(movement.type)} de{" "}
+            {formatMoney(movement.amountMinor)}
+          </p>
+          <p>
+            <strong>Medio:</strong>{" "}
+            {movement.paymentMethodName ||
+              movement.paymentMethodCode ||
+              "Efectivo"}
+          </p>
+          <p>
+            <strong>Motivo original:</strong> {movement.reason}
+          </p>
+        </div>
+        <Field label="Motivo de anulación">
+          <Textarea
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Explicá por qué se anula este movimiento"
+            required
+            autoFocus
+          />
+        </Field>
+        <Field label="PIN de autorización">
+          <Input
+            type="password"
+            inputMode="numeric"
+            maxLength={8}
+            value={pin}
+            onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
+            placeholder="••••"
+            required
+          />
+        </Field>
+        {error ? <ErrorMessage>{error}</ErrorMessage> : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button
+            type="submit"
+            variant="danger"
+            disabled={!reason.trim() || pin.length < 4 || mutation.isPending}
+          >
+            Confirmar anulación
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

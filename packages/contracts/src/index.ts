@@ -379,7 +379,23 @@ export interface CashSessionDto {
     name: string;
     amountMinor: MoneyMinor;
   }>;
+  movements?: CashMovementDto[];
   status: CashSessionStatus;
+}
+
+export interface CashMovementDto {
+  id: Id;
+  type: CashMovementType;
+  amountMinor: MoneyMinor;
+  affectsCash: boolean;
+  paymentMethodCode: string | null;
+  paymentMethodName?: string | null;
+  orderId: Id | null;
+  userId: Id;
+  reason: string | null;
+  createdAt: IsoDateTime;
+  referenceId?: Id | null;
+  reversedById?: Id | null;
 }
 
 export interface CashSessionHistoryItemDto {
@@ -461,17 +477,7 @@ export interface CashSessionReportDto {
     amountMinor: MoneyMinor;
   }>;
   orders: OrderDto[];
-  movements: Array<{
-    id: Id;
-    type: CashMovementType;
-    amountMinor: MoneyMinor;
-    affectsCash: boolean;
-    paymentMethodCode: string | null;
-    orderId: Id | null;
-    userId: Id;
-    reason: string | null;
-    createdAt: IsoDateTime;
-  }>;
+  movements: CashMovementDto[];
   filters: CashSessionReportFilters;
 }
 export interface DeliveryLedgerDto {
@@ -659,6 +665,7 @@ export interface CashMovementInput extends IdempotentRequest {
   >;
   amountMinor: MoneyMinor;
   reason: string;
+  paymentMethodCode?: string;
 }
 
 export interface CloseCashSessionInput extends IdempotentRequest {

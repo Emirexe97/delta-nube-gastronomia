@@ -397,6 +397,7 @@ export class GastronomyApplication {
     if (input.type !== "ADJUSTMENT") nonNegativeMoney(input.amountMinor);
     return this.repository.registerCashMovement({
       ...input,
+      paymentMethodCode: input.paymentMethodCode?.trim() || undefined,
       reason: input.reason.trim(),
     });
   }

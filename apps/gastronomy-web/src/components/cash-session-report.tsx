@@ -364,7 +364,12 @@ export function CashSessionReportModal({
                         <tr key={m.id}>
                           <td>{m.type}</td>
                           <td>{m.reason ?? "—"}</td>
-                          <td>{m.paymentMethodCode ?? "—"}</td>
+                          <td>
+                            {m.paymentMethodName ??
+                              (m.paymentMethodCode === "CASH"
+                                ? "Efectivo"
+                                : m.paymentMethodCode ?? "—")}
+                          </td>
                           <td>
                             {new Date(m.createdAt).toLocaleString("es-AR")}
                           </td>
