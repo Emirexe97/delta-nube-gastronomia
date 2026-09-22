@@ -739,4 +739,110 @@ ALTER TABLE products ADD COLUMN parent_product_id TEXT REFERENCES products(id) O
 CREATE INDEX IF NOT EXISTS products_parent_product_idx ON products(parent_product_id);
 `,
   },
+  {
+    version: 25,
+    name: "order_deposits_down_payments",
+    sql: String.raw`
+ALTER TABLE orders ADD COLUMN deposit_minor INTEGER NOT NULL DEFAULT 0 CHECK (deposit_minor >= 0);
+ALTER TABLE orders ADD COLUMN deposit_notes TEXT;
+`,
+  },
+  {
+    version: 26,
+    name: "permission_orders_deposit",
+    sql: String.raw`
+INSERT OR IGNORE INTO permissions (code, description) VALUES ('orders.deposit', 'Restar o registrar señas en pedidos y mesas');
+INSERT OR IGNORE INTO role_permissions (role_id, permission_code)
+  SELECT id, 'orders.deposit' FROM roles WHERE code IN ('ADMIN', 'MANAGER');
+`,
+  },
+  {
+    version: 27,
+    name: "customer_current_accounts",
+    sql: String.raw`
+CREATE TABLE customer_account_charges (
+  order_id TEXT PRIMARY KEY REFERENCES orders(id),
+  customer_id TEXT NOT NULL REFERENCES customers(id),
+  amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX customer_account_charges_customer_idx ON customer_account_charges(customer_id, created_at);
+CREATE TABLE customer_account_receipts (
+  id TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL REFERENCES customers(id),
+  cash_session_id TEXT NOT NULL REFERENCES cash_sessions(id),
+  cash_movement_id TEXT NOT NULL UNIQUE REFERENCES cash_movements(id),
+  payment_method_id TEXT NOT NULL REFERENCES payment_methods(id),
+  amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+  reference TEXT,
+  created_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX customer_account_receipts_customer_idx ON customer_account_receipts(customer_id, created_at);
+CREATE TABLE customer_account_allocations (
+  receipt_id TEXT NOT NULL REFERENCES customer_account_receipts(id),
+  order_id TEXT NOT NULL REFERENCES customer_account_charges(order_id),
+  amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+  PRIMARY KEY(receipt_id, order_id)
+);
+CREATE INDEX customer_account_allocations_order_idx ON customer_account_allocations(order_id);
+`,
+  },
+  {
+    version: 28,
+    name: "finance_expenses_and_cost_snapshots",
+    sql: String.raw`
+CREATE TABLE finance_product_costs (
+  product_id TEXT PRIMARY KEY REFERENCES products(id),
+  unit_cost_minor INTEGER NOT NULL CHECK(unit_cost_minor >= 0),
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE finance_order_item_costs (
+  order_item_id TEXT PRIMARY KEY REFERENCES order_items(id) ON DELETE CASCADE,
+  order_id TEXT NOT NULL REFERENCES orders(id),
+  unit_cost_minor INTEGER,
+  quantity INTEGER NOT NULL CHECK(quantity > 0),
+  total_cost_minor INTEGER,
+  source TEXT NOT NULL CHECK(source IN ('MANUAL','PURCHASE','UNKNOWN','HALVES')),
+  captured_at TEXT NOT NULL
+);
+CREATE INDEX finance_order_item_costs_order_idx ON finance_order_item_costs(order_id);
+CREATE TABLE finance_recurring (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  category TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('FIXED','PAYROLL')),
+  amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+  day_of_month INTEGER NOT NULL CHECK(day_of_month BETWEEN 1 AND 31),
+  start_month TEXT NOT NULL,
+  employee_id TEXT REFERENCES users(id),
+  active INTEGER NOT NULL DEFAULT 1,
+  stop_month TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE finance_expenses (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  category TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('GENERAL','FIXED','PAYROLL')),
+  amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+  incurred_on TEXT NOT NULL,
+  due_on TEXT NOT NULL,
+  paid_at TEXT,
+  payment_method_id TEXT REFERENCES payment_methods(id),
+  cash_movement_id TEXT UNIQUE REFERENCES cash_movements(id),
+  employee_id TEXT REFERENCES users(id),
+  recurring_id TEXT REFERENCES finance_recurring(id),
+  note TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(recurring_id, incurred_on)
+);
+CREATE INDEX finance_expenses_period_idx ON finance_expenses(incurred_on, kind);
+INSERT OR IGNORE INTO permissions(code, description) VALUES ('finance.view','Ver informes financieros'), ('finance.manage','Gestionar gastos y costos financieros');
+INSERT OR IGNORE INTO role_permissions(role_id, permission_code)
+  SELECT id, 'finance.view' FROM roles WHERE code IN ('ADMIN','MANAGER');
+INSERT OR IGNORE INTO role_permissions(role_id, permission_code)
+  SELECT id, 'finance.manage' FROM roles WHERE code IN ('ADMIN','MANAGER');
+`,
+  },
 ];

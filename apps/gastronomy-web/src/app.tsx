@@ -37,6 +37,7 @@ import { PurchasesPage } from "./pages/purchases-page";
 import { CustomersPage } from "./pages/customers-page";
 import { CashPage } from "./pages/cash-page";
 import { ReportsPage } from "./pages/reports-page";
+import { FinancePage } from "./pages/finance-page";
 import { SettingsPage } from "./pages/settings-page";
 import { DeliveriesPage } from "./pages/deliveries-page";
 import { UsersPage } from "./pages/users-page";
@@ -73,6 +74,7 @@ const navigation = [
   },
   { to: "/usuarios", label: "Usuarios", icon: UsersThree, group: "Gestión" },
   { to: "/caja", label: "Caja", icon: CashRegister, group: "Control" },
+  { to: "/finanzas", label: "Finanzas", icon: ChartPieSlice, group: "Control", permission: "finance.view" },
   {
     to: "/informes",
     label: "Informes",
@@ -541,6 +543,7 @@ export function App() {
               element={<UsersPage data={bootstrap.data} />}
             />
             <Route path="/caja" element={<CashPage data={bootstrap.data} />} />
+            <Route path="/finanzas" element={bootstrap.data.currentUser.permissions.includes("finance.view") || bootstrap.data.currentUser.permissions.includes("*") ? <FinancePage data={bootstrap.data} /> : <Navigate to="/resumen" replace />} />
             <Route
               path="/informes"
               element={<ReportsPage data={bootstrap.data} />}

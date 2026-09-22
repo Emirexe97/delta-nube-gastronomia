@@ -177,6 +177,8 @@ export interface CustomerSearchPageDto {
 
 export interface CustomerProfileDto {
   customer: CustomerDto;
+  accountCharges: Array<{ orderId: Id; orderNumber: number; createdAt: IsoDateTime; amountMinor: MoneyMinor; settledMinor: MoneyMinor; outstandingMinor: MoneyMinor }>;
+  accountReceipts: Array<{ id: Id; createdAt: IsoDateTime; amountMinor: MoneyMinor; methodCode: string; methodName: string; reference: string | null; allocations: Array<{ orderId: Id; orderNumber: number; amountMinor: MoneyMinor }> }>;
   metrics: {
     orderCount: number;
     totalSpentMinor: MoneyMinor;
@@ -336,6 +338,8 @@ export interface OrderDto {
   notes: string | null;
   subtotalMinor: MoneyMinor;
   discountMinor: MoneyMinor;
+  depositMinor: MoneyMinor;
+  depositNotes?: string | null;
   totalMinor: MoneyMinor;
   paidMinor: MoneyMinor;
   changeAmountMinor?: MoneyMinor | null;
@@ -446,6 +450,7 @@ export interface CashSessionReportDto {
     orderCount: number;
     averageTicketMinor: MoneyMinor;
     discountsMinor: MoneyMinor;
+    depositsMinor?: MoneyMinor;
     refundsMinor: MoneyMinor;
   };
   byTable: Array<{
@@ -787,6 +792,12 @@ export interface UpdateOrderItemNotesInput {
   notes: string | null;
 }
 
+export interface UpdateOrderItemQuantityInput {
+  orderId: Id;
+  itemId: Id;
+  quantity: number;
+}
+
 export interface AddOrderItemInput {
   orderId: Id;
   productId: Id;
@@ -811,6 +822,7 @@ export interface ChangeOutput {
 
 export interface PayOrderInput extends IdempotentRequest {
   orderId: Id;
+  customerId?: Id | null;
   collectedByDriver?: boolean;
   payDriverNow?: boolean;
   payments: Array<{
@@ -820,6 +832,88 @@ export interface PayOrderInput extends IdempotentRequest {
     reference?: string | null;
   }>;
   change?: ChangeOutput | null;
+}
+
+export type FinanceExpenseKind = "GENERAL" | "FIXED" | "PAYROLL";
+
+export interface FinanceExpenseDto {
+  id: Id;
+  title: string;
+  category: string;
+  kind: FinanceExpenseKind;
+  amountMinor: MoneyMinor;
+  incurredOn: string;
+  dueOn: string;
+  paidAt: IsoDateTime | null;
+  paymentMethodCode: string | null;
+  employeeId: Id | null;
+  employeeName: string | null;
+  recurringId: Id | null;
+  note: string | null;
+}
+
+export interface FinanceRecurringDto {
+  id: Id;
+  title: string;
+  category: string;
+  kind: "FIXED" | "PAYROLL";
+  amountMinor: MoneyMinor;
+  dayOfMonth: number;
+  startMonth: string;
+  employeeId: Id | null;
+  active: boolean;
+  stopMonth?: string | null;
+}
+
+export interface FinanceReportDto {
+  from: string;
+  to: string;
+  salesMinor: MoneyMinor;
+  refundsMinor: MoneyMinor;
+  cogsMinor: MoneyMinor;
+  unknownCostItems: number;
+  costedItems: number;
+  expensesMinor: MoneyMinor;
+  payrollMinor: MoneyMinor;
+  fixedMinor: MoneyMinor;
+  unpaidMinor: MoneyMinor;
+  purchasesMinor: MoneyMinor;
+  grossProfitMinor: MoneyMinor;
+  estimatedOperatingProfitMinor: MoneyMinor;
+  expenses: FinanceExpenseDto[];
+  recurring: FinanceRecurringDto[];
+  productCosts: Array<{productId: Id; productName: string; unitCostMinor: MoneyMinor | null; source: "MANUAL" | "PURCHASE" | "UNKNOWN"}>;
+  monthly: Array<{month: string; salesMinor: MoneyMinor; cogsMinor: MoneyMinor; expensesMinor: MoneyMinor}>;
+}
+
+export interface CreateFinanceExpenseInput extends IdempotentRequest {
+  title: string;
+  category: string;
+  kind: FinanceExpenseKind;
+  amountMinor: MoneyMinor;
+  incurredOn: string;
+  dueOn?: string;
+  employeeId?: Id | null;
+  note?: string | null;
+}
+
+export interface CreateFinanceRecurringInput extends IdempotentRequest {
+  title: string;
+  category: string;
+  kind: "FIXED" | "PAYROLL";
+  amountMinor: MoneyMinor;
+  dayOfMonth: number;
+  startMonth: string;
+  employeeId?: Id | null;
+}
+
+export interface SettleCustomerAccountInput extends IdempotentRequest {
+  customerId: Id;
+  amountMinor: MoneyMinor;
+  methodCode: string;
+  reference?: string | null;
+  /** Omitir para imputar a los cargos más antiguos. */
+  orderIds?: Id[];
 }
 
 export interface OrderActionGuardDto {
@@ -872,6 +966,9 @@ export interface DesktopApi {
   confirmOrder(input: ConfirmOrderInput): Promise<OrderDto>;
   discardDraftOrder(input: { orderId: Id }): Promise<{ discarded: boolean }>;
   addOrderItem(input: AddOrderItemInput): Promise<OrderDto>;
+  updateOrderItemQuantity(
+    input: UpdateOrderItemQuantityInput,
+  ): Promise<OrderDto>;
   updateOrderItemNotes(input: UpdateOrderItemNotesInput): Promise<OrderDto>;
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput): Promise<OrderDto>;
   removeOrderItem(input: { orderId: Id; itemId: Id }): Promise<OrderDto>;
@@ -890,6 +987,12 @@ export interface DesktopApi {
     mode: "PERCENTAGE" | "FIXED";
     value: number;
     reason: string;
+    authorizerPin: string;
+  }): Promise<OrderDto>;
+  applyOrderDeposit(input: {
+    orderId: Id;
+    depositMinor: MoneyMinor;
+    notes?: string | null;
     authorizerPin: string;
   }): Promise<OrderDto>;
   updateOrderStatus(input: {
@@ -923,6 +1026,7 @@ export interface DesktopApi {
     page: number;
     pageSize: number;
   }): Promise<CustomerProfileDto>;
+  settleCustomerAccount(input: SettleCustomerAccountInput): Promise<CustomerProfileDto>;
   createCustomer(input: {
     name: string;
     phone: string;
@@ -993,6 +1097,12 @@ export interface DesktopApi {
   }): Promise<ModifierDto>;
   listPurchases(): Promise<PurchaseDto[]>;
   createPurchase(input: CreatePurchaseInput): Promise<PurchaseDto>;
+  getFinanceReport(input: {from: string; to: string}): Promise<FinanceReportDto>;
+  createFinanceExpense(input: CreateFinanceExpenseInput): Promise<FinanceExpenseDto>;
+  payFinanceExpense(input: {expenseId: Id; paymentMethodCode: string; fromCash: boolean} & IdempotentRequest): Promise<FinanceExpenseDto>;
+  createFinanceRecurring(input: CreateFinanceRecurringInput): Promise<FinanceRecurringDto>;
+  stopFinanceRecurring(input: {recurringId: Id}): Promise<FinanceRecurringDto>;
+  setFinanceProductCost(input: {productId: Id; unitCostMinor: MoneyMinor | null}): Promise<void>;
   adjustStock(input: {
     productId: Id;
     newStockMinor: number;

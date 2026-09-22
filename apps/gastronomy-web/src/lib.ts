@@ -104,6 +104,7 @@ const entityLabels: Record<string, string> = {
 const permissionLabels: Record<string, string> = {
   "orders.cancel": "Cancelar pedidos",
   "orders.discount": "Aplicar descuentos",
+  "orders.deposit": "Restar / modificar señas",
   "orders.reprint": "Reimprimir",
   "orders.override_price": "Modificar precio de una línea",
   "payments.refund": "Devolver pagos",

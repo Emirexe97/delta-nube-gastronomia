@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AuditEntryDto,
   BootstrapDto,
@@ -6,6 +6,7 @@ import type {
   ProductDto,
 } from "@gastronomy/contracts";
 import {
+  CaretDown,
   ClockCounterClockwise,
   Copy,
   MagnifyingGlass,
@@ -51,6 +52,62 @@ function moneyInput(amountMinor: number) {
   });
 }
 
+export interface CatalogProductGroup {
+  parent: ProductDto;
+  variants: ProductDto[];
+  hasMatchingVariant: boolean;
+}
+
+export function matchesProductQuery(product: ProductDto, query: string): boolean {
+  if (!query.trim()) return true;
+  const term = query.trim().toLocaleLowerCase();
+  return `${product.code ?? ""} ${product.name} ${product.categoryName}`
+    .toLocaleLowerCase()
+    .includes(term);
+}
+
+export function buildCatalogProductGroups(
+  products: ProductDto[],
+  query = "",
+): CatalogProductGroup[] {
+  const allProductIds = new Set(products.map((p) => p.id));
+  const variantsByParentId = new Map<string, ProductDto[]>();
+  const baseProducts: ProductDto[] = [];
+
+  for (const product of products) {
+    if (product.parentProductId && allProductIds.has(product.parentProductId)) {
+      const list = variantsByParentId.get(product.parentProductId) ?? [];
+      list.push(product);
+      variantsByParentId.set(product.parentProductId, list);
+    } else {
+      baseProducts.push(product);
+    }
+  }
+
+  const q = query.trim().toLocaleLowerCase();
+  const groups: CatalogProductGroup[] = [];
+
+  for (const parent of baseProducts) {
+    const allVariants = variantsByParentId.get(parent.id) ?? [];
+    const parentMatches = matchesProductQuery(parent, q);
+    const matchingVariants = q
+      ? allVariants.filter((v) => matchesProductQuery(v, q))
+      : allVariants;
+    const hasMatchingVariant = Boolean(q) && matchingVariants.length > 0;
+
+    if (!q || parentMatches || hasMatchingVariant) {
+      const variantsToShow = !q || parentMatches ? allVariants : matchingVariants;
+      groups.push({
+        parent,
+        variants: variantsToShow,
+        hasMatchingVariant,
+      });
+    }
+  }
+
+  return groups;
+}
+
 export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [query, setQuery] = useState("");
   const [categoryQuery, setCategoryQuery] = useState("");
@@ -80,15 +137,55 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [variantBaseProduct, setVariantBaseProduct] =
     useState<ProductDto | null>(null);
-  const products = useMemo(
-    () =>
-      data.products.filter((product) =>
-        `${product.code ?? ""} ${product.name} ${product.categoryName}`
-          .toLocaleLowerCase()
-          .includes(query.toLocaleLowerCase()),
-      ),
+  const [expandedProductIds, setExpandedProductIds] = useState<Set<string>>(
+    new Set(),
+  );
+
+  const productGroups = useMemo(
+    () => buildCatalogProductGroups(data.products, query),
     [data.products, query],
   );
+
+  const totalVariantsCount = useMemo(
+    () => data.products.filter((p) => Boolean(p.parentProductId)).length,
+    [data.products],
+  );
+
+  const baseProductsWithVariants = useMemo(
+    () => productGroups.filter((g) => g.variants.length > 0).map((g) => g.parent),
+    [productGroups],
+  );
+
+  const isGroupExpanded = (group: CatalogProductGroup) => {
+    if (query.trim() && group.hasMatchingVariant) return true;
+    return expandedProductIds.has(group.parent.id);
+  };
+
+  const toggleExpand = (productId: string) => {
+    setExpandedProductIds((current) => {
+      const next = new Set(current);
+      if (next.has(productId)) {
+        next.delete(productId);
+      } else {
+        next.add(productId);
+      }
+      return next;
+    });
+  };
+
+  const visibleProducts = useMemo(() => {
+    const list: ProductDto[] = [];
+    for (const group of productGroups) {
+      list.push(group.parent);
+      if (isGroupExpanded(group)) {
+        for (const variant of group.variants) {
+          list.push(variant);
+        }
+      }
+    }
+    return list;
+  }, [productGroups, expandedProductIds, query]);
+
   const selectedProducts = useMemo(
     () => data.products.filter((product) => selectedProductIds.has(product.id)),
     [data.products, selectedProductIds],
@@ -110,8 +207,8 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     );
   }, [data.products]);
   const allVisibleSelected =
-    products.length > 0 &&
-    products.every((product) => selectedProductIds.has(product.id));
+    visibleProducts.length > 0 &&
+    visibleProducts.every((product) => selectedProductIds.has(product.id));
 
   return (
     <div className="panel-enter mx-auto max-w-[1500px] space-y-3">
@@ -211,6 +308,30 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                 className="pl-9"
               />
             </div>
+            {totalVariantsCount > 0 ? (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  if (expandedProductIds.size > 0) {
+                    setExpandedProductIds(new Set());
+                  } else {
+                    setExpandedProductIds(
+                      new Set(baseProductsWithVariants.map((p) => p.id)),
+                    );
+                  }
+                }}
+                className="text-xs"
+                title={
+                  expandedProductIds.size > 0
+                    ? "Colapsar todas las variantes desplegadas"
+                    : "Desplegar todas las variantes en la tabla"
+                }
+              >
+                {expandedProductIds.size > 0
+                  ? "Colapsar variantes"
+                  : "Expandir variantes"}
+              </Button>
+            ) : null}
             <Button
               variant="secondary"
               disabled={!selectedProductIds.size}
@@ -264,7 +385,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
               </Button>
             </section>
           ) : null}
-          {products.length ? (
+          {productGroups.length ? (
             <div className="max-h-[calc(100vh-260px)] overflow-auto">
               <table className="dn-table min-w-[920px]">
                 <thead>
@@ -277,7 +398,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                         onChange={(event) => {
                           setSelectedProductIds((current) => {
                             const next = new Set(current);
-                            for (const product of products) {
+                            for (const product of visibleProducts) {
                               if (event.target.checked) next.add(product.id);
                               else next.delete(product.id);
                             }
@@ -298,126 +419,267 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {products.map((product) => (
-                    <tr key={product.id}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          aria-label={`Seleccionar ${product.name}`}
-                          checked={selectedProductIds.has(product.id)}
-                          onChange={(event) => {
-                            setSelectedProductIds((current) => {
-                              const next = new Set(current);
-                              if (event.target.checked) next.add(product.id);
-                              else next.delete(product.id);
-                              return next;
-                            });
-                          }}
-                          className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
-                        />
-                      </td>
-                      <td className="font-bold text-slate-900">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span>{product.name}</span>
-                          {product.parentProductId ? (
-                            <span className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
-                              Variante de{" "}
-                              {products.find((p) => p.id === product.parentProductId)
-                                ?.name ?? "producto base"}
-                            </span>
-                          ) : (
-                            (() => {
-                              const variantCount = products.filter(
-                                (p) => p.parentProductId === product.id,
-                              ).length;
-                              return variantCount > 0 ? (
-                                <span className="inline-flex items-center rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
-                                  {variantCount} variante{variantCount > 1 ? "s" : ""}
-                                </span>
-                              ) : null;
-                            })()
+                  {productGroups.map((group) => {
+                    const { parent, variants } = group;
+                    const expanded = isGroupExpanded(group);
+                    const hasVariants = variants.length > 0;
+                    return (
+                      <Fragment key={parent.id}>
+                        <tr
+                          className={cn(
+                            hasVariants && expanded && "border-b-0 bg-slate-50/40",
                           )}
-                        </div>
-                      </td>
-                      <td>{product.categoryName}</td>
-                      <td className="font-mono text-[11px]">
-                        {product.code || "—"}
-                      </td>
-                      {visiblePriceListCodes.map((code) => (
-                        <td key={code} className="text-right font-semibold">
-                          {formatMoney(
-                            product.prices.find(
-                              (price) =>
-                                price.priceListCode ===
-                                (code === "OFF_PREMISE" ? "TAKEAWAY" : code),
-                            )?.amountMinor ?? 0,
-                          )}
-                        </td>
-                      ))}
-                      <td>
-                        <button
-                          type="button"
-                          aria-label={`Stock actual de ${product.name}; seleccionar para ajustar`}
-                          onClick={() => setStockProduct(product)}
-                          className="font-bold text-brand-700 hover:underline"
                         >
-                          {product.stockMinor == null
-                            ? "Sin control"
-                            : `${(product.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
-                        </button>
-                      </td>
-                      <td>
-                        <Badge tone={product.active ? "green" : "slate"}>
-                          {product.active ? "Activo" : "Inactivo"}
-                        </Badge>
-                      </td>
-                      <td className="text-right">
-                        <div className="flex justify-end gap-1.5">
-                          {!product.parentProductId ? (
+                          <td>
+                            <input
+                              type="checkbox"
+                              aria-label={`Seleccionar ${parent.name}`}
+                              checked={selectedProductIds.has(parent.id)}
+                              onChange={(event) => {
+                                setSelectedProductIds((current) => {
+                                  const next = new Set(current);
+                                  if (event.target.checked) next.add(parent.id);
+                                  else next.delete(parent.id);
+                                  return next;
+                                });
+                              }}
+                              className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
+                            />
+                          </td>
+                          <td className="font-bold text-slate-900">
+                            <div className="flex items-center gap-2">
+                              {hasVariants ? (
+                                <button
+                                  type="button"
+                                  aria-label={
+                                    expanded
+                                      ? `Ocultar variantes de ${parent.name}`
+                                      : `Mostrar ${variants.length} variantes de ${parent.name}`
+                                  }
+                                  title={
+                                    expanded
+                                      ? "Ocultar variantes"
+                                      : "Desplegar variantes"
+                                  }
+                                  onClick={() => toggleExpand(parent.id)}
+                                  className="focus-ring flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 shadow-2xs transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+                                >
+                                  <CaretDown
+                                    size={13}
+                                    className={cn(
+                                      "transition-transform duration-200",
+                                      !expanded && "-rotate-90",
+                                    )}
+                                  />
+                                </button>
+                              ) : (
+                                <span
+                                  className="w-6 shrink-0"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                <span>{parent.name}</span>
+                                {hasVariants ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleExpand(parent.id)}
+                                    title={
+                                      expanded
+                                        ? "Ocultar variantes"
+                                        : "Ver variantes"
+                                    }
+                                    className="inline-flex items-center gap-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 hover:bg-indigo-100 transition cursor-pointer"
+                                  >
+                                    {variants.length} variante
+                                    {variants.length > 1 ? "s" : ""}
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                          </td>
+                          <td>{parent.categoryName}</td>
+                          <td className="font-mono text-[11px]">
+                            {parent.code || "—"}
+                          </td>
+                          {visiblePriceListCodes.map((code) => (
+                            <td key={code} className="text-right font-semibold">
+                              {formatMoney(
+                                parent.prices.find(
+                                  (price) =>
+                                    price.priceListCode ===
+                                    (code === "OFF_PREMISE"
+                                      ? "TAKEAWAY"
+                                      : code),
+                                )?.amountMinor ?? 0,
+                              )}
+                            </td>
+                          ))}
+                          <td>
                             <button
                               type="button"
-                              aria-label={`Generar variante de ${product.name}`}
-                              title="Generar variante con precios propios"
-                              onClick={() => setVariantBaseProduct(product)}
-                              className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                              aria-label={`Stock actual de ${parent.name}; seleccionar para ajustar`}
+                              onClick={() => setStockProduct(parent)}
+                              className="font-bold text-brand-700 hover:underline"
                             >
-                              <Copy size={14} />
-                              Variante
+                              {parent.stockMinor == null
+                                ? "Sin control"
+                                : `${(parent.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
                             </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            aria-label={`Ajustar inventario de ${product.name}`}
-                            title="Registrar un ajuste de inventario"
-                            onClick={() => setStockProduct(product)}
-                            className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                          >
-                            <SlidersHorizontal size={14} />
-                            Ajustar
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Editar ${product.name}`}
-                            title="Editar producto y precios"
-                            onClick={() => setEditingProduct(product)}
-                            className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                          >
-                            <PencilSimple size={14} />
-                            Editar
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Eliminar ${product.name}`}
-                            title={`Eliminar producto ${product.name}`}
-                            onClick={() => setDeletingProduct(product)}
-                            className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 text-rose-700 transition hover:bg-rose-50"
-                          >
-                            <Trash size={14} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                          </td>
+                          <td>
+                            <Badge tone={parent.active ? "green" : "slate"}>
+                              {parent.active ? "Activo" : "Inactivo"}
+                            </Badge>
+                          </td>
+                          <td className="text-right">
+                            <div className="flex justify-end gap-1.5">
+                              <button
+                                type="button"
+                                aria-label={`Ajustar inventario de ${parent.name}`}
+                                title="Registrar un ajuste de inventario"
+                                onClick={() => setStockProduct(parent)}
+                                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                              >
+                                <SlidersHorizontal size={14} />
+                                Ajustar
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Editar ${parent.name}`}
+                                title="Editar producto y precios"
+                                onClick={() => setEditingProduct(parent)}
+                                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                              >
+                                <PencilSimple size={14} />
+                                Editar
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Eliminar ${parent.name}`}
+                                title={`Eliminar producto ${parent.name}`}
+                                onClick={() => setDeletingProduct(parent)}
+                                className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 text-rose-700 transition hover:bg-rose-50"
+                              >
+                                <Trash size={14} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                        {hasVariants && expanded
+                          ? variants.map((variant) => (
+                              <tr
+                                key={variant.id}
+                                className="bg-slate-50/70 hover:bg-slate-100/80 transition-colors border-l-2 border-l-indigo-400"
+                              >
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    aria-label={`Seleccionar ${variant.name}`}
+                                    checked={selectedProductIds.has(variant.id)}
+                                    onChange={(event) => {
+                                      setSelectedProductIds((current) => {
+                                        const next = new Set(current);
+                                        if (event.target.checked)
+                                          next.add(variant.id);
+                                        else next.delete(variant.id);
+                                        return next;
+                                      });
+                                    }}
+                                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
+                                  />
+                                </td>
+                                <td className="font-medium text-slate-800">
+                                  <div className="flex items-center gap-2 pl-3 sm:pl-5">
+                                    <span className="text-slate-400 font-mono text-xs select-none">
+                                      ↳
+                                    </span>
+                                    <span className="font-bold text-slate-800 text-xs">
+                                      {variant.name}
+                                    </span>
+                                    <span className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700">
+                                      Variante
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="text-xs text-slate-500">
+                                  {variant.categoryName}
+                                </td>
+                                <td className="font-mono text-[11px] text-slate-500">
+                                  {variant.code || "—"}
+                                </td>
+                                {visiblePriceListCodes.map((code) => (
+                                  <td
+                                    key={code}
+                                    className="text-right text-xs font-semibold text-slate-700"
+                                  >
+                                    {formatMoney(
+                                      variant.prices.find(
+                                        (price) =>
+                                          price.priceListCode ===
+                                          (code === "OFF_PREMISE"
+                                            ? "TAKEAWAY"
+                                            : code),
+                                      )?.amountMinor ?? 0,
+                                    )}
+                                  </td>
+                                ))}
+                                <td>
+                                  <button
+                                    type="button"
+                                    aria-label={`Stock actual de ${variant.name}; seleccionar para ajustar`}
+                                    onClick={() => setStockProduct(variant)}
+                                    className="font-bold text-xs text-brand-700 hover:underline"
+                                  >
+                                    {variant.stockMinor == null
+                                      ? "Sin control"
+                                      : `${(variant.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
+                                  </button>
+                                </td>
+                                <td>
+                                  <Badge tone={variant.active ? "green" : "slate"}>
+                                    {variant.active ? "Activo" : "Inactivo"}
+                                  </Badge>
+                                </td>
+                                <td className="text-right">
+                                  <div className="flex justify-end gap-1.5">
+                                    <button
+                                      type="button"
+                                      aria-label={`Ajustar inventario de ${variant.name}`}
+                                      title="Registrar un ajuste de inventario"
+                                      onClick={() => setStockProduct(variant)}
+                                      className="focus-ring inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                    >
+                                      <SlidersHorizontal size={13} />
+                                      Ajustar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label={`Editar ${variant.name}`}
+                                      title="Editar variante y precios"
+                                      onClick={() => setEditingProduct(variant)}
+                                      className="focus-ring inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                    >
+                                      <PencilSimple size={13} />
+                                      Editar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label={`Eliminar ${variant.name}`}
+                                      title={`Eliminar variante ${variant.name}`}
+                                      onClick={() => setDeletingProduct(variant)}
+                                      className="focus-ring inline-flex h-7 w-7 items-center justify-center rounded-lg border border-rose-200 bg-white text-rose-700 transition hover:bg-rose-50"
+                                    >
+                                      <Trash size={13} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))
+                          : null}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -493,11 +755,22 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         open={productOpen || Boolean(editingProduct)}
         product={editingProduct}
         categories={data.categories}
+        allProducts={data.products}
         initialCategoryId={newProductCategoryId}
         onClose={closeProduct}
         onRequestVariant={(product) => {
           closeProduct();
           setVariantBaseProduct(product);
+        }}
+        onEditVariant={(variant) => {
+          setEditingProduct(variant);
+        }}
+        onAdjustStock={(product) => {
+          closeProduct();
+          setStockProduct(product);
+        }}
+        onOpenParent={(parentProduct) => {
+          setEditingProduct(parentProduct);
         }}
       />
       <CreateVariantModal
@@ -1513,18 +1786,37 @@ function ProductModal({
   open,
   product,
   categories,
+  allProducts,
   initialCategoryId,
   onClose,
   onRequestVariant,
+  onEditVariant,
+  onAdjustStock,
+  onOpenParent,
 }: {
   open: boolean;
   product: ProductDto | null;
   categories: CategoryDto[];
+  allProducts?: ProductDto[];
   initialCategoryId: string | null;
   onClose(): void;
   onRequestVariant?: (product: ProductDto) => void;
+  onEditVariant?: (variant: ProductDto) => void;
+  onAdjustStock?: (product: ProductDto) => void;
+  onOpenParent?: (parentProduct: ProductDto) => void;
 }) {
   const editing = Boolean(product);
+  const isVariant = Boolean(product?.parentProductId);
+
+  const parentProduct = useMemo(() => {
+    if (!product?.parentProductId || !allProducts) return null;
+    return allProducts.find((p) => p.id === product.parentProductId) ?? null;
+  }, [allProducts, product?.parentProductId]);
+
+  const variants = useMemo(() => {
+    if (!product || product.parentProductId || !allProducts) return [];
+    return allProducts.filter((p) => p.parentProductId === product.id);
+  }, [allProducts, product]);
   const [categoryId, setCategoryId] = useState("");
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -1767,11 +2059,17 @@ function ProductModal({
       closeDisabled={mutation.isPending}
       width="max-w-4xl"
       title={
-        editing ? `Editar · ${product?.name ?? "producto"}` : "Nuevo producto"
+        editing
+          ? isVariant
+            ? `Editar variante · ${product?.name ?? "variante"}`
+            : `Editar · ${product?.name ?? "producto"}`
+          : "Nuevo producto"
       }
       description={
         editing
-          ? "Los cambios de datos y precios requieren autorización y quedan auditados."
+          ? isVariant
+            ? "Modificá los datos y precios de esta variante. Requiere autorización y queda auditado."
+            : "Los cambios de datos y precios requieren autorización y quedan auditados."
           : "El precio se guarda como snapshot al agregarlo a un pedido."
       }
     >
@@ -1782,6 +2080,35 @@ function ProductModal({
         }}
         className="grid gap-4"
       >
+        {isVariant ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 text-xs text-amber-900">
+            <div className="flex items-center gap-2">
+              <Copy size={16} className="shrink-0 text-amber-700" />
+              <div>
+                <span className="font-extrabold">Este producto es una variante</span>
+                {parentProduct ? (
+                  <span className="text-amber-800">
+                    {" "}de «{parentProduct.name}».
+                  </span>
+                ) : (
+                  <span className="text-amber-800">
+                    {" "}derivada de otro producto base.
+                  </span>
+                )}
+              </div>
+            </div>
+            {parentProduct && onOpenParent ? (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => onOpenParent(parentProduct)}
+                className="h-7 border-amber-300 px-2.5 text-[11px] font-bold text-amber-900 hover:bg-amber-100"
+              >
+                Ir a producto base
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         <Field label="Categoría">
           <Select
             value={categoryId}
@@ -1944,6 +2271,151 @@ function ProductModal({
             </Button>
           ) : null}
         </section>
+
+        {editing && !isVariant ? (
+          <section
+            className="space-y-3 rounded-xl border border-indigo-100 bg-indigo-50/30 p-3.5"
+            aria-label="Variantes del producto"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-100/80 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Copy size={17} className="text-indigo-600" />
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800">
+                    Variantes de este producto ({variants.length})
+                  </h4>
+                  <p className="text-[11px] text-slate-500">
+                    Presentaciones o tamaños derivados (ej. Chica, Mediana, Litro) con precios y existencias propias.
+                  </p>
+                </div>
+              </div>
+              {onRequestVariant && product ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => onRequestVariant(product)}
+                  className="h-8 gap-1 border-indigo-200 px-2.5 text-xs font-bold text-indigo-700 hover:bg-indigo-50"
+                >
+                  <Plus size={14} /> Nueva variante
+                </Button>
+              ) : null}
+            </div>
+
+            {variants.length > 0 ? (
+              <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-slate-100 bg-slate-50/80 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Variante</th>
+                      <th className="px-3 py-2">Código</th>
+                      <th className="px-3 py-2 text-right">Salón</th>
+                      <th className="px-3 py-2 text-right">Delivery</th>
+                      <th className="px-3 py-2">Stock</th>
+                      <th className="px-3 py-2">Estado</th>
+                      <th className="px-3 py-2 text-right">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {variants.map((variant) => {
+                      const salonPrice =
+                        variant.prices.find((p) => p.priceListCode === "SALON")
+                          ?.amountMinor ?? 0;
+                      const offPrice =
+                        variant.prices.find(
+                          (p) =>
+                            p.priceListCode === "TAKEAWAY" ||
+                            p.priceListCode === "DELIVERY",
+                        )?.amountMinor ?? 0;
+                      return (
+                        <tr key={variant.id} className="hover:bg-slate-50/60">
+                          <td className="px-3 py-2.5 font-bold text-slate-800">
+                            {variant.name}
+                          </td>
+                          <td className="px-3 py-2.5 font-mono text-[11px] text-slate-500">
+                            {variant.code || "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-semibold text-slate-700">
+                            {formatMoney(salonPrice)}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-semibold text-slate-700">
+                            {formatMoney(offPrice)}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            {onAdjustStock ? (
+                              <button
+                                type="button"
+                                onClick={() => onAdjustStock(variant)}
+                                className="font-bold text-brand-700 hover:underline"
+                                title="Ajustar inventario de esta variante"
+                              >
+                                {variant.stockMinor == null
+                                  ? "Sin control"
+                                  : `${(variant.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
+                              </button>
+                            ) : (
+                              <span>
+                                {variant.stockMinor == null
+                                  ? "Sin control"
+                                  : `${(variant.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <Badge tone={variant.active ? "green" : "slate"}>
+                              {variant.active ? "Activo" : "Inactivo"}
+                            </Badge>
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <div className="flex justify-end gap-1">
+                              {onAdjustStock ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onAdjustStock(variant)}
+                                  title="Ajustar stock"
+                                  className="focus-ring inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                >
+                                  <SlidersHorizontal size={13} />
+                                  Stock
+                                </button>
+                              ) : null}
+                              {onEditVariant ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onEditVariant(variant)}
+                                  title="Editar variante"
+                                  className="focus-ring inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                >
+                                  <PencilSimple size={13} />
+                                  Editar
+                                </button>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-indigo-200 bg-white/70 p-3 text-center">
+                <p className="text-xs text-slate-500">
+                  Este producto todavía no tiene variantes cargadas.
+                </p>
+                {onRequestVariant && product ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => onRequestVariant(product)}
+                    className="mt-2 h-7 px-2.5 text-[11px] font-bold"
+                  >
+                    <Plus size={13} /> Crear primera variante
+                  </Button>
+                ) : null}
+              </div>
+            )}
+          </section>
+        ) : null}
 
         {editing ? (
           <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-[1fr_150px]">

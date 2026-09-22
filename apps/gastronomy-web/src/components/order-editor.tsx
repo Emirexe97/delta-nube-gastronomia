@@ -1,7 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   BootstrapDto,
+  CustomerDto,
   OrderDto,
+  OrderItemDto,
   OrderOperationalStatus,
   ProductDto,
 } from "@gastronomy/contracts";
@@ -13,11 +15,13 @@ import {
   CookingPot,
   CreditCard,
   MagnifyingGlass,
+  Minus,
   Motorcycle,
   Percent,
   Pizza,
   Plus,
   Printer,
+  Receipt,
   Trash,
   X,
 } from "@phosphor-icons/react";
@@ -71,6 +75,7 @@ export function OrderEditor({
   const [notesItemId, setNotesItemId] = useState<string | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
   const [discountOpen, setDiscountOpen] = useState(false);
+  const [depositOpen, setDepositOpen] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [discardError, setDiscardError] = useState<string | null>(null);
   const [driverOpen, setDriverOpen] = useState(false);
@@ -274,6 +279,50 @@ export function OrderEditor({
         : {}),
     });
   };
+  const updateItemQuantity = useApiMutation(
+    (input: { orderId: string; itemId: string; quantity: number }) =>
+      window.gastronomy.updateOrderItemQuantity(input),
+    {
+      onError: (value) => setError(humanError(value)),
+    },
+  );
+  const [qtyInputs, setQtyInputs] = useState<Record<string, string>>({});
+
+  const commitQuantity = (item: OrderItemDto) => {
+    const raw = qtyInputs[item.id];
+    if (raw === undefined) return;
+    setQtyInputs((prev) => {
+      const next = { ...prev };
+      delete next[item.id];
+      return next;
+    });
+    const parsed = Number(raw);
+    if (Number.isInteger(parsed) && parsed > 0 && parsed !== item.quantity) {
+      if (order) {
+        updateItemQuantity.mutate({
+          orderId: order.id,
+          itemId: item.id,
+          quantity: parsed,
+        });
+      }
+    }
+  };
+
+  const handleStepQuantity = (item: OrderItemDto, delta: number) => {
+    if (locked || updateItemQuantity.isPending || !order) return;
+    const newQty = item.quantity + delta;
+    if (newQty < 1) return;
+    setQtyInputs((prev) => {
+      const next = { ...prev };
+      delete next[item.id];
+      return next;
+    });
+    updateItemQuantity.mutate({
+      orderId: order.id,
+      itemId: item.id,
+      quantity: newQty,
+    });
+  };
   const removeItem = useApiMutation(
     (input: { orderId: string; itemId: string }) =>
       window.gastronomy.removeOrderItem(input),
@@ -299,7 +348,14 @@ export function OrderEditor({
   const updateStatus = useApiMutation(
     (input: { orderId: string; status: OrderOperationalStatus }) =>
       window.gastronomy.updateOrderStatus(input),
-    { onError: (value) => setError(humanError(value)) },
+    {
+      onSuccess: (_data, variables) => {
+        if (variables.status === "DELIVERED") {
+          onClose();
+        }
+      },
+      onError: (value) => setError(humanError(value)),
+    },
   );
   const assignDriver = useApiMutation(
     (input: Parameters<typeof window.gastronomy.assignDeliveryDriver>[0]) =>
@@ -858,24 +914,86 @@ export function OrderEditor({
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
             {order.items.length ? (
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 {order.items.map((item) => (
                   <article
                     key={item.id}
-                    className="group rounded-xl border border-slate-100 bg-slate-50/70 p-2.5"
+                    className="group rounded-xl border border-slate-100 bg-slate-50/70 p-2"
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-[12px] font-bold">
-                          <span className="mr-1 text-brand-700">
-                            {item.quantity}×
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          {!locked ? (
+                            <div className="inline-flex shrink-0 items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm">
+                              <button
+                                type="button"
+                                onClick={() => handleStepQuantity(item, -1)}
+                                disabled={
+                                  item.quantity <= 1 ||
+                                  updateItemQuantity.isPending
+                                }
+                                className="grid h-6 w-6 place-items-center rounded text-slate-600 transition hover:bg-slate-100 active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+                                aria-label={`Restar una unidad de ${item.productNameSnapshot}`}
+                                title="Restar una unidad"
+                              >
+                                <Minus size={11} weight="bold" />
+                              </button>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                value={
+                                  qtyInputs[item.id] ?? String(item.quantity)
+                                }
+                                onChange={(e) =>
+                                  setQtyInputs((prev) => ({
+                                    ...prev,
+                                    [item.id]: e.target.value.replace(
+                                      /\D/g,
+                                      "",
+                                    ),
+                                  }))
+                                }
+                                onFocus={(e) => e.currentTarget.select()}
+                                onBlur={() => commitQuantity(item)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") e.currentTarget.blur();
+                                  if (e.key === "Escape") {
+                                    setQtyInputs((prev) => {
+                                      const next = { ...prev };
+                                      delete next[item.id];
+                                      return next;
+                                    });
+                                  }
+                                }}
+                                disabled={updateItemQuantity.isPending}
+                                className="h-6 w-8 rounded border-0 bg-transparent p-0 text-center text-xs font-black text-slate-800 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                                aria-label={`Cantidad de ${item.productNameSnapshot}`}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleStepQuantity(item, 1)}
+                                disabled={updateItemQuantity.isPending}
+                                className="grid h-6 w-6 place-items-center rounded text-slate-600 transition hover:bg-slate-100 active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+                                aria-label={`Sumar una unidad de ${item.productNameSnapshot}`}
+                                title="Sumar una unidad"
+                              >
+                                <Plus size={11} weight="bold" />
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="mr-1 font-bold text-brand-700">
+                              {item.quantity}×
+                            </span>
+                          )}
+                          <span className="text-[12px] font-bold text-slate-900 leading-snug">
+                            {item.productNameSnapshot}
                           </span>
-                          {item.productNameSnapshot}
-                        </p>
+                        </div>
                         {item.halves.map((half) => (
                           <p
                             key={half.position}
-                            className="ml-4 mt-0.5 text-[10px] font-semibold text-slate-500"
+                            className="ml-2 mt-0.5 text-[10px] font-semibold text-slate-500"
                           >
                             ½ {half.nameSnapshot}
                           </p>
@@ -890,7 +1008,7 @@ export function OrderEditor({
                                 modifierId: modifier.id,
                               })
                             }
-                            className="ml-4 mt-0.5 block text-left text-[10px] font-semibold text-brand-700 hover:text-rose-600"
+                            className="ml-2 mt-0.5 block text-left text-[10px] font-semibold text-brand-700 hover:text-rose-600"
                           >
                             + {modifier.nameSnapshot} ·{" "}
                             {modifier.scope === "FULL_PIZZA"
@@ -903,37 +1021,40 @@ export function OrderEditor({
                           </button>
                         ))}
                         {item.notes ? (
-                          <p className="ml-4 mt-1 text-[10px] text-amber-700">
+                          <p className="ml-2 mt-0.5 text-[10px] text-amber-700">
                             {item.notes}
                           </p>
                         ) : null}
                         {!locked ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setNotesError(null);
-                              setNotesItemId(item.id);
-                            }}
-                            className="ml-2 mt-1 flex min-h-10 items-center gap-1 px-2 text-[10px] font-bold text-brand-600 hover:underline"
-                            aria-label={`${item.notes ? "Editar" : "Agregar"} observación para ${item.productNameSnapshot}`}
-                          >
-                            <Plus size={11} />
-                            {item.notes
-                              ? "Editar observación"
-                              : "Agregar observación"}
-                          </button>
-                        ) : null}
-                        {!locked && data.modifiers.length ? (
-                          <button
-                            onClick={() => setModifierItemId(item.id)}
-                            className="ml-2 mt-1 flex min-h-10 items-center gap-1 px-2 text-[10px] font-bold text-brand-600 hover:underline"
-                          >
-                            <Plus size={11} />
-                            Agregar extra
-                          </button>
+                          <div className="ml-1 mt-1 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNotesError(null);
+                                setNotesItemId(item.id);
+                              }}
+                              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold text-brand-600 hover:bg-brand-50 hover:text-brand-800 transition"
+                              aria-label={`${item.notes ? "Editar" : "Agregar"} observación para ${item.productNameSnapshot}`}
+                            >
+                              <Plus size={10} weight="bold" />
+                              {item.notes
+                                ? "Editar observación"
+                                : "Agregar observación"}
+                            </button>
+                            {data.modifiers.length ? (
+                              <button
+                                type="button"
+                                onClick={() => setModifierItemId(item.id)}
+                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold text-brand-600 hover:bg-brand-50 hover:text-brand-800 transition"
+                              >
+                                <Plus size={10} weight="bold" />
+                                Agregar extra
+                              </button>
+                            ) : null}
+                          </div>
                         ) : null}
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <span className="whitespace-nowrap text-xs font-extrabold">
                           {formatMoney(item.lineTotalMinor)}
                         </span>
@@ -945,7 +1066,7 @@ export function OrderEditor({
                                 itemId: item.id,
                               })
                             }
-                            className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+                            className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
                             disabled={
                               removeItem.isPending ||
                               (!isDraft && order.items.length <= 1)
@@ -957,7 +1078,7 @@ export function OrderEditor({
                                 : "Quitar"
                             }
                           >
-                            <Trash size={15} />
+                            <Trash size={14} />
                           </button>
                         ) : null}
                       </div>
@@ -1031,6 +1152,16 @@ export function OrderEditor({
                 {order.discountMinor > 0 ? (
                   <p className="text-[10px] font-bold text-emerald-600">
                     Descuento −{formatMoney(order.discountMinor)}
+                  </p>
+                ) : null}
+                {order.depositMinor > 0 ? (
+                  <p className="text-[10px] font-bold text-indigo-600">
+                    Seña −{formatMoney(order.depositMinor)}
+                    {order.depositNotes ? (
+                      <span className="ml-1 font-normal text-slate-500">
+                        ({order.depositNotes})
+                      </span>
+                    ) : null}
                   </p>
                 ) : null}
                 <p className="text-2xl font-extrabold tracking-tight">
@@ -1239,13 +1370,12 @@ export function OrderEditor({
             ) : null}
             {!locked &&
             (order.items.length ||
+              order.depositMinor > 0 ||
               (order.type === "DINE_IN" && order.tableId)) ? (
               <div
                 className={cn(
                   "mt-2 grid gap-2",
-                  order.items.length &&
-                    order.type === "DINE_IN" &&
-                    order.tableId
+                  (order.type === "DINE_IN" && order.tableId) || order.items.length
                     ? "grid-cols-2"
                     : "grid-cols-1",
                 )}
@@ -1260,10 +1390,21 @@ export function OrderEditor({
                     Aplicar descuento
                   </Button>
                 ) : null}
+                <Button
+                  variant="secondary"
+                  className="w-full"
+                  onClick={() => setDepositOpen(true)}
+                >
+                  <Receipt size={15} />
+                  {order.depositMinor > 0 ? "Modificar seña" : "Restar seña"}
+                </Button>
                 {order.type === "DINE_IN" && order.tableId ? (
                   <Button
                     variant="secondary"
-                    className="w-full"
+                    className={cn(
+                      "w-full",
+                      order.items.length ? "col-span-2" : "col-span-1",
+                    )}
                     onClick={() => setChangeTableOpen(true)}
                   >
                     <ArrowsLeftRight size={15} />
@@ -1467,13 +1608,25 @@ export function OrderEditor({
         onClose={() => setDiscountOpen(false)}
         onError={setError}
       />
+      <DepositModal
+        open={depositOpen}
+        order={order}
+        onClose={() => setDepositOpen(false)}
+        onError={setError}
+      />
       <PaymentModal
         open={payOpen}
         order={order}
         data={data}
-        onClose={() => setPayOpen(false)}
+        onClose={() => {
+          setPayOpen(false);
+          if (completeOnPay) {
+            onClose();
+          }
+        }}
         onError={setError}
         completeOnPay={completeOnPay}
+        onOpenDeposit={() => setDepositOpen(true)}
       />
       <RefundPaymentModal
         open={refundOpen}
@@ -2139,6 +2292,181 @@ function DiscountModal({
   );
 }
 
+function DepositModal({
+  open,
+  order,
+  onClose,
+  onError,
+}: {
+  open: boolean;
+  order: OrderDto;
+  onClose(): void;
+  onError(value: string): void;
+}) {
+  const [value, setValue] = useState("");
+  const [notes, setNotes] = useState("");
+  const [pin, setPin] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setValue(order.depositMinor > 0 ? String(order.depositMinor / 100) : "");
+    setNotes(order.depositNotes ?? "");
+    setPin("");
+    setLocalError(null);
+  }, [open, order.id, order.depositMinor, order.depositNotes]);
+
+  const mutation = useApiMutation(
+    (input: Parameters<typeof window.gastronomy.applyOrderDeposit>[0]) =>
+      window.gastronomy.applyOrderDeposit(input),
+    {
+      onSuccess: () => onClose(),
+      onError: (error) => {
+        const message = humanError(error);
+        setLocalError(message);
+        onError(message);
+      },
+    },
+  );
+
+  const parsed = parseMoneyInput(value);
+  const currentBase =
+    order.subtotalMinor + order.deliveryFeeMinor - order.discountMinor;
+  const isDepositOverBase =
+    parsed != null && parsed > 0 && parsed > currentBase;
+
+  const handleApply = (depositAmount: number, depositNotes: string) => {
+    if (pin.length < 4) {
+      setLocalError("Ingresá el PIN de un usuario autorizado.");
+      return;
+    }
+    mutation.mutate({
+      orderId: order.id,
+      depositMinor: depositAmount,
+      notes: depositNotes.trim() || null,
+      authorizerPin: pin,
+    });
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      closeDisabled={mutation.isPending}
+      title={order.depositMinor > 0 ? "Modificar seña" : "Restar seña"}
+      description="Movimiento sensible. Requiere autorización y resta el importe del total a cobrar"
+    >
+      <form
+        className="grid gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (
+            parsed == null ||
+            parsed < 0 ||
+            pin.length < 4 ||
+            mutation.isPending
+          )
+            return;
+          handleApply(parsed, notes);
+        }}
+      >
+        <Field
+          label="Importe de la seña"
+          hint="Se descontará del saldo a cobrar"
+        >
+          <Input
+            autoFocus
+            inputMode="decimal"
+            placeholder="0"
+            value={value}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setLocalError(null);
+            }}
+          />
+        </Field>
+        <Field label="Nota o comprobante (opcional)">
+          <Input
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder="Ej. Transferencia alias..., Efectivo reserva 20/09"
+          />
+        </Field>
+        <Field
+          label="PIN de autorización"
+          hint="Usuario autorizado para aplicar o modificar señas"
+        >
+          <Input
+            type="password"
+            inputMode="numeric"
+            maxLength={8}
+            placeholder="PIN (4-8 dígitos)"
+            value={pin}
+            onChange={(event) => {
+              setPin(event.target.value.replace(/\D/g, ""));
+              setLocalError(null);
+            }}
+          />
+        </Field>
+        {isDepositOverBase ? (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+            La seña ({formatMoney(parsed)}) supera el consumo actual ({formatMoney(currentBase)}). El saldo a cobrar quedará en $0 hasta que se carguen más consumos.
+          </p>
+        ) : null}
+        {localError ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700"
+          >
+            {localError}
+          </p>
+        ) : null}
+        <div className="flex justify-between gap-2">
+          {order.depositMinor > 0 ? (
+            <Button
+              type="button"
+              variant="danger"
+              disabled={mutation.isPending || pin.length < 4}
+              onClick={() => handleApply(0, "")}
+              title={pin.length < 4 ? "Ingresá el PIN para autorizar quitar la seña" : undefined}
+            >
+              Quitar seña
+            </Button>
+          ) : (
+            <div />
+          )}
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={onClose}
+              disabled={mutation.isPending}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="submit"
+              disabled={
+                parsed == null ||
+                parsed < 0 ||
+                pin.length < 4 ||
+                mutation.isPending
+              }
+            >
+              <Receipt size={16} />
+              {mutation.isPending
+                ? "Guardando…"
+                : order.depositMinor > 0
+                  ? "Actualizar seña"
+                  : "Aplicar seña"}
+            </Button>
+          </div>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 export function PizzaHalfSelector({
   label,
   pizzas,
@@ -2639,6 +2967,7 @@ function PaymentModal({
   onClose,
   onError,
   completeOnPay,
+  onOpenDeposit,
 }: {
   open: boolean;
   order: OrderDto;
@@ -2646,11 +2975,17 @@ function PaymentModal({
   onClose(): void;
   onError(value: string): void;
   completeOnPay: boolean;
+  onOpenDeposit?(): void;
 }) {
   const remaining = Math.max(0, order.totalMinor - order.paidMinor);
   const [values, setValues] = useState<Record<string, string>>({});
   const [references, setReferences] = useState<Record<string, string>>({});
   const [received, setReceived] = useState("");
+  const [customerId, setCustomerId] = useState<string | null>(order.customerId);
+  const [customerQuery, setCustomerQuery] = useState("");
+  const [customerResults, setCustomerResults] = useState<CustomerDto[]>([]);
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
   const defaultChangeMethod = useMemo(
@@ -2674,6 +3009,9 @@ function PaymentModal({
     }
     const exact = String(remaining / 100);
     setValues({ CASH: exact });
+    setCustomerId(order.customerId);
+    setCustomerQuery("");
+    setCustomerResults([]);
     setReferences({});
     setChangeMethodCode(defaultChangeMethod);
     setPayDriverNow(
@@ -2734,6 +3072,7 @@ function PaymentModal({
     .filter((item) => item.amountMinor > 0);
 
   const allocated = payments.reduce((sum, item) => sum + item.amountMinor, 0);
+  const accountAmount = payments.find((item) => item.methodCode === "ACCOUNT")?.amountMinor ?? 0;
   const changeDue = Math.max(0, allocated - remaining);
 
   const selectedChangeMethod = data.paymentMethods.find(
@@ -2757,6 +3096,7 @@ function PaymentModal({
   const canSubmit =
     initialized &&
     allocated >= remaining &&
+    (!accountAmount || (Boolean(customerId) && allocated === remaining)) &&
     !isCashChangeInsufficient &&
     !mutation.isPending;
 
@@ -2764,6 +3104,7 @@ function PaymentModal({
     if (!canSubmit) return;
     mutation.mutate({
       orderId: order.id,
+      customerId: accountAmount ? customerId : undefined,
       payments,
       change:
         changeDue > 0
@@ -2798,10 +3139,29 @@ function PaymentModal({
         }}
       >
         <div className="rounded-xl bg-slate-950 p-4 text-white">
-          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-            Saldo a cobrar
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+              Saldo a cobrar
+            </p>
+            {onOpenDeposit ? (
+              <button
+                type="button"
+                onClick={onOpenDeposit}
+                className="text-[11px] font-semibold text-indigo-300 hover:text-indigo-100 underline inline-flex items-center gap-1"
+              >
+                <Receipt size={13} />
+                {order.depositMinor > 0
+                  ? `Seña: −${formatMoney(order.depositMinor)} (Editar)`
+                  : "Restar seña"}
+              </button>
+            ) : null}
+          </div>
           <p className="text-3xl font-extrabold">{formatMoney(remaining)}</p>
+          {order.depositMinor > 0 ? (
+            <p className="mt-1 text-xs text-indigo-200">
+              Total {formatMoney(order.totalMinor + order.depositMinor)} − Seña {formatMoney(order.depositMinor)}
+            </p>
+          ) : null}
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           {data.paymentMethods
@@ -2842,6 +3202,44 @@ function PaymentModal({
             ))}
         </div>
 
+        {accountAmount > 0 ? (
+          <section className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3 space-y-2">
+            <p className="text-xs font-bold text-indigo-900">Cuenta corriente · cliente obligatorio</p>
+            <p className="text-xs text-indigo-700">Se cerrará el pedido y se cargará {formatMoney(accountAmount)} como deuda, sin ingreso de efectivo.</p>
+            {customerId ? (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-bold">{order.customerId === customerId ? order.customerNameSnapshot : customerResults.find((customer) => customer.id === customerId)?.name ?? customerName}</span>
+                {!order.customerId ? <Button type="button" variant="secondary" onClick={() => setCustomerId(null)}>Cambiar</Button> : null}
+              </div>
+            ) : (
+              <>
+                <div className="flex gap-2">
+                  <Input aria-label="Buscar cliente para cuenta corriente" value={customerQuery} onChange={(event) => setCustomerQuery(event.target.value)} placeholder="Nombre o teléfono" />
+                  <Button type="button" variant="secondary" onClick={async () => {
+                    try { setCustomerResults((await window.gastronomy.searchCustomers(customerQuery)).filter((customer) => customer.active)); setLocalError(null); }
+                    catch (error) { setLocalError(humanError(error)); }
+                  }}>Buscar</Button>
+                </div>
+                {customerResults.map((customer) => (
+                  <button type="button" key={customer.id} className="block w-full rounded-lg bg-white p-2 text-left text-xs hover:bg-indigo-100" onClick={() => setCustomerId(customer.id)}>{customer.name} · {customer.phone}</button>
+                ))}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Input aria-label="Nombre del cliente nuevo" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Nuevo cliente · nombre" />
+                  <Input aria-label="Teléfono del cliente nuevo" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} placeholder="Teléfono" />
+                </div>
+                <Button type="button" variant="secondary" disabled={!customerName.trim() || !customerPhone.trim()} onClick={async () => {
+                  try {
+                    const customer = await window.gastronomy.createCustomer({name: customerName.trim(), phone: customerPhone.trim()});
+                    setCustomerId(customer.id);
+                    setCustomerResults([customer]);
+                    setLocalError(null);
+                  } catch (error) { setLocalError(humanError(error)); }
+                }}>Crear y seleccionar cliente</Button>
+              </>
+            )}
+          </section>
+        ) : null}
+
         {changeDue > 0 ? (
           <div className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50/80 p-3.5 space-y-2.5">
             <div className="flex items-center justify-between">
@@ -2866,7 +3264,7 @@ function PaymentModal({
                 }}
               >
                 {data.paymentMethods
-                  .filter((method) => method.active)
+                  .filter((method) => method.active && method.code !== "ACCOUNT")
                   .map((method) => (
                     <option key={method.code} value={method.code}>
                       {method.name}{" "}

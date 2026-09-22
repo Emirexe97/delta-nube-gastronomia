@@ -4,6 +4,7 @@ export const SYSTEM_PERMISSIONS = [
   "orders.cancel",
   "orders.reprint",
   "orders.discount",
+  "orders.deposit",
   "orders.override_price",
   "payments.refund",
   "tables.manage",
@@ -19,6 +20,8 @@ export const SYSTEM_PERMISSIONS = [
   "prices.bulk_update",
   "stock.adjust",
   "purchases.manage",
+  "finance.view",
+  "finance.manage",
 ] as const;
 
 export type Permission = (typeof SYSTEM_PERMISSIONS)[number];

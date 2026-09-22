@@ -277,6 +277,8 @@ function demoOrder(
     notes: partial.notes ?? null,
     subtotalMinor: partial.subtotalMinor ?? 0,
     discountMinor: partial.discountMinor ?? 0,
+    depositMinor: partial.depositMinor ?? 0,
+    depositNotes: partial.depositNotes ?? null,
     totalMinor: partial.totalMinor ?? 0,
     paidMinor: partial.paidMinor ?? 0,
     printedAt: partial.printedAt ?? null,
@@ -572,6 +574,7 @@ export function createDemoBootstrap(): BootstrapDto {
         affectsCash: false,
         active: true,
       },
+      { id: "payment-account", code: "ACCOUNT", name: "Cuenta corriente", affectsCash: false, active: true },
     ],
     printJobs: [
       {

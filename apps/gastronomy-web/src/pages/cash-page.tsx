@@ -596,7 +596,7 @@ function MovementModal({
               onChange={(event) => setPaymentMethodCode(event.target.value)}
             >
               {paymentMethods
-                .filter((m) => m.active)
+                .filter((m) => m.active && m.code !== "ACCOUNT")
                 .map((m) => (
                   <option key={m.code} value={m.code}>
                     {m.name}

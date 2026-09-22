@@ -48,6 +48,8 @@ const waiterRoleLabels = {
 } as const;
 
 export function TablesPage({ data }: { data: BootstrapDto }) {
+  const pageRef = useRef<HTMLDivElement>(null);
+  const lastScrollTopRef = useRef<number>(0);
   const [view, setView] = useState<"CLASSIC" | "PLAN">("CLASSIC");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [openingTable, setOpeningTable] = useState<RestaurantTableDto | null>(
@@ -71,6 +73,48 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
   const canManageTables =
     data.currentUser.permissions.includes("tables.manage") ||
     data.currentUser.permissions.includes("*");
+
+  const getScrollContainer = (): HTMLElement | null => {
+    let parent = pageRef.current?.parentElement;
+    while (parent) {
+      const { overflowY } = window.getComputedStyle(parent);
+      if (overflowY === "auto" || overflowY === "scroll") return parent;
+      parent = parent.parentElement;
+    }
+    return null;
+  };
+
+  useEffect(() => {
+    const container = getScrollContainer();
+    if (!container) return;
+    const handleScroll = () => {
+      if (!selectedOrderId) {
+        lastScrollTopRef.current = container.scrollTop;
+      }
+    };
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, [selectedOrderId]);
+
+  useEffect(() => {
+    if (!selectedOrderId && lastScrollTopRef.current > 0) {
+      const container = getScrollContainer();
+      if (container) {
+        const targetScroll = lastScrollTopRef.current;
+        container.scrollTop = targetScroll;
+        const raf = window.requestAnimationFrame(() => {
+          container.scrollTop = targetScroll;
+        });
+        const timer = window.setTimeout(() => {
+          container.scrollTop = targetScroll;
+        }, 60);
+        return () => {
+          window.cancelAnimationFrame(raf);
+          window.clearTimeout(timer);
+        };
+      }
+    }
+  }, [selectedOrderId]);
 
   const createOrder = useApiMutation(
     (input: OpenTableInput) =>
@@ -112,10 +156,15 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
     setWaiterUserId(preferred?.id ?? "");
     setOpeningTable(table);
   };
-  const activateTable = (table: RestaurantTableDto) =>
+  const activateTable = (table: RestaurantTableDto) => {
+    const container = getScrollContainer();
+    if (container) {
+      lastScrollTopRef.current = container.scrollTop;
+    }
     table.currentOrderId
       ? setSelectedOrderId(table.currentOrderId)
       : requestOpen(table);
+  };
   const requestDeleteTable = (table: RestaurantTableDto) => {
     deleteTable.reset();
     setTableMessage(null);
@@ -124,7 +173,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
   };
 
   return (
-    <div className="panel-enter mx-auto max-w-[1500px] space-y-4">
+    <div ref={pageRef} className="panel-enter mx-auto max-w-[1500px] space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-extrabold">Salón</h2>
@@ -477,10 +526,19 @@ function QuickEntry({
   const waiterAdvanceRef = useRef(false);
   const preferredWaiterFocusRef = useRef<"number" | "name">("number");
   const previousEditorOpenRef = useRef(false);
+  const openedByQuickEntryRef = useRef(false);
+
+  const handleOpenFullOrder = (orderId: string) => {
+    openedByQuickEntryRef.current = true;
+    onOpenFullOrder(orderId);
+  };
 
   useEffect(() => {
     if (previousEditorOpenRef.current && !isEditorOpen) {
-      window.setTimeout(() => focus(tableRef), 50);
+      if (openedByQuickEntryRef.current) {
+        openedByQuickEntryRef.current = false;
+        window.setTimeout(() => focus(tableRef), 50);
+      }
     }
     previousEditorOpenRef.current = Boolean(isEditorOpen);
   }, [isEditorOpen]);
@@ -581,7 +639,7 @@ function QuickEntry({
           document.activeElement === document.body ||
           document.activeElement === target)
       ) {
-        target.focus();
+        target.focus({ preventScroll: true });
       }
     });
   };
@@ -696,7 +754,7 @@ function QuickEntry({
           tableAdvanceRef.current = false;
           return;
         }
-        onOpenFullOrder(currentOrder.id);
+        handleOpenFullOrder(currentOrder.id);
         resetFlow();
         return;
       }
@@ -725,7 +783,7 @@ function QuickEntry({
       return;
     }
     if (order) {
-      onOpenFullOrder(order.id);
+      handleOpenFullOrder(order.id);
       resetFlow();
       return;
     }
@@ -735,7 +793,7 @@ function QuickEntry({
         tableId: table.id,
         waiterUserId: waiter.id,
       });
-      onOpenFullOrder(created.id);
+      handleOpenFullOrder(created.id);
       resetFlow();
     } catch (value) {
       fail(humanError(value), waiterRef);
@@ -1161,7 +1219,7 @@ function QuickEntry({
                     type="button"
                     variant="secondary"
                     className="h-8 px-2.5 text-xs whitespace-nowrap shrink-0"
-                    onClick={() => onOpenFullOrder(order.id)}
+                    onClick={() => handleOpenFullOrder(order.id)}
                   >
                     <Eye size={15} className="shrink-0" />
                     <span>Ver pedido</span>

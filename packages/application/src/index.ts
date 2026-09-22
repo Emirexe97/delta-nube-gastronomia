@@ -21,6 +21,7 @@ import type {
   DetailedReportDto,
   FloorPlanShapeDto,
   Id,
+  MoneyMinor,
   OpenCashSessionInput,
   OrderDto,
   OrderOperationalStatus,
@@ -36,10 +37,17 @@ import type {
   UpdateCustomerInput,
   UpdateDraftOrderInput,
   UpdateOrderItemNotesInput,
+  UpdateOrderItemQuantityInput,
   ConfirmOrderInput,
   CreatePurchaseInput,
   PurchaseDto,
+  FinanceReportDto,
+  FinanceExpenseDto,
+  FinanceRecurringDto,
+  CreateFinanceExpenseInput,
+  CreateFinanceRecurringInput,
   SettleDeliveryInput,
+  SettleCustomerAccountInput,
   TableSectorDto,
 } from "@gastronomy/contracts";
 import {
@@ -122,6 +130,7 @@ export interface GastronomyRepository {
   confirmOrder(input: ConfirmOrderInput): OrderDto;
   discardDraftOrder(orderId: Id): { discarded: boolean };
   addOrderItem(input: AddOrderItemInput): OrderDto;
+  updateOrderItemQuantity(input: UpdateOrderItemQuantityInput): OrderDto;
   updateOrderItemNotes(input: UpdateOrderItemNotesInput): OrderDto;
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput): OrderDto;
   removeOrderItem(orderId: Id, itemId: Id): OrderDto;
@@ -137,6 +146,12 @@ export interface GastronomyRepository {
     mode: "PERCENTAGE" | "FIXED";
     value: number;
     reason: string;
+    authorizerPin: string;
+  }): OrderDto;
+  applyOrderDeposit(input: {
+    orderId: Id;
+    depositMinor: MoneyMinor;
+    notes?: string | null;
     authorizerPin: string;
   }): OrderDto;
   updateOrderStatus(orderId: Id, status: OrderOperationalStatus): OrderDto;
@@ -168,6 +183,7 @@ export interface GastronomyRepository {
     page: number;
     pageSize: number;
   }): CustomerProfileDto;
+  settleCustomerAccount(input: SettleCustomerAccountInput): CustomerProfileDto;
   createCustomer(input: {
     name: string;
     phone: string;
@@ -238,6 +254,12 @@ export interface GastronomyRepository {
   }): import("@gastronomy/contracts").ModifierDto;
   listPurchases(): PurchaseDto[];
   createPurchase(input: CreatePurchaseInput): PurchaseDto;
+  getFinanceReport(input: {from: string; to: string}): FinanceReportDto;
+  createFinanceExpense(input: CreateFinanceExpenseInput): FinanceExpenseDto;
+  payFinanceExpense(input: {expenseId: Id; paymentMethodCode: string; fromCash: boolean; idempotencyKey?: string; terminalId?: string}): FinanceExpenseDto;
+  createFinanceRecurring(input: CreateFinanceRecurringInput): FinanceRecurringDto;
+  stopFinanceRecurring(input: {recurringId: Id}): FinanceRecurringDto;
+  setFinanceProductCost(input: {productId: Id; unitCostMinor: MoneyMinor | null}): void;
   adjustStock(input: {
     productId: Id;
     newStockMinor: number;
@@ -467,6 +489,14 @@ export class GastronomyApplication {
     return this.repository.addOrderItem(input);
   }
 
+  updateOrderItemQuantity(input: UpdateOrderItemQuantityInput) {
+    const quantity = Number(input.quantity);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new Error("La cantidad debe ser un entero mayor que cero.");
+    }
+    return this.repository.updateOrderItemQuantity({ ...input, quantity });
+  }
+
   updateOrderItemNotes(input: UpdateOrderItemNotesInput) {
     const notes = input.notes?.trim() || null;
     if (notes && notes.length > 500)
@@ -505,6 +535,17 @@ export class GastronomyApplication {
     return this.repository.applyOrderDiscount({
       ...input,
       reason: input.reason.trim(),
+    });
+  }
+
+  applyOrderDeposit(
+    input: Parameters<GastronomyRepository["applyOrderDeposit"]>[0],
+  ) {
+    if (!/^\d{4,8}$/.test(input.authorizerPin))
+      throw new Error("El PIN no es válido.");
+    return this.repository.applyOrderDeposit({
+      ...input,
+      notes: input.notes?.trim() || null,
     });
   }
 
@@ -632,6 +673,14 @@ export class GastronomyApplication {
         ? Math.min(50, Math.max(1, Math.trunc(input.pageSize)))
         : 10,
     });
+  }
+
+  settleCustomerAccount(input: SettleCustomerAccountInput) {
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+      throw new Error("Ingresá un importe mayor que cero.");
+    if (input.methodCode === "ACCOUNT")
+      throw new Error("La cuenta corriente no es un medio de cobro de deudas.");
+    return this.repository.settleCustomerAccount(input);
   }
 
   createCustomer(input: {
@@ -883,6 +932,30 @@ export class GastronomyApplication {
       invoiceNumber: input.invoiceNumber?.trim() || null,
       notes: input.notes?.trim() || null,
     });
+  }
+
+  getFinanceReport(input: {from: string; to: string}) {
+    return this.repository.getFinanceReport(input);
+  }
+
+  createFinanceExpense(input: CreateFinanceExpenseInput) {
+    return this.repository.createFinanceExpense(input);
+  }
+
+  payFinanceExpense(input: Parameters<GastronomyRepository["payFinanceExpense"]>[0]) {
+    return this.repository.payFinanceExpense(input);
+  }
+
+  createFinanceRecurring(input: CreateFinanceRecurringInput) {
+    return this.repository.createFinanceRecurring(input);
+  }
+
+  stopFinanceRecurring(input: {recurringId: Id}) {
+    return this.repository.stopFinanceRecurring(input);
+  }
+
+  setFinanceProductCost(input: {productId: Id; unitCostMinor: MoneyMinor | null}) {
+    return this.repository.setFinanceProductCost(input);
   }
 
   createModifier(input: Parameters<GastronomyRepository["createModifier"]>[0]) {

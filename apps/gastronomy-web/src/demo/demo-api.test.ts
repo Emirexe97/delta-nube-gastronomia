@@ -20,6 +20,62 @@ class MemoryStorage implements DemoStorage {
 }
 
 describe("API de demostración", () => {
+  it("finanzas tolera pedidos antiguos de demo sin seña ni devolución", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    const date = new Date().toISOString().slice(0,10);
+    await api.getFinanceReport({from: date, to: date});
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    for (const order of saved.data.orders) {
+      delete order.depositMinor;
+      for (const payment of order.payments) delete payment.refundedMinor;
+    }
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+    const report = await createDemoApi(storage).getFinanceReport({from: date, to: date});
+    expect(Number.isFinite(report.salesMinor)).toBe(true);
+    expect(report.salesMinor).toBeGreaterThan(0);
+  });
+  it("finanzas demo calcula costos, fijos y sueldos sin duplicar compras", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const date = new Date().toISOString().slice(0,10);
+    const initialReport = await api.getFinanceReport({from: date, to: date});
+    expect(Number.isFinite(initialReport.salesMinor)).toBe(true);
+    const product = (await api.bootstrap()).products.find((item) => item.active)!;
+    await api.setFinanceProductCost({productId: product.id, unitCostMinor: 123_000});
+    expect((await api.getFinanceReport({from: date, to: date})).unknownCostItems).toBe(initialReport.unknownCostItems);
+    const order = await api.createOrder({type: "TAKEAWAY", customerName: "Cliente finanzas", customerPhone: "11 1234-9876"});
+    await api.addOrderItem({orderId: order.id, productId: product.id});
+    await api.confirmOrder({orderId: order.id});
+    const salary = await api.createFinanceExpense({title: "Sueldo", category: "Personal", kind: "PAYROLL", employeeId: "user-admin", amountMinor: 100_000, incurredOn: date});
+    await api.createFinanceRecurring({title: "Alquiler", category: "Local", kind: "FIXED", amountMinor: 200_000, dayOfMonth: Number(date.slice(8)), startMonth: date.slice(0,7)});
+    const report = await api.getFinanceReport({from: date, to: date});
+    expect(report.cogsMinor).toBeGreaterThanOrEqual(123_000);
+    expect(report.expensesMinor).toBe(300_000);
+    expect((await api.getFinanceReport({from: date, to: date})).expenses.length).toBe(2);
+    await api.payFinanceExpense({expenseId: salary.id, paymentMethodCode: "CASH", fromCash: true});
+    expect((await api.getFinanceReport({from: date, to: date})).expenses.find((item) => item.id === salary.id)?.paidAt).not.toBeNull();
+  });
+  it("no regenera un gasto fijo detenido en el mismo mes", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const date = new Date().toISOString().slice(0,10);
+    const rule = await api.createFinanceRecurring({title: "Servicio", category: "Local", kind: "FIXED", amountMinor: 10_000, dayOfMonth: Number(date.slice(8)), startMonth: date.slice(0,7)});
+    await api.stopFinanceRecurring({recurringId: rule.id});
+    expect((await api.getFinanceReport({from: date.slice(0,7) + "-01", to: date})).expenses).toHaveLength(0);
+  });
+  it("mantiene deuda de cuenta corriente y registra cobro posterior", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const customer = await api.createCustomer({name: "Cliente fiado", phone: "11 4444-8888"});
+    const product = (await api.bootstrap()).products.find((item) => item.active)!;
+    const draft = await api.createOrder({type: "TAKEAWAY", customerId: customer.id, customerName: customer.name, customerPhone: customer.phone});
+    const withItem = await api.addOrderItem({orderId: draft.id, productId: product.id});
+    await api.confirmOrder({orderId: draft.id});
+    await api.payOrder({orderId: draft.id, payments: [{methodCode: "ACCOUNT", amountMinor: withItem.totalMinor}]});
+    const before = await api.getCustomerProfile({customerId: customer.id, page: 1, pageSize: 10});
+    expect(before.metrics.outstandingMinor).toBe(withItem.totalMinor);
+    const after = await api.settleCustomerAccount({customerId: customer.id, methodCode: "CASH", amountMinor: 100});
+    expect(after.metrics.outstandingMinor).toBe(withItem.totalMinor - 100);
+    expect(after.accountReceipts[0]?.allocations[0]?.orderId).toBe(draft.id);
+  });
   it("crea pedidos para retirar y clientes nuevos sin dirección", async () => {
     const api = createDemoApi(new MemoryStorage());
     const customer = await api.createCustomer({
@@ -1721,6 +1777,67 @@ describe("API de demostración", () => {
     expect(paid.changeMethodCode).toBe("CASH");
   });
 
+  it("requiere PIN autorizado para restar seña y descuenta del monto a cobrar en demo", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Cliente Con Seña",
+      customerPhone: "11 5555-4444",
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    const initialTotal = populated.totalMinor;
+    expect(initialTotal).toBeGreaterThan(0);
+
+    // Rechaza PIN incorrecto
+    await expect(
+      api.applyOrderDeposit({
+        orderId: order.id,
+        depositMinor: 300_000,
+        authorizerPin: "0000",
+      }),
+    ).rejects.toThrow("PIN incorrecto");
+
+    // Restar seña con PIN autorizado
+    const withDeposit = await api.applyOrderDeposit({
+      orderId: order.id,
+      depositMinor: 300_000,
+      notes: "Seña reserva fiesta",
+      authorizerPin: "1234",
+    });
+    expect(withDeposit.depositMinor).toBe(300_000);
+    expect(withDeposit.depositNotes).toBe("Seña reserva fiesta");
+    expect(withDeposit.totalMinor).toBe(initialTotal - 300_000);
+
+    // Quitar seña requiere PIN autorizado
+    const cleared = await api.applyOrderDeposit({
+      orderId: order.id,
+      depositMinor: 0,
+      authorizerPin: "1234",
+    });
+    expect(cleared.depositMinor).toBe(0);
+    expect(cleared.totalMinor).toBe(initialTotal);
+
+    // Volver a aplicar seña y cobrar
+    const withDepositAgain = await api.applyOrderDeposit({
+      orderId: order.id,
+      depositMinor: 500_000,
+      notes: "Transferencia bancaria",
+      authorizerPin: "1234",
+    });
+    expect(withDepositAgain.totalMinor).toBe(initialTotal - 500_000);
+
+    await api.confirmOrder({ orderId: order.id });
+    const paid = await api.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "CASH", amountMinor: initialTotal - 500_000 }],
+    });
+    expect(paid.paymentStatus).toBe("PAID");
+    expect(paid.paidMinor).toBe(initialTotal - 500_000);
+  });
+
   it("permite pagar al repartidor en el momento al cobrar en demo", async () => {
     const api = createDemoApi(new MemoryStorage());
     const bootstrap = await api.bootstrap();
@@ -1977,6 +2094,54 @@ describe("API de demostración", () => {
     expect(
       after.deliveryLedger.find((l) => l.id === ledger2.id)?.status,
     ).toBe("SETTLED");
+  });
+
+  it("unifica productos duplicados al agregar y permite modificar la cantidad con updateOrderItemQuantity", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Juan Perez",
+      customerPhone: "11 2233-4455",
+      waiterUserId: "user-waiter",
+    });
+
+    // 1. Agregar primera vez
+    const orderWithFirst = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+      quantity: 1,
+    });
+    expect(orderWithFirst.items).toHaveLength(1);
+    expect(orderWithFirst.items[0]?.quantity).toBe(1);
+    const itemId = orderWithFirst.items[0]!.id;
+
+    // 2. Agregar el mismo producto -> debe sumar cantidad en lugar de duplicar línea
+    const orderWithSecond = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+      quantity: 3,
+    });
+    expect(orderWithSecond.items).toHaveLength(1);
+    expect(orderWithSecond.items[0]?.id).toBe(itemId);
+    expect(orderWithSecond.items[0]?.quantity).toBe(4);
+
+    // 3. Modificar cantidad con updateOrderItemQuantity
+    const orderUpdated = await api.updateOrderItemQuantity({
+      orderId: order.id,
+      itemId,
+      quantity: 6,
+    });
+    expect(orderUpdated.items).toHaveLength(1);
+    expect(orderUpdated.items[0]?.quantity).toBe(6);
+
+    // 4. Rechazar cantidades no válidas
+    await expect(
+      api.updateOrderItemQuantity({
+        orderId: order.id,
+        itemId,
+        quantity: 0,
+      }),
+    ).rejects.toThrow("La cantidad debe ser mayor que cero.");
   });
 });
 

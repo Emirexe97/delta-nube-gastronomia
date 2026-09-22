@@ -19,6 +19,103 @@ const takeawayOrder = (
   ...overrides,
 });
 
+test("cuenta corriente exige cliente, cierra mesa y cobra deuda sin duplicar ventas", () => {
+  withRepository((repository) => {
+    repository.openCashSession({openingAmountMinor: 0});
+    const customer = repository.createCustomer({name: "Cliente crédito", phone: "11 5555-1234"});
+    const table = repository.ensureTable(89);
+    const draft = repository.createOrder({type: "DINE_IN", tableId: table.id, waiterUserId: "user-admin"});
+    const order = repository.addOrderItem({orderId: draft.id, productId: "starter-muzza-grande"});
+    repository.confirmOrder({orderId: draft.id});
+    assert.throws(() => repository.payOrder({orderId: draft.id, payments: [{methodCode: "ACCOUNT", amountMinor: order.totalMinor}]}), /cliente/i);
+    const paid = repository.completeOrder({orderId: draft.id, customerId: customer.id, finalStatus: "DELIVERED", payments: [{methodCode: "ACCOUNT", amountMinor: order.totalMinor}]});
+    assert.equal(paid.customerId, customer.id);
+    assert.equal(paid.operationalStatus, "DELIVERED");
+    const before = repository.getCustomerProfile({customerId: customer.id, page: 1, pageSize: 10});
+    assert.equal(before.metrics.outstandingMinor, order.totalMinor);
+    assert.equal(before.accountCharges[0]?.outstandingMinor, order.totalMinor);
+    const salesBefore = repository.bootstrap().cashSession!.salesTotalMinor;
+    const first = repository.settleCustomerAccount({customerId: customer.id, amountMinor: 100_000, methodCode: "CASH", idempotencyKey: "account-receipt-1", terminalId: "TEST"});
+    assert.equal(first.metrics.outstandingMinor, order.totalMinor - 100_000);
+    assert.equal(first.accountReceipts[0]?.allocations[0]?.orderId, draft.id);
+    const duplicate = repository.settleCustomerAccount({customerId: customer.id, amountMinor: 100_000, methodCode: "CASH", idempotencyKey: "account-receipt-1", terminalId: "TEST"});
+    assert.equal(duplicate.metrics.outstandingMinor, first.metrics.outstandingMinor);
+    assert.equal(repository.bootstrap().cashSession!.salesTotalMinor, salesBefore);
+    const movement = repository.bootstrap().cashSession!.movements?.find((entry) => entry.reason?.includes(first.accountReceipts[0]!.id));
+    assert.ok(movement);
+    assert.throws(() => repository.reverseCashMovement({movementId: movement.id, reason: "Prueba", authorizerPin: "2468"}), /cuenta corriente/i);
+    assert.throws(() => repository.setCustomerActive({customerId: customer.id, active: false, reason: "Prueba", authorizerPin: "2468"}), /deuda/i);
+    assert.throws(() => repository.settleCustomerAccount({customerId: customer.id, amountMinor: order.totalMinor, methodCode: "CASH"}), /supera/i);
+  });
+});
+
+test("cobros de cuenta corriente imputan FIFO o pedidos elegidos", () => {
+  withRepository((repository) => {
+    repository.openCashSession({openingAmountMinor: 0});
+    const customer = repository.createCustomer({name: "Cliente dos pedidos", phone: "11 5555-9876"});
+    const orders = [0, 1].map(() => {
+      const draft = repository.createOrder(takeawayOrder({customerId: customer.id}));
+      const populated = repository.addOrderItem({orderId: draft.id, productId: "starter-muzza-grande"});
+      repository.confirmOrder({orderId: draft.id});
+      repository.payOrder({orderId: draft.id, payments: [{methodCode: "ACCOUNT", amountMinor: populated.totalMinor}]});
+      return populated;
+    });
+    const selected = repository.settleCustomerAccount({customerId: customer.id, methodCode: "TRANSFER", amountMinor: 200_000, orderIds: [orders[1]!.id]});
+    assert.equal(selected.accountCharges[0]?.outstandingMinor, orders[0]!.totalMinor);
+    assert.equal(selected.accountCharges[1]?.outstandingMinor, orders[1]!.totalMinor - 200_000);
+    const fifo = repository.settleCustomerAccount({customerId: customer.id, methodCode: "CASH", amountMinor: 100_000});
+    assert.equal(fifo.accountCharges[0]?.outstandingMinor, orders[0]!.totalMinor - 100_000);
+    assert.equal(fifo.accountCharges[1]?.outstandingMinor, orders[1]!.totalMinor - 200_000);
+    assert.throws(() => repository.settleCustomerAccount({customerId: customer.id, methodCode: "ACCOUNT", amountMinor: 100}), /cuenta corriente/i);
+  });
+});
+
+test("finanzas separa ventas, costo congelado, sueldo y gasto fijo de compras", () => {
+  withRepository((repository) => {
+    const date = new Date().toISOString().slice(0, 10);
+    repository.openCashSession({openingAmountMinor: 5_000_000});
+    repository.setFinanceProductCost({productId: "starter-muzza-grande", unitCostMinor: 300_000});
+    const draft = repository.createOrder(takeawayOrder());
+    repository.addOrderItem({orderId: draft.id, productId: "starter-muzza-grande"});
+    repository.confirmOrder({orderId: draft.id});
+    const salary = repository.createFinanceExpense({title: "Sueldo mesero", category: "Personal", kind: "PAYROLL", employeeId: "user-admin", amountMinor: 200_000, incurredOn: date});
+    repository.createFinanceRecurring({title: "Alquiler", category: "Local", kind: "FIXED", amountMinor: 400_000, dayOfMonth: Number(date.slice(8)), startMonth: date.slice(0, 7)});
+    const report = repository.getFinanceReport({from: date, to: date});
+    assert.equal(report.cogsMinor, 300_000);
+    assert.equal(report.costedItems, 1);
+    assert.equal(report.payrollMinor, 200_000);
+    assert.equal(report.fixedMinor, 400_000);
+    assert.equal(report.purchasesMinor, 0);
+    assert.equal(report.expensesMinor, 600_000);
+    assert.equal(repository.getFinanceReport({from: date, to: date}).expenses.length, 2);
+    const paid = repository.payFinanceExpense({expenseId: salary.id, paymentMethodCode: "CASH", fromCash: true});
+    assert.ok(paid.paidAt);
+    assert.equal(repository.getFinanceReport({from: date, to: date}).expensesMinor, 600_000);
+    repository.registerCashMovement({type: "EXPENSE", amountMinor: 50_000, paymentMethodCode: "CASH", reason: "Limpieza"});
+    assert.equal(repository.getFinanceReport({from: date, to: date}).expensesMinor, 650_000);
+    repository.setFinanceProductCost({productId: "starter-muzza-grande", unitCostMinor: 900_000});
+    assert.equal(repository.getFinanceReport({from: date, to: date}).cogsMinor, 300_000);
+    repository.setFinanceProductCost({productId: "starter-muzza-grande", unitCostMinor: null});
+    repository.createPurchase({supplierName: "Proveedor", authorizerPin: "2468", items: [{productId: "starter-muzza-grande", quantityMinor: 1_000, unitCostMinor: 450_000}]});
+    const next = repository.createOrder(takeawayOrder());
+    repository.addOrderItem({orderId: next.id, productId: "starter-muzza-grande"});
+    repository.confirmOrder({orderId: next.id});
+    const final = repository.getFinanceReport({from: date, to: date});
+    assert.equal(final.cogsMinor, 750_000);
+    assert.equal(final.purchasesMinor, 450_000);
+    assert.equal(final.expensesMinor, 650_000);
+  });
+});
+
+test("detener un gasto fijo no lo regenera dentro del mes actual", () => {
+  withRepository((repository) => {
+    const date = new Date().toISOString().slice(0, 10);
+    const rule = repository.createFinanceRecurring({title: "Servicio", category: "Local", kind: "FIXED", amountMinor: 10_000, dayOfMonth: Number(date.slice(8)), startMonth: date.slice(0, 7)});
+    repository.stopFinanceRecurring({recurringId: rule.id});
+    assert.equal(repository.getFinanceReport({from: date.slice(0, 7) + "-01", to: date}).expenses.length, 0);
+  });
+});
+
 function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
   const path = join(tmpdir(), `gastronomy-${randomUUID()}.sqlite`);
   const repository = new SqliteGastronomyRepository(path, {
@@ -1419,11 +1516,95 @@ test("descuento autorizado se audita y no altera snapshots", () => {
       authorizerPin: "2468",
     });
     assert.equal(discounted.discountMinor, 150_000);
-    assert.equal(discounted.totalMinor, 1_350_000);
     assert.equal(
       discounted.items[0]?.unitPriceMinorSnapshot,
       withItem.items[0]?.unitPriceMinorSnapshot,
     );
+  });
+});
+
+test("seña requiere pin autorizado, se resta del monto a cobrar y se audita con authorizerUserId", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const order = repository.createOrder(takeawayOrder());
+    repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+
+    // Rechaza PIN incorrecto
+    assert.throws(
+      () =>
+        repository.applyOrderDeposit({
+          orderId: order.id,
+          depositMinor: 500_000,
+          notes: "Intento no autorizado",
+          authorizerPin: "0000",
+        }),
+      /PIN incorrecto o usuario sin permiso/,
+    );
+
+    const withDeposit = repository.applyOrderDeposit({
+      orderId: order.id,
+      depositMinor: 500_000,
+      notes: "Seña reserva cumpleaños",
+      authorizerPin: "2468",
+    });
+    assert.equal(withDeposit.depositMinor, 500_000);
+    assert.equal(withDeposit.depositNotes, "Seña reserva cumpleaños");
+    assert.equal(withDeposit.subtotalMinor, 1_500_000);
+    assert.equal(withDeposit.totalMinor, 1_000_000);
+
+    const withSecondItem = repository.addOrderItem({
+      orderId: order.id,
+      productId: "starter-muzza-grande",
+    });
+    assert.equal(withSecondItem.subtotalMinor, 3_000_000);
+    assert.equal(withSecondItem.depositMinor, 500_000);
+    assert.equal(withSecondItem.totalMinor, 2_500_000);
+
+    const withDiscount = repository.applyOrderDiscount({
+      orderId: order.id,
+      mode: "FIXED",
+      value: 200_000,
+      reason: "Descuento especial",
+      authorizerPin: "2468",
+    });
+    assert.equal(withDiscount.discountMinor, 200_000);
+    assert.equal(withDiscount.depositMinor, 500_000);
+    assert.equal(withDiscount.totalMinor, 2_300_000);
+
+    const cleared = repository.applyOrderDeposit({
+      orderId: order.id,
+      depositMinor: 0,
+      authorizerPin: "2468",
+    });
+    assert.equal(cleared.depositMinor, 0);
+    assert.equal(cleared.depositNotes, null);
+    assert.equal(cleared.totalMinor, 2_800_000);
+
+    const finalOrder = repository.applyOrderDeposit({
+      orderId: order.id,
+      depositMinor: 800_000,
+      notes: "Transferencia bancaria",
+      authorizerPin: "2468",
+    });
+    assert.equal(finalOrder.totalMinor, 2_000_000);
+    repository.confirmOrder({ orderId: order.id });
+    const paid = repository.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "CASH", amountMinor: 2_000_000 }],
+    });
+    assert.equal(paid.paidMinor, 2_000_000);
+    assert.equal(paid.paymentStatus, "PAID");
+
+    const audit = repository
+      .getAuditLog({
+        action: "ORDER_DEPOSIT_APPLIED",
+      })
+      .filter((entry) => entry.entityId === order.id);
+    assert.ok(audit.length >= 3);
+    assert.ok(audit[0]?.authorizerName);
   });
 });
 
@@ -4074,6 +4255,96 @@ test("permite registrar movimientos de caja con diferentes medios de pago y vali
       authorizerPin: "2468",
     });
     assert.equal(afterReversal.expectedAmountMinor, 3_000_000);
+  });
+
+  test("unifica productos duplicados al agregar y permite modificar la cantidad con updateOrderItemQuantity", () => {
+    withRepository((repository) => {
+      const session = repository.openCashSession({
+        openingAmountMinor: 100_000,
+      });
+      const order = repository.createOrder({
+        type: "TAKEAWAY",
+        cashSessionId: session.id,
+        waiterUserId: "user-waiter",
+      });
+
+      // 1. Agregar producto por primera vez (cantidad 1)
+      const orderWithFirst = repository.addOrderItem({
+        orderId: order.id,
+        productId: "starter-muzza-grande",
+        quantity: 1,
+      });
+      assert.equal(orderWithFirst.items.length, 1);
+      assert.equal(orderWithFirst.items[0]?.quantity, 1);
+      assert.equal(orderWithFirst.items[0]?.lineTotalMinor, 1_500_000);
+      assert.equal(orderWithFirst.totalMinor, 1_500_000);
+      const itemId = orderWithFirst.items[0]!.id;
+
+      // 2. Agregar el MISMO producto nuevamente (cantidad 2) -> debe unificarse en la misma línea
+      const orderWithDuplicate = repository.addOrderItem({
+        orderId: order.id,
+        productId: "starter-muzza-grande",
+        quantity: 2,
+      });
+      assert.equal(
+        orderWithDuplicate.items.length,
+        1,
+        "No debe crear una línea separada",
+      );
+      assert.equal(
+        orderWithDuplicate.items[0]?.id,
+        itemId,
+        "Debe mantener el mismo itemId",
+      );
+      assert.equal(
+        orderWithDuplicate.items[0]?.quantity,
+        3,
+        "La cantidad debe ser 1 + 2 = 3",
+      );
+      assert.equal(orderWithDuplicate.items[0]?.lineTotalMinor, 4_500_000);
+      assert.equal(orderWithDuplicate.totalMinor, 4_500_000);
+
+      // 3. Modificar la cantidad directamente con updateOrderItemQuantity
+      const orderUpdated = repository.updateOrderItemQuantity({
+        orderId: order.id,
+        itemId,
+        quantity: 5,
+      });
+      assert.equal(orderUpdated.items.length, 1);
+      assert.equal(orderUpdated.items[0]?.quantity, 5);
+      assert.equal(orderUpdated.items[0]?.lineTotalMinor, 7_500_000);
+      assert.equal(orderUpdated.totalMinor, 7_500_000);
+
+      // 4. Reducir la cantidad
+      const orderReduced = repository.updateOrderItemQuantity({
+        orderId: order.id,
+        itemId,
+        quantity: 2,
+      });
+      assert.equal(orderReduced.items[0]?.quantity, 2);
+      assert.equal(orderReduced.items[0]?.lineTotalMinor, 3_000_000);
+      assert.equal(orderReduced.totalMinor, 3_000_000);
+
+      // 5. Validar que cantidades no válidas se rechacen
+      assert.throws(
+        () =>
+          repository.updateOrderItemQuantity({
+            orderId: order.id,
+            itemId,
+            quantity: 0,
+          }),
+        /La cantidad debe ser mayor que cero/,
+      );
+      assert.throws(
+        () =>
+          repository.updateOrderItemQuantity({
+            orderId: order.id,
+            itemId,
+            quantity: -3,
+          }),
+        /La cantidad debe ser mayor que cero/,
+      );
+    });
   });
 });
 

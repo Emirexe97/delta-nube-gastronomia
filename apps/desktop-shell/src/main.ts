@@ -94,7 +94,10 @@ function orderTicketHtml(
       return `<div class="item"><div class="item-main"><span class="product">${quantity}<strong>${escapeHtml(item.productNameSnapshot)}</strong>${unitPrice}</span>${price}</div>${halves}${modifiers ? `<div class="detail">${modifiers}</div>` : ""}${notes}</div>`;
     })
     .join("");
-  const showBreakdown = order.discountMinor > 0 || order.deliveryFeeMinor > 0;
+  const showBreakdown =
+    order.discountMinor > 0 ||
+    order.deliveryFeeMinor > 0 ||
+    order.depositMinor > 0;
   return `<!doctype html><html><head><meta charset="utf-8"><style>
     @page{size:${paperMm}mm auto;margin:${marginMm}mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;line-height:1.16;overflow-wrap:anywhere}h1,h2,p{margin:0}.center{text-align:center}.title{font-size:18px;line-height:1.05;font-weight:900}.subtitle{font-size:11px;margin-top:1px}.meta{border-top:1px solid #000;border-bottom:1px solid #000;margin:3px 0;padding:2px 0}.meta-line,.row,.item-main,.columns{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px;align-items:baseline}.meta-line+.meta-line{margin-top:1px}.columns{font-size:10px;text-transform:uppercase;border-bottom:1px dashed #000;padding:1px 0}.item{padding:2px 0;border-bottom:1px dotted #999}.product{display:flex;min-width:0;gap:3px;align-items:baseline;font-size:calc(${fontSizePx}px + 2pt);font-weight:700;text-transform:uppercase;line-height:1.18}.quantity{flex:0 0 auto;min-width:26px}.amount{white-space:nowrap;font-variant-numeric:tabular-nums;font-size:calc(${fontSizePx}px + 2pt);font-weight:700}.unit-price{font-size:9px;font-weight:400;white-space:nowrap;text-transform:none}.detail{padding-left:26px;font-size:10px;line-height:1.15}.halves{font-size:calc(${fontSizePx}px + 2pt);font-weight:700;text-transform:uppercase;line-height:1.18}.modifier{display:block;font-weight:700;text-transform:uppercase}.info{font-size:11px;padding:2px 0;border-bottom:1px dashed #000}.promised{font-size:15px;font-weight:900;text-align:center;padding:2px 0;border-bottom:1px dashed #000}.totals{margin-top:3px}.row{margin:1px 0}.total{border-top:3px double #000;margin-top:2px;padding-top:2px;font-size:19px;font-weight:900}.payments{border-top:1px dashed #000;margin-top:3px;padding-top:2px;font-size:11px}.order-note{font-size:calc(${fontSizePx}px + 2pt);font-weight:700;text-transform:uppercase;padding-top:2px;line-height:1.18}.item-obs{padding-left:14px;margin-top:1px}.footer{border-top:1px dashed #000;margin-top:4px;padding-top:3px;text-align:center;font-size:11px}.reprint{font-weight:900;border:1px solid #000;padding:1px 4px}
   </style></head><body><header class="center"><h1 class="title">${escapeHtml(isKitchen ? template.kitchenHeader || "COMANDA" : template.title || settings.businessName)}</h1>${!isKitchen && template.subtitle ? `<p class="subtitle">${escapeHtml(template.subtitle)}</p>` : ""}</header><section class="meta"><div class="meta-line"><strong>${dateLabel} · ${timeLabel}</strong>${template.showOrderNumber || isKitchen ? `<strong>PEDIDO #${order.number}</strong>` : ""}</div><div class="meta-line">${template.showTable || isKitchen ? `<strong>${escapeHtml(typeLabel)}</strong>` : "<span></span>"}${template.showWaiter && order.waiterName ? `<span>Mozo: <strong>${escapeHtml(order.waiterName)}</strong></span>` : `<span>${escapeHtml(settings.printing.terminalLabel)}</span>`}</div>${order.printCount > 0 ? `<div class="center"><span class="reprint">REIMPRESIÓN</span></div>` : ""}</section>
@@ -103,7 +106,7 @@ function orderTicketHtml(
   ${isKitchen && order.type === "DELIVERY" && order.deliveryAddressNotesSnapshot ? `<p class="order-note"><strong>Referencia:</strong> ${escapeHtml(order.deliveryAddressNotesSnapshot)}</p>` : ""}
   <div class="columns"><strong>Cant. · Producto</strong>${isKitchen || !template.showItemTotal ? "" : "<strong>Total</strong>"}</div>${itemRows}
   ${order.notes ? `<p class="order-note"><strong>OBS:</strong> ${lineBreaks(order.notes)}</p>` : ""}
-  ${isKitchen ? "" : `<section class="totals">${showBreakdown ? `<div class="row"><span>Subtotal</span><strong>${escapeHtml(formatMoney(order.subtotalMinor))}</strong></div>` : ""}${order.discountMinor ? `<div class="row"><span>Descuento</span><strong>-${escapeHtml(formatMoney(order.discountMinor))}</strong></div>` : ""}${order.deliveryFeeMinor ? `<div class="row"><span>Delivery</span><strong>${escapeHtml(formatMoney(order.deliveryFeeMinor))}</strong></div>` : ""}<div class="row total"><span>TOTAL</span><span>${escapeHtml(formatMoney(order.totalMinor))}</span></div></section>`}
+  ${isKitchen ? "" : `<section class="totals">${showBreakdown ? `<div class="row"><span>Subtotal</span><strong>${escapeHtml(formatMoney(order.subtotalMinor))}</strong></div>` : ""}${order.discountMinor ? `<div class="row"><span>Descuento</span><strong>-${escapeHtml(formatMoney(order.discountMinor))}</strong></div>` : ""}${order.depositMinor ? `<div class="row"><span>Seña</span><strong>-${escapeHtml(formatMoney(order.depositMinor))}</strong></div>` : ""}${order.deliveryFeeMinor ? `<div class="row"><span>Delivery</span><strong>${escapeHtml(formatMoney(order.deliveryFeeMinor))}</strong></div>` : ""}<div class="row total"><span>TOTAL</span><span>${escapeHtml(formatMoney(order.totalMinor))}</span></div></section>`}
   ${
     !isKitchen && template.showPaymentSummary && order.payments.length
       ? `<section class="payments">${order.payments
@@ -316,6 +319,8 @@ function printerTestHtml(
       "Texto largo de prueba para verificar saltos de línea y legibilidad.",
     subtotalMinor: 186_000,
     discountMinor: 0,
+    depositMinor: 0,
+    depositNotes: null,
     totalMinor: 211_000,
     paidMinor: 211_000,
     printedAt: null,
@@ -430,12 +435,14 @@ function registerIpcHandlers() {
     "confirmOrder",
     "discardDraftOrder",
     "addOrderItem",
+    "updateOrderItemQuantity",
     "addHalfAndHalfItem",
     "updateOrderItemNotes",
     "removeOrderItem",
     "addOrderItemModifier",
     "removeOrderItemModifier",
     "applyOrderDiscount",
+    "applyOrderDeposit",
     "updateOrderStatus",
     "assignDeliveryDriver",
     "payOrder",
@@ -446,6 +453,7 @@ function registerIpcHandlers() {
     "searchCustomers",
     "searchCustomersPage",
     "getCustomerProfile",
+    "settleCustomerAccount",
     "createCustomer",
     "updateCustomer",
     "setCustomerActive",
@@ -460,6 +468,12 @@ function registerIpcHandlers() {
     "createModifier",
     "listPurchases",
     "createPurchase",
+    "getFinanceReport",
+    "createFinanceExpense",
+    "payFinanceExpense",
+    "createFinanceRecurring",
+    "stopFinanceRecurring",
+    "setFinanceProductCost",
     "adjustStock",
     "createUser",
     "createDriver",

@@ -17,6 +17,8 @@ import type {
   OrderItemDto,
   ProductDto,
   PurchaseDto,
+  FinanceExpenseDto,
+  FinanceRecurringDto,
   ReportFilters,
   UserDto,
 } from "@gastronomy/contracts";
@@ -87,9 +89,15 @@ interface DemoState {
     createdAt: string;
   }>;
   customers: CustomerDto[];
+  accountReceipts?: Array<{ id: string; customerId: string; movementId: string; createdAt: string; amountMinor: number; methodCode: string; methodName: string; reference: string | null; allocations: Array<{ orderId: string; orderNumber: number; amountMinor: number }> }>;
   audit: AuditEntryDto[];
   purchases: PurchaseDto[];
   purchaseReceipts: Record<string, { purchaseId: string; requestJson: string }>;
+  financeExpenses?: FinanceExpenseDto[];
+  financeRecurring?: FinanceRecurringDto[];
+  financeManualCosts?: Record<string, number>;
+  financeItemCosts?: Record<string, {unitCostMinor: number | null; quantity: number}>;
+  financeExpenseMovements?: Record<string, string>;
   sequence: number;
 }
 
@@ -530,7 +538,10 @@ function refreshOrder(order: OrderDto) {
   );
   order.totalMinor = Math.max(
     0,
-    order.subtotalMinor + order.deliveryFeeMinor - order.discountMinor,
+    order.subtotalMinor +
+      order.deliveryFeeMinor -
+      order.discountMinor -
+      (order.depositMinor ?? 0),
   );
   order.paidMinor = Math.max(
     0,
@@ -645,6 +656,8 @@ function makeDriverDeliveryActivity(
 }
 
 function normalize(state: DemoState) {
+  if (!state.data.paymentMethods.some((method) => method.code === "ACCOUNT"))
+    state.data.paymentMethods.push({id: "payment-account", code: "ACCOUNT", name: "Cuenta corriente", affectsCash: false, active: true});
   for (const order of state.data.orders) refreshOrder(order);
   state.data.tables.sort((left, right) => left.number - right.number);
   if (state.data.cashSession) {
@@ -962,7 +975,30 @@ export function createDemoApi(
   storage: DemoStorage = window.localStorage,
 ): DesktopApi {
   let state = loadState(storage);
+  // Existing confirmed demo orders predate cost tracking. Keep their cost unknown
+  // rather than applying a newly entered unit cost retroactively.
+  const initialCosts = state.financeItemCosts ??= {};
+  for (const order of state.data.orders.filter((candidate) => candidate.lifecycleStatus === "CONFIRMED")) {
+    for (const item of order.items) initialCosts[item.id] ??= {unitCostMinor: null, quantity: item.quantity};
+  }
+  const currentFinanceCost = (productId: string) => {
+    const manual = state.financeManualCosts?.[productId];
+    if (manual != null) return {unitCostMinor: manual, source: "MANUAL" as const};
+    const purchase = [...state.purchases].sort((a,b) => b.createdAt.localeCompare(a.createdAt))
+      .flatMap((entry) => entry.items).find((item) => item.productId === productId);
+    return purchase ? {unitCostMinor: purchase.unitCostMinor, source: "PURCHASE" as const} : {unitCostMinor: null, source: "UNKNOWN" as const};
+  };
   const save = () => {
+    for (const order of state.data.orders.filter((candidate) => candidate.lifecycleStatus === "CONFIRMED")) {
+      for (const item of order.items) {
+        const costs = state.financeItemCosts ??= {};
+        if (!costs[item.id]) {
+          const unitCostMinor = item.productId ? currentFinanceCost(item.productId).unitCostMinor :
+            item.halves.length === 2 ? (() => {const halves = item.halves.map((half) => currentFinanceCost(half.productId).unitCostMinor); return halves.every((value) => value != null) ? Math.round((halves[0]! + halves[1]!) / 2) : null;})() : null;
+          costs[item.id] = {unitCostMinor, quantity: item.quantity};
+        } else costs[item.id]!.quantity = item.quantity;
+      }
+    }
     normalize(state);
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(state));
   };
@@ -1149,6 +1185,7 @@ export function createDemoApi(
       if (input.amountMinor <= 0)
         throw new Error("El importe debe ser mayor que cero.");
       const methodCode = input.paymentMethodCode || "CASH";
+      if (methodCode === "ACCOUNT") throw new Error("Cuenta corriente no registra un movimiento de caja manual.");
       const method = state.data.paymentMethods.find(
         (m) => m.code === methodCode && m.active,
       );
@@ -1350,6 +1387,8 @@ export function createDemoApi(
         notes: input.notes ?? null,
         subtotalMinor: 0,
         discountMinor: 0,
+        depositMinor: 0,
+        depositNotes: null,
         totalMinor: input.deliveryFeeMinor ?? 0,
         paidMinor: 0,
         printedAt: null,
@@ -1485,19 +1524,35 @@ export function createDemoApi(
           throw new Error(`Stock insuficiente para ${product.name}.`);
         product.stockMinor -= required;
       }
-      const item: OrderItemDto = {
-        id: uid("item", state),
-        productId: product.id,
-        productNameSnapshot: product.name,
-        quantity,
-        unitPriceMinorSnapshot: unit,
-        discountMinorSnapshot: 0,
-        notes: input.notes ?? null,
-        halves: [],
-        modifiers: [],
-        lineTotalMinor: unit * quantity,
-      };
-      order.items.push(item);
+      const normalizedNotes = input.notes?.trim() || null;
+      const existingItem = order.items.find(
+        (candidate) =>
+          candidate.productId === product.id &&
+          candidate.unitPriceMinorSnapshot === unit &&
+          candidate.modifiers.length === 0 &&
+          candidate.halves.length === 0 &&
+          ((candidate.notes == null && normalizedNotes == null) ||
+            candidate.notes === normalizedNotes),
+      );
+      if (existingItem) {
+        existingItem.quantity += quantity;
+        refreshOrder(order);
+      } else {
+        const item: OrderItemDto = {
+          id: uid("item", state),
+          productId: product.id,
+          productNameSnapshot: product.name,
+          quantity,
+          unitPriceMinorSnapshot: unit,
+          discountMinorSnapshot: 0,
+          notes: normalizedNotes,
+          halves: [],
+          modifiers: [],
+          lineTotalMinor: unit * quantity,
+        };
+        order.items.push(item);
+        refreshOrder(order);
+      }
       if (priceWasOverridden) {
         audit(
           state,
@@ -1508,7 +1563,59 @@ export function createDemoApi(
           "orders.override_price",
         );
       }
-      audit(state, "ORDER", order.id, "PRODUCTO_AGREGADO");
+      audit(
+        state,
+        "ORDER",
+        order.id,
+        existingItem ? "PRODUCTO_CANTIDAD_INCREMENTADA" : "PRODUCTO_AGREGADO",
+      );
+      save();
+      return output(order);
+    },
+
+    async updateOrderItemQuantity(input) {
+      const order = orderById(input.orderId);
+      assertOrderAction(order, "EDIT");
+      const item = order.items.find(
+        (candidate) => candidate.id === input.itemId,
+      );
+      if (!item) throw new Error("No se encontró el producto del pedido.");
+      const newQty = input.quantity;
+      if (!Number.isInteger(newQty) || newQty <= 0) {
+        throw new Error("La cantidad debe ser mayor que cero.");
+      }
+      const oldQty = item.quantity;
+      if (newQty === oldQty) return output(order);
+      const delta = newQty - oldQty;
+
+      if (
+        order.lifecycleStatus === "CONFIRMED" &&
+        state.data.settings.stockEnabled
+      ) {
+        if (item.productId) {
+          const product = state.data.products.find(
+            (p) => p.id === item.productId,
+          );
+          if (product && product.stockMinor != null) {
+            const required = delta * 1000;
+            if (delta > 0 && product.stockMinor < required) {
+              throw new Error(`Stock insuficiente para ${product.name}.`);
+            }
+            product.stockMinor -= required;
+          }
+        }
+      }
+      item.quantity = newQty;
+      refreshOrder(order);
+      audit(
+        state,
+        "ORDER_ITEM",
+        item.id,
+        order.printedAt
+          ? "ORDER_EDITED_AFTER_PRINT"
+          : "ORDER_ITEM_QUANTITY_UPDATED",
+        `Cantidad modificada de ${oldQty} a ${newQty}`,
+      );
       save();
       return output(order);
     },
@@ -1669,6 +1776,8 @@ export function createDemoApi(
         input.mode === "PERCENTAGE"
           ? Math.round((order.subtotalMinor * input.value) / 100)
           : input.value;
+      refreshOrder(order);
+      refreshTables(state.data);
       audit(
         state,
         "ORDER",
@@ -1676,6 +1785,26 @@ export function createDemoApi(
         "DESCUENTO_APLICADO",
         input.reason,
         "orders.discount",
+      );
+      save();
+      return output(order);
+    },
+
+    async applyOrderDeposit(input) {
+      requirePin(input.authorizerPin);
+      const order = orderById(input.orderId);
+      assertOrderAction(order, "EDIT");
+      order.depositMinor = Math.max(0, input.depositMinor);
+      order.depositNotes = input.notes?.trim() || null;
+      refreshOrder(order);
+      refreshTables(state.data);
+      audit(
+        state,
+        "ORDER",
+        order.id,
+        "ORDER_DEPOSIT_APPLIED",
+        input.notes ? `Seña: ${input.notes}` : "Seña descontada del pedido",
+        "orders.deposit",
       );
       save();
       return output(order);
@@ -1783,6 +1912,17 @@ export function createDemoApi(
     async payOrder(input) {
       const order = orderById(input.orderId);
       assertOrderAction(order, "PAY");
+      const accountPayment = input.payments.find((payment) => payment.methodCode === "ACCOUNT");
+      if (accountPayment) {
+        const customerId = input.customerId ?? order.customerId;
+        const customer = state.customers.find((candidate) => candidate.id === customerId && candidate.active);
+        if (!customer) throw new Error("Seleccioná un cliente activo para usar cuenta corriente.");
+        if (order.customerId && order.customerId !== customer.id) throw new Error("El pedido ya pertenece a otro cliente.");
+        if (input.change?.amountMinor) throw new Error("No se puede entregar vuelto de una cuenta corriente.");
+        order.customerId = customer.id;
+        order.customerNameSnapshot = customer.name;
+        order.customerPhoneSnapshot = customer.phone;
+      }
       if (!input.payments.length)
         throw new Error("Agregá al menos un medio de pago.");
       const changeAmountMinor = input.change?.amountMinor ?? 0;
@@ -1990,6 +2130,8 @@ export function createDemoApi(
         (candidate) => candidate.id === input.paymentId,
       );
       if (!payment) throw new Error("No se encontró el pago.");
+      if (payment.methodCode === "ACCOUNT" && (state.accountReceipts ?? []).some((receipt) => receipt.allocations.some((allocation) => allocation.orderId === order.id)))
+        throw new Error("La cuenta corriente ya tiene cobros aplicados; no se puede devolver este cargo.");
       if (payment.refundableMinor <= 0)
         throw new Error("El pago ya fue devuelto.");
       const amountMinor = payment.refundableMinor;
@@ -2355,6 +2497,12 @@ export function createDemoApi(
             order.operationalStatus !== "CANCELLED",
         )
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      const accountCharges = metricOrders.flatMap((order) => {
+        const amountMinor = order.payments.filter((payment) => payment.methodCode === "ACCOUNT").reduce((sum, payment) => sum + payment.amountMinor - payment.refundedMinor, 0);
+        if (!amountMinor) return [];
+        const settledMinor = (state.accountReceipts ?? []).reduce((sum, receipt) => sum + receipt.allocations.filter((allocation) => allocation.orderId === order.id).reduce((part, allocation) => part + allocation.amountMinor, 0), 0);
+        return [{orderId: order.id, orderNumber: order.number, createdAt: order.createdAt, amountMinor, settledMinor, outstandingMinor: amountMinor - settledMinor}];
+      });
       const totalSpentMinor = metricOrders.reduce(
         (total, order) => total + order.totalMinor,
         0,
@@ -2437,17 +2585,15 @@ export function createDemoApi(
         : 1;
       return output({
         customer,
+        accountCharges,
+        accountReceipts: (state.accountReceipts ?? []).filter((receipt) => receipt.customerId === customer.id).sort((a,b) => b.createdAt.localeCompare(a.createdAt)),
         metrics: {
           orderCount: metricOrders.length,
           totalSpentMinor,
           averageTicketMinor: metricOrders.length
             ? Math.round(totalSpentMinor / metricOrders.length)
             : 0,
-          outstandingMinor: metricOrders.reduce(
-            (total, order) =>
-              total + Math.max(0, order.totalMinor - order.paidMinor),
-            0,
-          ),
+          outstandingMinor: accountCharges.reduce((sum, charge) => sum + charge.outstandingMinor, 0),
           frequencyDays: gaps.length
             ? Math.round(
                 (gaps.reduce((total, gap) => total + gap, 0) /
@@ -2493,11 +2639,45 @@ export function createDemoApi(
       });
     },
 
+    async settleCustomerAccount(input) {
+      if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) throw new Error("Ingresá un importe mayor que cero.");
+      if (!state.data.cashSession) throw new Error("Abrí una caja antes de registrar el cobro.");
+      const method = state.data.paymentMethods.find((candidate) => candidate.code === input.methodCode && candidate.active && candidate.code !== "ACCOUNT");
+      if (!method) throw new Error("Seleccioná un medio de pago válido.");
+      const profile = await this.getCustomerProfile({customerId: input.customerId, page: 1, pageSize: 10});
+      const charges = profile.accountCharges.filter((charge) => charge.outstandingMinor > 0 && (!input.orderIds || input.orderIds.includes(charge.orderId)));
+      if (input.orderIds && (new Set(input.orderIds).size !== input.orderIds.length || charges.length !== input.orderIds.length)) throw new Error("Seleccioná pedidos con deuda vigente.");
+      if (input.amountMinor > charges.reduce((sum, charge) => sum + charge.outstandingMinor, 0)) throw new Error("El importe supera la deuda seleccionada.");
+      let remaining = input.amountMinor;
+      const allocations: Array<{orderId: string; orderNumber: number; amountMinor: number}> = [];
+      for (const charge of charges) {
+        if (!remaining) break;
+        const amountMinor = Math.min(remaining, charge.outstandingMinor);
+        allocations.push({orderId: charge.orderId, orderNumber: charge.orderNumber, amountMinor});
+        remaining -= amountMinor;
+      }
+      const id = uid("account-receipt", state);
+      const movementId = uid("movement", state);
+      (state.accountReceipts ??= []).push({id, customerId: input.customerId, movementId, createdAt: now(), amountMinor: input.amountMinor, methodCode: method.code, methodName: method.name, reference: input.reference?.trim() || null, allocations});
+      state.movements.push({id: movementId, sessionId: state.data.cashSession.id, type: "INCOME", amountMinor: input.amountMinor, affectsCash: method.affectsCash, paymentMethodCode: method.code, orderId: null, userId: state.data.currentUser.id, reason: `Cobro cuenta corriente · recibo ${id}`, createdAt: now()});
+      if (method.affectsCash) {
+        state.data.cashSession.expectedAmountMinor += input.amountMinor;
+        state.data.cashSession.cashIncomeMinor = (state.data.cashSession.cashIncomeMinor ?? 0) + input.amountMinor;
+      }
+      audit(state, "CUSTOMER", input.customerId, "CUSTOMER_ACCOUNT_SETTLED", `Recibo ${id}`);
+      save();
+      return this.getCustomerProfile({customerId: input.customerId, page: 1, pageSize: 10});
+    },
+
     async setCustomerActive(input) {
       requirePin(input.authorizerPin);
       const customer = state.customers.find(
         (candidate) => candidate.id === input.customerId,
       );
+      if (!input.active) {
+        const profile = await this.getCustomerProfile({customerId: input.customerId, page: 1, pageSize: 10});
+        if (profile.metrics.outstandingMinor > 0) throw new Error("El cliente tiene deuda de cuenta corriente; cobrá o fusioná la ficha antes de archivarla.");
+      }
       if (!customer) throw new Error("El cliente no existe.");
       if (input.active && customer.mergedIntoCustomerId)
         throw new Error(
@@ -2562,6 +2742,8 @@ export function createDemoApi(
       }
       for (const order of state.data.orders)
         if (order.customerId === source.id) order.customerId = target.id;
+      for (const receipt of state.accountReceipts ?? [])
+        if (receipt.customerId === source.id) receipt.customerId = target.id;
       target.tags = [...new Set([...target.tags, ...source.tags])];
       if (!target.preferredPaymentMethodCode)
         target.preferredPaymentMethodCode = source.preferredPaymentMethodCode;
@@ -2970,6 +3152,115 @@ export function createDemoApi(
 
     async listPurchases() {
       return output(state.purchases);
+    },
+
+    async getFinanceReport(input) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(input.from) || !/^\d{4}-\d{2}-\d{2}$/.test(input.to) || input.from > input.to ||
+        Number.isNaN(Date.parse(input.from)) || Number.isNaN(Date.parse(input.to)) || (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000 > 1096)
+        throw new Error("Elegí un período válido de hasta tres años.");
+      const expenses = state.financeExpenses ??= [];
+      const recurring = state.financeRecurring ??= [];
+      let month = input.from.slice(0,7);
+      while (month <= input.to.slice(0,7)) {
+        const [year, number] = month.split("-").map(Number);
+        for (const rule of recurring.filter((item) => item.startMonth <= month && (!item.stopMonth || item.stopMonth >= month))) {
+          const day = Math.min(rule.dayOfMonth, new Date(Date.UTC(year!, number!, 0)).getUTCDate());
+          const date = `${month}-${String(day).padStart(2,"0")}`;
+          if (!expenses.some((item) => item.recurringId === rule.id && item.incurredOn === date))
+            expenses.push({id: uid("finance-expense", state), title: rule.title, category: rule.category, kind: rule.kind,
+              amountMinor: rule.amountMinor, incurredOn: date, dueOn: date, paidAt: null, paymentMethodCode: null,
+              employeeId: rule.employeeId, employeeName: state.data.users.find((user) => user.id === rule.employeeId)?.fullName ?? null,
+              recurringId: rule.id, note: null});
+        }
+        month = new Date(Date.UTC(year!, number!, 1)).toISOString().slice(0,7);
+      }
+      const periodOrders = state.data.orders.filter((order) => order.lifecycleStatus === "CONFIRMED" && order.operationalStatus !== "CANCELLED" && order.createdAt.slice(0,10) >= input.from && order.createdAt.slice(0,10) <= input.to);
+      const paidFinanceMovementIds = new Set(Object.values(state.financeExpenseMovements ?? {}));
+      const cashExpenses: FinanceExpenseDto[] = state.movements.filter((movement) => movement.type === "EXPENSE" && movement.createdAt.slice(0,10) >= input.from && movement.createdAt.slice(0,10) <= input.to &&
+        !(movement as any).referenceId && !state.movements.some((other) => (other as any).referenceId === movement.id) && !paidFinanceMovementIds.has(movement.id))
+        .map((movement) => ({id: `cash-${movement.id}`,title: movement.reason || "Gasto de caja",category: "Caja sin clasificar",kind: "GENERAL",
+          amountMinor: movement.amountMinor,incurredOn: movement.createdAt.slice(0,10),dueOn: movement.createdAt.slice(0,10),paidAt: movement.createdAt,
+          paymentMethodCode: movement.paymentMethodCode,employeeId: null,employeeName: null,recurringId: null,note: "Movimiento de caja existente"}));
+      const periodExpenses = [...expenses.filter((item) => item.incurredOn >= input.from && item.incurredOn <= input.to), ...cashExpenses].sort((a,b) => b.incurredOn.localeCompare(a.incurredOn));
+      const costRows = periodOrders.flatMap((order) => order.items.map((item) => ({month: order.createdAt.slice(0,7), cost: state.financeItemCosts?.[item.id]?.unitCostMinor == null ? null : state.financeItemCosts[item.id]!.unitCostMinor! * item.quantity})));
+      const refundsMinor = periodOrders.reduce((sum, order) => sum + order.payments.reduce((part, payment) => part + (payment.refundedMinor ?? 0), 0), 0);
+      const salesMinor = periodOrders.reduce((sum, order) => sum + order.totalMinor + (order.depositMinor ?? 0), 0) - refundsMinor;
+      const cogsMinor = costRows.reduce((sum, row) => sum + (row.cost ?? 0), 0);
+      const expensesMinor = periodExpenses.reduce((sum, item) => sum + item.amountMinor, 0);
+      const monthlyMap = new Map<string, {month: string; salesMinor: number; cogsMinor: number; expensesMinor: number}>();
+      const monthly = (month: string) => {let row = monthlyMap.get(month); if (!row) {row = {month,salesMinor:0,cogsMinor:0,expensesMinor:0}; monthlyMap.set(month,row);} return row;};
+      for (const order of periodOrders) monthly(order.createdAt.slice(0,7)).salesMinor += order.totalMinor + (order.depositMinor ?? 0) - order.payments.reduce((sum,payment) => sum + (payment.refundedMinor ?? 0),0);
+      for (const row of costRows) monthly(row.month).cogsMinor += row.cost ?? 0;
+      for (const item of periodExpenses) monthly(item.incurredOn.slice(0,7)).expensesMinor += item.amountMinor;
+      save();
+      return output({from: input.from,to: input.to,salesMinor,refundsMinor,cogsMinor,
+        unknownCostItems: costRows.filter((row) => row.cost == null).length,costedItems: costRows.filter((row) => row.cost != null).length,
+        expensesMinor,payrollMinor: periodExpenses.filter((item) => item.kind === "PAYROLL").reduce((sum,item) => sum + item.amountMinor,0),
+        fixedMinor: periodExpenses.filter((item) => item.kind === "FIXED").reduce((sum,item) => sum + item.amountMinor,0),
+        unpaidMinor: periodExpenses.filter((item) => !item.paidAt).reduce((sum,item) => sum + item.amountMinor,0),
+        purchasesMinor: state.purchases.filter((purchase) => purchase.createdAt.slice(0,10) >= input.from && purchase.createdAt.slice(0,10) <= input.to).reduce((sum,purchase) => sum + purchase.totalMinor,0),
+        grossProfitMinor: salesMinor - cogsMinor,estimatedOperatingProfitMinor: salesMinor - cogsMinor - expensesMinor,
+        expenses: periodExpenses,recurring,productCosts: state.data.products.filter((product) => product.active).map((product) => ({productId: product.id,productName: product.name,...currentFinanceCost(product.id)})),
+        monthly: [...monthlyMap.values()].sort((a,b) => a.month.localeCompare(b.month))});
+    },
+
+    async createFinanceExpense(input) {
+      if (!input.title.trim() || !input.category.trim() || !["GENERAL","FIXED","PAYROLL"].includes(input.kind) ||
+        !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(input.incurredOn) || Number.isNaN(Date.parse(input.incurredOn))) throw new Error("Completá un gasto válido.");
+      if (input.kind === "PAYROLL" && !input.employeeId) throw new Error("Seleccioná un empleado para el sueldo.");
+      const employee = input.employeeId ? state.data.users.find((user) => user.id === input.employeeId) : undefined;
+      if (input.employeeId && !employee) throw new Error("El empleado no existe.");
+      const expense: FinanceExpenseDto = {id: uid("finance-expense", state),title: input.title.trim(),category: input.category.trim(),kind: input.kind,
+        amountMinor: input.amountMinor,incurredOn: input.incurredOn,dueOn: input.dueOn ?? input.incurredOn,paidAt: null,paymentMethodCode: null,
+        employeeId: input.employeeId ?? null,employeeName: employee?.fullName ?? null,recurringId: null,note: input.note?.trim() || null};
+      (state.financeExpenses ??= []).push(expense); save(); return output(expense);
+    },
+
+    async payFinanceExpense(input) {
+      const expense = state.financeExpenses?.find((item) => item.id === input.expenseId);
+      if (!expense) throw new Error("El gasto no existe.");
+      if (expense.paidAt) throw new Error("El gasto ya está pagado.");
+      const method = state.data.paymentMethods.find((item) => item.code === input.paymentMethodCode && item.active && item.code !== "ACCOUNT");
+      if (!method) throw new Error("El medio de pago no está disponible.");
+      if (input.fromCash) {
+        const cash = state.data.cashSession;
+        if (!cash) throw new Error("Abrí la caja antes de pagar desde caja.");
+        if (method.affectsCash && expense.amountMinor > cash.expectedAmountMinor) throw new Error("La caja no tiene efectivo suficiente.");
+        const movementId = uid("movement",state);
+        state.movements.push({id: movementId,sessionId: cash.id,type: "EXPENSE",amountMinor: expense.amountMinor,affectsCash: method.affectsCash,
+          paymentMethodCode: method.code,orderId: null,userId: state.data.currentUser.id,reason: `Gasto finanzas: ${expense.title}`,createdAt: now()});
+        (state.financeExpenseMovements ??= {})[expense.id] = movementId;
+        if (method.affectsCash) {cash.expectedAmountMinor -= expense.amountMinor; cash.cashExpenseMinor = (cash.cashExpenseMinor ?? 0) + expense.amountMinor;}
+      }
+      expense.paidAt = now(); expense.paymentMethodCode = method.code; save(); return output(expense);
+    },
+
+    async createFinanceRecurring(input) {
+      if (!input.title.trim() || !input.category.trim() || !["FIXED","PAYROLL"].includes(input.kind) || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 ||
+        !Number.isInteger(input.dayOfMonth) || input.dayOfMonth < 1 || input.dayOfMonth > 31 || !/^\d{4}-(0[1-9]|1[0-2])$/.test(input.startMonth)) throw new Error("Completá un gasto fijo válido.");
+      if (input.kind === "PAYROLL" && !input.employeeId) throw new Error("Seleccioná un empleado para el sueldo fijo.");
+      const rule: FinanceRecurringDto = {id: uid("finance-recurring",state),title: input.title.trim(),category: input.category.trim(),kind: input.kind,
+        amountMinor: input.amountMinor,dayOfMonth: input.dayOfMonth,startMonth: input.startMonth,employeeId: input.employeeId ?? null,active: true};
+      (state.financeRecurring ??= []).push(rule); save(); return output(rule);
+    },
+
+    async stopFinanceRecurring(input) {
+      const rule = state.financeRecurring?.find((item) => item.id === input.recurringId && item.active);
+      if (!rule) throw new Error("El gasto fijo no está activo.");
+      rule.active = false;
+      const now = new Date();
+      rule.stopMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0,7);
+      const today = new Date().toISOString().slice(0,10);
+      state.financeExpenses = state.financeExpenses?.filter((item) => item.recurringId !== rule.id || item.paidAt || item.incurredOn <= today);
+      save(); return output(rule);
+    },
+
+    async setFinanceProductCost(input) {
+      if (input.unitCostMinor != null && (!Number.isSafeInteger(input.unitCostMinor) || input.unitCostMinor < 0)) throw new Error("El costo no es válido.");
+      productById(input.productId);
+      if (input.unitCostMinor == null) delete (state.financeManualCosts ??= {})[input.productId];
+      else (state.financeManualCosts ??= {})[input.productId] = input.unitCostMinor;
+      save();
     },
 
     async createPurchase(input) {
@@ -3775,6 +4066,8 @@ export function createDemoApi(
         throw new Error("Abrí una caja antes de anular movimientos.");
       const original = state.movements.find((m) => m.id === input.movementId);
       if (!original) throw new Error("El movimiento no existe.");
+      if ((state.accountReceipts ?? []).some((receipt) => receipt.movementId === original.id))
+        throw new Error("Este ingreso corresponde a un cobro de cuenta corriente y no puede anularse como movimiento suelto.");
       if (
         state.movements.some(
           (m) => (m as any).referenceId === input.movementId,

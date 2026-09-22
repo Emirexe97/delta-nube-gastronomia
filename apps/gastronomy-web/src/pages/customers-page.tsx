@@ -487,6 +487,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
       <CustomerProfileModal
         customer={viewing}
         paymentMethods={data.paymentMethods}
+        cashOpen={Boolean(data.cashSession)}
         onClose={() => setViewing(null)}
         onEdit={() => {
           if (!viewing) return;
@@ -1398,6 +1399,7 @@ function ConflictColumn({
 function CustomerProfileModal({
   customer,
   paymentMethods,
+  cashOpen,
   onClose,
   onEdit,
   onUpdated,
@@ -1405,6 +1407,7 @@ function CustomerProfileModal({
 }: {
   customer: CustomerDto | null;
   paymentMethods: BootstrapDto["paymentMethods"];
+  cashOpen: boolean;
   onClose(): void;
   onEdit(): void;
   onUpdated(customer: CustomerDto): void;
@@ -1416,6 +1419,14 @@ function CustomerProfileModal({
   const [error, setError] = useState<string | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
+  const [settleOpen, setSettleOpen] = useState(false);
+  const [settleAmount, setSettleAmount] = useState("");
+  const [settleMethod, setSettleMethod] = useState("CASH");
+  const [settleReference, setSettleReference] = useState("");
+  const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
+  const [settleError, setSettleError] = useState<string | null>(null);
+  const [settling, setSettling] = useState(false);
+  const settleLockRef = useRef(false);
 
   useEffect(() => {
     if (!customer) {
@@ -1439,13 +1450,17 @@ function CustomerProfileModal({
     };
   }, [customer, page]);
 
-  useEffect(() => setPage(1), [customer?.id]);
+  useEffect(() => { setPage(1); setSettleOpen(false); setSelectedOrders([]); }, [customer?.id]);
 
   const currentCustomer = profile?.customer ?? customer;
   const preferredPayment = paymentMethods.find(
     (method) => method.code === currentCustomer?.preferredPaymentMethodCode,
   );
   const metrics = profile?.metrics;
+  const openCharges = profile?.accountCharges.filter((charge) => charge.outstandingMinor > 0) ?? [];
+  const selectedBalance = selectedOrders.length
+    ? openCharges.filter((charge) => selectedOrders.includes(charge.orderId)).reduce((sum, charge) => sum + charge.outstandingMinor, 0)
+    : metrics?.outstandingMinor ?? 0;
   return (
     <Modal
       open={Boolean(customer)}
@@ -1516,6 +1531,52 @@ function CustomerProfileModal({
               value={formatMoney(metrics?.totalSpentMinor ?? 0)}
             />
           </section>
+
+          <section className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-extrabold text-indigo-950">Cuenta corriente</h3>
+                <p className="text-xs text-indigo-700">Deuda pendiente: <strong>{formatMoney(metrics?.outstandingMinor ?? 0)}</strong></p>
+              </div>
+              <Button type="button" disabled={!cashOpen || !metrics?.outstandingMinor || settling} onClick={() => {setSettleOpen(true); setSettleAmount(String((metrics?.outstandingMinor ?? 0) / 100)); setSelectedOrders([]); setSettleError(null);}}>Registrar pago</Button>
+            </div>
+            {!cashOpen ? <p className="text-xs text-amber-700">Abrí una caja para registrar cobros.</p> : null}
+            {openCharges.length ? <div className="space-y-1 text-xs">
+              {openCharges.map((charge) => <div key={charge.orderId} className="flex justify-between gap-2 rounded bg-white p-2"><span>Pedido #{charge.orderNumber} · {new Date(charge.createdAt).toLocaleDateString("es-AR")}</span><b>{formatMoney(charge.outstandingMinor)}</b></div>)}
+            </div> : <p className="text-xs text-slate-500">Sin deuda pendiente.</p>}
+            {profile?.accountReceipts.length ? <div className="border-t border-indigo-200 pt-2">
+              <h4 className="text-xs font-bold text-slate-700">Recibos registrados</h4>
+              {profile.accountReceipts.map((receipt) => <div key={receipt.id} className="mt-1 rounded bg-white p-2 text-xs">
+                <b>{formatMoney(receipt.amountMinor)}</b> · {receipt.methodName} · {new Date(receipt.createdAt).toLocaleString("es-AR")}
+                <span className="block text-slate-500">Recibo {receipt.id.slice(0, 8)} · Pedidos {receipt.allocations.map((allocation) => `#${allocation.orderNumber} (${formatMoney(allocation.amountMinor)})`).join(", ")}{receipt.reference ? ` · ${receipt.reference}` : ""}</span>
+              </div>)}
+            </div> : null}
+          </section>
+
+          {settleOpen ? <section className="rounded-xl border border-slate-200 p-4 space-y-3">
+            <h3 className="text-sm font-bold">Registrar cobro de deuda</h3>
+            <p className="text-xs text-slate-500">Sin selección se imputará a los pedidos más antiguos. Podés elegir pedidos concretos.</p>
+            <div className="space-y-1">{openCharges.map((charge) => <label key={charge.orderId} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={selectedOrders.includes(charge.orderId)} onChange={(event) => setSelectedOrders((current) => event.target.checked ? [...current, charge.orderId] : current.filter((id) => id !== charge.orderId))} /> Pedido #{charge.orderNumber} · {formatMoney(charge.outstandingMinor)}</label>)}</div>
+            <p className="text-xs">Disponible para imputar: <b>{formatMoney(selectedBalance)}</b></p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Field label="Importe"><Input inputMode="decimal" value={settleAmount} onChange={(event) => setSettleAmount(event.target.value)} /></Field>
+              <Field label="Medio de cobro"><Select value={settleMethod} onChange={(event) => setSettleMethod(event.target.value)}>{paymentMethods.filter((method) => method.active && method.code !== "ACCOUNT").map((method) => <option key={method.code} value={method.code}>{method.name}</option>)}</Select></Field>
+            </div>
+            <Field label="Referencia / comprobante (opcional)"><Input value={settleReference} onChange={(event) => setSettleReference(event.target.value)} /></Field>
+            {settleError ? <p role="alert" className="text-xs text-rose-700">{settleError}</p> : null}
+            <div className="flex gap-2"><Button type="button" disabled={settling || !parseMoneyInput(settleAmount) || (parseMoneyInput(settleAmount) ?? 0) > selectedBalance} onClick={async () => {
+              if (!customer || settleLockRef.current) return;
+              const amountMinor = parseMoneyInput(settleAmount);
+              if (!amountMinor) return;
+              settleLockRef.current = true;
+              setSettling(true);
+              try {
+                const result = await window.gastronomy.settleCustomerAccount({customerId: customer.id, amountMinor, methodCode: settleMethod, reference: settleReference.trim() || null, orderIds: selectedOrders.length ? selectedOrders : undefined, idempotencyKey: crypto.randomUUID()});
+                setProfile(result); setSettleOpen(false); setSelectedOrders([]); setSettleReference(""); setSettleError(null);
+              } catch (value) { setSettleError(humanError(value)); }
+              finally { settleLockRef.current = false; setSettling(false); }
+            }}>{settling ? "Registrando…" : "Confirmar cobro"}</Button><Button type="button" variant="secondary" disabled={settling} onClick={() => setSettleOpen(false)}>Cancelar</Button></div>
+          </section> : null}
 
           <section className="grid gap-3 lg:grid-cols-2">
             <Card className="p-3">
