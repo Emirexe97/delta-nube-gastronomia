@@ -154,7 +154,8 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
     return grouped;
   }, [data.orders]);
   const visibleOrders = visibleResults.reduce(
-    (total, customer) => total + (orderStats.get(customer.id)?.count ?? 0),
+    (total, customer) =>
+      total + (customer.orderCount ?? orderStats.get(customer.id)?.count ?? 0),
     0,
   );
   const saveResult = (customer: CustomerDto) => {
@@ -343,6 +344,14 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
       >
         {visibleResults.map((customer) => {
           const stats = orderStats.get(customer.id);
+          const hasDebt = customerHasAccountDebt(customer);
+          const pendingCount =
+            customer.pendingCount ?? stats?.pendingCount ?? 0;
+          const orderCount = customer.orderCount ?? stats?.count ?? 0;
+          const lastOrderAt =
+            customer.lastOrderAt ?? stats?.lastOrderAt ?? null;
+          const totalPaidMinor =
+            customer.totalPaidMinor ?? stats?.paidMinor ?? 0;
           return (
             <Card key={customer.id} className="overflow-hidden p-0">
               <div className="p-4">
@@ -360,15 +369,22 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
                           <Phone size={12} weight="bold" /> {customer.phone}
                         </p>
                       </div>
-                      <Badge tone={stats?.pendingCount ? "amber" : "slate"}>
-                        {!customer.active
-                          ? customer.mergedIntoCustomerId
-                            ? "Fusionado"
-                            : "Archivado"
-                          : stats?.pendingCount
-                            ? `${stats.pendingCount} pendiente${stats.pendingCount === 1 ? "" : "s"}`
-                            : "Sin pendientes"}
-                      </Badge>
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <Badge tone={pendingCount ? "amber" : "slate"}>
+                          {!customer.active
+                            ? customer.mergedIntoCustomerId
+                              ? "Fusionado"
+                              : "Archivado"
+                            : pendingCount
+                              ? `${pendingCount} pendiente${pendingCount === 1 ? "" : "s"}`
+                              : "Sin pendientes"}
+                        </Badge>
+                        {hasDebt ? (
+                          <Badge tone="rose">
+                            Debe {formatMoney(customer.outstandingMinor!)}
+                          </Badge>
+                        ) : null}
+                      </div>
                     </div>
                     {customer.addresses.length ? (
                       <div className="mt-2 space-y-1.5">
@@ -408,21 +424,28 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
                   <Receipt size={13} className="mt-0.5 text-brand-600" />
                   <span>
                     <span className="block">
-                      <b className="text-slate-700">{stats?.count ?? 0}</b>{" "}
-                      {stats?.count === 1 ? "pedido" : "pedidos"}
+                      <b className="text-slate-700">{orderCount}</b>{" "}
+                      {orderCount === 1 ? "pedido" : "pedidos"}
                     </span>
                     <span className="block text-[9px] text-slate-400">
-                      {stats
-                        ? `Último: ${new Date(stats.lastOrderAt).toLocaleDateString("es-AR")}`
+                      {lastOrderAt
+                        ? `Último: ${new Date(lastOrderAt).toLocaleDateString("es-AR")}`
                         : "Sin compras registradas"}
                     </span>
                   </span>
                 </div>
                 <div className="text-right text-slate-500">
-                  Cobrado:{" "}
-                  <b className="text-slate-700">
-                    {formatMoney(stats?.paidMinor ?? 0)}
-                  </b>
+                  <div>
+                    Cobrado:{" "}
+                    <b className="text-slate-700">
+                      {formatMoney(totalPaidMinor)}
+                    </b>
+                  </div>
+                  {hasDebt ? (
+                    <div className="mt-0.5 font-bold text-rose-700">
+                      Debe en CC: {formatMoney(customer.outstandingMinor!)}
+                    </div>
+                  ) : null}
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2 border-t border-slate-100 p-3">
@@ -534,6 +557,12 @@ const normalizeText = (value: string) =>
     .toLocaleLowerCase("es-AR");
 
 const normalizePhone = (value: string) => value.replace(/\D/g, "");
+
+export function customerHasAccountDebt(
+  customer?: Pick<CustomerDto, "outstandingMinor"> | null,
+): boolean {
+  return Boolean(customer?.outstandingMinor && customer.outstandingMinor > 0);
+}
 
 export function customerResultRange(
   page: number,
@@ -1572,7 +1601,7 @@ function CustomerProfileModal({
               setSettling(true);
               try {
                 const result = await window.gastronomy.settleCustomerAccount({customerId: customer.id, amountMinor, methodCode: settleMethod, reference: settleReference.trim() || null, orderIds: selectedOrders.length ? selectedOrders : undefined, idempotencyKey: crypto.randomUUID()});
-                setProfile(result); setSettleOpen(false); setSelectedOrders([]); setSettleReference(""); setSettleError(null);
+                setProfile(result); onUpdated(result.customer); setSettleOpen(false); setSelectedOrders([]); setSettleReference(""); setSettleError(null);
               } catch (value) { setSettleError(humanError(value)); }
               finally { settleLockRef.current = false; setSettling(false); }
             }}>{settling ? "Registrando…" : "Confirmar cobro"}</Button><Button type="button" variant="secondary" disabled={settling} onClick={() => setSettleOpen(false)}>Cancelar</Button></div>

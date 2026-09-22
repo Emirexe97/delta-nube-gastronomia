@@ -3768,33 +3768,98 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       current.push(address);
       addressesByCustomer.set(customerId, current);
     }
-    return rows.map((row) => ({
-      id: String(row.id),
-      name: String(row.name),
-      phone: String(row.phone),
-      notes: row.notes == null ? null : String(row.notes),
-      preferences: row.preferences == null ? null : String(row.preferences),
-      tags: jsonStringArray(row.tags_json),
-      preferredPaymentMethodCode:
-        row.preferred_payment_method_code == null
-          ? null
-          : String(row.preferred_payment_method_code),
-      active: row.active == null ? true : flag(row.active),
-      mergedIntoCustomerId:
-        row.merged_into_customer_id == null
-          ? null
-          : String(row.merged_into_customer_id),
-      updatedAt: String(row.updated_at),
-      addresses: (addressesByCustomer.get(String(row.id)) ?? []).map(
-        (address) => ({
-          id: String(address.id),
-          label: String(address.label),
-          address: String(address.address),
-          notes: address.notes == null ? null : String(address.notes),
-          deliveryFeeMinor: Number(address.delivery_fee_minor),
-        }),
-      ),
-    }));
+    const debts = this.db
+      .prepare(
+        `SELECT c.customer_id,
+                COALESCE(SUM(c.amount_minor - COALESCE(a.settled_minor, 0)), 0) AS outstanding_minor
+         FROM customer_account_charges c
+         LEFT JOIN (
+           SELECT order_id, SUM(amount_minor) AS settled_minor
+           FROM customer_account_allocations
+           GROUP BY order_id
+         ) a ON a.order_id = c.order_id
+         WHERE c.customer_id IN (${ids.map(() => "?").join(",")})
+         GROUP BY c.customer_id`,
+      )
+      .all(...ids) as Row[];
+    const debtByCustomer = new Map<string, number>();
+    for (const debt of debts) {
+      debtByCustomer.set(
+        String(debt.customer_id),
+        Math.max(0, Number(debt.outstanding_minor)),
+      );
+    }
+    const statsRows = this.db
+      .prepare(
+        `SELECT customer_id,
+                COUNT(*) AS order_count,
+                COALESCE(SUM(total_minor), 0) AS total_spent_minor,
+                COALESCE(SUM(paid_minor), 0) AS total_paid_minor,
+                MAX(created_at) AS last_order_at,
+                SUM(CASE WHEN operational_status NOT IN ('DELIVERED', 'CANCELLED') THEN 1 ELSE 0 END) AS pending_count
+         FROM orders
+         WHERE customer_id IN (${ids.map(() => "?").join(",")})
+           AND lifecycle_status = 'CONFIRMED'
+           AND operational_status <> 'CANCELLED'
+         GROUP BY customer_id`,
+      )
+      .all(...ids) as Row[];
+    const statsByCustomer = new Map<
+      string,
+      {
+        orderCount: number;
+        totalSpentMinor: number;
+        totalPaidMinor: number;
+        lastOrderAt: string | null;
+        pendingCount: number;
+      }
+    >();
+    for (const row of statsRows) {
+      statsByCustomer.set(String(row.customer_id), {
+        orderCount: Number(row.order_count),
+        totalSpentMinor: Number(row.total_spent_minor),
+        totalPaidMinor: Number(row.total_paid_minor),
+        lastOrderAt:
+          row.last_order_at == null ? null : String(row.last_order_at),
+        pendingCount: Number(row.pending_count),
+      });
+    }
+    return rows.map((row) => {
+      const stats = statsByCustomer.get(String(row.id));
+      return {
+        id: String(row.id),
+        name: String(row.name),
+        phone: String(row.phone),
+        notes: row.notes == null ? null : String(row.notes),
+        preferences: row.preferences == null ? null : String(row.preferences),
+        tags: jsonStringArray(row.tags_json),
+        preferredPaymentMethodCode:
+          row.preferred_payment_method_code == null
+            ? null
+            : String(row.preferred_payment_method_code),
+        active: row.active == null ? true : flag(row.active),
+        mergedIntoCustomerId:
+          row.merged_into_customer_id == null
+            ? null
+            : String(row.merged_into_customer_id),
+        updatedAt: String(row.updated_at),
+        outstandingMinor: debtByCustomer.get(String(row.id)) ?? 0,
+        orderCount: stats?.orderCount ?? 0,
+        totalPaidMinor: stats?.totalPaidMinor ?? 0,
+        totalSpentMinor: stats?.totalSpentMinor ?? 0,
+        lastOrderAt: stats?.lastOrderAt ?? null,
+        pendingCount: stats?.pendingCount ?? 0,
+        addresses: (addressesByCustomer.get(String(row.id)) ?? []).map(
+          (address) => ({
+            id: String(address.id),
+            label: String(address.label),
+            address: String(address.address),
+            notes: address.notes == null ? null : String(address.notes),
+            deliveryFeeMinor: Number(address.delivery_fee_minor),
+          }),
+        ),
+      };
+    });
   }
 
   private customerDto(row: Row): CustomerDto {

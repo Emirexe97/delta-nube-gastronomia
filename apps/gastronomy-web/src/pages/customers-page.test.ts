@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CustomerDto } from "@gastronomy/contracts";
 import {
   addressDisplayLabel,
+  customerHasAccountDebt,
   customerResultRange,
   filterCustomersForQuery,
   findPotentialCustomerDuplicates,
@@ -127,5 +128,14 @@ describe("ficha de clientes", () => {
         },
       ]),
     ).toEqual({ issues: [], valid: [] });
+  });
+
+  it("determina visibilidad de deuda de cuenta corriente sólo cuando el saldo es mayor a cero", () => {
+    expect(customerHasAccountDebt({ outstandingMinor: 50_000 })).toBe(true);
+    expect(customerHasAccountDebt({ outstandingMinor: 1 })).toBe(true);
+    expect(customerHasAccountDebt({ outstandingMinor: 0 })).toBe(false);
+    expect(customerHasAccountDebt({ outstandingMinor: -100 })).toBe(false);
+    expect(customerHasAccountDebt({ outstandingMinor: undefined })).toBe(false);
+    expect(customerHasAccountDebt(null)).toBe(false);
   });
 });

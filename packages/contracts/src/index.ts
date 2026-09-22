@@ -158,6 +158,12 @@ export interface CustomerDto {
   mergedIntoCustomerId: Id | null;
   addresses: CustomerAddressDto[];
   updatedAt: IsoDateTime;
+  outstandingMinor?: MoneyMinor;
+  orderCount?: number;
+  totalPaidMinor?: MoneyMinor;
+  totalSpentMinor?: MoneyMinor;
+  lastOrderAt?: IsoDateTime | null;
+  pendingCount?: number;
 }
 
 export interface SearchCustomersPageInput {

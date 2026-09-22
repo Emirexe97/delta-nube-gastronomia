@@ -72,9 +72,17 @@ describe("API de demostración", () => {
     await api.payOrder({orderId: draft.id, payments: [{methodCode: "ACCOUNT", amountMinor: withItem.totalMinor}]});
     const before = await api.getCustomerProfile({customerId: customer.id, page: 1, pageSize: 10});
     expect(before.metrics.outstandingMinor).toBe(withItem.totalMinor);
+    const searchBefore = await api.searchCustomersPage({query: "Cliente fiado", page: 1, pageSize: 10});
+    expect(searchBefore.items[0]?.outstandingMinor).toBe(withItem.totalMinor);
+    expect(searchBefore.items[0]?.orderCount).toBe(1);
+    expect(searchBefore.items[0]?.totalSpentMinor).toBe(withItem.totalMinor);
+    expect(searchBefore.items[0]?.totalPaidMinor).toBe(withItem.totalMinor);
+    expect(searchBefore.items[0]?.pendingCount).toBe(1);
     const after = await api.settleCustomerAccount({customerId: customer.id, methodCode: "CASH", amountMinor: 100});
     expect(after.metrics.outstandingMinor).toBe(withItem.totalMinor - 100);
     expect(after.accountReceipts[0]?.allocations[0]?.orderId).toBe(draft.id);
+    const searchAfter = await api.searchCustomersPage({query: "Cliente fiado", page: 1, pageSize: 10});
+    expect(searchAfter.items[0]?.outstandingMinor).toBe(withItem.totalMinor - 100);
   });
   it("crea pedidos para retirar y clientes nuevos sin dirección", async () => {
     const api = createDemoApi(new MemoryStorage());

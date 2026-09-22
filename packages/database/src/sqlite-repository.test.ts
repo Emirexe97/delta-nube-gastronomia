@@ -34,10 +34,18 @@ test("cuenta corriente exige cliente, cierra mesa y cobra deuda sin duplicar ven
     const before = repository.getCustomerProfile({customerId: customer.id, page: 1, pageSize: 10});
     assert.equal(before.metrics.outstandingMinor, order.totalMinor);
     assert.equal(before.accountCharges[0]?.outstandingMinor, order.totalMinor);
+    const searchBefore = repository.searchCustomersPage({query: "Cliente crédito", page: 1, pageSize: 10});
+    assert.equal(searchBefore.items[0]?.outstandingMinor, order.totalMinor);
+    assert.equal(searchBefore.items[0]?.orderCount, 1);
+    assert.equal(searchBefore.items[0]?.totalSpentMinor, order.totalMinor);
+    assert.equal(searchBefore.items[0]?.totalPaidMinor, order.totalMinor);
+    assert.equal(searchBefore.items[0]?.pendingCount, 0);
     const salesBefore = repository.bootstrap().cashSession!.salesTotalMinor;
     const first = repository.settleCustomerAccount({customerId: customer.id, amountMinor: 100_000, methodCode: "CASH", idempotencyKey: "account-receipt-1", terminalId: "TEST"});
     assert.equal(first.metrics.outstandingMinor, order.totalMinor - 100_000);
     assert.equal(first.accountReceipts[0]?.allocations[0]?.orderId, draft.id);
+    const searchAfter = repository.searchCustomersPage({query: "Cliente crédito", page: 1, pageSize: 10});
+    assert.equal(searchAfter.items[0]?.outstandingMinor, order.totalMinor - 100_000);
     const duplicate = repository.settleCustomerAccount({customerId: customer.id, amountMinor: 100_000, methodCode: "CASH", idempotencyKey: "account-receipt-1", terminalId: "TEST"});
     assert.equal(duplicate.metrics.outstandingMinor, first.metrics.outstandingMinor);
     assert.equal(repository.bootstrap().cashSession!.salesTotalMinor, salesBefore);

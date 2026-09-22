@@ -366,6 +366,7 @@ function seedState(): DemoState {
         active: true,
         mergedIntoCustomerId: null,
         updatedAt,
+        outstandingMinor: 0,
         addresses: [
           {
             id: "address-ana",
@@ -387,6 +388,7 @@ function seedState(): DemoState {
         active: true,
         mergedIntoCustomerId: null,
         updatedAt,
+        outstandingMinor: 0,
         addresses: [
           {
             id: "address-mariana",
@@ -1022,6 +1024,60 @@ export function createDemoApi(
     if (!category) throw new Error("No se encontró la categoría.");
     return category;
   };
+  const customerOutstandingDebt = (customerId: string): number => {
+    const metricOrders = state.data.orders.filter(
+      (order) =>
+        order.customerId === customerId &&
+        order.lifecycleStatus === "CONFIRMED" &&
+        order.operationalStatus !== "CANCELLED",
+    );
+    return metricOrders.reduce((sum, order) => {
+      const amountMinor = order.payments
+        .filter((payment) => payment.methodCode === "ACCOUNT")
+        .reduce((part, p) => part + p.amountMinor - p.refundedMinor, 0);
+      if (!amountMinor) return sum;
+      const settledMinor = (state.accountReceipts ?? []).reduce(
+        (part, receipt) =>
+          part +
+          receipt.allocations
+            .filter((allocation) => allocation.orderId === order.id)
+            .reduce((acc, alloc) => acc + alloc.amountMinor, 0),
+        0,
+      );
+      return sum + Math.max(0, amountMinor - settledMinor);
+    }, 0);
+  };
+    const customerOrderMetrics = (customerId: string) => {
+    const metricOrders = state.data.orders.filter(
+      (order) =>
+        order.customerId === customerId &&
+        order.lifecycleStatus === "CONFIRMED" &&
+        order.operationalStatus !== "CANCELLED",
+    );
+    const orderCount = metricOrders.length;
+    const totalSpentMinor = metricOrders.reduce(
+      (sum, order) => sum + order.totalMinor,
+      0,
+    );
+    const totalPaidMinor = metricOrders.reduce(
+      (sum, order) => sum + order.paidMinor,
+      0,
+    );
+    const lastOrderAt = metricOrders.reduce<string | null>(
+      (latest, order) => (!latest || order.createdAt > latest ? order.createdAt : latest),
+      null,
+    );
+    const pendingCount = metricOrders.filter(
+      (order) => !["DELIVERED", "CANCELLED"].includes(order.operationalStatus),
+    ).length;
+    return {
+      orderCount,
+      totalSpentMinor,
+      totalPaidMinor,
+      lastOrderAt,
+      pendingCount,
+    };
+  };
   const matchingCustomers = (
     query: string,
     status: "ACTIVE" | "ARCHIVED" | "ALL" = "ACTIVE",
@@ -1041,6 +1097,18 @@ export function createDemoApi(
               .toLocaleLowerCase("es")
               .includes(normalized)),
       )
+      .map((customer) => {
+        const metrics = customerOrderMetrics(customer.id);
+        return {
+          ...customer,
+          outstandingMinor: customerOutstandingDebt(customer.id),
+          orderCount: metrics.orderCount,
+          totalSpentMinor: metrics.totalSpentMinor,
+          totalPaidMinor: metrics.totalPaidMinor,
+          lastOrderAt: metrics.lastOrderAt,
+          pendingCount: metrics.pendingCount,
+        };
+      })
       .sort((left, right) => {
         if (hasPhoneQuery) {
           const leftPhone = left.phone.replace(/\D/g, "").includes(digits);
@@ -2396,6 +2464,12 @@ export function createDemoApi(
         active: true,
         mergedIntoCustomerId: null,
         updatedAt: now(),
+        outstandingMinor: 0,
+        orderCount: 0,
+        totalPaidMinor: 0,
+        totalSpentMinor: 0,
+        lastOrderAt: null,
+        pendingCount: 0,
         addresses: addresses
           .filter((address) => address.address.trim())
           .map((address) => ({
@@ -2584,7 +2658,15 @@ export function createDemoApi(
         ? Math.min(Math.max(1, Math.trunc(input.page)), pageCount)
         : 1;
       return output({
-        customer,
+        customer: {
+          ...customer,
+          outstandingMinor: accountCharges.reduce((sum, charge) => sum + charge.outstandingMinor, 0),
+          orderCount: metricOrders.length,
+          totalSpentMinor,
+          totalPaidMinor: metricOrders.reduce((sum, order) => sum + order.paidMinor, 0),
+          lastOrderAt: metricOrders.length ? metricOrders[metricOrders.length - 1]!.createdAt : null,
+          pendingCount: metricOrders.filter((order) => !["DELIVERED", "CANCELLED"].includes(order.operationalStatus)).length,
+        },
         accountCharges,
         accountReceipts: (state.accountReceipts ?? []).filter((receipt) => receipt.customerId === customer.id).sort((a,b) => b.createdAt.localeCompare(a.createdAt)),
         metrics: {
