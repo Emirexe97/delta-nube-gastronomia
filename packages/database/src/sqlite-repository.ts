@@ -2991,8 +2991,6 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const customerId = input.customerId ?? (order.customer_id == null ? null : String(order.customer_id));
           if (accountPayments.length) {
             if (!customerId) throw new Error("Seleccioná un cliente para usar cuenta corriente.");
-            if (String(order.type) !== "DINE_IN" && !order.customer_id)
-              throw new Error("El pedido debe tener un cliente vinculado antes del cobro.");
             if (order.customer_id && String(order.customer_id) !== customerId)
               throw new Error("El pedido ya está vinculado a otro cliente.");
             const customer = requireRow(this.db.prepare("SELECT id, name, phone, active FROM customers WHERE id = ?").get(customerId) as Row | undefined, "El cliente no existe.");

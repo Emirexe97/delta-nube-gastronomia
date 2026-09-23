@@ -57,6 +57,29 @@ test("cuenta corriente exige cliente, cierra mesa y cobra deuda sin duplicar ven
   });
 });
 
+test("permite cobrar pedido para retirar o delivery con cuenta corriente vinculando el cliente al cobrar", () => {
+  withRepository((repository) => {
+    repository.openCashSession({openingAmountMinor: 0});
+    const customer = repository.createCustomer({name: "Indio", phone: "11 5555-4321"});
+    const draft = repository.createOrder({type: "TAKEAWAY", customerName: "Indio", customerPhone: "11 5555-4321"});
+    const order = repository.addOrderItem({orderId: draft.id, productId: "starter-muzza-grande"});
+    repository.confirmOrder({orderId: draft.id});
+    assert.equal(repository.getOrder(draft.id).customerId, null);
+    const paid = repository.completeOrder({
+      orderId: draft.id,
+      customerId: customer.id,
+      finalStatus: "DELIVERED",
+      payments: [{methodCode: "ACCOUNT", amountMinor: order.totalMinor}],
+    });
+    assert.equal(paid.customerId, customer.id);
+    assert.equal(paid.operationalStatus, "DELIVERED");
+    assert.equal(paid.paymentStatus, "PAID");
+    const profile = repository.getCustomerProfile({customerId: customer.id, page: 1, pageSize: 10});
+    assert.equal(profile.metrics.outstandingMinor, order.totalMinor);
+    assert.equal(profile.accountCharges[0]?.orderId, draft.id);
+  });
+});
+
 test("cobros de cuenta corriente imputan FIFO o pedidos elegidos", () => {
   withRepository((repository) => {
     repository.openCashSession({openingAmountMinor: 0});
