@@ -23,7 +23,7 @@ pnpm --filter @gastronomy/desktop-shell dist:mac
 
 `dist:mac` compila web y desktop y pide a `electron-builder` un `.dmg` para cada arquitectura configurada (`arm64` y `x64`). `npmRebuild` reconstruye el addon SQLite durante el empaquetado para cada arquitectura; no anteponer `rebuild:native`, porque ese comando sólo prepara el binario para la arquitectura del host.
 
-El DMG usa fondo liso (`background: null`) porque el generador de imágenes de fondo falló en el runner Intel al serializar un alias de archivo; esto no altera el contenido de la app ni el acceso directo a `/Applications`.
+En CI, el instalador Intel se arma con `hdiutil` a partir del `.app` porque `dmgbuild` falla en ese runner al serializar un alias de fondo. Incluye la app y un acceso directo a `/Applications`; el instalador Apple Silicon usa `electron-builder` directamente.
 
 Para una matriz de distribución, producir y validar **arm64 (Apple Silicon)** y **x64 (Intel)** por separado o confirmar que el target configurado genera un binario universal. Un universal sólo es válido si tanto la aplicación como todos sus addons nativos incluyen ambas arquitecturas. No dar por hecho que una compilación arm64/x64 cruzada desde otra arquitectura sea correcta sin inspeccionar el artefacto.
 
