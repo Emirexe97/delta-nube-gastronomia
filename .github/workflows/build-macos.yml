@@ -37,10 +37,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build web and desktop
+      - name: Build web and workspace
         run: |
           pnpm --filter @gastronomy/web build
-          pnpm --filter @gastronomy/desktop-shell build
+          pnpm build
 
       - name: Package macOS DMG
         run: pnpm --filter @gastronomy/desktop-shell exec electron-builder --mac dmg --${{ matrix.arch }}
