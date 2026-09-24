@@ -43,14 +43,9 @@ jobs:
           pnpm build
 
       - name: Package macOS DMG
-        run: pnpm --filter @gastronomy/desktop-shell exec electron-builder --mac dmg --${{ matrix.arch }}
+        run: pnpm --filter @gastronomy/desktop-shell exec electron-builder --mac dmg --${{ matrix.arch }} --publish never -c.mac.identity=null -c.mac.hardenedRuntime=false
         env:
-          # Optional repository secrets; leave unset for unsigned internal builds.
-          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: Upload DMG artifacts
         uses: actions/upload-artifact@v4

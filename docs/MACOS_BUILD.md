@@ -27,6 +27,8 @@ Para una matriz de distribución, producir y validar **arm64 (Apple Silicon)** y
 
 Los artefactos se esperan en `apps/desktop-shell/release/` (directorio `build.directories.output` actual). Anotar versión, arquitectura y nombre/hash de cada artefacto validado.
 
+El workflow manual `.github/workflows/build-macos.yml` genera artefactos **sin firma** en GitHub Actions, uno por arquitectura. Esta modalidad es sólo para pruebas internas; al descargarlos en otra Mac, Gatekeeper puede exigir aprobar la apertura desde Configuración del Sistema > Privacidad y seguridad.
+
 ## Validación funcional en Mac
 
 Probar cada arquitectura/artefacto en una Mac limpia o cuenta de prueba, además de ejecutar la suite del repositorio:
