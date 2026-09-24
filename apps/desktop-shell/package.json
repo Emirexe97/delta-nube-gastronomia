@@ -10,7 +10,8 @@
     "dev": "wait-on http-get://localhost:5173 && pnpm build && pnpm rebuild:native && cross-env GASTRONOMY_RENDERER_URL=http://localhost:5173 electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test",
-    "dist:win": "pnpm --filter @gastronomy/web build && pnpm build && pnpm rebuild:native && electron-builder --win nsis"
+    "dist:win": "pnpm --filter @gastronomy/web build && pnpm build && pnpm rebuild:native && electron-builder --win nsis",
+    "dist:mac": "pnpm --filter @gastronomy/web build && pnpm build && electron-builder --mac"
   },
   "dependencies": {
     "@gastronomy/application": "workspace:*",
@@ -43,6 +44,7 @@
       "node_modules/**/*"
     ],
     "asar": true,
+    "npmRebuild": true,
     "asarUnpack": [
       "node_modules/better-sqlite3-multiple-ciphers/build/Release/*.node",
       "node_modules/better-sqlite3-multiple-ciphers/build/Release/*.dll"
@@ -54,6 +56,32 @@
           "arch": [
             "x64"
           ]
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
         }
       ]
     },

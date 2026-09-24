@@ -707,6 +707,13 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
+app.on("activate", () => {
+  if (process.platform !== "darwin" || mainWindow || !application) return;
+  void createWindow().catch((error) => {
+    console.error("No se pudo reabrir Delta Nube Gastronomía", error);
+  });
+});
+
 app.on("before-quit", () => {
   repository?.close();
   repository = null;
