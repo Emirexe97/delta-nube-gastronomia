@@ -71,6 +71,7 @@
       ]
     },
     "dmg": {
+      "background": null,
       "contents": [
         {
           "x": 130,
