@@ -25,9 +25,11 @@ import type {
 import { createDemoBootstrap, emptyDashboard } from "./demo-data";
 import {
   assertOffPremiseCustomer,
+  assertOrderTransition,
   assertAppSettings,
   assertOperationalTransition,
   assertOrderAction,
+  paymentStatusFor,
 } from "@gastronomy/domain";
 
 export const DEMO_STORAGE_KEY = "delta-nube-gastronomia.demo.v5";
@@ -89,14 +91,31 @@ interface DemoState {
     createdAt: string;
   }>;
   customers: CustomerDto[];
-  accountReceipts?: Array<{ id: string; customerId: string; movementId: string; createdAt: string; amountMinor: number; methodCode: string; methodName: string; reference: string | null; allocations: Array<{ orderId: string; orderNumber: number; amountMinor: number }> }>;
+  accountReceipts?: Array<{
+    id: string;
+    customerId: string;
+    movementId: string;
+    createdAt: string;
+    amountMinor: number;
+    methodCode: string;
+    methodName: string;
+    reference: string | null;
+    allocations: Array<{
+      orderId: string;
+      orderNumber: number;
+      amountMinor: number;
+    }>;
+  }>;
   audit: AuditEntryDto[];
   purchases: PurchaseDto[];
   purchaseReceipts: Record<string, { purchaseId: string; requestJson: string }>;
   financeExpenses?: FinanceExpenseDto[];
   financeRecurring?: FinanceRecurringDto[];
   financeManualCosts?: Record<string, number>;
-  financeItemCosts?: Record<string, {unitCostMinor: number | null; quantity: number}>;
+  financeItemCosts?: Record<
+    string,
+    { unitCostMinor: number | null; quantity: number }
+  >;
   financeExpenseMovements?: Record<string, string>;
   sequence: number;
 }
@@ -477,6 +496,12 @@ function loadState(storage: DemoStorage): DemoState {
         ledger.settledAt ??= ledger.createdAt;
       }
     }
+    // Older demo profiles predate fee ownership; retain the historical default.
+    parsed.data.settings.deliveryFeeBelongsToDriver ??= true;
+    for (const order of parsed.data.orders) {
+      // Old paid orders followed the legacy rule that the driver owned the fee.
+      if (order.paidMinor > 0) order.deliveryFeeBelongsToDriver ??= true;
+    }
     parsed.version = 12;
     return parsed as DemoState;
   } catch {
@@ -548,16 +573,16 @@ function refreshOrder(order: OrderDto) {
   order.paidMinor = Math.max(
     0,
     order.payments.reduce(
-      (sum, payment) => sum + payment.amountMinor - payment.refundedMinor,
+      (sum, payment) =>
+        sum + payment.amountMinor - (payment.refundedMinor ?? 0),
       0,
     ) - (order.changeAmountMinor ?? 0),
   );
-  order.paymentStatus =
-    order.paidMinor === 0
-      ? "UNPAID"
-      : order.paidMinor >= order.totalMinor
-        ? "PAID"
-        : "PARTIALLY_PAID";
+  order.paymentStatus = paymentStatusFor(
+    order.totalMinor,
+    order.paidMinor ?? 0,
+    order.depositMinor ?? 0,
+  );
   order.updatedAt = now();
 }
 
@@ -636,9 +661,11 @@ function makeDriverDeliveryActivity(
       sessionsById.get(cashSessionId)?.businessDate ?? today();
     const activityKey = `${order.driverUserId}:${cashSessionId}`;
     const current = byDriver.get(activityKey);
+    const earningsMinor =
+      (order.deliveryFeeBelongsToDriver ?? true) ? order.deliveryFeeMinor : 0;
     if (current) {
       current.deliveryCount += 1;
-      current.earningsMinor += order.deliveryFeeMinor;
+      current.earningsMinor += earningsMinor;
       if (order.updatedAt > current.lastDeliveryAt)
         current.lastDeliveryAt = order.updatedAt;
     } else {
@@ -647,7 +674,7 @@ function makeDriverDeliveryActivity(
         cashSessionId,
         businessDate,
         deliveryCount: 1,
-        earningsMinor: order.deliveryFeeMinor,
+        earningsMinor,
         lastDeliveryAt: order.updatedAt,
       });
     }
@@ -659,7 +686,13 @@ function makeDriverDeliveryActivity(
 
 function normalize(state: DemoState) {
   if (!state.data.paymentMethods.some((method) => method.code === "ACCOUNT"))
-    state.data.paymentMethods.push({id: "payment-account", code: "ACCOUNT", name: "Cuenta corriente", affectsCash: false, active: true});
+    state.data.paymentMethods.push({
+      id: "payment-account",
+      code: "ACCOUNT",
+      name: "Cuenta corriente",
+      affectsCash: false,
+      active: true,
+    });
   for (const order of state.data.orders) refreshOrder(order);
   state.data.tables.sort((left, right) => left.number - right.number);
   if (state.data.cashSession) {
@@ -717,9 +750,8 @@ function normalize(state: DemoState) {
           createdAt: m.createdAt,
           referenceId: (m as any).referenceId ?? null,
           reversedById:
-            state.movements.find(
-              (other) => (other as any).referenceId === m.id,
-            )?.id ?? null,
+            state.movements.find((other) => (other as any).referenceId === m.id)
+              ?.id ?? null,
         };
       })
       .reverse();
@@ -979,29 +1011,58 @@ export function createDemoApi(
   let state = loadState(storage);
   // Existing confirmed demo orders predate cost tracking. Keep their cost unknown
   // rather than applying a newly entered unit cost retroactively.
-  const initialCosts = state.financeItemCosts ??= {};
-  for (const order of state.data.orders.filter((candidate) => candidate.lifecycleStatus === "CONFIRMED")) {
-    for (const item of order.items) initialCosts[item.id] ??= {unitCostMinor: null, quantity: item.quantity};
+  const initialCosts = (state.financeItemCosts ??= {});
+  for (const order of state.data.orders.filter(
+    (candidate) => candidate.lifecycleStatus === "CONFIRMED",
+  )) {
+    for (const item of order.items)
+      initialCosts[item.id] ??= {
+        unitCostMinor: null,
+        quantity: item.quantity,
+      };
   }
   const currentFinanceCost = (productId: string) => {
     const manual = state.financeManualCosts?.[productId];
-    if (manual != null) return {unitCostMinor: manual, source: "MANUAL" as const};
-    const purchase = [...state.purchases].sort((a,b) => b.createdAt.localeCompare(a.createdAt))
-      .flatMap((entry) => entry.items).find((item) => item.productId === productId);
-    return purchase ? {unitCostMinor: purchase.unitCostMinor, source: "PURCHASE" as const} : {unitCostMinor: null, source: "UNKNOWN" as const};
+    if (manual != null)
+      return { unitCostMinor: manual, source: "MANUAL" as const };
+    const purchase = [...state.purchases]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .flatMap((entry) => entry.items)
+      .find((item) => item.productId === productId);
+    return purchase
+      ? { unitCostMinor: purchase.unitCostMinor, source: "PURCHASE" as const }
+      : { unitCostMinor: null, source: "UNKNOWN" as const };
   };
   const save = () => {
-    for (const order of state.data.orders.filter((candidate) => candidate.lifecycleStatus === "CONFIRMED")) {
+    for (const order of state.data.orders.filter(
+      (candidate) => candidate.lifecycleStatus === "CONFIRMED",
+    )) {
       for (const item of order.items) {
-        const costs = state.financeItemCosts ??= {};
+        const costs = (state.financeItemCosts ??= {});
         if (!costs[item.id]) {
-          const unitCostMinor = item.productId ? currentFinanceCost(item.productId).unitCostMinor :
-            item.halves.length === 2 ? (() => {const halves = item.halves.map((half) => currentFinanceCost(half.productId).unitCostMinor); return halves.every((value) => value != null) ? Math.round((halves[0]! + halves[1]!) / 2) : null;})() : null;
-          costs[item.id] = {unitCostMinor, quantity: item.quantity};
+          const unitCostMinor = item.productId
+            ? currentFinanceCost(item.productId).unitCostMinor
+            : item.halves.length === 2
+              ? (() => {
+                  const halves = item.halves.map(
+                    (half) => currentFinanceCost(half.productId).unitCostMinor,
+                  );
+                  return halves.every((value) => value != null)
+                    ? Math.round((halves[0]! + halves[1]!) / 2)
+                    : null;
+                })()
+              : null;
+          costs[item.id] = { unitCostMinor, quantity: item.quantity };
         } else costs[item.id]!.quantity = item.quantity;
       }
     }
     normalize(state);
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(state));
+  };
+  const restore = (snapshot: DemoState) => {
+    state = clone(snapshot);
+    // Do not normalize on rollback: normalization refreshes timestamps and can
+    // turn a rejected transaction into a visible state change.
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(state));
   };
   const output = <T>(value: T) => clone(value);
@@ -1047,7 +1108,7 @@ export function createDemoApi(
       return sum + Math.max(0, amountMinor - settledMinor);
     }, 0);
   };
-    const customerOrderMetrics = (customerId: string) => {
+  const customerOrderMetrics = (customerId: string) => {
     const metricOrders = state.data.orders.filter(
       (order) =>
         order.customerId === customerId &&
@@ -1064,7 +1125,8 @@ export function createDemoApi(
       0,
     );
     const lastOrderAt = metricOrders.reduce<string | null>(
-      (latest, order) => (!latest || order.createdAt > latest ? order.createdAt : latest),
+      (latest, order) =>
+        !latest || order.createdAt > latest ? order.createdAt : latest,
       null,
     );
     const pendingCount = metricOrders.filter(
@@ -1253,7 +1315,10 @@ export function createDemoApi(
       if (input.amountMinor <= 0)
         throw new Error("El importe debe ser mayor que cero.");
       const methodCode = input.paymentMethodCode || "CASH";
-      if (methodCode === "ACCOUNT") throw new Error("Cuenta corriente no registra un movimiento de caja manual.");
+      if (methodCode === "ACCOUNT")
+        throw new Error(
+          "Cuenta corriente no registra un movimiento de caja manual.",
+        );
       const method = state.data.paymentMethods.find(
         (m) => m.code === methodCode && m.active,
       );
@@ -1270,11 +1335,14 @@ export function createDemoApi(
           "La caja no tiene efectivo suficiente. Registrá un ingreso o corregí el importe antes de continuar.",
         );
       if (affectsCash) {
-        cash.expectedAmountMinor += ["EXPENSE", "WITHDRAWAL"].includes(input.type)
+        cash.expectedAmountMinor += ["EXPENSE", "WITHDRAWAL"].includes(
+          input.type,
+        )
           ? -input.amountMinor
           : input.amountMinor;
         if (input.type === "INCOME")
-          cash.cashIncomeMinor = (cash.cashIncomeMinor ?? 0) + input.amountMinor;
+          cash.cashIncomeMinor =
+            (cash.cashIncomeMinor ?? 0) + input.amountMinor;
         if (input.type === "EXPENSE")
           cash.cashExpenseMinor =
             (cash.cashExpenseMinor ?? 0) + input.amountMinor;
@@ -1374,7 +1442,7 @@ export function createDemoApi(
       const cash = state.data.cashSession;
       if (!cash || cash.status !== "OPEN")
         throw new Error("Abrí una caja antes de crear pedidos.");
-      assertOffPremiseCustomer(input);
+      // Contact information is required when confirming, not while building a draft.
       if (
         !Number.isSafeInteger(input.deliveryFeeMinor ?? 0) ||
         (input.deliveryFeeMinor ?? 0) < 0
@@ -1473,83 +1541,362 @@ export function createDemoApi(
     },
 
     async updateDraftOrder(input) {
-      const order = orderById(input.orderId);
-      if (["DELIVERED", "CANCELLED"].includes(order.operationalStatus))
-        throw new Error(
-          "No se pueden editar los datos de un pedido finalizado.",
-        );
-      if (order.type === "DINE_IN" || input.type !== order.type)
-        throw new Error("El tipo del pedido no se puede modificar.");
-      assertOffPremiseCustomer(input);
-      const fee = input.deliveryFeeMinor ?? 0;
-      if (!Number.isSafeInteger(fee) || fee < 0)
-        throw new Error("El costo de delivery no es válido.");
-      if (order.paidMinor > 0)
-        throw new Error("Un pedido con pagos no admite esta edición.");
-      const customer = input.customerId
-        ? state.customers.find((candidate) => candidate.id === input.customerId)
-        : null;
-      if (input.customerId && !customer)
-        throw new Error("El cliente no existe.");
-      const selectedAddress = input.customerAddressId
-        ? customer?.addresses.find(
-            (candidate) => candidate.id === input.customerAddressId,
-          )
-        : customer?.addresses.find(
-            (candidate) => candidate.address === input.deliveryAddress?.trim(),
+      const before = clone(state);
+      try {
+        const order = orderById(input.orderId);
+        if (["DELIVERED", "CANCELLED"].includes(order.operationalStatus))
+          throw new Error(
+            "No se pueden editar los datos de un pedido finalizado.",
           );
-      if (input.customerAddressId && !selectedAddress)
-        throw new Error("La dirección seleccionada no pertenece al cliente.");
-      if (order.type === "DELIVERY" && selectedAddress)
-        selectedAddress.deliveryFeeMinor = fee;
-      const driver = input.driverUserId
-        ? state.data.users.find(
-            (user) =>
-              user.id === input.driverUserId &&
-              user.active &&
-              user.roleCode === "DELIVERY_DRIVER",
+        if (order.type === "DINE_IN" || input.type === "DINE_IN")
+          throw new Error("Sólo se puede cambiar entre retirar y envío.");
+        const changingType = input.type !== order.type;
+        const isDraft = order.lifecycleStatus === "DRAFT";
+        const fee =
+          input.deliveryFeeMinor ??
+          (input.type === order.type ? order.deliveryFeeMinor : 0);
+        if (!Number.isSafeInteger(fee) || fee < 0)
+          throw new Error("El costo de delivery no es válido.");
+        if (order.paidMinor > 0 && !changingType && order.type === input.type)
+          throw new Error("Un pedido con pagos no admite esta edición.");
+        if (changingType && order.paidMinor > 0) {
+          requirePin(input.authorizerPin ?? "");
+          if (!input.reason?.trim())
+            throw new Error("Indicá el motivo del cambio de modalidad.");
+        }
+        const wasCollectedByDriver = order.collectedByDriver;
+        const effectiveCustomerId =
+          input.customerId === undefined ? order.customerId : input.customerId;
+        const customer = effectiveCustomerId
+          ? state.customers.find(
+              (candidate) => candidate.id === effectiveCustomerId,
+            )
+          : null;
+        if (effectiveCustomerId && !customer)
+          throw new Error("El cliente no existe.");
+        if (
+          changingType &&
+          order.paidMinor > 0 &&
+          order.customerId !== (customer?.id ?? null)
+        )
+          throw new Error(
+            "No se puede cambiar el cliente vinculado de un pedido ya cargado.",
+          );
+        const selectedAddress = input.customerAddressId
+          ? customer?.addresses.find(
+              (candidate) => candidate.id === input.customerAddressId,
+            )
+          : customer?.addresses.find(
+              (candidate) =>
+                candidate.address === input.deliveryAddress?.trim(),
+            );
+        if (input.customerAddressId && !selectedAddress)
+          throw new Error("La dirección seleccionada no pertenece al cliente.");
+        const effectiveDriverId =
+          input.driverUserId === undefined
+            ? input.type === order.type
+              ? order.driverUserId
+              : null
+            : input.driverUserId;
+        const driver = effectiveDriverId
+          ? state.data.users.find(
+              (user) =>
+                user.id === effectiveDriverId &&
+                user.active &&
+                user.roleCode === "DELIVERY_DRIVER",
+            )
+          : null;
+        if (effectiveDriverId && !driver)
+          throw new Error("El repartidor seleccionado no está activo.");
+        if (
+          order.operationalStatus === "OUT_FOR_DELIVERY" &&
+          input.type === "DELIVERY" &&
+          !driver
+        )
+          throw new Error(
+            "Un pedido en reparto debe conservar un repartidor asignado.",
+          );
+        const newFee = input.type === "DELIVERY" ? fee : 0;
+        const depositMinor = order.depositMinor ?? 0;
+        const amountBeforeDeposit = Math.max(
+          0,
+          order.subtotalMinor + newFee - order.discountMinor,
+        );
+        if (changingType && depositMinor > amountBeforeDeposit)
+          throw new Error(
+            "La seña supera el nuevo importe del pedido. Ajustá o devolvé primero la seña externa antes de cambiar la modalidad.",
+          );
+        const newTotal = Math.max(
+          0,
+          order.subtotalMinor +
+            newFee -
+            order.discountMinor -
+            (order.depositMinor ?? 0),
+        );
+        const refundSpecs = input.refunds ?? [];
+        const targetRefund = Math.max(0, order.paidMinor - newTotal);
+        if (
+          refundSpecs.reduce((sum, refund) => sum + refund.amountMinor, 0) !==
+          targetRefund
+        )
+          throw new Error(
+            targetRefund > 0
+              ? "Indicá devoluciones que sumen exactamente la diferencia a favor del cliente."
+              : "No se admiten devoluciones adicionales al cambiar la modalidad.",
+          );
+        if (newTotal > order.paidMinor && order.paymentStatus === "PAID") {
+          // Refreshing after changing the fee will leave a payable balance (PARTIALLY_PAID).
+        }
+        for (const refund of refundSpecs) {
+          const payment = order.payments.find(
+            (candidate) => candidate.id === refund.paymentId,
+          );
+          if (
+            !payment ||
+            !Number.isSafeInteger(refund.amountMinor) ||
+            refund.amountMinor <= 0 ||
+            refund.amountMinor > payment.refundableMinor
           )
-        : null;
-      if (input.driverUserId && !driver)
-        throw new Error("El repartidor seleccionado no está activo.");
-      Object.assign(order, {
-        customerId: customer?.id ?? null,
-        customerNameSnapshot:
-          input.customerName?.trim() || customer?.name || null,
-        customerPhoneSnapshot:
-          input.customerPhone?.trim() || customer?.phone || null,
-        deliveryAddressSnapshot:
-          selectedAddress?.address ?? input.deliveryAddress?.trim() ?? null,
-        deliveryAddressNotesSnapshot: selectedAddress?.notes ?? null,
-        deliveryFeeMinor: fee,
-        promisedAt: input.promisedAt ?? null,
-        scheduled: input.scheduled ?? false,
-        driverUserId: driver?.id ?? null,
-        driverName: driver?.fullName ?? null,
-        notes: input.notes?.trim() || null,
-        updatedAt: now(),
-      });
-      audit(
-        state,
-        "ORDER",
-        order.id,
-        order.printedAt
-          ? "ORDER_EDITED_AFTER_PRINT"
-          : order.lifecycleStatus === "DRAFT"
-            ? "ORDER_DRAFT_UPDATED"
-            : "ORDER_DETAILS_UPDATED",
-        order.printedAt
-          ? "Datos del cliente o envío editados después de imprimir"
-          : undefined,
-      );
-      save();
-      return output(order);
+            throw new Error(
+              "La devolución indicada no corresponde a un pago vigente.",
+            );
+          if (payment.methodCode === "ACCOUNT") {
+            const settled = (state.accountReceipts ?? []).reduce(
+              (total, receipt) =>
+                total +
+                receipt.allocations
+                  .filter((allocation) => allocation.orderId === order.id)
+                  .reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+              0,
+            );
+            const otherAccountRefunded = order.payments
+              .filter((candidate) => candidate.methodCode === "ACCOUNT")
+              .reduce((sum, candidate) => sum + candidate.refundedMinor, 0);
+            const accountOutstanding =
+              order.payments
+                .filter((candidate) => candidate.methodCode === "ACCOUNT")
+                .reduce((sum, candidate) => sum + candidate.amountMinor, 0) -
+              otherAccountRefunded -
+              settled;
+            if (refund.amountMinor > accountOutstanding)
+              throw new Error(
+                "No se puede devolver un cargo de cuenta ya cobrado; sólo se puede reducir la deuda pendiente.",
+              );
+          }
+        }
+        if (changingType) {
+          const ledger = state.data.deliveryLedger.find(
+            (row) => row.orderId === order.id,
+          );
+          if (ledger?.status === "SETTLED") {
+            if (!input.reverseDeliverySettlement)
+              throw new Error(
+                "Revertí primero la liquidación del repartidor para cambiar la modalidad.",
+              );
+            if (!input.reason?.trim())
+              throw new Error("Indicá el motivo para revertir la liquidación.");
+            await this.reverseDeliverySettlement({
+              ledgerId: ledger.id,
+              reason: input.reason,
+              authorizerPin: input.authorizerPin ?? "",
+              idempotencyKey: uid("idem", state),
+            });
+          }
+          const driverCashToRemit = order.payments
+            .filter((payment) => payment.methodCode === "CASH")
+            .reduce(
+              (sum, payment) =>
+                sum + payment.amountMinor - (payment.refundedMinor ?? 0),
+              0,
+            );
+          const cashRefund = refundSpecs.reduce(
+            (sum, refund) =>
+              sum +
+              (order.payments.find((payment) => payment.id === refund.paymentId)
+                ?.methodCode === "CASH"
+                ? refund.amountMinor
+                : 0),
+            0,
+          );
+          if (
+            order.type === "DELIVERY" &&
+            input.type === "TAKEAWAY" &&
+            order.collectedByDriver &&
+            driverCashToRemit > 0
+          ) {
+            if (input.driverCashRemitted !== true)
+              throw new Error(
+                "Confirmá la rendición física del efectivo cobrado por el repartidor para pasar el pedido a retiro.",
+              );
+            if (
+              !state.data.cashSession ||
+              state.data.cashSession.status !== "OPEN"
+            )
+              throw new Error(
+                "Abrí una caja antes de registrar la rendición del repartidor.",
+              );
+            const netRemittance = Math.max(0, driverCashToRemit - cashRefund);
+            state.data.cashSession.expectedAmountMinor += netRemittance;
+            state.data.cashSession.cashIncomeMinor =
+              (state.data.cashSession.cashIncomeMinor ?? 0) + netRemittance;
+            if (netRemittance > 0)
+              state.movements.push({
+                id: uid("movement", state),
+                sessionId: state.data.cashSession.id,
+                type: "INCOME",
+                amountMinor: netRemittance,
+                affectsCash: true,
+                paymentMethodCode: "CASH",
+                orderId: order.id,
+                userId: state.data.currentUser.id,
+                reason: `Rendición de efectivo del repartidor por cambio a retiro · Pedido #${order.number}`,
+                createdAt: now(),
+              });
+            order.collectedByDriver = false;
+          }
+          if (ledger?.status === "PENDING")
+            state.data.deliveryLedger = state.data.deliveryLedger.filter(
+              (row) => row.id !== ledger.id,
+            );
+        }
+        order.type = input.type;
+        order.deliveryFeeMinor = newFee;
+        for (const refund of refundSpecs) {
+          const payment = order.payments.find(
+            (candidate) => candidate.id === refund.paymentId,
+          )!;
+          payment.refundedMinor += refund.amountMinor;
+          payment.refundableMinor -= refund.amountMinor;
+          payment.status =
+            payment.refundableMinor === 0 ? "REFUNDED" : "ACTIVE";
+          const method = state.data.paymentMethods.find(
+            (candidate) => candidate.code === payment.methodCode,
+          );
+          if (method?.affectsCash && !wasCollectedByDriver) {
+            if (
+              !state.data.cashSession ||
+              refund.amountMinor > state.data.cashSession.expectedAmountMinor
+            )
+              throw new Error(
+                "La caja no tiene efectivo suficiente para devolver la diferencia.",
+              );
+            state.data.cashSession.expectedAmountMinor -= refund.amountMinor;
+            state.data.cashSession.cashRefundMinor =
+              (state.data.cashSession.cashRefundMinor ?? 0) +
+              refund.amountMinor;
+          }
+          if (state.data.cashSession && method)
+            state.movements.push({
+              id: uid("movement", state),
+              sessionId: state.data.cashSession.id,
+              type: "REFUND",
+              amountMinor: refund.amountMinor,
+              affectsCash: method.affectsCash && !wasCollectedByDriver,
+              paymentMethodCode: payment.methodCode,
+              orderId: order.id,
+              userId: state.data.currentUser.id,
+              reason: input.reason ?? "Cambio de modalidad",
+              createdAt: now(),
+            });
+        }
+        Object.assign(order, {
+          customerId: customer?.id ?? null,
+          customerNameSnapshot:
+            input.customerName?.trim() ||
+            customer?.name ||
+            order.customerNameSnapshot,
+          customerPhoneSnapshot:
+            input.customerPhone?.trim() ||
+            customer?.phone ||
+            order.customerPhoneSnapshot,
+          deliveryAddressSnapshot:
+            input.type === "DELIVERY"
+              ? (selectedAddress?.address ??
+                input.deliveryAddress?.trim() ??
+                order.deliveryAddressSnapshot ??
+                null)
+              : null,
+          deliveryAddressNotesSnapshot:
+            input.type === "DELIVERY"
+              ? (selectedAddress?.notes ??
+                order.deliveryAddressNotesSnapshot ??
+                null)
+              : null,
+          deliveryFeeMinor: newFee,
+          promisedAt:
+            input.promisedAt === undefined
+              ? order.promisedAt
+              : input.promisedAt,
+          scheduled:
+            input.scheduled === undefined ? order.scheduled : input.scheduled,
+          driverUserId: input.type === "DELIVERY" ? (driver?.id ?? null) : null,
+          driverName:
+            input.type === "DELIVERY" ? (driver?.fullName ?? null) : null,
+          notes:
+            input.notes === undefined
+              ? order.notes
+              : input.notes?.trim() || null,
+          updatedAt: now(),
+        });
+        refreshOrder(order);
+        if (!isDraft)
+          assertOffPremiseCustomer({
+            type: order.type,
+            customerName: order.customerNameSnapshot,
+            customerPhone: order.customerPhoneSnapshot,
+            deliveryAddress: order.deliveryAddressSnapshot,
+          });
+        // Ordinary delivery edits keep the existing saved-address workflow.
+        // A channel conversion only updates the order's quotation.
+        if (!changingType && input.type === "DELIVERY" && selectedAddress)
+          selectedAddress.deliveryFeeMinor = newFee;
+        audit(
+          state,
+          "ORDER",
+          order.id,
+          order.printedAt
+            ? "ORDER_EDITED_AFTER_PRINT"
+            : order.lifecycleStatus === "DRAFT"
+              ? "ORDER_DRAFT_UPDATED"
+              : "ORDER_DETAILS_UPDATED",
+          order.printedAt
+            ? "Datos del cliente o envío editados después de imprimir"
+            : undefined,
+        );
+        refreshOrder(order);
+        audit(
+          state,
+          "ORDER",
+          order.id,
+          changingType ? "ORDER_TYPE_CHANGED" : "ORDER_DETAILS_UPDATED",
+          input.reason?.trim() || undefined,
+        );
+        save();
+        return output(order);
+      } catch (error) {
+        restore(before);
+        throw error;
+      }
     },
 
     async confirmOrder({ orderId }) {
       const order = orderById(orderId);
       assertOrderAction(order, "CONFIRM");
+      if (order.type !== "DINE_IN")
+        assertOffPremiseCustomer({
+          type: order.type,
+          customerName: order.customerNameSnapshot,
+          customerPhone: order.customerPhoneSnapshot,
+          deliveryAddress: order.deliveryAddressSnapshot,
+        });
       reserveOrderStock(order);
+      if (
+        order.type === "DELIVERY" &&
+        order.totalMinor === 0 &&
+        (order.depositMinor ?? 0) > 0
+      )
+        order.deliveryFeeBelongsToDriver ??=
+          state.data.settings.deliveryFeeBelongsToDriver ?? true;
       order.lifecycleStatus = "CONFIRMED";
       order.operationalStatus = "IN_PREPARATION";
       audit(state, "ORDER", order.id, "PEDIDO_CONFIRMADO");
@@ -1825,6 +2172,7 @@ export function createDemoApi(
 
     async removeOrderItemModifier(input) {
       const order = orderById(input.orderId);
+      assertOrderAction(order, "EDIT");
       for (const item of order.items)
         item.modifiers = item.modifiers.filter(
           (modifier) => modifier.id !== input.modifierId,
@@ -1865,6 +2213,14 @@ export function createDemoApi(
       order.depositMinor = Math.max(0, input.depositMinor);
       order.depositNotes = input.notes?.trim() || null;
       refreshOrder(order);
+      if (
+        order.lifecycleStatus === "CONFIRMED" &&
+        order.type === "DELIVERY" &&
+        order.totalMinor === 0 &&
+        order.depositMinor > 0
+      )
+        order.deliveryFeeBelongsToDriver ??=
+          state.data.settings.deliveryFeeBelongsToDriver ?? true;
       refreshTables(state.data);
       audit(
         state,
@@ -1880,6 +2236,11 @@ export function createDemoApi(
 
     async updateOrderStatus(input) {
       const order = orderById(input.orderId);
+      assertOrderTransition(order.operationalStatus, input.status);
+      if (input.status === "CANCELLED")
+        throw new Error(
+          "Usá la acción Cancelar pedido para registrar motivo, autorización y devolver el stock.",
+        );
       assertOperationalTransition(order, input.status);
       if (
         order.type === "DELIVERY" &&
@@ -1901,6 +2262,8 @@ export function createDemoApi(
         order.paymentStatus === "PAID" &&
         order.driverUserId &&
         state.data.settings.deliverySettlementEnabled &&
+        ((order.deliveryFeeBelongsToDriver ?? true) ||
+          order.collectedByDriver) &&
         !state.data.deliveryLedger.some((row) => row.orderId === order.id)
       ) {
         const restaurantAmount = Math.max(
@@ -1908,7 +2271,10 @@ export function createDemoApi(
           order.totalMinor - order.deliveryFeeMinor,
         );
         const amountDue = order.collectedByDriver
-          ? restaurantAmount
+          ? restaurantAmount +
+            ((order.deliveryFeeBelongsToDriver ?? true)
+              ? 0
+              : order.deliveryFeeMinor)
           : order.deliveryFeeMinor;
         if (amountDue > 0)
           state.data.deliveryLedger.unshift({
@@ -1959,12 +2325,26 @@ export function createDemoApi(
         if (!driver)
           throw new Error("El repartidor no existe o está inactivo.");
       }
+      const ledger = state.data.deliveryLedger.find(
+        (row) => row.orderId === order.id,
+      );
+      if (
+        ledger?.status === "SETTLED" &&
+        ledger.driverUserId !== input.driverUserId
+      )
+        throw new Error(
+          "Revertí la liquidación del repartidor antes de reasignar este pedido.",
+        );
       const previousDriverUserId = order.driverUserId;
       order.driverUserId = input.driverUserId;
       order.driverName = input.driverUserId
         ? (state.data.users.find((user) => user.id === input.driverUserId)
             ?.fullName ?? null)
         : null;
+      if (ledger?.status === "PENDING") {
+        ledger.driverUserId = order.driverUserId ?? ledger.driverUserId;
+        ledger.driverName = order.driverName ?? ledger.driverName;
+      }
       order.updatedAt = now();
       audit(
         state,
@@ -1978,278 +2358,516 @@ export function createDemoApi(
     },
 
     async payOrder(input) {
-      const order = orderById(input.orderId);
-      assertOrderAction(order, "PAY");
-      const accountPayment = input.payments.find((payment) => payment.methodCode === "ACCOUNT");
-      if (accountPayment) {
-        const customerId = input.customerId ?? order.customerId;
-        const customer = state.customers.find((candidate) => candidate.id === customerId && candidate.active);
-        if (!customer) throw new Error("Seleccioná un cliente activo para usar cuenta corriente.");
-        if (order.customerId && order.customerId !== customer.id) throw new Error("El pedido ya pertenece a otro cliente.");
-        if (input.change?.amountMinor) throw new Error("No se puede entregar vuelto de una cuenta corriente.");
-        order.customerId = customer.id;
-        order.customerNameSnapshot = customer.name;
-        order.customerPhoneSnapshot = customer.phone;
-      }
-      if (!input.payments.length)
-        throw new Error("Agregá al menos un medio de pago.");
-      const changeAmountMinor = input.change?.amountMinor ?? 0;
-      const amount = input.payments.reduce(
-        (sum, payment) => sum + payment.amountMinor,
-        0,
-      );
-      const remaining = order.totalMinor - order.paidMinor;
-      const netPayment = amount - changeAmountMinor;
-      if (netPayment !== remaining)
-        throw new Error(
-          "La suma de los pagos menos el vuelto debe coincidir con el saldo pendiente.",
-        );
-      if (changeAmountMinor > 0 && amount <= remaining) {
-        throw new Error(
-          "El vuelto sólo corresponde si el pago supera el saldo pendiente.",
-        );
-      }
-      let changeMethod: (typeof state.data.paymentMethods)[number] | undefined;
-      if (changeAmountMinor > 0) {
-        if (!input.change?.methodCode)
-          throw new Error("Indicá el medio de pago para el vuelto.");
-        changeMethod = state.data.paymentMethods.find(
-          (m) => m.code === input.change!.methodCode && m.active,
-        );
-        if (!changeMethod)
-          throw new Error("El medio de pago para vuelto no está disponible.");
-      }
-      for (const payment of input.payments) {
-        if (payment.amountMinor <= 0)
-          throw new Error("Los importes deben ser mayores que cero.");
+      const before = clone(state);
+      try {
+        const order = orderById(input.orderId);
+        assertOrderAction(order, "PAY");
+        const driverCollected = input.collectedByDriver === true;
+        const amountAlreadyPaid = order.paidMinor;
         if (
-          payment.methodCode === "CASH" &&
-          (payment.receivedMinor ?? payment.amountMinor) < payment.amountMinor
+          amountAlreadyPaid > 0 &&
+          driverCollected !== order.collectedByDriver
         )
           throw new Error(
-            "El efectivo recibido no alcanza para cubrir el importe.",
+            "No se pueden mezclar cobros recibidos por el negocio y por el repartidor. Completá con el mismo responsable o devolvé lo ya cobrado antes de cambiarlo.",
           );
-        order.payments.push({
-          id: uid("payment", state),
-          methodCode: payment.methodCode,
-          methodName: methodName(state.data, payment.methodCode),
-          amountMinor: payment.amountMinor,
-          receivedMinor: payment.receivedMinor ?? null,
-          reference: payment.reference ?? null,
-          createdAt: now(),
-          refundedMinor: 0,
-          refundableMinor: payment.amountMinor,
-          status: "ACTIVE",
-        });
-      }
-      order.changeAmountMinor = changeAmountMinor > 0 ? changeAmountMinor : null;
-      order.changeMethodCode =
-        changeAmountMinor > 0 && input.change ? input.change.methodCode : null;
-      order.changeMethodName = changeMethod ? changeMethod.name : null;
-      refreshOrder(order);
-      order.cashSessionPaidId = state.data.cashSession?.id ?? null;
-      order.collectedByDriver = input.collectedByDriver === true;
-      const cashAmount = input.payments
-        .filter((payment) => payment.methodCode === "CASH")
-        .reduce((sum, payment) => sum + payment.amountMinor, 0);
-      const availableCash =
-        (state.data.cashSession?.expectedAmountMinor ?? 0) +
-        (input.collectedByDriver ? 0 : cashAmount);
-      if (
-        changeAmountMinor > 0 &&
-        changeMethod?.affectsCash &&
-        !input.collectedByDriver &&
-        changeAmountMinor > availableCash
-      ) {
-        throw new Error(
-          "La caja no tiene efectivo suficiente para entregar este vuelto.",
+        if (driverCollected) {
+          if (order.type !== "DELIVERY")
+            throw new Error(
+              "Sólo un envío puede registrarse como cobrado por el repartidor.",
+            );
+          if (
+            !state.data.users.some(
+              (user) =>
+                user.id === order.driverUserId &&
+                user.active &&
+                user.roleCode === "DELIVERY_DRIVER",
+            )
+          )
+            throw new Error(
+              "Asigná un repartidor activo antes de registrar un cobro a su cargo.",
+            );
+          if (
+            !input.payments.length ||
+            input.payments.some((payment) => payment.methodCode !== "CASH")
+          )
+            throw new Error(
+              "El repartidor sólo puede rendir efectivo; los demás medios se cobran desde el negocio.",
+            );
+          if (
+            (input.change?.amountMinor ?? 0) > 0 &&
+            input.change?.methodCode !== "CASH"
+          )
+            throw new Error(
+              "El vuelto de un cobro del repartidor debe ser en efectivo.",
+            );
+        }
+        const accountPayment = input.payments.find(
+          (payment) => payment.methodCode === "ACCOUNT",
         );
-      }
-      if (state.data.cashSession) {
-        state.data.cashSession.expectedAmountMinor += cashAmount;
-        state.data.cashSession.cashSalesMinor =
-          (state.data.cashSession.cashSalesMinor ?? 0) + cashAmount;
-        if (changeAmountMinor > 0 && changeMethod) {
-          if (changeMethod.affectsCash && !input.collectedByDriver) {
-            state.data.cashSession.expectedAmountMinor -= changeAmountMinor;
-            state.data.cashSession.cashRefundMinor =
-              (state.data.cashSession.cashRefundMinor ?? 0) + changeAmountMinor;
+        if (accountPayment) {
+          const customerId = input.customerId ?? order.customerId;
+          const customer = state.customers.find(
+            (candidate) => candidate.id === customerId && candidate.active,
+          );
+          if (!customer)
+            throw new Error(
+              "Seleccioná un cliente activo para usar cuenta corriente.",
+            );
+          if (order.customerId && order.customerId !== customer.id)
+            throw new Error("El pedido ya pertenece a otro cliente.");
+          if (input.change?.amountMinor)
+            throw new Error(
+              "No se puede entregar vuelto de una cuenta corriente.",
+            );
+          order.customerId = customer.id;
+          order.customerNameSnapshot = customer.name;
+          order.customerPhoneSnapshot = customer.phone;
+        }
+        if (
+          !input.payments.length &&
+          !(order.depositMinor > 0 && order.totalMinor === 0)
+        )
+          throw new Error("Agregá al menos un medio de pago.");
+        const changeAmountMinor = input.change?.amountMinor ?? 0;
+        const amount = input.payments.reduce(
+          (sum, payment) => sum + payment.amountMinor,
+          0,
+        );
+        const remaining = order.totalMinor - order.paidMinor;
+        const netPayment = amount - changeAmountMinor;
+        if (input.payments.length && netPayment !== remaining)
+          throw new Error(
+            "La suma de los pagos menos el vuelto debe coincidir con el saldo pendiente.",
+          );
+        if (changeAmountMinor > 0 && amount <= remaining) {
+          throw new Error(
+            "El vuelto sólo corresponde si el pago supera el saldo pendiente.",
+          );
+        }
+        let changeMethod:
+          (typeof state.data.paymentMethods)[number] | undefined;
+        if (changeAmountMinor > 0) {
+          if (!input.change?.methodCode)
+            throw new Error("Indicá el medio de pago para el vuelto.");
+          changeMethod = state.data.paymentMethods.find(
+            (m) => m.code === input.change!.methodCode && m.active,
+          );
+          if (!changeMethod)
+            throw new Error("El medio de pago para vuelto no está disponible.");
+        }
+        for (const payment of input.payments) {
+          if (payment.amountMinor <= 0)
+            throw new Error("Los importes deben ser mayores que cero.");
+          if (
+            payment.methodCode === "CASH" &&
+            (payment.receivedMinor ?? payment.amountMinor) < payment.amountMinor
+          )
+            throw new Error(
+              "El efectivo recibido no alcanza para cubrir el importe.",
+            );
+          order.payments.push({
+            id: uid("payment", state),
+            methodCode: payment.methodCode,
+            methodName: methodName(state.data, payment.methodCode),
+            amountMinor: payment.amountMinor,
+            receivedMinor: payment.receivedMinor ?? null,
+            reference: payment.reference ?? null,
+            createdAt: now(),
+            refundedMinor: 0,
+            refundableMinor: payment.amountMinor,
+            status: "ACTIVE",
+          });
+        }
+        order.changeAmountMinor =
+          changeAmountMinor > 0 ? changeAmountMinor : null;
+        order.changeMethodCode =
+          changeAmountMinor > 0 && input.change
+            ? input.change.methodCode
+            : null;
+        order.changeMethodName = changeMethod ? changeMethod.name : null;
+        refreshOrder(order);
+        order.cashSessionPaidId = state.data.cashSession?.id ?? null;
+        order.collectedByDriver = driverCollected;
+        // Snapshot fee ownership when the order is first paid, not when drafted.
+        order.deliveryFeeBelongsToDriver ??=
+          state.data.settings.deliveryFeeBelongsToDriver ?? true;
+        const cashAmount = input.payments
+          .filter((payment) => payment.methodCode === "CASH")
+          .reduce((sum, payment) => sum + payment.amountMinor, 0);
+        const availableCash =
+          (state.data.cashSession?.expectedAmountMinor ?? 0) +
+          (input.collectedByDriver ? 0 : cashAmount);
+        if (
+          changeAmountMinor > 0 &&
+          changeMethod?.affectsCash &&
+          !input.collectedByDriver &&
+          changeAmountMinor > availableCash
+        ) {
+          throw new Error(
+            "La caja no tiene efectivo suficiente para entregar este vuelto.",
+          );
+        }
+        if (state.data.cashSession) {
+          if (!input.collectedByDriver) {
+            state.data.cashSession.expectedAmountMinor += cashAmount;
+            state.data.cashSession.cashSalesMinor =
+              (state.data.cashSession.cashSalesMinor ?? 0) + cashAmount;
           }
+          if (changeAmountMinor > 0 && changeMethod) {
+            if (changeMethod.affectsCash && !input.collectedByDriver) {
+              state.data.cashSession.expectedAmountMinor -= changeAmountMinor;
+              state.data.cashSession.cashRefundMinor =
+                (state.data.cashSession.cashRefundMinor ?? 0) +
+                changeAmountMinor;
+            }
+            state.movements.push({
+              id: uid("movement", state),
+              sessionId: state.data.cashSession.id,
+              type: "REFUND",
+              amountMinor: changeAmountMinor,
+              affectsCash: input.collectedByDriver
+                ? false
+                : changeMethod.affectsCash,
+              paymentMethodCode: changeMethod.code,
+              orderId: order.id,
+              userId: state.data.currentUser.id,
+              reason: `Vuelto cobro pedido #${order.number} (${changeMethod.name})`,
+              createdAt: now(),
+            });
+          }
+          for (const payment of input.payments) {
+            const method = state.data.paymentMethods.find(
+              (m) => m.code === payment.methodCode,
+            );
+            state.movements.push({
+              id: uid("movement", state),
+              sessionId: state.data.cashSession.id,
+              type: "SALE",
+              amountMinor: payment.amountMinor,
+              affectsCash: input.collectedByDriver
+                ? false
+                : (method?.affectsCash ?? false),
+              paymentMethodCode: payment.methodCode,
+              orderId: order.id,
+              userId: state.data.currentUser.id,
+              reason: null,
+              createdAt: now(),
+            });
+          }
+        }
+        if (
+          order.type === "DELIVERY" &&
+          order.driverUserId &&
+          state.data.settings.deliverySettlementEnabled &&
+          (order.deliveryFeeBelongsToDriver || order.collectedByDriver)
+        ) {
+          const driverCollected = input.collectedByDriver === true;
+          const restaurantAmount = Math.max(
+            0,
+            order.totalMinor - order.deliveryFeeMinor,
+          );
+          const shouldPayDriverNow =
+            input.payDriverNow === true &&
+            order.deliveryFeeBelongsToDriver &&
+            !driverCollected &&
+            order.deliveryFeeMinor > 0;
+          if (shouldPayDriverNow) {
+            if (
+              state.data.cashSession &&
+              order.deliveryFeeMinor >
+                state.data.cashSession.expectedAmountMinor
+            ) {
+              throw new Error(
+                "La caja no tiene efectivo suficiente para pagar el envío al repartidor.",
+              );
+            }
+            if (state.data.cashSession) {
+              state.data.cashSession.expectedAmountMinor -=
+                order.deliveryFeeMinor;
+              state.data.cashSession.cashExpenseMinor =
+                (state.data.cashSession.cashExpenseMinor ?? 0) +
+                order.deliveryFeeMinor;
+              state.movements.push({
+                id: uid("movement", state),
+                sessionId: state.data.cashSession.id,
+                type: "EXPENSE",
+                amountMinor: order.deliveryFeeMinor,
+                affectsCash: true,
+                paymentMethodCode: "CASH",
+                orderId: order.id,
+                userId: state.data.currentUser.id,
+                reason: `Pago de envío a repartidor: Pedido #${order.number}`,
+                createdAt: now(),
+              });
+            }
+            const existingLedger = state.data.deliveryLedger.find(
+              (l) => l.orderId === order.id,
+            );
+            if (existingLedger) {
+              existingLedger.status = "SETTLED";
+              existingLedger.settledAmountMinor = order.deliveryFeeMinor;
+              existingLedger.settledAt = now();
+            } else {
+              state.data.deliveryLedger.unshift({
+                id: uid("ledger", state),
+                orderId: order.id,
+                orderNumber: order.number,
+                cashSessionId:
+                  order.cashSessionPaidId ?? order.cashSessionCreatedId,
+                businessDate: state.data.cashSession?.businessDate ?? today(),
+                driverUserId: order.driverUserId,
+                driverName:
+                  state.data.users.find((u) => u.id === order.driverUserId)
+                    ?.fullName ?? "Repartidor",
+                restaurantAmountMinor: restaurantAmount,
+                deliveryFeeMinor: order.deliveryFeeMinor,
+                direction: "BUSINESS_OWES_DRIVER",
+                amountDueMinor: order.deliveryFeeMinor,
+                settledAmountMinor: order.deliveryFeeMinor,
+                status: "SETTLED",
+                createdAt: now(),
+                settledAt: now(),
+              });
+            }
+          }
+          // Under business-owned fees, driver-collected customer payments are
+          // fully owed back to the business, including the delivery fee.
+          if (driverCollected && !order.deliveryFeeBelongsToDriver) {
+            const existingLedger = state.data.deliveryLedger.find(
+              (ledger) => ledger.orderId === order.id,
+            );
+            const amountDue = order.totalMinor;
+            if (existingLedger) {
+              existingLedger.amountDueMinor = amountDue;
+              existingLedger.settledAmountMinor = 0;
+              existingLedger.status = "PENDING";
+              existingLedger.settledAt = null;
+            } else if (amountDue > 0) {
+              state.data.deliveryLedger.unshift({
+                id: uid("ledger", state),
+                orderId: order.id,
+                orderNumber: order.number,
+                cashSessionId:
+                  order.cashSessionPaidId ?? order.cashSessionCreatedId,
+                businessDate: state.data.cashSession?.businessDate ?? today(),
+                driverUserId: order.driverUserId,
+                driverName: order.driverName ?? "Repartidor",
+                restaurantAmountMinor: Math.max(
+                  0,
+                  order.totalMinor - order.deliveryFeeMinor,
+                ),
+                deliveryFeeMinor: order.deliveryFeeMinor,
+                direction: "DRIVER_OWES_BUSINESS",
+                amountDueMinor: amountDue,
+                settledAmountMinor: 0,
+                status: "PENDING",
+                createdAt: now(),
+                settledAt: null,
+              });
+            }
+          }
+        }
+        audit(state, "ORDER", order.id, "PEDIDO_COBRADO");
+        save();
+        return output(order);
+      } catch (error) {
+        restore(before);
+        throw error;
+      }
+    },
+
+    async refundPayment(input) {
+      const before = clone(state);
+      try {
+        requirePin(input.authorizerPin);
+        if (!input.reason.trim())
+          throw new Error("Indicá el motivo de la devolución.");
+        const order = orderById(input.orderId);
+        if (order.operationalStatus === "CANCELLED")
+          throw new Error(
+            "No se puede devolver un pago de un pedido cancelado.",
+          );
+        const ledger = state.data.deliveryLedger.find(
+          (row) => row.orderId === order.id,
+        );
+        if (ledger?.status === "SETTLED") {
+          if (!input.reverseDeliverySettlement)
+            throw new Error(
+              "Revertí primero la liquidación del repartidor para poder devolver el pago.",
+            );
+          await this.reverseDeliverySettlement({
+            ledgerId: ledger.id,
+            reason: input.reason,
+            authorizerPin: input.authorizerPin,
+            idempotencyKey: uid("idem", state),
+          });
+        }
+        const payment = order.payments.find(
+          (candidate) => candidate.id === input.paymentId,
+        );
+        if (!payment) throw new Error("No se encontró el pago.");
+        if (payment.refundableMinor <= 0)
+          throw new Error("El pago ya fue devuelto.");
+        const amountMinor = input.amountMinor ?? payment.refundableMinor;
+        if (
+          !Number.isSafeInteger(amountMinor) ||
+          amountMinor <= 0 ||
+          amountMinor > payment.refundableMinor
+        )
+          throw new Error("El importe de devolución no es válido.");
+        if (payment.methodCode === "ACCOUNT") {
+          const settled = (state.accountReceipts ?? []).reduce(
+            (total, receipt) =>
+              total +
+              receipt.allocations
+                .filter((allocation) => allocation.orderId === order.id)
+                .reduce((sum, allocation) => sum + allocation.amountMinor, 0),
+            0,
+          );
+          const outstanding =
+            order.payments
+              .filter((candidate) => candidate.methodCode === "ACCOUNT")
+              .reduce(
+                (sum, candidate) =>
+                  sum + candidate.amountMinor - candidate.refundedMinor,
+                0,
+              ) - settled;
+          if (amountMinor > outstanding)
+            throw new Error(
+              "No se puede devolver un cargo de cuenta ya cobrado; sólo se puede reducir la deuda pendiente.",
+            );
+        }
+        const method = state.data.paymentMethods.find(
+          (candidate) => candidate.code === payment.methodCode,
+        );
+        if (
+          method?.affectsCash &&
+          !order.collectedByDriver &&
+          (!state.data.cashSession ||
+            amountMinor > state.data.cashSession.expectedAmountMinor)
+        )
+          throw new Error(
+            "La caja no tiene efectivo suficiente para esta devolución. Registrá un ingreso de fondos antes de continuar.",
+          );
+        payment.refundedMinor += amountMinor;
+        payment.refundableMinor -= amountMinor;
+        payment.status = payment.refundableMinor === 0 ? "REFUNDED" : "ACTIVE";
+        refreshOrder(order);
+        if (ledger) {
+          // The refund has no line allocation. Once delivered, the earned driver fee
+          // survives food refunds, even when the cash balance crosses through zero.
+          const remainingCash = order.payments
+            .filter((candidate) => candidate.methodCode === "CASH")
+            .reduce(
+              (sum, candidate) =>
+                sum + candidate.amountMinor - (candidate.refundedMinor ?? 0),
+              0,
+            );
+          const feeEarned =
+            (order.deliveryFeeBelongsToDriver ?? true)
+              ? order.deliveryFeeMinor
+              : 0;
+          const delivered = order.operationalStatus === "DELIVERED";
+          const fullyRefunded = order.paidMinor === 0;
+          if (!delivered && fullyRefunded) {
+            state.data.deliveryLedger = state.data.deliveryLedger.filter(
+              (row) => row.id !== ledger.id,
+            );
+          } else if (order.collectedByDriver) {
+            const signedBalance = remainingCash - feeEarned;
+            if (signedBalance === 0)
+              state.data.deliveryLedger = state.data.deliveryLedger.filter(
+                (row) => row.id !== ledger.id,
+              );
+            else {
+              ledger.direction =
+                signedBalance > 0
+                  ? "DRIVER_OWES_BUSINESS"
+                  : "BUSINESS_OWES_DRIVER";
+              ledger.amountDueMinor = Math.abs(signedBalance);
+              ledger.settledAmountMinor = 0;
+              ledger.status = "PENDING";
+              ledger.settledAt = null;
+            }
+          } else {
+            const amountDue = delivered
+              ? feeEarned
+              : Math.min(
+                  feeEarned,
+                  order.payments.reduce(
+                    (sum, candidate) =>
+                      sum +
+                      candidate.amountMinor -
+                      (candidate.refundedMinor ?? 0),
+                    0,
+                  ),
+                );
+            if (amountDue <= 0)
+              state.data.deliveryLedger = state.data.deliveryLedger.filter(
+                (row) => row.id !== ledger.id,
+              );
+            else {
+              ledger.direction = "BUSINESS_OWES_DRIVER";
+              ledger.amountDueMinor = amountDue;
+              ledger.settledAmountMinor = 0;
+              ledger.status = "PENDING";
+              ledger.settledAt = null;
+            }
+          }
+        }
+        if (
+          state.data.cashSession &&
+          method?.affectsCash &&
+          !order.collectedByDriver
+        ) {
+          state.data.cashSession.expectedAmountMinor -= amountMinor;
+          state.data.cashSession.cashRefundMinor =
+            (state.data.cashSession.cashRefundMinor ?? 0) + amountMinor;
           state.movements.push({
             id: uid("movement", state),
             sessionId: state.data.cashSession.id,
             type: "REFUND",
-            amountMinor: changeAmountMinor,
-            affectsCash: input.collectedByDriver ? false : changeMethod.affectsCash,
-            paymentMethodCode: changeMethod.code,
-            orderId: order.id,
-            userId: state.data.currentUser.id,
-            reason: `Vuelto cobro pedido #${order.number} (${changeMethod.name})`,
-            createdAt: now(),
-          });
-        }
-        for (const payment of input.payments) {
-          const method = state.data.paymentMethods.find(
-            (m) => m.code === payment.methodCode,
-          );
-          state.movements.push({
-            id: uid("movement", state),
-            sessionId: state.data.cashSession.id,
-            type: "SALE",
-            amountMinor: payment.amountMinor,
-            affectsCash: method?.affectsCash ?? false,
+            amountMinor,
+            affectsCash: true,
             paymentMethodCode: payment.methodCode,
             orderId: order.id,
             userId: state.data.currentUser.id,
-            reason: null,
+            reason: input.reason,
             createdAt: now(),
           });
         }
-      }
-      if (
-        order.type === "DELIVERY" &&
-        order.driverUserId &&
-        state.data.settings.deliverySettlementEnabled
-      ) {
-        const driverCollected = input.collectedByDriver === true;
-        const restaurantAmount = Math.max(
-          0,
-          order.totalMinor - order.deliveryFeeMinor,
+        if (
+          state.data.cashSession &&
+          method &&
+          (!method.affectsCash || order.collectedByDriver)
+        )
+          state.movements.push({
+            id: uid("movement", state),
+            sessionId: state.data.cashSession.id,
+            type: "REFUND",
+            amountMinor,
+            affectsCash: false,
+            paymentMethodCode: payment.methodCode,
+            orderId: order.id,
+            userId: state.data.currentUser.id,
+            reason: input.reason,
+            createdAt: now(),
+          });
+        audit(
+          state,
+          "PAYMENT",
+          payment.id,
+          "PAGO_DEVUELTO",
+          input.reason,
+          "payments.refund",
         );
-        const shouldPayDriverNow =
-          input.payDriverNow === true &&
-          !driverCollected &&
-          order.deliveryFeeMinor > 0;
-        if (shouldPayDriverNow) {
-          if (
-            state.data.cashSession &&
-            order.deliveryFeeMinor > state.data.cashSession.expectedAmountMinor
-          ) {
-            throw new Error(
-              "La caja no tiene efectivo suficiente para pagar el envío al repartidor.",
-            );
-          }
-          if (state.data.cashSession) {
-            state.data.cashSession.expectedAmountMinor -= order.deliveryFeeMinor;
-            state.data.cashSession.cashExpenseMinor =
-              (state.data.cashSession.cashExpenseMinor ?? 0) +
-              order.deliveryFeeMinor;
-            state.movements.push({
-              id: uid("movement", state),
-              sessionId: state.data.cashSession.id,
-              type: "EXPENSE",
-              amountMinor: order.deliveryFeeMinor,
-              affectsCash: true,
-              paymentMethodCode: "CASH",
-              orderId: order.id,
-              userId: state.data.currentUser.id,
-              reason: `Pago de envío a repartidor: Pedido #${order.number}`,
-              createdAt: now(),
-            });
-          }
-          const existingLedger = state.data.deliveryLedger.find(
-            (l) => l.orderId === order.id,
-          );
-          if (existingLedger) {
-            existingLedger.status = "SETTLED";
-            existingLedger.settledAmountMinor = order.deliveryFeeMinor;
-            existingLedger.settledAt = now();
-          } else {
-            state.data.deliveryLedger.unshift({
-              id: uid("ledger", state),
-              orderId: order.id,
-              orderNumber: order.number,
-              cashSessionId:
-                order.cashSessionPaidId ?? order.cashSessionCreatedId,
-              businessDate: state.data.cashSession?.businessDate ?? today(),
-              driverUserId: order.driverUserId,
-              driverName:
-                state.data.users.find((u) => u.id === order.driverUserId)
-                  ?.fullName ?? "Repartidor",
-              restaurantAmountMinor: restaurantAmount,
-              deliveryFeeMinor: order.deliveryFeeMinor,
-              direction: "BUSINESS_OWES_DRIVER",
-              amountDueMinor: order.deliveryFeeMinor,
-              settledAmountMinor: order.deliveryFeeMinor,
-              status: "SETTLED",
-              createdAt: now(),
-              settledAt: now(),
-            });
-          }
-        }
+        save();
+        return output(order);
+      } catch (error) {
+        restore(before);
+        throw error;
       }
-      audit(state, "ORDER", order.id, "PEDIDO_COBRADO");
-      save();
-      return output(order);
-    },
-
-    async refundPayment(input) {
-      requirePin(input.authorizerPin);
-      if (!input.reason.trim())
-        throw new Error("Indicá el motivo de la devolución.");
-      const order = orderById(input.orderId);
-      if (order.operationalStatus === "CANCELLED")
-        throw new Error("No se puede devolver un pago de un pedido cancelado.");
-      if (state.data.deliveryLedger.some((row) => row.orderId === order.id))
-        throw new Error(
-          "No se puede devolver este pago porque el envío ya generó una rendición; su anulación todavía no está disponible.",
-        );
-      const payment = order.payments.find(
-        (candidate) => candidate.id === input.paymentId,
-      );
-      if (!payment) throw new Error("No se encontró el pago.");
-      if (payment.methodCode === "ACCOUNT" && (state.accountReceipts ?? []).some((receipt) => receipt.allocations.some((allocation) => allocation.orderId === order.id)))
-        throw new Error("La cuenta corriente ya tiene cobros aplicados; no se puede devolver este cargo.");
-      if (payment.refundableMinor <= 0)
-        throw new Error("El pago ya fue devuelto.");
-      const amountMinor = payment.refundableMinor;
-      const method = state.data.paymentMethods.find(
-        (candidate) => candidate.code === payment.methodCode,
-      );
-      if (
-        method?.affectsCash &&
-        !order.collectedByDriver &&
-        (!state.data.cashSession ||
-          amountMinor > state.data.cashSession.expectedAmountMinor)
-      )
-        throw new Error(
-          "La caja no tiene efectivo suficiente para esta devolución. Registrá un ingreso de fondos antes de continuar.",
-        );
-      payment.refundedMinor += amountMinor;
-      payment.refundableMinor = 0;
-      payment.status = "REFUNDED";
-      refreshOrder(order);
-      if (
-        state.data.cashSession &&
-        method?.affectsCash &&
-        !order.collectedByDriver
-      ) {
-        state.data.cashSession.expectedAmountMinor -= amountMinor;
-        state.data.cashSession.cashRefundMinor =
-          (state.data.cashSession.cashRefundMinor ?? 0) + amountMinor;
-        state.movements.push({
-          id: uid("movement", state),
-          sessionId: state.data.cashSession.id,
-          type: "REFUND",
-          amountMinor,
-          affectsCash: true,
-          paymentMethodCode: payment.methodCode,
-          orderId: order.id,
-          userId: state.data.currentUser.id,
-          reason: input.reason,
-          createdAt: now(),
-        });
-      }
-      audit(
-        state,
-        "PAYMENT",
-        payment.id,
-        "PAGO_DEVUELTO",
-        input.reason,
-        "payments.refund",
-      );
-      save();
-      return output(order);
     },
 
     async completeOrder(input) {
@@ -2261,14 +2879,25 @@ export function createDemoApi(
           const cashMinor = input.payments
             .filter((payment) => payment.methodCode === "CASH")
             .reduce((sum, payment) => sum + payment.amountMinor, 0);
-          const nonCashMinor = input.payments
-            .filter((payment) => payment.methodCode !== "CASH")
+          const nonAccountNonCashMinor = input.payments
+            .filter(
+              (payment) =>
+                payment.methodCode !== "CASH" &&
+                payment.methodCode !== "ACCOUNT",
+            )
             .reduce((sum, payment) => sum + payment.amountMinor, 0);
-          if (cashMinor > 0 && nonCashMinor > 0)
+          const accountMinor = input.payments
+            .filter((payment) => payment.methodCode === "ACCOUNT")
+            .reduce((sum, payment) => sum + payment.amountMinor, 0);
+          if (cashMinor > 0 && nonAccountNonCashMinor > 0)
             throw new Error(
               "Para cobrar y entregar un envío, elegí efectivo contra entrega o un medio anticipado, sin combinarlos.",
             );
-          paymentInput = { ...input, collectedByDriver: cashMinor > 0 };
+          paymentInput = {
+            ...input,
+            // La parte en cuenta corriente no la cobra el repartidor ni ingresa a caja.
+            collectedByDriver: cashMinor > 0 && accountMinor === 0,
+          };
         }
         if (order.lifecycleStatus === "DRAFT")
           order = await this.confirmOrder({ orderId: order.id });
@@ -2280,8 +2909,7 @@ export function createDemoApi(
           status: input.finalStatus,
         });
       } catch (error) {
-        state = before;
-        save();
+        restore(before);
         throw error;
       }
     },
@@ -2572,10 +3200,33 @@ export function createDemoApi(
         )
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
       const accountCharges = metricOrders.flatMap((order) => {
-        const amountMinor = order.payments.filter((payment) => payment.methodCode === "ACCOUNT").reduce((sum, payment) => sum + payment.amountMinor - payment.refundedMinor, 0);
+        // Multiple payments after a modality change are one receivable per order.
+        const amountMinor = order.payments
+          .filter((payment) => payment.methodCode === "ACCOUNT")
+          .reduce(
+            (sum, payment) =>
+              sum + payment.amountMinor - (payment.refundedMinor ?? 0),
+            0,
+          );
         if (!amountMinor) return [];
-        const settledMinor = (state.accountReceipts ?? []).reduce((sum, receipt) => sum + receipt.allocations.filter((allocation) => allocation.orderId === order.id).reduce((part, allocation) => part + allocation.amountMinor, 0), 0);
-        return [{orderId: order.id, orderNumber: order.number, createdAt: order.createdAt, amountMinor, settledMinor, outstandingMinor: amountMinor - settledMinor}];
+        const settledMinor = (state.accountReceipts ?? []).reduce(
+          (sum, receipt) =>
+            sum +
+            receipt.allocations
+              .filter((allocation) => allocation.orderId === order.id)
+              .reduce((part, allocation) => part + allocation.amountMinor, 0),
+          0,
+        );
+        return [
+          {
+            orderId: order.id,
+            orderNumber: order.number,
+            createdAt: order.createdAt,
+            amountMinor,
+            settledMinor,
+            outstandingMinor: Math.max(0, amountMinor - settledMinor),
+          },
+        ];
       });
       const totalSpentMinor = metricOrders.reduce(
         (total, order) => total + order.totalMinor,
@@ -2660,22 +3311,38 @@ export function createDemoApi(
       return output({
         customer: {
           ...customer,
-          outstandingMinor: accountCharges.reduce((sum, charge) => sum + charge.outstandingMinor, 0),
+          outstandingMinor: accountCharges.reduce(
+            (sum, charge) => sum + charge.outstandingMinor,
+            0,
+          ),
           orderCount: metricOrders.length,
           totalSpentMinor,
-          totalPaidMinor: metricOrders.reduce((sum, order) => sum + order.paidMinor, 0),
-          lastOrderAt: metricOrders.length ? metricOrders[metricOrders.length - 1]!.createdAt : null,
-          pendingCount: metricOrders.filter((order) => !["DELIVERED", "CANCELLED"].includes(order.operationalStatus)).length,
+          totalPaidMinor: metricOrders.reduce(
+            (sum, order) => sum + order.paidMinor,
+            0,
+          ),
+          lastOrderAt: metricOrders.length
+            ? metricOrders[metricOrders.length - 1]!.createdAt
+            : null,
+          pendingCount: metricOrders.filter(
+            (order) =>
+              !["DELIVERED", "CANCELLED"].includes(order.operationalStatus),
+          ).length,
         },
         accountCharges,
-        accountReceipts: (state.accountReceipts ?? []).filter((receipt) => receipt.customerId === customer.id).sort((a,b) => b.createdAt.localeCompare(a.createdAt)),
+        accountReceipts: (state.accountReceipts ?? [])
+          .filter((receipt) => receipt.customerId === customer.id)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
         metrics: {
           orderCount: metricOrders.length,
           totalSpentMinor,
           averageTicketMinor: metricOrders.length
             ? Math.round(totalSpentMinor / metricOrders.length)
             : 0,
-          outstandingMinor: accountCharges.reduce((sum, charge) => sum + charge.outstandingMinor, 0),
+          outstandingMinor: accountCharges.reduce(
+            (sum, charge) => sum + charge.outstandingMinor,
+            0,
+          ),
           frequencyDays: gaps.length
             ? Math.round(
                 (gaps.reduce((total, gap) => total + gap, 0) /
@@ -2722,33 +3389,97 @@ export function createDemoApi(
     },
 
     async settleCustomerAccount(input) {
-      if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) throw new Error("Ingresá un importe mayor que cero.");
-      if (!state.data.cashSession) throw new Error("Abrí una caja antes de registrar el cobro.");
-      const method = state.data.paymentMethods.find((candidate) => candidate.code === input.methodCode && candidate.active && candidate.code !== "ACCOUNT");
+      if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+        throw new Error("Ingresá un importe mayor que cero.");
+      if (!state.data.cashSession)
+        throw new Error("Abrí una caja antes de registrar el cobro.");
+      const method = state.data.paymentMethods.find(
+        (candidate) =>
+          candidate.code === input.methodCode &&
+          candidate.active &&
+          candidate.code !== "ACCOUNT",
+      );
       if (!method) throw new Error("Seleccioná un medio de pago válido.");
-      const profile = await this.getCustomerProfile({customerId: input.customerId, page: 1, pageSize: 10});
-      const charges = profile.accountCharges.filter((charge) => charge.outstandingMinor > 0 && (!input.orderIds || input.orderIds.includes(charge.orderId)));
-      if (input.orderIds && (new Set(input.orderIds).size !== input.orderIds.length || charges.length !== input.orderIds.length)) throw new Error("Seleccioná pedidos con deuda vigente.");
-      if (input.amountMinor > charges.reduce((sum, charge) => sum + charge.outstandingMinor, 0)) throw new Error("El importe supera la deuda seleccionada.");
+      const profile = await this.getCustomerProfile({
+        customerId: input.customerId,
+        page: 1,
+        pageSize: 10,
+      });
+      const charges = profile.accountCharges.filter(
+        (charge) =>
+          charge.outstandingMinor > 0 &&
+          (!input.orderIds || input.orderIds.includes(charge.orderId)),
+      );
+      if (
+        input.orderIds &&
+        (new Set(input.orderIds).size !== input.orderIds.length ||
+          charges.length !== input.orderIds.length)
+      )
+        throw new Error("Seleccioná pedidos con deuda vigente.");
+      if (
+        input.amountMinor >
+        charges.reduce((sum, charge) => sum + charge.outstandingMinor, 0)
+      )
+        throw new Error("El importe supera la deuda seleccionada.");
       let remaining = input.amountMinor;
-      const allocations: Array<{orderId: string; orderNumber: number; amountMinor: number}> = [];
+      const allocations: Array<{
+        orderId: string;
+        orderNumber: number;
+        amountMinor: number;
+      }> = [];
       for (const charge of charges) {
         if (!remaining) break;
         const amountMinor = Math.min(remaining, charge.outstandingMinor);
-        allocations.push({orderId: charge.orderId, orderNumber: charge.orderNumber, amountMinor});
+        allocations.push({
+          orderId: charge.orderId,
+          orderNumber: charge.orderNumber,
+          amountMinor,
+        });
         remaining -= amountMinor;
       }
       const id = uid("account-receipt", state);
       const movementId = uid("movement", state);
-      (state.accountReceipts ??= []).push({id, customerId: input.customerId, movementId, createdAt: now(), amountMinor: input.amountMinor, methodCode: method.code, methodName: method.name, reference: input.reference?.trim() || null, allocations});
-      state.movements.push({id: movementId, sessionId: state.data.cashSession.id, type: "INCOME", amountMinor: input.amountMinor, affectsCash: method.affectsCash, paymentMethodCode: method.code, orderId: null, userId: state.data.currentUser.id, reason: `Cobro cuenta corriente · recibo ${id}`, createdAt: now()});
+      (state.accountReceipts ??= []).push({
+        id,
+        customerId: input.customerId,
+        movementId,
+        createdAt: now(),
+        amountMinor: input.amountMinor,
+        methodCode: method.code,
+        methodName: method.name,
+        reference: input.reference?.trim() || null,
+        allocations,
+      });
+      state.movements.push({
+        id: movementId,
+        sessionId: state.data.cashSession.id,
+        type: "INCOME",
+        amountMinor: input.amountMinor,
+        affectsCash: method.affectsCash,
+        paymentMethodCode: method.code,
+        orderId: null,
+        userId: state.data.currentUser.id,
+        reason: `Cobro cuenta corriente · recibo ${id}`,
+        createdAt: now(),
+      });
       if (method.affectsCash) {
         state.data.cashSession.expectedAmountMinor += input.amountMinor;
-        state.data.cashSession.cashIncomeMinor = (state.data.cashSession.cashIncomeMinor ?? 0) + input.amountMinor;
+        state.data.cashSession.cashIncomeMinor =
+          (state.data.cashSession.cashIncomeMinor ?? 0) + input.amountMinor;
       }
-      audit(state, "CUSTOMER", input.customerId, "CUSTOMER_ACCOUNT_SETTLED", `Recibo ${id}`);
+      audit(
+        state,
+        "CUSTOMER",
+        input.customerId,
+        "CUSTOMER_ACCOUNT_SETTLED",
+        `Recibo ${id}`,
+      );
       save();
-      return this.getCustomerProfile({customerId: input.customerId, page: 1, pageSize: 10});
+      return this.getCustomerProfile({
+        customerId: input.customerId,
+        page: 1,
+        pageSize: 10,
+      });
     },
 
     async setCustomerActive(input) {
@@ -2757,8 +3488,15 @@ export function createDemoApi(
         (candidate) => candidate.id === input.customerId,
       );
       if (!input.active) {
-        const profile = await this.getCustomerProfile({customerId: input.customerId, page: 1, pageSize: 10});
-        if (profile.metrics.outstandingMinor > 0) throw new Error("El cliente tiene deuda de cuenta corriente; cobrá o fusioná la ficha antes de archivarla.");
+        const profile = await this.getCustomerProfile({
+          customerId: input.customerId,
+          page: 1,
+          pageSize: 10,
+        });
+        if (profile.metrics.outstandingMinor > 0)
+          throw new Error(
+            "El cliente tiene deuda de cuenta corriente; cobrá o fusioná la ficha antes de archivarla.",
+          );
       }
       if (!customer) throw new Error("El cliente no existe.");
       if (input.active && customer.mergedIntoCustomerId)
@@ -3212,7 +3950,7 @@ export function createDemoApi(
         save();
         return output(products);
       } catch (error) {
-        state = before;
+        restore(before);
         throw error;
       }
     },
@@ -3237,111 +3975,350 @@ export function createDemoApi(
     },
 
     async getFinanceReport(input) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(input.from) || !/^\d{4}-\d{2}-\d{2}$/.test(input.to) || input.from > input.to ||
-        Number.isNaN(Date.parse(input.from)) || Number.isNaN(Date.parse(input.to)) || (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000 > 1096)
+      if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(input.from) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(input.to) ||
+        input.from > input.to ||
+        Number.isNaN(Date.parse(input.from)) ||
+        Number.isNaN(Date.parse(input.to)) ||
+        (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000 > 1096
+      )
         throw new Error("Elegí un período válido de hasta tres años.");
-      const expenses = state.financeExpenses ??= [];
-      const recurring = state.financeRecurring ??= [];
-      let month = input.from.slice(0,7);
-      while (month <= input.to.slice(0,7)) {
+      const expenses = (state.financeExpenses ??= []);
+      const recurring = (state.financeRecurring ??= []);
+      let month = input.from.slice(0, 7);
+      while (month <= input.to.slice(0, 7)) {
         const [year, number] = month.split("-").map(Number);
-        for (const rule of recurring.filter((item) => item.startMonth <= month && (!item.stopMonth || item.stopMonth >= month))) {
-          const day = Math.min(rule.dayOfMonth, new Date(Date.UTC(year!, number!, 0)).getUTCDate());
-          const date = `${month}-${String(day).padStart(2,"0")}`;
-          if (!expenses.some((item) => item.recurringId === rule.id && item.incurredOn === date))
-            expenses.push({id: uid("finance-expense", state), title: rule.title, category: rule.category, kind: rule.kind,
-              amountMinor: rule.amountMinor, incurredOn: date, dueOn: date, paidAt: null, paymentMethodCode: null,
-              employeeId: rule.employeeId, employeeName: state.data.users.find((user) => user.id === rule.employeeId)?.fullName ?? null,
-              recurringId: rule.id, note: null});
+        for (const rule of recurring.filter(
+          (item) =>
+            item.startMonth <= month &&
+            (!item.stopMonth || item.stopMonth >= month),
+        )) {
+          const day = Math.min(
+            rule.dayOfMonth,
+            new Date(Date.UTC(year!, number!, 0)).getUTCDate(),
+          );
+          const date = `${month}-${String(day).padStart(2, "0")}`;
+          if (
+            !expenses.some(
+              (item) =>
+                item.recurringId === rule.id && item.incurredOn === date,
+            )
+          )
+            expenses.push({
+              id: uid("finance-expense", state),
+              title: rule.title,
+              category: rule.category,
+              kind: rule.kind,
+              amountMinor: rule.amountMinor,
+              incurredOn: date,
+              dueOn: date,
+              paidAt: null,
+              paymentMethodCode: null,
+              employeeId: rule.employeeId,
+              employeeName:
+                state.data.users.find((user) => user.id === rule.employeeId)
+                  ?.fullName ?? null,
+              recurringId: rule.id,
+              note: null,
+            });
         }
-        month = new Date(Date.UTC(year!, number!, 1)).toISOString().slice(0,7);
+        month = new Date(Date.UTC(year!, number!, 1)).toISOString().slice(0, 7);
       }
-      const periodOrders = state.data.orders.filter((order) => order.lifecycleStatus === "CONFIRMED" && order.operationalStatus !== "CANCELLED" && order.createdAt.slice(0,10) >= input.from && order.createdAt.slice(0,10) <= input.to);
-      const paidFinanceMovementIds = new Set(Object.values(state.financeExpenseMovements ?? {}));
-      const cashExpenses: FinanceExpenseDto[] = state.movements.filter((movement) => movement.type === "EXPENSE" && movement.createdAt.slice(0,10) >= input.from && movement.createdAt.slice(0,10) <= input.to &&
-        !(movement as any).referenceId && !state.movements.some((other) => (other as any).referenceId === movement.id) && !paidFinanceMovementIds.has(movement.id))
-        .map((movement) => ({id: `cash-${movement.id}`,title: movement.reason || "Gasto de caja",category: "Caja sin clasificar",kind: "GENERAL",
-          amountMinor: movement.amountMinor,incurredOn: movement.createdAt.slice(0,10),dueOn: movement.createdAt.slice(0,10),paidAt: movement.createdAt,
-          paymentMethodCode: movement.paymentMethodCode,employeeId: null,employeeName: null,recurringId: null,note: "Movimiento de caja existente"}));
-      const periodExpenses = [...expenses.filter((item) => item.incurredOn >= input.from && item.incurredOn <= input.to), ...cashExpenses].sort((a,b) => b.incurredOn.localeCompare(a.incurredOn));
-      const costRows = periodOrders.flatMap((order) => order.items.map((item) => ({month: order.createdAt.slice(0,7), cost: state.financeItemCosts?.[item.id]?.unitCostMinor == null ? null : state.financeItemCosts[item.id]!.unitCostMinor! * item.quantity})));
-      const refundsMinor = periodOrders.reduce((sum, order) => sum + order.payments.reduce((part, payment) => part + (payment.refundedMinor ?? 0), 0), 0);
-      const salesMinor = periodOrders.reduce((sum, order) => sum + order.totalMinor + (order.depositMinor ?? 0), 0) - refundsMinor;
+      const periodOrders = state.data.orders.filter(
+        (order) =>
+          order.lifecycleStatus === "CONFIRMED" &&
+          order.operationalStatus !== "CANCELLED" &&
+          order.createdAt.slice(0, 10) >= input.from &&
+          order.createdAt.slice(0, 10) <= input.to,
+      );
+      const paidFinanceMovementIds = new Set(
+        Object.values(state.financeExpenseMovements ?? {}),
+      );
+      const cashExpenses: FinanceExpenseDto[] = state.movements
+        .filter(
+          (movement) =>
+            movement.type === "EXPENSE" &&
+            movement.createdAt.slice(0, 10) >= input.from &&
+            movement.createdAt.slice(0, 10) <= input.to &&
+            !(movement as any).referenceId &&
+            !state.movements.some(
+              (other) => (other as any).referenceId === movement.id,
+            ) &&
+            !paidFinanceMovementIds.has(movement.id),
+        )
+        .map((movement) => ({
+          id: `cash-${movement.id}`,
+          title: movement.reason || "Gasto de caja",
+          category: "Caja sin clasificar",
+          kind: "GENERAL",
+          amountMinor: movement.amountMinor,
+          incurredOn: movement.createdAt.slice(0, 10),
+          dueOn: movement.createdAt.slice(0, 10),
+          paidAt: movement.createdAt,
+          paymentMethodCode: movement.paymentMethodCode,
+          employeeId: null,
+          employeeName: null,
+          recurringId: null,
+          note: "Movimiento de caja existente",
+        }));
+      const periodExpenses = [
+        ...expenses.filter(
+          (item) =>
+            item.incurredOn >= input.from && item.incurredOn <= input.to,
+        ),
+        ...cashExpenses,
+      ].sort((a, b) => b.incurredOn.localeCompare(a.incurredOn));
+      const costRows = periodOrders.flatMap((order) =>
+        order.items.map((item) => ({
+          month: order.createdAt.slice(0, 7),
+          cost:
+            state.financeItemCosts?.[item.id]?.unitCostMinor == null
+              ? null
+              : state.financeItemCosts[item.id]!.unitCostMinor! * item.quantity,
+        })),
+      );
+      const refundsMinor = periodOrders.reduce(
+        (sum, order) =>
+          sum +
+          order.payments.reduce(
+            (part, payment) => part + (payment.refundedMinor ?? 0),
+            0,
+          ),
+        0,
+      );
+      const salesMinor =
+        periodOrders.reduce(
+          (sum, order) => sum + order.totalMinor + (order.depositMinor ?? 0),
+          0,
+        ) - refundsMinor;
       const cogsMinor = costRows.reduce((sum, row) => sum + (row.cost ?? 0), 0);
-      const expensesMinor = periodExpenses.reduce((sum, item) => sum + item.amountMinor, 0);
-      const monthlyMap = new Map<string, {month: string; salesMinor: number; cogsMinor: number; expensesMinor: number}>();
-      const monthly = (month: string) => {let row = monthlyMap.get(month); if (!row) {row = {month,salesMinor:0,cogsMinor:0,expensesMinor:0}; monthlyMap.set(month,row);} return row;};
-      for (const order of periodOrders) monthly(order.createdAt.slice(0,7)).salesMinor += order.totalMinor + (order.depositMinor ?? 0) - order.payments.reduce((sum,payment) => sum + (payment.refundedMinor ?? 0),0);
+      const expensesMinor = periodExpenses.reduce(
+        (sum, item) => sum + item.amountMinor,
+        0,
+      );
+      const monthlyMap = new Map<
+        string,
+        {
+          month: string;
+          salesMinor: number;
+          cogsMinor: number;
+          expensesMinor: number;
+        }
+      >();
+      const monthly = (month: string) => {
+        let row = monthlyMap.get(month);
+        if (!row) {
+          row = { month, salesMinor: 0, cogsMinor: 0, expensesMinor: 0 };
+          monthlyMap.set(month, row);
+        }
+        return row;
+      };
+      for (const order of periodOrders)
+        monthly(order.createdAt.slice(0, 7)).salesMinor +=
+          order.totalMinor +
+          (order.depositMinor ?? 0) -
+          order.payments.reduce(
+            (sum, payment) => sum + (payment.refundedMinor ?? 0),
+            0,
+          );
       for (const row of costRows) monthly(row.month).cogsMinor += row.cost ?? 0;
-      for (const item of periodExpenses) monthly(item.incurredOn.slice(0,7)).expensesMinor += item.amountMinor;
+      for (const item of periodExpenses)
+        monthly(item.incurredOn.slice(0, 7)).expensesMinor += item.amountMinor;
       save();
-      return output({from: input.from,to: input.to,salesMinor,refundsMinor,cogsMinor,
-        unknownCostItems: costRows.filter((row) => row.cost == null).length,costedItems: costRows.filter((row) => row.cost != null).length,
-        expensesMinor,payrollMinor: periodExpenses.filter((item) => item.kind === "PAYROLL").reduce((sum,item) => sum + item.amountMinor,0),
-        fixedMinor: periodExpenses.filter((item) => item.kind === "FIXED").reduce((sum,item) => sum + item.amountMinor,0),
-        unpaidMinor: periodExpenses.filter((item) => !item.paidAt).reduce((sum,item) => sum + item.amountMinor,0),
-        purchasesMinor: state.purchases.filter((purchase) => purchase.createdAt.slice(0,10) >= input.from && purchase.createdAt.slice(0,10) <= input.to).reduce((sum,purchase) => sum + purchase.totalMinor,0),
-        grossProfitMinor: salesMinor - cogsMinor,estimatedOperatingProfitMinor: salesMinor - cogsMinor - expensesMinor,
-        expenses: periodExpenses,recurring,productCosts: state.data.products.filter((product) => product.active).map((product) => ({productId: product.id,productName: product.name,...currentFinanceCost(product.id)})),
-        monthly: [...monthlyMap.values()].sort((a,b) => a.month.localeCompare(b.month))});
+      return output({
+        from: input.from,
+        to: input.to,
+        salesMinor,
+        refundsMinor,
+        cogsMinor,
+        unknownCostItems: costRows.filter((row) => row.cost == null).length,
+        costedItems: costRows.filter((row) => row.cost != null).length,
+        expensesMinor,
+        payrollMinor: periodExpenses
+          .filter((item) => item.kind === "PAYROLL")
+          .reduce((sum, item) => sum + item.amountMinor, 0),
+        fixedMinor: periodExpenses
+          .filter((item) => item.kind === "FIXED")
+          .reduce((sum, item) => sum + item.amountMinor, 0),
+        unpaidMinor: periodExpenses
+          .filter((item) => !item.paidAt)
+          .reduce((sum, item) => sum + item.amountMinor, 0),
+        purchasesMinor: state.purchases
+          .filter(
+            (purchase) =>
+              purchase.createdAt.slice(0, 10) >= input.from &&
+              purchase.createdAt.slice(0, 10) <= input.to,
+          )
+          .reduce((sum, purchase) => sum + purchase.totalMinor, 0),
+        grossProfitMinor: salesMinor - cogsMinor,
+        estimatedOperatingProfitMinor: salesMinor - cogsMinor - expensesMinor,
+        expenses: periodExpenses,
+        recurring,
+        productCosts: state.data.products
+          .filter((product) => product.active)
+          .map((product) => ({
+            productId: product.id,
+            productName: product.name,
+            ...currentFinanceCost(product.id),
+          })),
+        monthly: [...monthlyMap.values()].sort((a, b) =>
+          a.month.localeCompare(b.month),
+        ),
+      });
     },
 
     async createFinanceExpense(input) {
-      if (!input.title.trim() || !input.category.trim() || !["GENERAL","FIXED","PAYROLL"].includes(input.kind) ||
-        !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(input.incurredOn) || Number.isNaN(Date.parse(input.incurredOn))) throw new Error("Completá un gasto válido.");
-      if (input.kind === "PAYROLL" && !input.employeeId) throw new Error("Seleccioná un empleado para el sueldo.");
-      const employee = input.employeeId ? state.data.users.find((user) => user.id === input.employeeId) : undefined;
-      if (input.employeeId && !employee) throw new Error("El empleado no existe.");
-      const expense: FinanceExpenseDto = {id: uid("finance-expense", state),title: input.title.trim(),category: input.category.trim(),kind: input.kind,
-        amountMinor: input.amountMinor,incurredOn: input.incurredOn,dueOn: input.dueOn ?? input.incurredOn,paidAt: null,paymentMethodCode: null,
-        employeeId: input.employeeId ?? null,employeeName: employee?.fullName ?? null,recurringId: null,note: input.note?.trim() || null};
-      (state.financeExpenses ??= []).push(expense); save(); return output(expense);
+      if (
+        !input.title.trim() ||
+        !input.category.trim() ||
+        !["GENERAL", "FIXED", "PAYROLL"].includes(input.kind) ||
+        !Number.isSafeInteger(input.amountMinor) ||
+        input.amountMinor <= 0 ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(input.incurredOn) ||
+        Number.isNaN(Date.parse(input.incurredOn))
+      )
+        throw new Error("Completá un gasto válido.");
+      if (input.kind === "PAYROLL" && !input.employeeId)
+        throw new Error("Seleccioná un empleado para el sueldo.");
+      const employee = input.employeeId
+        ? state.data.users.find((user) => user.id === input.employeeId)
+        : undefined;
+      if (input.employeeId && !employee)
+        throw new Error("El empleado no existe.");
+      const expense: FinanceExpenseDto = {
+        id: uid("finance-expense", state),
+        title: input.title.trim(),
+        category: input.category.trim(),
+        kind: input.kind,
+        amountMinor: input.amountMinor,
+        incurredOn: input.incurredOn,
+        dueOn: input.dueOn ?? input.incurredOn,
+        paidAt: null,
+        paymentMethodCode: null,
+        employeeId: input.employeeId ?? null,
+        employeeName: employee?.fullName ?? null,
+        recurringId: null,
+        note: input.note?.trim() || null,
+      };
+      (state.financeExpenses ??= []).push(expense);
+      save();
+      return output(expense);
     },
 
     async payFinanceExpense(input) {
-      const expense = state.financeExpenses?.find((item) => item.id === input.expenseId);
+      const expense = state.financeExpenses?.find(
+        (item) => item.id === input.expenseId,
+      );
       if (!expense) throw new Error("El gasto no existe.");
       if (expense.paidAt) throw new Error("El gasto ya está pagado.");
-      const method = state.data.paymentMethods.find((item) => item.code === input.paymentMethodCode && item.active && item.code !== "ACCOUNT");
+      const method = state.data.paymentMethods.find(
+        (item) =>
+          item.code === input.paymentMethodCode &&
+          item.active &&
+          item.code !== "ACCOUNT",
+      );
       if (!method) throw new Error("El medio de pago no está disponible.");
       if (input.fromCash) {
         const cash = state.data.cashSession;
         if (!cash) throw new Error("Abrí la caja antes de pagar desde caja.");
-        if (method.affectsCash && expense.amountMinor > cash.expectedAmountMinor) throw new Error("La caja no tiene efectivo suficiente.");
-        const movementId = uid("movement",state);
-        state.movements.push({id: movementId,sessionId: cash.id,type: "EXPENSE",amountMinor: expense.amountMinor,affectsCash: method.affectsCash,
-          paymentMethodCode: method.code,orderId: null,userId: state.data.currentUser.id,reason: `Gasto finanzas: ${expense.title}`,createdAt: now()});
+        if (
+          method.affectsCash &&
+          expense.amountMinor > cash.expectedAmountMinor
+        )
+          throw new Error("La caja no tiene efectivo suficiente.");
+        const movementId = uid("movement", state);
+        state.movements.push({
+          id: movementId,
+          sessionId: cash.id,
+          type: "EXPENSE",
+          amountMinor: expense.amountMinor,
+          affectsCash: method.affectsCash,
+          paymentMethodCode: method.code,
+          orderId: null,
+          userId: state.data.currentUser.id,
+          reason: `Gasto finanzas: ${expense.title}`,
+          createdAt: now(),
+        });
         (state.financeExpenseMovements ??= {})[expense.id] = movementId;
-        if (method.affectsCash) {cash.expectedAmountMinor -= expense.amountMinor; cash.cashExpenseMinor = (cash.cashExpenseMinor ?? 0) + expense.amountMinor;}
+        if (method.affectsCash) {
+          cash.expectedAmountMinor -= expense.amountMinor;
+          cash.cashExpenseMinor =
+            (cash.cashExpenseMinor ?? 0) + expense.amountMinor;
+        }
       }
-      expense.paidAt = now(); expense.paymentMethodCode = method.code; save(); return output(expense);
+      expense.paidAt = now();
+      expense.paymentMethodCode = method.code;
+      save();
+      return output(expense);
     },
 
     async createFinanceRecurring(input) {
-      if (!input.title.trim() || !input.category.trim() || !["FIXED","PAYROLL"].includes(input.kind) || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 ||
-        !Number.isInteger(input.dayOfMonth) || input.dayOfMonth < 1 || input.dayOfMonth > 31 || !/^\d{4}-(0[1-9]|1[0-2])$/.test(input.startMonth)) throw new Error("Completá un gasto fijo válido.");
-      if (input.kind === "PAYROLL" && !input.employeeId) throw new Error("Seleccioná un empleado para el sueldo fijo.");
-      const rule: FinanceRecurringDto = {id: uid("finance-recurring",state),title: input.title.trim(),category: input.category.trim(),kind: input.kind,
-        amountMinor: input.amountMinor,dayOfMonth: input.dayOfMonth,startMonth: input.startMonth,employeeId: input.employeeId ?? null,active: true};
-      (state.financeRecurring ??= []).push(rule); save(); return output(rule);
+      if (
+        !input.title.trim() ||
+        !input.category.trim() ||
+        !["FIXED", "PAYROLL"].includes(input.kind) ||
+        !Number.isSafeInteger(input.amountMinor) ||
+        input.amountMinor <= 0 ||
+        !Number.isInteger(input.dayOfMonth) ||
+        input.dayOfMonth < 1 ||
+        input.dayOfMonth > 31 ||
+        !/^\d{4}-(0[1-9]|1[0-2])$/.test(input.startMonth)
+      )
+        throw new Error("Completá un gasto fijo válido.");
+      if (input.kind === "PAYROLL" && !input.employeeId)
+        throw new Error("Seleccioná un empleado para el sueldo fijo.");
+      const rule: FinanceRecurringDto = {
+        id: uid("finance-recurring", state),
+        title: input.title.trim(),
+        category: input.category.trim(),
+        kind: input.kind,
+        amountMinor: input.amountMinor,
+        dayOfMonth: input.dayOfMonth,
+        startMonth: input.startMonth,
+        employeeId: input.employeeId ?? null,
+        active: true,
+      };
+      (state.financeRecurring ??= []).push(rule);
+      save();
+      return output(rule);
     },
 
     async stopFinanceRecurring(input) {
-      const rule = state.financeRecurring?.find((item) => item.id === input.recurringId && item.active);
+      const rule = state.financeRecurring?.find(
+        (item) => item.id === input.recurringId && item.active,
+      );
       if (!rule) throw new Error("El gasto fijo no está activo.");
       rule.active = false;
       const now = new Date();
-      rule.stopMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0,7);
-      const today = new Date().toISOString().slice(0,10);
-      state.financeExpenses = state.financeExpenses?.filter((item) => item.recurringId !== rule.id || item.paidAt || item.incurredOn <= today);
-      save(); return output(rule);
+      rule.stopMonth = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
+      )
+        .toISOString()
+        .slice(0, 7);
+      const today = new Date().toISOString().slice(0, 10);
+      state.financeExpenses = state.financeExpenses?.filter(
+        (item) =>
+          item.recurringId !== rule.id ||
+          item.paidAt ||
+          item.incurredOn <= today,
+      );
+      save();
+      return output(rule);
     },
 
     async setFinanceProductCost(input) {
-      if (input.unitCostMinor != null && (!Number.isSafeInteger(input.unitCostMinor) || input.unitCostMinor < 0)) throw new Error("El costo no es válido.");
+      if (
+        input.unitCostMinor != null &&
+        (!Number.isSafeInteger(input.unitCostMinor) || input.unitCostMinor < 0)
+      )
+        throw new Error("El costo no es válido.");
       productById(input.productId);
-      if (input.unitCostMinor == null) delete (state.financeManualCosts ??= {})[input.productId];
-      else (state.financeManualCosts ??= {})[input.productId] = input.unitCostMinor;
+      if (input.unitCostMinor == null)
+        delete (state.financeManualCosts ??= {})[input.productId];
+      else
+        (state.financeManualCosts ??= {})[input.productId] =
+          input.unitCostMinor;
       save();
     },
 
@@ -3444,7 +4421,7 @@ export function createDemoApi(
         save();
         return output(purchase);
       } catch (error) {
-        state = before;
+        restore(before);
         throw error;
       }
     },
@@ -3847,7 +4824,7 @@ export function createDemoApi(
         layout.y < 0 ||
         layout.width < 6 ||
         layout.width > 40 ||
-        layout.height < 8 ||
+        layout.height < 7 ||
         layout.height > 40 ||
         layout.x + layout.width > 100 ||
         layout.y + layout.height > 100
@@ -4148,12 +5125,16 @@ export function createDemoApi(
         throw new Error("Abrí una caja antes de anular movimientos.");
       const original = state.movements.find((m) => m.id === input.movementId);
       if (!original) throw new Error("El movimiento no existe.");
-      if ((state.accountReceipts ?? []).some((receipt) => receipt.movementId === original.id))
-        throw new Error("Este ingreso corresponde a un cobro de cuenta corriente y no puede anularse como movimiento suelto.");
       if (
-        state.movements.some(
-          (m) => (m as any).referenceId === input.movementId,
+        (state.accountReceipts ?? []).some(
+          (receipt) => receipt.movementId === original.id,
         )
+      )
+        throw new Error(
+          "Este ingreso corresponde a un cobro de cuenta corriente y no puede anularse como movimiento suelto.",
+        );
+      if (
+        state.movements.some((m) => (m as any).referenceId === input.movementId)
       ) {
         throw new Error("Este movimiento ya fue anulado.");
       }
@@ -4171,10 +5152,9 @@ export function createDemoApi(
               ? "INCOME"
               : "EXPENSE";
       if (original.affectsCash) {
-        cash.expectedAmountMinor += [
-          "EXPENSE",
-          "WITHDRAWAL",
-        ].includes(reversedType)
+        cash.expectedAmountMinor += ["EXPENSE", "WITHDRAWAL"].includes(
+          reversedType,
+        )
           ? -original.amountMinor
           : original.amountMinor;
       }
@@ -4202,8 +5182,59 @@ export function createDemoApi(
       save();
       return output(cash);
     },
-    async reverseDeliverySettlement() {
-      throw new Error("No implementado en modo demo.");
+    async reverseDeliverySettlement(input) {
+      const before = clone(state);
+      try {
+        const cash = state.data.cashSession;
+        if (!cash || cash.status !== "OPEN")
+          throw new Error("Abrí una caja antes de revertir la liquidación.");
+        requirePin(input.authorizerPin);
+        if (!input.reason.trim())
+          throw new Error("Indicá el motivo de la reversión.");
+        const ledger = state.data.deliveryLedger.find(
+          (row) => row.id === input.ledgerId,
+        );
+        if (!ledger || ledger.status !== "SETTLED")
+          throw new Error("La liquidación no está rendida.");
+        const reverseType =
+          ledger.direction === "DRIVER_OWES_BUSINESS" ? "EXPENSE" : "INCOME";
+        const amount = ledger.settledAmountMinor;
+        if (reverseType === "EXPENSE" && amount > cash.expectedAmountMinor)
+          throw new Error(
+            "La caja no tiene efectivo suficiente para revertir esta liquidación.",
+          );
+        cash.expectedAmountMinor += reverseType === "INCOME" ? amount : -amount;
+        if (reverseType === "INCOME")
+          cash.cashIncomeMinor = (cash.cashIncomeMinor ?? 0) + amount;
+        else cash.cashExpenseMinor = (cash.cashExpenseMinor ?? 0) + amount;
+        state.movements.push({
+          id: uid("movement", state),
+          sessionId: cash.id,
+          type: reverseType,
+          amountMinor: amount,
+          affectsCash: true,
+          paymentMethodCode: "CASH",
+          orderId: ledger.orderId,
+          userId: state.data.currentUser.id,
+          reason: `Anulación de liquidación: ${input.reason.trim()}`,
+          createdAt: now(),
+        });
+        ledger.status = "PENDING";
+        ledger.settledAmountMinor = 0;
+        ledger.settledAt = null;
+        audit(
+          state,
+          "DELIVERY_LEDGER",
+          ledger.id,
+          "DELIVERY_SETTLEMENT_REVERSED",
+          input.reason.trim(),
+        );
+        save();
+        return output(ledger);
+      } catch (error) {
+        restore(before);
+        throw error;
+      }
     },
     async getDashboard() {
       save();

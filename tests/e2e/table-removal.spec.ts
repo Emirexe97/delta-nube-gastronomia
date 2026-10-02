@@ -116,7 +116,9 @@ test("elimina pedido vacío y desactiva mesa", async () => {
   await page
     .getByRole("button", { name: "Eliminar mesa", exact: true })
     .click();
-  await expect(page.getByText("Mesa 52", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Eliminar mesa 52" }),
+  ).toHaveCount(0);
 });
 
 test("confirmación exige escribir número explícito", async () => {
@@ -150,6 +152,8 @@ test("elimina mesa usada por QuickEntry y permite recrearla sin estado latente",
       page.getByRole("dialog", { name: /Eliminar mesa 55/ }),
     ).toBeHidden();
     await expect(tableInput).toHaveValue("");
-    await expect(page.getByText("Mesa 55", { exact: true })).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Eliminar mesa 55" }),
+    ).toHaveCount(0);
   }
 });

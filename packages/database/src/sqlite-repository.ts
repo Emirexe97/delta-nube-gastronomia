@@ -148,6 +148,7 @@ const DEFAULT_SETTINGS: AppSettingsDto = {
   allowCloseWithPendingOrders: false,
   touchProductPanelEnabled: false,
   deliverySettlementEnabled: false,
+  deliveryFeeBelongsToDriver: true,
   deliveryDriverPaymentMode: "ACCUMULATED",
   enabledOrderStatuses: ["IN_PREPARATION", "DELIVERED"],
   quickDelayMinutes: [20, 30, 40, 45, 60],
@@ -770,7 +771,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         reason: m.reason == null ? null : String(m.reason),
         createdAt: String(m.created_at),
         referenceId: m.reference_id == null ? null : String(m.reference_id),
-        reversedById: m.reversed_by_id == null ? null : String(m.reversed_by_id),
+        reversedById:
+          m.reversed_by_id == null ? null : String(m.reversed_by_id),
       })),
       status: String(row.status) as CashSessionDto["status"],
     };
@@ -995,7 +997,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const session = this.requireOpenCashSessionRow();
           const currentCash = this.cashSessionDto(session);
           const methodCode = input.paymentMethodCode || "CASH";
-          if (methodCode === "ACCOUNT") throw new Error("Cuenta corriente no registra un movimiento de caja manual.");
+          if (methodCode === "ACCOUNT")
+            throw new Error(
+              "Cuenta corriente no registra un movimiento de caja manual.",
+            );
           const method = requireRow(
             this.db
               .prepare(
@@ -1419,7 +1424,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           `SELECT o.driver_user_id,
                   COALESCE(o.cash_session_paid_id, o.cash_session_created_id) AS cash_session_id,
                   cs.business_date, COUNT(*) AS delivery_count,
-                  COALESCE(SUM(o.delivery_fee_minor), 0) AS earnings_minor,
+                  COALESCE(SUM(CASE WHEN COALESCE(o.delivery_fee_belongs_to_driver, 1) = 1
+                    THEN o.delivery_fee_minor ELSE 0 END), 0) AS earnings_minor,
                   MAX(o.updated_at) AS last_delivery_at
            FROM orders o
            JOIN cash_sessions cs ON cs.id = COALESCE(o.cash_session_paid_id, o.cash_session_created_id)
@@ -1510,7 +1516,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         row.layout_x ?? 5 + ((Number(row.number) - 1) % 10) * 9.2,
       ),
       layoutY: Number(
-        row.layout_y ?? 5 + (Math.floor((Number(row.number) - 1) / 10) % 10) * 9.2,
+        row.layout_y ??
+          5 + (Math.floor((Number(row.number) - 1) / 10) % 10) * 9.2,
       ),
       layoutWidth: Number(row.layout_width ?? 7),
       layoutHeight: Number(row.layout_height ?? 7),
@@ -1714,6 +1721,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           ? null
           : String(row.delivery_address_notes_snapshot),
       deliveryFeeMinor: Number(row.delivery_fee_minor),
+      ...(row.delivery_fee_belongs_to_driver == null
+        ? {}
+        : {
+            deliveryFeeBelongsToDriver: flag(
+              row.delivery_fee_belongs_to_driver,
+            ),
+          }),
       promisedAt: row.promised_at == null ? null : String(row.promised_at),
       scheduled: flag(row.scheduled),
       waiterUserId:
@@ -1732,7 +1746,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       totalMinor: Number(row.total_minor),
       paidMinor: Number(row.paid_minor),
       changeAmountMinor:
-        row.change_amount_minor == null ? null : Number(row.change_amount_minor),
+        row.change_amount_minor == null
+          ? null
+          : Number(row.change_amount_minor),
       changeMethodCode:
         row.change_method_code == null ? null : String(row.change_method_code),
       changeMethodName:
@@ -1763,11 +1779,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       0,
       order.totalMinor - order.deliveryFeeMinor,
     );
+    const feeBelongsToDriver = order.deliveryFeeBelongsToDriver ?? true;
+    if (!order.collectedByDriver && !feeBelongsToDriver) return;
     const direction = order.collectedByDriver
       ? "DRIVER_OWES_BUSINESS"
       : "BUSINESS_OWES_DRIVER";
     const amountDue = order.collectedByDriver
-      ? restaurantAmount
+      ? restaurantAmount + (feeBelongsToDriver ? 0 : order.deliveryFeeMinor)
       : order.deliveryFeeMinor;
     if (amountDue <= 0) return;
     this.db
@@ -1810,7 +1828,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }, 0);
     const order = this.db
       .prepare(
-        "SELECT delivery_fee_minor, discount_minor, deposit_minor, lifecycle_status FROM orders WHERE id = ?",
+        "SELECT delivery_fee_minor, discount_minor, deposit_minor, paid_minor, lifecycle_status FROM orders WHERE id = ?",
       )
       .get(orderId) as Row;
     const total = Math.max(
@@ -1822,43 +1840,100 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     );
     this.db
       .prepare(
-        "UPDATE orders SET subtotal_minor = ?, total_minor = ?, version = version + 1, updated_at = ? WHERE id = ?",
+        "UPDATE orders SET subtotal_minor = ?, total_minor = ?, payment_status = ?, version = version + 1, updated_at = ? WHERE id = ?",
       )
-      .run(subtotal, total, nowIso(), orderId);
-    if (String(order.lifecycle_status) === "CONFIRMED") this.snapshotOrderCosts(orderId);
+      .run(
+        subtotal,
+        total,
+        paymentStatusFor(
+          total,
+          Number(order.paid_minor ?? 0),
+          Number(order.deposit_minor ?? 0),
+        ),
+        nowIso(),
+        orderId,
+      );
+    if (String(order.lifecycle_status) === "CONFIRMED")
+      this.snapshotOrderCosts(orderId);
   }
 
-  private currentProductCost(productId: string): {unitCostMinor: number | null; source: "MANUAL" | "PURCHASE" | "UNKNOWN"} {
-    const manual = this.db.prepare("SELECT unit_cost_minor FROM finance_product_costs WHERE product_id = ?").get(productId) as Row | undefined;
-    if (manual) return {unitCostMinor: Number(manual.unit_cost_minor), source: "MANUAL"};
-    const purchase = this.db.prepare(`SELECT pi.unit_cost_minor FROM purchase_items pi JOIN purchases p ON p.id = pi.purchase_id
-      WHERE pi.product_id = ? ORDER BY p.created_at DESC, pi.rowid DESC LIMIT 1`).get(productId) as Row | undefined;
-    return purchase ? {unitCostMinor: Number(purchase.unit_cost_minor), source: "PURCHASE"} : {unitCostMinor: null, source: "UNKNOWN"};
+  private currentProductCost(productId: string): {
+    unitCostMinor: number | null;
+    source: "MANUAL" | "PURCHASE" | "UNKNOWN";
+  } {
+    const manual = this.db
+      .prepare(
+        "SELECT unit_cost_minor FROM finance_product_costs WHERE product_id = ?",
+      )
+      .get(productId) as Row | undefined;
+    if (manual)
+      return {
+        unitCostMinor: Number(manual.unit_cost_minor),
+        source: "MANUAL",
+      };
+    const purchase = this.db
+      .prepare(
+        `SELECT pi.unit_cost_minor FROM purchase_items pi JOIN purchases p ON p.id = pi.purchase_id
+      WHERE pi.product_id = ? ORDER BY p.created_at DESC, pi.rowid DESC LIMIT 1`,
+      )
+      .get(productId) as Row | undefined;
+    return purchase
+      ? { unitCostMinor: Number(purchase.unit_cost_minor), source: "PURCHASE" }
+      : { unitCostMinor: null, source: "UNKNOWN" };
   }
 
   private snapshotOrderCosts(orderId: string) {
-    const items = this.db.prepare("SELECT id, product_id, quantity FROM order_items WHERE order_id = ?").all(orderId) as Row[];
-    const halves = this.db.prepare("SELECT product_id FROM order_item_halves WHERE order_item_id = ?") ;
-    const insert = this.db.prepare(`INSERT OR IGNORE INTO finance_order_item_costs(order_item_id, order_id, unit_cost_minor, quantity, total_cost_minor, source, captured_at)
+    const items = this.db
+      .prepare(
+        "SELECT id, product_id, quantity FROM order_items WHERE order_id = ?",
+      )
+      .all(orderId) as Row[];
+    const halves = this.db.prepare(
+      "SELECT product_id FROM order_item_halves WHERE order_item_id = ?",
+    );
+    const insert = this.db
+      .prepare(`INSERT OR IGNORE INTO finance_order_item_costs(order_item_id, order_id, unit_cost_minor, quantity, total_cost_minor, source, captured_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)`);
-    const updateQuantity = this.db.prepare(`UPDATE finance_order_item_costs SET quantity = ?,
+    const updateQuantity = this.db
+      .prepare(`UPDATE finance_order_item_costs SET quantity = ?,
       total_cost_minor = CASE WHEN unit_cost_minor IS NULL THEN NULL ELSE unit_cost_minor * ? END
       WHERE order_item_id = ?`);
     for (const item of items) {
       const quantity = Number(item.quantity);
-      let cost: {unitCostMinor: number | null; source: "MANUAL" | "PURCHASE" | "UNKNOWN" | "HALVES"};
-      if (item.product_id) cost = this.currentProductCost(String(item.product_id));
+      let cost: {
+        unitCostMinor: number | null;
+        source: "MANUAL" | "PURCHASE" | "UNKNOWN" | "HALVES";
+      };
+      if (item.product_id)
+        cost = this.currentProductCost(String(item.product_id));
       else {
         const parts = halves.all(item.id) as Row[];
-        const costs = parts.map((part) => this.currentProductCost(String(part.product_id)).unitCostMinor);
-        cost = {unitCostMinor: costs.length === 2 && costs.every((value) => value != null) ? Math.round((costs[0]! + costs[1]!) / 2) : null, source: "HALVES"};
+        const costs = parts.map(
+          (part) =>
+            this.currentProductCost(String(part.product_id)).unitCostMinor,
+        );
+        cost = {
+          unitCostMinor:
+            costs.length === 2 && costs.every((value) => value != null)
+              ? Math.round((costs[0]! + costs[1]!) / 2)
+              : null,
+          source: "HALVES",
+        };
       }
-      insert.run(item.id, orderId, cost.unitCostMinor, quantity, cost.unitCostMinor == null ? null : cost.unitCostMinor * quantity, cost.source, nowIso());
+      insert.run(
+        item.id,
+        orderId,
+        cost.unitCostMinor,
+        quantity,
+        cost.unitCostMinor == null ? null : cost.unitCostMinor * quantity,
+        cost.source,
+        nowIso(),
+      );
       updateQuantity.run(quantity, quantity, item.id);
     }
   }
 
-  private resolveOrderCustomer(input: CreateOrderInput) {
+  private resolveOrderCustomer(input: CreateOrderInput, updateSavedFee = true) {
     let customerName = input.customerName ?? null;
     let customerPhone = input.customerPhone ?? null;
     let deliveryAddress = input.deliveryAddress ?? null;
@@ -1895,7 +1970,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       deliveryAddress = String(address.address);
       deliveryAddressNotes =
         address.notes == null ? null : String(address.notes);
-      if (input.type === "DELIVERY") {
+      if (input.type === "DELIVERY" && updateSavedFee) {
         this.db
           .prepare(
             "UPDATE customer_addresses SET delivery_fee_minor = ?, updated_at = ? WHERE id = ?",
@@ -2020,91 +2095,354 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   updateDraftOrder(input: UpdateDraftOrderInput): OrderDto {
-    const run = this.db.transaction(() => {
-      if (
-        !Number.isSafeInteger(input.deliveryFeeMinor ?? 0) ||
-        (input.deliveryFeeMinor ?? 0) < 0
-      )
-        throw new Error("El costo de delivery no es válido.");
-      const before = this.getOrder(input.orderId);
-      if (["DELIVERED", "CANCELLED"].includes(before.operationalStatus))
-        throw new Error(
-          "No se pueden editar los datos de un pedido finalizado.",
-        );
-      if (before.type === "DINE_IN" || input.type !== before.type)
-        throw new Error("El tipo del pedido no se puede modificar.");
-      if (before.paidMinor > 0)
-        throw new Error("Un pedido con pagos no admite esta edición.");
-      const {
-        customerName,
-        customerPhone,
-        deliveryAddress,
-        deliveryAddressNotes,
-      } = this.resolveOrderCustomer(input);
-      const driverUserId = input.driverUserId
-        ? String(this.requireActiveDriver(input.driverUserId).id)
-        : null;
-      this.db
-        .prepare(
-          `UPDATE orders SET customer_id = ?, customer_name_snapshot = ?, customer_phone_snapshot = ?,
-             delivery_address_snapshot = ?, delivery_address_notes_snapshot = ?, delivery_fee_minor = ?, promised_at = ?, scheduled = ?,
-             driver_user_id = ?, notes = ?, version = version + 1, updated_at = ?
+    return this.idempotentTransaction(
+      input.idempotencyKey,
+      input.terminalId,
+      "updateDraftOrder",
+      undefined,
+      input,
+      () => {
+        const run = this.db.transaction(() => {
+          if (
+            !Number.isSafeInteger(input.deliveryFeeMinor ?? 0) ||
+            (input.deliveryFeeMinor ?? 0) < 0
+          )
+            throw new Error("El costo de delivery no es válido.");
+          const before = this.getOrder(input.orderId);
+          if (["DELIVERED", "CANCELLED"].includes(before.operationalStatus))
+            throw new Error(
+              "No se pueden editar los datos de un pedido finalizado.",
+            );
+          if (
+            before.type === "DINE_IN" ||
+            !["TAKEAWAY", "DELIVERY"].includes(input.type)
+          )
+            throw new Error("Sólo se puede cambiar entre retiro y envío.");
+          const changingType = before.type !== input.type;
+          if (before.paidMinor > 0 && !changingType)
+            throw new Error(
+              "Un pedido con pagos sólo admite el cambio de modalidad con autorización.",
+            );
+          const newDeliveryFee =
+            input.type === "DELIVERY"
+              ? (input.deliveryFeeMinor ?? before.deliveryFeeMinor)
+              : 0;
+          const grossAfterChange = Math.max(
+            0,
+            before.subtotalMinor + newDeliveryFee - before.discountMinor,
+          );
+          if (changingType && before.depositMinor > grossAfterChange)
+            throw new Error(
+              "La seña supera el nuevo importe. Ajustá o devolvé primero la seña recibida fuera de caja antes de cambiar la modalidad.",
+            );
+          const newTotal = Math.max(0, grossAfterChange - before.depositMinor);
+          const refundRequired = Math.max(0, before.paidMinor - newTotal);
+          const suppliedRefunds = input.refunds ?? [];
+          if (
+            before.paidMinor > 0 &&
+            before.customerId &&
+            input.customerId &&
+            before.customerId !== input.customerId
+          )
+            throw new Error(
+              "No se puede reemplazar el cliente ya vinculado al pedido.",
+            );
+          if (before.paidMinor > 0 && changingType) {
+            if (!input.authorizerPin || !input.reason?.trim())
+              throw new Error(
+                "Para cambiar un pedido cobrado se requiere autorización y motivo.",
+              );
+            if (
+              suppliedRefunds.reduce((sum, r) => sum + r.amountMinor, 0) !==
+              refundRequired
+            )
+              throw new Error(
+                refundRequired
+                  ? `La diferencia a devolver es ${refundRequired} minor.`
+                  : "No corresponde devolver dinero por este cambio.",
+              );
+          } else if (suppliedRefunds.length) {
+            throw new Error(
+              "No hay pagos que deban devolverse por este cambio.",
+            );
+          }
+          if (
+            input.type === "DELIVERY" &&
+            before.lifecycleStatus !== "DRAFT" &&
+            !(input.deliveryAddress ?? before.deliveryAddressSnapshot)?.trim()
+          )
+            throw new Error(
+              "Indicá una dirección antes de confirmar el envío.",
+            );
+          const ledger = this.db
+            .prepare("SELECT * FROM delivery_ledger WHERE order_id = ?")
+            .get(input.orderId) as Row | undefined;
+          if (
+            changingType &&
+            ledger &&
+            String(ledger.status) === "SETTLED" &&
+            !input.reverseDeliverySettlement
+          )
+            throw new Error(
+              "El envío tiene una liquidación rendida; anulala antes de cambiar la modalidad.",
+            );
+          let authorizer: Row | null = null;
+          if (before.paidMinor > 0 && changingType) {
+            authorizer = this.authorizePin(
+              input.authorizerPin!,
+              "payments.refund",
+            );
+            if (refundRequired > 0 && suppliedRefunds.length === 0)
+              throw new Error(
+                "Seleccioná el pago y el importe exacto que se devolverá.",
+              );
+            for (const refund of suppliedRefunds) {
+              if (
+                !Number.isSafeInteger(refund.amountMinor) ||
+                refund.amountMinor <= 0
+              )
+                throw new Error("El importe de devolución no es válido.");
+            }
+          }
+          const effectiveCustomerId =
+            before.paidMinor > 0
+              ? (before.customerId ?? input.customerId)
+              : (input.customerId ?? before.customerId);
+          const effectiveInput = {
+            ...input,
+            customerId: effectiveCustomerId,
+            customerName: input.customerName ?? before.customerNameSnapshot,
+            customerPhone: input.customerPhone ?? before.customerPhoneSnapshot,
+            deliveryAddress:
+              input.deliveryAddress ?? before.deliveryAddressSnapshot,
+            deliveryFeeMinor: newDeliveryFee,
+            promisedAt:
+              input.promisedAt === undefined
+                ? before.promisedAt
+                : input.promisedAt,
+            scheduled: input.scheduled ?? before.scheduled,
+          };
+          const {
+            customerName,
+            customerPhone,
+            deliveryAddress,
+            deliveryAddressNotes,
+          } = this.resolveOrderCustomer(effectiveInput, !changingType);
+          if (
+            before.lifecycleStatus !== "DRAFT" &&
+            input.type !== "DINE_IN" &&
+            (!customerName?.trim() || !customerPhone?.trim())
+          )
+            throw new Error(
+              "Completá nombre y teléfono del cliente antes de confirmar el pedido.",
+            );
+          if (
+            before.lifecycleStatus !== "DRAFT" &&
+            input.type === "DELIVERY" &&
+            !deliveryAddress?.trim()
+          )
+            throw new Error(
+              "Completá la dirección de entrega antes de confirmar el pedido.",
+            );
+          const requestedDriver =
+            input.type === "DELIVERY"
+              ? input.driverUserId === undefined
+                ? before.driverUserId
+                : input.driverUserId
+              : null;
+          if (
+            input.type === "DELIVERY" &&
+            before.operationalStatus === "OUT_FOR_DELIVERY" &&
+            !requestedDriver
+          )
+            throw new Error(
+              "Un pedido en reparto debe conservar su repartidor.",
+            );
+          const driverUserId =
+            input.type === "DELIVERY" && requestedDriver
+              ? String(this.requireActiveDriver(requestedDriver).id)
+              : null;
+          if (changingType && ledger && String(ledger.status) === "SETTLED")
+            this.reverseDeliverySettlementInTransaction(
+              String(ledger.id),
+              input.reason!.trim(),
+              input.authorizerPin!,
+            );
+          if (refundRequired > 0) {
+            const refundedTotal = suppliedRefunds.reduce(
+              (sum, r) => sum + r.amountMinor,
+              0,
+            );
+            if (refundedTotal !== refundRequired)
+              throw new Error(
+                "Las devoluciones deben coincidir exactamente con la diferencia del pedido.",
+              );
+            for (const refund of suppliedRefunds)
+              this.refundPaymentInTransaction({
+                orderId: input.orderId,
+                paymentId: refund.paymentId,
+                amountMinor: refund.amountMinor,
+                reason: input.reason!.trim(),
+                authorizer,
+              });
+          }
+          if (
+            changingType &&
+            input.type === "TAKEAWAY" &&
+            before.collectedByDriver
+          ) {
+            const retainedDriverCash = this.db
+              .prepare(
+                `SELECT COALESCE(SUM(p.amount_minor - COALESCE(r.refunded_minor,0)),0) AS amount
+          FROM payments p JOIN payment_methods pm ON pm.id = p.payment_method_id AND pm.code = 'CASH'
+          LEFT JOIN (SELECT payment_id, SUM(amount_minor) refunded_minor FROM payment_refunds GROUP BY payment_id) r ON r.payment_id = p.id
+          WHERE p.order_id = ?`,
+              )
+              .get(input.orderId) as Row;
+            const amount = Number(retainedDriverCash.amount);
+            if (amount > 0 && !input.driverCashRemitted)
+              throw new Error(
+                "Confirmá que el repartidor rindió el efectivo retenido antes de cambiar a retiro.",
+              );
+            if (amount > 0 && input.driverCashRemitted) {
+              const session = this.requireOpenCashSessionRow();
+              const cashMethod = this.db
+                .prepare("SELECT id FROM payment_methods WHERE code = 'CASH'")
+                .get() as Row;
+              this.db
+                .prepare(
+                  `INSERT INTO cash_movements(id,cash_session_id,type,amount_minor,affects_cash,payment_method_id,order_id,user_id,reason,created_at)
+            VALUES (?,?,'INCOME',?,1,?,?,?, ?,?)`,
+                )
+                .run(
+                  randomUUID(),
+                  session.id,
+                  amount,
+                  cashMethod.id,
+                  input.orderId,
+                  this.adminUserId,
+                  `Rendición de efectivo del repartidor por cambio a retiro: ${input.reason!.trim()}`,
+                  nowIso(),
+                );
+            }
+          }
+          this.db
+            .prepare(
+              `UPDATE orders SET customer_id = ?, customer_name_snapshot = ?, customer_phone_snapshot = ?,
+             type = ?, delivery_address_snapshot = ?, delivery_address_notes_snapshot = ?, delivery_fee_minor = ?, promised_at = ?, scheduled = ?,
+             driver_user_id = ?, collected_by_driver = CASE WHEN ? = 'TAKEAWAY' THEN 0 ELSE collected_by_driver END,
+             delivery_fee_belongs_to_driver = CASE WHEN ? = 'DELIVERY' AND (paid_minor > 0 OR (total_minor = 0 AND deposit_minor > 0)) THEN COALESCE(delivery_fee_belongs_to_driver, ?) ELSE delivery_fee_belongs_to_driver END,
+             notes = ?, operational_status = CASE WHEN type = 'DELIVERY' AND ? = 'TAKEAWAY' AND operational_status = 'OUT_FOR_DELIVERY' THEN 'READY' ELSE operational_status END,
+             total_minor = ?, paid_minor = MIN(paid_minor, ?), payment_status = ?, version = version + 1, updated_at = ?
            WHERE id = ?`,
-        )
-        .run(
-          input.customerId ?? null,
-          customerName,
-          customerPhone,
-          deliveryAddress,
-          deliveryAddressNotes,
-          input.deliveryFeeMinor ?? 0,
-          input.promisedAt ?? null,
-          input.scheduled ? 1 : 0,
-          driverUserId,
-          input.notes ?? null,
-          nowIso(),
-          input.orderId,
-        );
-      this.recalculateOrder(input.orderId);
-      const after = this.getOrder(input.orderId);
-      this.audit({
-        entityType: "ORDER",
-        entityId: input.orderId,
-        action: before.printedAt
-          ? "ORDER_EDITED_AFTER_PRINT"
-          : before.lifecycleStatus === "DRAFT"
-            ? "ORDER_DRAFT_UPDATED"
-            : "ORDER_DETAILS_UPDATED",
-        reason: before.printedAt
-          ? "Datos del cliente o envío editados después de imprimir"
-          : undefined,
-        before: {
-          customerId: before.customerId,
-          customerName: before.customerNameSnapshot,
-          customerPhone: before.customerPhoneSnapshot,
-          address: before.deliveryAddressSnapshot,
-          deliveryFeeMinor: before.deliveryFeeMinor,
-          promisedAt: before.promisedAt,
-          driverUserId: before.driverUserId,
-        },
-        after: {
-          customerId: after.customerId,
-          customerName: after.customerNameSnapshot,
-          customerPhone: after.customerPhoneSnapshot,
-          address: after.deliveryAddressSnapshot,
-          deliveryFeeMinor: after.deliveryFeeMinor,
-          promisedAt: after.promisedAt,
-          driverUserId: after.driverUserId,
-        },
-      });
-      this.event("Order", input.orderId, "OrderUpdated", {
-        customerId: after.customerId,
-        deliveryFeeMinor: after.deliveryFeeMinor,
-        editedAfterPrint: Boolean(before.printedAt),
-      });
-      return after;
-    });
-    return run();
+            )
+            .run(
+              effectiveCustomerId ?? null,
+              customerName,
+              customerPhone,
+              input.type,
+              input.type === "DELIVERY" ? deliveryAddress : null,
+              input.type === "DELIVERY" ? deliveryAddressNotes : null,
+              newDeliveryFee,
+              effectiveInput.promisedAt ?? null,
+              effectiveInput.scheduled ? 1 : 0,
+              driverUserId,
+              input.type,
+              input.type,
+              (this.getSettings().deliveryFeeBelongsToDriver ?? true) ? 1 : 0,
+              input.notes ?? before.notes,
+              input.type,
+              newTotal,
+              newTotal,
+              paymentStatusFor(
+                newTotal,
+                Math.min(before.paidMinor, newTotal),
+                before.depositMinor,
+              ),
+              nowIso(),
+              input.orderId,
+            );
+          const currentLedger = this.db
+            .prepare("SELECT status FROM delivery_ledger WHERE order_id = ?")
+            .get(input.orderId) as Row | undefined;
+          if (currentLedger && String(currentLedger.status) === "PENDING") {
+            if (input.type === "TAKEAWAY") {
+              this.db
+                .prepare(
+                  "DELETE FROM delivery_ledger WHERE order_id = ? AND status = 'PENDING'",
+                )
+                .run(input.orderId);
+            } else if (driverUserId) {
+              this.db
+                .prepare(
+                  "UPDATE delivery_ledger SET driver_user_id = ?, delivery_fee_minor = ?, restaurant_amount_minor = ?, amount_due_minor = CASE WHEN direction = 'BUSINESS_OWES_DRIVER' THEN ? ELSE ? END WHERE order_id = ? AND status = 'PENDING'",
+                )
+                .run(
+                  driverUserId,
+                  newDeliveryFee,
+                  Math.max(0, newTotal - newDeliveryFee),
+                  newDeliveryFee,
+                  newTotal,
+                  input.orderId,
+                );
+            }
+          }
+          this.recalculateOrder(input.orderId);
+          const after = this.getOrder(input.orderId);
+          this.audit({
+            entityType: "ORDER",
+            entityId: input.orderId,
+            action: changingType
+              ? "ORDER_FULFILLMENT_TYPE_CHANGED"
+              : before.printedAt
+                ? "ORDER_EDITED_AFTER_PRINT"
+                : before.lifecycleStatus === "DRAFT"
+                  ? "ORDER_DRAFT_UPDATED"
+                  : "ORDER_DETAILS_UPDATED",
+            reason: changingType
+              ? input.reason?.trim() || "Cambio de modalidad solicitado"
+              : before.printedAt
+                ? input.reason?.trim() ||
+                  "Datos del cliente o envío editados después de imprimir"
+                : undefined,
+            permission:
+              before.paidMinor > 0 && changingType
+                ? "payments.refund"
+                : undefined,
+            before: {
+              customerId: before.customerId,
+              customerName: before.customerNameSnapshot,
+              customerPhone: before.customerPhoneSnapshot,
+              address: before.deliveryAddressSnapshot,
+              deliveryFeeMinor: before.deliveryFeeMinor,
+              type: before.type,
+              promisedAt: before.promisedAt,
+              driverUserId: before.driverUserId,
+            },
+            after: {
+              customerId: after.customerId,
+              customerName: after.customerNameSnapshot,
+              customerPhone: after.customerPhoneSnapshot,
+              address: after.deliveryAddressSnapshot,
+              deliveryFeeMinor: after.deliveryFeeMinor,
+              type: after.type,
+              promisedAt: after.promisedAt,
+              driverUserId: after.driverUserId,
+            },
+            authorizerUserId: authorizer ? String(authorizer.id) : undefined,
+          });
+          this.event("Order", input.orderId, "OrderUpdated", {
+            customerId: after.customerId,
+            deliveryFeeMinor: after.deliveryFeeMinor,
+            previousType: before.type,
+            type: after.type,
+            editedAfterPrint: Boolean(before.printedAt),
+          });
+          return after;
+        });
+        return run();
+      },
+    );
   }
 
   confirmOrder(input: ConfirmOrderInput): OrderDto {
@@ -2119,6 +2457,21 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const orderId = input.orderId;
           const order = this.getOrder(orderId);
           assertOrderAction(order, "CONFIRM");
+          if (
+            order.type !== "DINE_IN" &&
+            (!order.customerNameSnapshot?.trim() ||
+              !order.customerPhoneSnapshot?.trim())
+          )
+            throw new Error(
+              "Completá nombre y teléfono del cliente antes de confirmar el pedido.",
+            );
+          if (
+            order.type === "DELIVERY" &&
+            !order.deliveryAddressSnapshot?.trim()
+          )
+            throw new Error(
+              "Completá la dirección de entrega antes de confirmar el pedido.",
+            );
           if (this.getSettings().stockEnabled) {
             const timestamp = nowIso();
             const rows = this.db
@@ -2171,9 +2524,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const timestamp = nowIso();
           this.db
             .prepare(
-              `UPDATE orders SET lifecycle_status = 'CONFIRMED', operational_status = 'IN_PREPARATION', confirmed_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+              `UPDATE orders SET lifecycle_status = 'CONFIRMED', operational_status = 'IN_PREPARATION',
+               delivery_fee_belongs_to_driver = CASE WHEN type = 'DELIVERY' AND total_minor = 0 AND deposit_minor > 0 THEN COALESCE(delivery_fee_belongs_to_driver, ?) ELSE delivery_fee_belongs_to_driver END,
+               confirmed_at = ?, version = version + 1, updated_at = ? WHERE id = ?`,
             )
-            .run(timestamp, timestamp, orderId);
+            .run(
+              (this.getSettings().deliveryFeeBelongsToDriver ?? true) ? 1 : 0,
+              timestamp,
+              timestamp,
+              orderId,
+            );
           this.snapshotOrderCosts(orderId);
           this.audit({
             entityType: "ORDER",
@@ -2820,9 +3180,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const total = Math.max(0, base - discount - deposit);
       this.db
         .prepare(
-          `UPDATE orders SET discount_minor = ?, total_minor = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+          `UPDATE orders SET discount_minor = ?, total_minor = ?, payment_status = ?, version = version + 1, updated_at = ? WHERE id = ?`,
         )
-        .run(discount, total, nowIso(), input.orderId);
+        .run(
+          discount,
+          total,
+          paymentStatusFor(total, Number(order.paid_minor), deposit),
+          nowIso(),
+          input.orderId,
+        );
       this.audit({
         entityType: "ORDER",
         entityId: input.orderId,
@@ -2864,9 +3230,20 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const notes = input.notes?.trim() || null;
       this.db
         .prepare(
-          `UPDATE orders SET deposit_minor = ?, deposit_notes = ?, total_minor = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+          `UPDATE orders SET deposit_minor = ?, deposit_notes = ?, total_minor = ?, payment_status = ?,
+           delivery_fee_belongs_to_driver = CASE WHEN type = 'DELIVERY' AND ? = 1 THEN COALESCE(delivery_fee_belongs_to_driver, ?) ELSE delivery_fee_belongs_to_driver END,
+           version = version + 1, updated_at = ? WHERE id = ?`,
         )
-        .run(deposit, notes, total, nowIso(), input.orderId);
+        .run(
+          deposit,
+          notes,
+          total,
+          paymentStatusFor(total, Number(order.paid_minor), deposit),
+          total === 0 && deposit > 0 ? 1 : 0,
+          (this.getSettings().deliveryFeeBelongsToDriver ?? true) ? 1 : 0,
+          nowIso(),
+          input.orderId,
+        );
       this.audit({
         entityType: "ORDER",
         entityId: input.orderId,
@@ -2896,6 +3273,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   updateOrderStatus(orderId: Id, status: OrderOperationalStatus): OrderDto {
     const run = this.db.transaction(() => {
       const order = this.getOrder(orderId);
+      if (status === "CANCELLED")
+        throw new Error(
+          "Para cancelar un pedido usá la acción Cancelar pedido, que valida pagos, permisos y stock.",
+        );
       assertOperationalTransition(order, status);
       if (
         order.type === "DELIVERY" &&
@@ -2948,11 +3329,24 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         this.requireActiveDriver(input.driverUserId);
       }
       if (before.driverUserId === input.driverUserId) return before;
+      const ledger = this.db
+        .prepare("SELECT status FROM delivery_ledger WHERE order_id = ?")
+        .get(input.orderId) as Row | undefined;
+      if (ledger && String(ledger.status) === "SETTLED")
+        throw new Error(
+          "El envío ya tiene una liquidación rendida. Anulá la liquidación antes de cambiar el repartidor.",
+        );
       this.db
         .prepare(
           "UPDATE orders SET driver_user_id = ?, version = version + 1, updated_at = ? WHERE id = ?",
         )
         .run(input.driverUserId, nowIso(), input.orderId);
+      if (ledger)
+        this.db
+          .prepare(
+            "UPDATE delivery_ledger SET driver_user_id = ? WHERE order_id = ?",
+          )
+          .run(input.driverUserId, input.orderId);
       this.audit({
         entityType: "ORDER",
         entityId: input.orderId,
@@ -2987,19 +3381,70 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             "El pedido no existe.",
           );
           assertOrderAction(this.getOrder(input.orderId), "PAY");
-          const accountPayments = input.payments.filter((payment) => payment.methodCode === "ACCOUNT");
-          const customerId = input.customerId ?? (order.customer_id == null ? null : String(order.customer_id));
+          const collectedByDriver = input.collectedByDriver === true;
+          if (
+            Number(order.paid_minor) > 0 &&
+            collectedByDriver !== flag(order.collected_by_driver)
+          )
+            throw new Error(
+              "El pedido ya tiene pagos con otro responsable de cobro; completá con el mismo responsable o devolvé/liquidá esos pagos antes de cambiarlo.",
+            );
+          if (collectedByDriver) {
+            if (String(order.type) !== "DELIVERY")
+              throw new Error(
+                "Sólo un envío asignado puede marcarse como cobrado por el repartidor.",
+              );
+            this.requireActiveDriver(String(order.driver_user_id ?? ""));
+            if (input.payments.some((payment) => payment.methodCode !== "CASH"))
+              throw new Error(
+                "El repartidor sólo puede registrar efectivo como cobro contra entrega.",
+              );
+            if (
+              (input.change?.amountMinor ?? 0) > 0 &&
+              input.change?.methodCode !== "CASH"
+            )
+              throw new Error(
+                "El vuelto del cobro del repartidor también debe ser en efectivo.",
+              );
+          }
+          const accountPayments = input.payments.filter(
+            (payment) => payment.methodCode === "ACCOUNT",
+          );
+          const customerId =
+            input.customerId ??
+            (order.customer_id == null ? null : String(order.customer_id));
           if (accountPayments.length) {
-            if (!customerId) throw new Error("Seleccioná un cliente para usar cuenta corriente.");
+            if (!customerId)
+              throw new Error(
+                "Seleccioná un cliente para usar cuenta corriente.",
+              );
             if (order.customer_id && String(order.customer_id) !== customerId)
               throw new Error("El pedido ya está vinculado a otro cliente.");
-            const customer = requireRow(this.db.prepare("SELECT id, name, phone, active FROM customers WHERE id = ?").get(customerId) as Row | undefined, "El cliente no existe.");
-            if (!flag(customer.active)) throw new Error("El cliente está archivado.");
+            const customer = requireRow(
+              this.db
+                .prepare(
+                  "SELECT id, name, phone, active FROM customers WHERE id = ?",
+                )
+                .get(customerId) as Row | undefined,
+              "El cliente no existe.",
+            );
+            if (!flag(customer.active))
+              throw new Error("El cliente está archivado.");
             if (!order.customer_id) {
-              this.db.prepare("UPDATE orders SET customer_id = ?, customer_name_snapshot = ?, customer_phone_snapshot = ?, version = version + 1, updated_at = ? WHERE id = ?")
-                .run(customerId, customer.name, customer.phone, nowIso(), input.orderId);
+              this.db
+                .prepare(
+                  "UPDATE orders SET customer_id = ?, customer_name_snapshot = ?, customer_phone_snapshot = ?, version = version + 1, updated_at = ? WHERE id = ?",
+                )
+                .run(
+                  customerId,
+                  customer.name,
+                  customer.phone,
+                  nowIso(),
+                  input.orderId,
+                );
             }
-            if (accountPayments.length !== 1) throw new Error("Usá una sola línea de cuenta corriente.");
+            if (accountPayments.length !== 1)
+              throw new Error("Usá una sola línea de cuenta corriente.");
           }
           if (!input.payments.length)
             throw new Error("Agregá al menos un medio de pago.");
@@ -3037,10 +3482,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const currentExpectedCash =
             this.cashSessionDto(session).expectedAmountMinor;
           const availableCash =
-            currentExpectedCash +
-            (input.collectedByDriver ? 0 : incomingCash);
+            currentExpectedCash + (input.collectedByDriver ? 0 : incomingCash);
           if (changeAmountMinor > 0) {
-            if (accountPayments.length) throw new Error("No se puede entregar vuelto de una cuenta corriente.");
+            if (accountPayments.length)
+              throw new Error(
+                "No se puede entregar vuelto de una cuenta corriente.",
+              );
             if (!input.change?.methodCode) {
               throw new Error("Indicá el medio de pago para el vuelto.");
             }
@@ -3098,7 +3545,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               timestamp,
             );
             if (payment.methodCode === "ACCOUNT") {
-              this.db.prepare("INSERT INTO customer_account_charges(order_id, customer_id, amount_minor, created_at) VALUES (?, ?, ?, ?)")
+              this.db
+                .prepare(
+                  `INSERT INTO customer_account_charges(order_id, customer_id, amount_minor, created_at) VALUES (?, ?, ?, ?)
+                ON CONFLICT(order_id) DO UPDATE SET amount_minor = customer_account_charges.amount_minor + excluded.amount_minor`,
+                )
                 .run(input.orderId, customerId, payment.amountMinor, timestamp);
             }
             insertMovement.run(
@@ -3106,7 +3557,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               session.id,
               "SALE",
               payment.amountMinor,
-              payment.methodCode === "ACCOUNT" || input.collectedByDriver ? 0 : method.affects_cash,
+              payment.methodCode === "ACCOUNT" || input.collectedByDriver
+                ? 0
+                : method.affects_cash,
               method.id,
               input.orderId,
               this.adminUserId,
@@ -3135,10 +3588,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const paymentStatus = paymentStatusFor(
             Number(order.total_minor),
             paidMinor,
+            Number(order.deposit_minor ?? 0),
           );
+          const feeBelongsToDriver =
+            order.delivery_fee_belongs_to_driver == null
+              ? (this.getSettings().deliveryFeeBelongsToDriver ?? true)
+              : flag(order.delivery_fee_belongs_to_driver);
           this.db
             .prepare(
               `UPDATE orders SET paid_minor = ?, payment_status = ?, cash_session_paid_id = ?, collected_by_driver = ?,
+           delivery_fee_belongs_to_driver = CASE WHEN type = 'DELIVERY' THEN COALESCE(delivery_fee_belongs_to_driver, ?) ELSE delivery_fee_belongs_to_driver END,
            change_amount_minor = ?, change_method_code = ?,
            version = version + 1, updated_at = ? WHERE id = ?`,
             )
@@ -3147,8 +3606,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               paymentStatus,
               session.id,
               input.collectedByDriver ? 1 : 0,
+              feeBelongsToDriver ? 1 : 0,
               changeAmountMinor > 0 ? changeAmountMinor : 0,
-              changeAmountMinor > 0 && input.change ? input.change.methodCode : null,
+              changeAmountMinor > 0 && input.change
+                ? input.change.methodCode
+                : null,
               timestamp,
               input.orderId,
             );
@@ -3164,6 +3626,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               Number(order.total_minor) - Number(order.delivery_fee_minor),
             );
             const shouldPayDriverNow =
+              feeBelongsToDriver &&
               input.payDriverNow === true &&
               !driverCollected &&
               Number(order.delivery_fee_minor) > 0;
@@ -3233,25 +3696,27 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
                 ? "DRIVER_OWES_BUSINESS"
                 : "BUSINESS_OWES_DRIVER";
               const amountDue = driverCollected
-                ? restaurantAmount
+                ? restaurantAmount +
+                  (feeBelongsToDriver ? 0 : Number(order.delivery_fee_minor))
                 : Number(order.delivery_fee_minor);
-              this.db
-                .prepare(
-                  `INSERT OR IGNORE INTO delivery_ledger(
+              if (driverCollected || feeBelongsToDriver)
+                this.db
+                  .prepare(
+                    `INSERT OR IGNORE INTO delivery_ledger(
             id, order_id, driver_user_id, restaurant_amount_minor, delivery_fee_minor,
             direction, amount_due_minor, created_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                )
-                .run(
-                  randomUUID(),
-                  input.orderId,
-                  order.driver_user_id,
-                  restaurantAmount,
-                  order.delivery_fee_minor,
-                  direction,
-                  amountDue,
-                  timestamp,
-                );
+                  )
+                  .run(
+                    randomUUID(),
+                    input.orderId,
+                    order.driver_user_id,
+                    restaurantAmount,
+                    order.delivery_fee_minor,
+                    direction,
+                    amountDue,
+                    timestamp,
+                  );
             }
           }
           this.audit({
@@ -3275,6 +3740,329 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     );
   }
 
+  private reverseDeliverySettlementInTransaction(
+    ledgerId: string,
+    reason: string,
+    authorizerPin: string,
+  ) {
+    if (!reason.trim())
+      throw new Error("La anulación de liquidación requiere un motivo.");
+    const session = this.requireOpenCashSessionRow();
+    const row = requireRow(
+      this.db
+        .prepare("SELECT * FROM delivery_ledger WHERE id = ?")
+        .get(ledgerId) as Row | undefined,
+      "La liquidación no existe.",
+    );
+    if (String(row.status) !== "SETTLED") return;
+    const authorizer = this.authorizePin(authorizerPin, "cash.expense");
+    const movementType =
+      String(row.direction) === "DRIVER_OWES_BUSINESS" ? "EXPENSE" : "INCOME";
+    if (
+      movementType === "EXPENSE" &&
+      Number(row.settled_amount_minor) >
+        this.cashSessionDto(session).expectedAmountMinor
+    )
+      throw new Error(
+        "La caja no tiene efectivo suficiente para revertir esta liquidación.",
+      );
+    const timestamp = nowIso();
+    const reversalId = randomUUID();
+    const originalType = movementType === "EXPENSE" ? "INCOME" : "EXPENSE";
+    let originalMovement = this.db
+      .prepare(
+        `SELECT cm.id FROM cash_movements cm WHERE cm.order_id = ? AND cm.type = ?
+      AND cm.amount_minor = ? AND cm.affects_cash = 1 AND cm.created_at = ? AND COALESCE(cm.reason,'') NOT LIKE 'Anulación:%'
+      AND NOT EXISTS (SELECT 1 FROM cash_movements reversal WHERE reversal.reference_id = cm.id)
+      ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(
+        row.order_id,
+        originalType,
+        row.settled_amount_minor,
+        row.settled_at,
+      ) as Row | undefined;
+    if (!originalMovement && row.settlement_reason) {
+      const driver = this.db
+        .prepare("SELECT full_name FROM users WHERE id = ?")
+        .get(row.driver_user_id) as Row | undefined;
+      const expectedReason = driver
+        ? `Liquidación de reparto (${String(driver.full_name)}): ${String(row.settlement_reason)}`
+        : `Liquidación de reparto: ${String(row.settlement_reason)}`;
+      const legacyCandidates = this.db
+        .prepare(
+          `SELECT cm.id FROM cash_movements cm WHERE cm.order_id IS NULL AND cm.type = ?
+        AND cm.amount_minor = ? AND cm.affects_cash = 1 AND cm.created_at = ? AND cm.reason = ?
+        AND NOT EXISTS (SELECT 1 FROM cash_movements reversal WHERE reversal.reference_id = cm.id)`,
+        )
+        .all(
+          originalType,
+          row.settled_amount_minor,
+          row.settled_at,
+          expectedReason,
+        ) as Row[];
+      // A legacy batch may contain indistinguishable movements without order links; fail closed rather than reverse the wrong one.
+      if (legacyCandidates.length === 1) originalMovement = legacyCandidates[0];
+    }
+    if (!originalMovement)
+      throw new Error(
+        "No se encontró el movimiento original de la liquidación para anularlo.",
+      );
+    this.db
+      .prepare(
+        `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, order_id, user_id, reason, created_at, reference_id)
+      VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        reversalId,
+        session.id,
+        movementType,
+        row.settled_amount_minor,
+        row.order_id,
+        authorizer.id,
+        `Anulación de liquidación: ${reason}`,
+        timestamp,
+        originalMovement.id,
+      );
+    this.db
+      .prepare(
+        "UPDATE delivery_ledger SET status = 'PENDING', settled_amount_minor = 0, settled_at = NULL, settled_by_user_id = NULL, settlement_reason = NULL WHERE id = ?",
+      )
+      .run(ledgerId);
+    this.audit({
+      entityType: "DELIVERY_LEDGER",
+      entityId: ledgerId,
+      action: "DELIVERY_SETTLEMENT_REVERSED",
+      permission: "cash.expense",
+      reason,
+      before: { status: "SETTLED" },
+      after: { status: "PENDING", reversalMovementId: reversalId },
+      authorizerUserId: String(authorizer.id),
+    });
+  }
+
+  private refundPaymentInTransaction(input: {
+    orderId: string;
+    paymentId: string;
+    amountMinor?: number;
+    reason: string;
+    authorizer: Row | null;
+    authorizerPin?: string;
+    skipLedger?: boolean;
+  }) {
+    const session = this.requireOpenCashSessionRow();
+    const order = requireRow(
+      this.db
+        .prepare("SELECT * FROM orders WHERE id = ?")
+        .get(input.orderId) as Row | undefined,
+      "El pedido no existe.",
+    );
+    if (String(order.operational_status) === "CANCELLED")
+      throw new Error("No se puede devolver un pago de un pedido cancelado.");
+    const payment = requireRow(
+      this.db
+        .prepare(
+          `SELECT p.*, pm.code AS method_code, pm.affects_cash,
+      COALESCE((SELECT SUM(pr.amount_minor) FROM payment_refunds pr WHERE pr.payment_id = p.id), 0) AS refunded_minor
+      FROM payments p JOIN payment_methods pm ON pm.id = p.payment_method_id WHERE p.id = ? AND p.order_id = ?`,
+        )
+        .get(input.paymentId, input.orderId) as Row | undefined,
+      "El pago no existe o no pertenece al pedido.",
+    );
+    const available =
+      Number(payment.amount_minor) - Number(payment.refunded_minor);
+    if (available <= 0) throw new Error("El pago ya fue devuelto.");
+    const amountMinor = input.amountMinor ?? available;
+    if (
+      !Number.isSafeInteger(amountMinor) ||
+      amountMinor <= 0 ||
+      amountMinor > available
+    )
+      throw new Error(
+        "El importe de devolución supera el saldo disponible del pago.",
+      );
+    if (String(payment.method_code) === "ACCOUNT") {
+      const charge = this.db
+        .prepare(
+          "SELECT amount_minor FROM customer_account_charges WHERE order_id = ?",
+        )
+        .get(input.orderId) as Row | undefined;
+      if (!charge)
+        throw new Error(
+          "No se encontró el cargo de cuenta corriente asociado.",
+        );
+      const allocated = this.db
+        .prepare(
+          "SELECT COALESCE(SUM(amount_minor),0) AS n FROM customer_account_allocations WHERE order_id = ?",
+        )
+        .get(input.orderId) as Row;
+      if (Number(allocated.n) > Number(charge.amount_minor) - amountMinor)
+        throw new Error(
+          "Parte de esta deuda ya fue cobrada. Sólo se puede devolver el saldo todavía pendiente de la cuenta corriente.",
+        );
+      this.db
+        .prepare(
+          "UPDATE customer_account_charges SET amount_minor = amount_minor - ? WHERE order_id = ?",
+        )
+        .run(amountMinor, input.orderId);
+    }
+    if (
+      flag(payment.affects_cash) &&
+      !flag(order.collected_by_driver) &&
+      amountMinor > this.cashSessionDto(session).expectedAmountMinor
+    )
+      throw new Error(
+        "La caja no tiene efectivo suficiente para esta devolución. Registrá un ingreso de fondos antes de continuar.",
+      );
+    const authorizer =
+      input.authorizer ??
+      this.authorizePin(input.authorizerPin ?? "", "payments.refund");
+    const timestamp = nowIso();
+    const refundId = randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO payment_refunds(id, payment_id, order_id, cash_session_id, amount_minor, reason, created_by_user_id, authorized_by_user_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        refundId,
+        input.paymentId,
+        input.orderId,
+        session.id,
+        amountMinor,
+        input.reason,
+        this.adminUserId,
+        authorizer.id,
+        timestamp,
+      );
+    this.db
+      .prepare(
+        `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, payment_method_id, order_id, user_id, reason, created_at)
+      VALUES (?, ?, 'REFUND', ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        session.id,
+        amountMinor,
+        flag(order.collected_by_driver) ? 0 : payment.affects_cash,
+        payment.payment_method_id,
+        input.orderId,
+        this.adminUserId,
+        `Devolución pedido #${String(order.number)}: ${input.reason}`,
+        timestamp,
+      );
+    const paidMinor = Math.max(0, Number(order.paid_minor) - amountMinor);
+    const paymentStatus = paymentStatusFor(
+      Number(order.total_minor),
+      paidMinor,
+      Number(order.deposit_minor ?? 0),
+    );
+    this.db
+      .prepare(
+        "UPDATE orders SET paid_minor = ?, payment_status = ?, version = version + 1, updated_at = ? WHERE id = ?",
+      )
+      .run(paidMinor, paymentStatus, timestamp, input.orderId);
+    const pendingLedger = this.db
+      .prepare(
+        "SELECT * FROM delivery_ledger WHERE order_id = ? AND status = 'PENDING'",
+      )
+      .get(input.orderId) as Row | undefined;
+    if (pendingLedger) {
+      const depositKeepsOrderFunded =
+        paymentStatus === "PAID" && Number(order.deposit_minor ?? 0) > 0;
+      const delivered = String(order.operational_status) === "DELIVERED";
+      if (paidMinor <= 0 && !depositKeepsOrderFunded && !delivered) {
+        this.db
+          .prepare(
+            "DELETE FROM delivery_ledger WHERE order_id = ? AND status = 'PENDING'",
+          )
+          .run(input.orderId);
+      } else {
+        const cashRow = this.db
+          .prepare(
+            `SELECT COALESCE(SUM(p.amount_minor - COALESCE(r.refunded_minor,0)),0) AS amount
+          FROM payments p JOIN payment_methods pm ON pm.id = p.payment_method_id AND pm.code = 'CASH'
+          LEFT JOIN (SELECT payment_id, SUM(amount_minor) refunded_minor FROM payment_refunds GROUP BY payment_id) r ON r.payment_id = p.id
+          WHERE p.order_id = ?`,
+          )
+          .get(input.orderId) as Row;
+        const cashRemaining = Math.max(0, Number(cashRow.amount));
+        const driverOwnsFee =
+          order.delivery_fee_belongs_to_driver == null
+            ? (this.getSettings().deliveryFeeBelongsToDriver ?? true)
+            : flag(order.delivery_fee_belongs_to_driver);
+        const fee = Number(order.delivery_fee_minor);
+        let direction: "DRIVER_OWES_BUSINESS" | "BUSINESS_OWES_DRIVER";
+        let amountDue: number;
+        if (flag(order.collected_by_driver)) {
+          if (delivered) {
+            const signedBalance = cashRemaining - (driverOwnsFee ? fee : 0);
+            direction =
+              signedBalance >= 0
+                ? "DRIVER_OWES_BUSINESS"
+                : "BUSINESS_OWES_DRIVER";
+            amountDue = Math.abs(signedBalance);
+          } else {
+            direction = "DRIVER_OWES_BUSINESS";
+            amountDue = cashRemaining;
+          }
+        } else {
+          direction = "BUSINESS_OWES_DRIVER";
+          amountDue = delivered
+            ? driverOwnsFee
+              ? fee
+              : 0
+            : driverOwnsFee
+              ? Math.min(fee, Math.max(0, paidMinor))
+              : 0;
+        }
+        if (amountDue <= 0) {
+          this.db
+            .prepare(
+              "DELETE FROM delivery_ledger WHERE order_id = ? AND status = 'PENDING'",
+            )
+            .run(input.orderId);
+        } else {
+          this.db
+            .prepare(
+              "UPDATE delivery_ledger SET direction = ?, restaurant_amount_minor = ?, delivery_fee_minor = ?, amount_due_minor = ? WHERE order_id = ? AND status = 'PENDING'",
+            )
+            .run(
+              direction,
+              Math.max(0, Number(order.total_minor) - fee),
+              fee,
+              amountDue,
+              input.orderId,
+            );
+        }
+      }
+    }
+    this.audit({
+      entityType: "PAYMENT",
+      entityId: input.paymentId,
+      action: "PAYMENT_REFUNDED",
+      permission: "payments.refund",
+      reason: input.reason,
+      before: {
+        amountMinor: Number(payment.amount_minor),
+        refundedMinor: Number(payment.refunded_minor),
+        orderPaidMinor: Number(order.paid_minor),
+      },
+      after: {
+        refundId,
+        refundedMinor: Number(payment.refunded_minor) + amountMinor,
+        orderPaidMinor: paidMinor,
+        paymentStatus,
+      },
+      authorizerUserId: String(authorizer.id),
+    });
+    this.event("Payment", input.paymentId, "PaymentRefunded", {
+      refundId,
+      orderId: input.orderId,
+      amountMinor,
+    });
+  }
+
   refundPayment(input: RefundPaymentInput): OrderDto {
     return this.idempotentTransaction(
       input.idempotencyKey,
@@ -3284,126 +4072,30 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       input,
       () => {
         const run = this.db.transaction(() => {
-          const session = this.requireOpenCashSessionRow();
-          const order = requireRow(
-            this.db
-              .prepare("SELECT * FROM orders WHERE id = ?")
-              .get(input.orderId) as Row | undefined,
-            "El pedido no existe.",
-          );
-          if (String(order.operational_status) === "CANCELLED")
-            throw new Error(
-              "No se puede devolver un pago de un pedido cancelado.",
-            );
-          const deliveryLedger = this.db
-            .prepare("SELECT id FROM delivery_ledger WHERE order_id = ?")
+          const ledger = this.db
+            .prepare("SELECT * FROM delivery_ledger WHERE order_id = ?")
             .get(input.orderId) as Row | undefined;
-          if (deliveryLedger) {
-            throw new Error(
-              "No se puede devolver este pago porque el envío ya generó una rendición; su anulación todavía no está disponible.",
+          if (ledger && String(ledger.status) === "SETTLED") {
+            if (!input.reverseDeliverySettlement)
+              throw new Error(
+                "El envío tiene una liquidación rendida; marcá su anulación para continuar.",
+              );
+            this.reverseDeliverySettlementInTransaction(
+              String(ledger.id),
+              input.reason.trim(),
+              input.authorizerPin,
             );
           }
-          const payment = requireRow(
-            this.db
-              .prepare(
-                `SELECT p.*, pm.code AS method_code, pm.affects_cash,
-              COALESCE((SELECT SUM(pr.amount_minor) FROM payment_refunds pr WHERE pr.payment_id = p.id), 0) AS refunded_minor
-             FROM payments p JOIN payment_methods pm ON pm.id = p.payment_method_id
-             WHERE p.id = ? AND p.order_id = ?`,
-              )
-              .get(input.paymentId, input.orderId) as Row | undefined,
-            "El pago no existe o no pertenece al pedido.",
-          );
-          const amountMinor =
-            Number(payment.amount_minor) - Number(payment.refunded_minor);
-          if (amountMinor <= 0) throw new Error("El pago ya fue devuelto.");
-          if (String(payment.method_code) === "ACCOUNT") {
-            const allocated = this.db.prepare("SELECT 1 FROM customer_account_allocations WHERE order_id = ? LIMIT 1").get(input.orderId);
-            if (allocated) throw new Error("La cuenta corriente ya tiene cobros aplicados; no se puede devolver este cargo.");
-            this.db.prepare("DELETE FROM customer_account_charges WHERE order_id = ?").run(input.orderId);
-          }
-          if (
-            flag(payment.affects_cash) &&
-            !flag(order.collected_by_driver) &&
-            amountMinor > this.cashSessionDto(session).expectedAmountMinor
-          )
-            throw new Error(
-              "La caja no tiene efectivo suficiente para esta devolución. Registrá un ingreso de fondos antes de continuar.",
-            );
           const authorizer = this.authorizePin(
             input.authorizerPin,
             "payments.refund",
           );
-          const timestamp = nowIso();
-          const refundId = randomUUID();
-          this.db
-            .prepare(
-              `INSERT INTO payment_refunds(id, payment_id, order_id, cash_session_id, amount_minor,
-            reason, created_by_user_id, authorized_by_user_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            )
-            .run(
-              refundId,
-              input.paymentId,
-              input.orderId,
-              session.id,
-              amountMinor,
-              input.reason,
-              this.adminUserId,
-              authorizer.id,
-              timestamp,
-            );
-          this.db
-            .prepare(
-              `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash,
-            payment_method_id, order_id, user_id, reason, created_at)
-           VALUES (?, ?, 'REFUND', ?, ?, ?, ?, ?, ?, ?)`,
-            )
-            .run(
-              randomUUID(),
-              session.id,
-              amountMinor,
-              flag(order.collected_by_driver) ? 0 : payment.affects_cash,
-              payment.payment_method_id,
-              input.orderId,
-              this.adminUserId,
-              `Devolución pedido #${String(order.number)}: ${input.reason}`,
-              timestamp,
-            );
-          const paidMinor = Math.max(0, Number(order.paid_minor) - amountMinor);
-          const paymentStatus = paymentStatusFor(
-            Number(order.total_minor),
-            paidMinor,
-          );
-          this.db
-            .prepare(
-              `UPDATE orders SET paid_minor = ?, payment_status = ?, version = version + 1,
-           updated_at = ? WHERE id = ?`,
-            )
-            .run(paidMinor, paymentStatus, timestamp, input.orderId);
-          this.audit({
-            entityType: "PAYMENT",
-            entityId: input.paymentId,
-            action: "PAYMENT_REFUNDED",
-            permission: "payments.refund",
-            reason: input.reason,
-            before: {
-              amountMinor: Number(payment.amount_minor),
-              refundedMinor: Number(payment.refunded_minor),
-              orderPaidMinor: Number(order.paid_minor),
-            },
-            after: {
-              refundId,
-              refundedMinor: Number(payment.refunded_minor) + amountMinor,
-              orderPaidMinor: paidMinor,
-              paymentStatus,
-            },
-            authorizerUserId: String(authorizer.id),
-          });
-          this.event("Payment", input.paymentId, "PaymentRefunded", {
-            refundId,
+          this.refundPaymentInTransaction({
             orderId: input.orderId,
-            amountMinor,
+            paymentId: input.paymentId,
+            amountMinor: input.amountMinor,
+            reason: input.reason,
+            authorizer,
           });
           return this.getOrder(input.orderId);
         });
@@ -3420,15 +4112,25 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         const cashMinor = input.payments
           .filter((payment) => payment.methodCode === "CASH")
           .reduce((sum, payment) => sum + payment.amountMinor, 0);
-        const nonCashMinor = input.payments
-          .filter((payment) => payment.methodCode !== "CASH")
-          .reduce((sum, payment) => sum + payment.amountMinor, 0);
-        if (cashMinor > 0 && nonCashMinor > 0) {
+        const hasNonAccountPrepayment = input.payments.some(
+          (payment) =>
+            payment.methodCode !== "CASH" && payment.methodCode !== "ACCOUNT",
+        );
+        const hasAccountCharge = input.payments.some(
+          (payment) => payment.methodCode === "ACCOUNT",
+        );
+        if (cashMinor > 0 && hasNonAccountPrepayment) {
           throw new Error(
             "Para cobrar y entregar un envío, elegí efectivo contra entrega o un medio anticipado, sin combinarlos.",
           );
         }
-        paymentInput = { ...input, collectedByDriver: cashMinor > 0 };
+        // A mixed cash/account order is collected by the business: cash is
+        // recorded in its register and the ACCOUNT portion remains receivable.
+        // Only an all-cash-at-door payment is collected by the driver.
+        paymentInput = {
+          ...input,
+          collectedByDriver: cashMinor > 0 && !hasAccountCharge,
+        };
       }
       if (order.lifecycleStatus === "DRAFT")
         order = this.confirmOrder({ orderId: input.orderId });
@@ -3457,7 +4159,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         input.authorizerPin,
         "orders.cancel",
       );
-      if (this.getSettings().stockEnabled) {
+      if (
+        this.getSettings().stockEnabled &&
+        String(order.lifecycle_status) === "CONFIRMED"
+      ) {
         const items = this.db
           .prepare("SELECT * FROM order_items WHERE order_id = ?")
           .all(input.orderId) as Row[];
@@ -3515,12 +4220,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           .get(input.orderId) as Row | undefined,
         "El pedido no existe.",
       );
-      if (["DELIVERED", "CANCELLED"].includes(String(order.operational_status))) {
+      if (
+        ["DELIVERED", "CANCELLED"].includes(String(order.operational_status))
+      ) {
         throw new Error("El pedido ya no admite modificaciones.");
       }
       const targetTable = requireRow(
         this.db
-          .prepare("SELECT * FROM restaurant_tables WHERE id = ? AND active = 1")
+          .prepare(
+            "SELECT * FROM restaurant_tables WHERE id = ? AND active = 1",
+          )
           .get(input.targetTableId) as Row | undefined,
         "La mesa de destino no existe o está inactiva.",
       );
@@ -3535,10 +4244,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       if (occupied) {
         throw new Error("La mesa de destino ya está ocupada.");
       }
-      const authorizer = this.authorizePin(
-        input.authorizerPin,
-        "orders.edit",
-      );
+      const authorizer = this.authorizePin(input.authorizerPin, "orders.edit");
 
       const previousTableId =
         order.table_id == null ? null : String(order.table_id);
@@ -4226,47 +4932,137 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   settleCustomerAccount(input: SettleCustomerAccountInput): CustomerProfileDto {
-    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "settleCustomerAccount", undefined, input, () => {
-      const run = this.db.transaction(() => {
-        if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
-          throw new Error("Ingresá un importe mayor que cero.");
-        const session = this.requireOpenCashSessionRow();
-        requireRow(this.db.prepare("SELECT id FROM customers WHERE id = ?").get(input.customerId) as Row | undefined, "El cliente no existe.");
-        const method = requireRow(this.db.prepare("SELECT * FROM payment_methods WHERE code = ? AND active = 1").get(input.methodCode) as Row | undefined, "El medio de pago no está disponible.");
-        if (input.methodCode === "ACCOUNT") throw new Error("La cuenta corriente no es un medio de cobro.");
-        const charges = this.db.prepare(`SELECT c.order_id, c.amount_minor - COALESCE(SUM(a.amount_minor), 0) AS balance_minor
+    return this.idempotentTransaction(
+      input.idempotencyKey,
+      input.terminalId,
+      "settleCustomerAccount",
+      undefined,
+      input,
+      () => {
+        const run = this.db.transaction(() => {
+          if (
+            !Number.isSafeInteger(input.amountMinor) ||
+            input.amountMinor <= 0
+          )
+            throw new Error("Ingresá un importe mayor que cero.");
+          const session = this.requireOpenCashSessionRow();
+          requireRow(
+            this.db
+              .prepare("SELECT id FROM customers WHERE id = ?")
+              .get(input.customerId) as Row | undefined,
+            "El cliente no existe.",
+          );
+          const method = requireRow(
+            this.db
+              .prepare(
+                "SELECT * FROM payment_methods WHERE code = ? AND active = 1",
+              )
+              .get(input.methodCode) as Row | undefined,
+            "El medio de pago no está disponible.",
+          );
+          if (input.methodCode === "ACCOUNT")
+            throw new Error("La cuenta corriente no es un medio de cobro.");
+          const charges = this.db
+            .prepare(
+              `SELECT c.order_id, c.amount_minor - COALESCE(SUM(a.amount_minor), 0) AS balance_minor
           FROM customer_account_charges c JOIN orders o ON o.id = c.order_id
           LEFT JOIN customer_account_allocations a ON a.order_id = c.order_id
-          WHERE c.customer_id = ? GROUP BY c.order_id HAVING balance_minor > 0 ORDER BY c.created_at, o.number`).all(input.customerId) as Row[];
-        const selected = input.orderIds ? charges.filter((charge) => input.orderIds!.includes(String(charge.order_id))) : charges;
-        if (input.orderIds && (new Set(input.orderIds).size !== input.orderIds.length || selected.length !== input.orderIds.length))
-          throw new Error("Seleccioná pedidos con deuda vigente del cliente.");
-        const available = selected.reduce((sum, charge) => sum + Number(charge.balance_minor), 0);
-        if (input.amountMinor > available) throw new Error("El importe supera la deuda seleccionada.");
-        const id = randomUUID();
-        const timestamp = nowIso();
-        const movementId = randomUUID();
-        this.db.prepare(`INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash,
-          payment_method_id, order_id, user_id, reason, created_at) VALUES (?, ?, 'INCOME', ?, ?, ?, NULL, ?, ?, ?)`).run(
-          movementId, session.id, input.amountMinor, method.affects_cash, method.id, this.adminUserId,
-          `Cobro cuenta corriente cliente ${input.customerId} · recibo ${id}`, timestamp);
-        this.db.prepare(`INSERT INTO customer_account_receipts(id, customer_id, cash_session_id, cash_movement_id, payment_method_id, amount_minor, reference, created_by_user_id, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.customerId, session.id, movementId, method.id, input.amountMinor, input.reference?.trim() || null, this.adminUserId, timestamp);
-        let remaining = input.amountMinor;
-        const allocations: Array<{orderId: string; amountMinor: number}> = [];
-        for (const charge of selected) {
-          if (!remaining) break;
-          const amount = Math.min(remaining, Number(charge.balance_minor));
-          this.db.prepare("INSERT INTO customer_account_allocations(receipt_id, order_id, amount_minor) VALUES (?, ?, ?)").run(id, charge.order_id, amount);
-          allocations.push({orderId: String(charge.order_id), amountMinor: amount});
-          remaining -= amount;
-        }
-        this.audit({entityType: "CUSTOMER", entityId: input.customerId, action: "CUSTOMER_ACCOUNT_SETTLED", after: {receiptId: id, amountMinor: input.amountMinor, allocations}});
-        this.event("Customer", input.customerId, "CustomerAccountSettled", {receiptId: id, amountMinor: input.amountMinor});
-        return this.getCustomerProfile({customerId: input.customerId, page: 1, pageSize: 10});
-      });
-      return run();
-    });
+          WHERE c.customer_id = ? GROUP BY c.order_id HAVING balance_minor > 0 ORDER BY c.created_at, o.number`,
+            )
+            .all(input.customerId) as Row[];
+          const selected = input.orderIds
+            ? charges.filter((charge) =>
+                input.orderIds!.includes(String(charge.order_id)),
+              )
+            : charges;
+          if (
+            input.orderIds &&
+            (new Set(input.orderIds).size !== input.orderIds.length ||
+              selected.length !== input.orderIds.length)
+          )
+            throw new Error(
+              "Seleccioná pedidos con deuda vigente del cliente.",
+            );
+          const available = selected.reduce(
+            (sum, charge) => sum + Number(charge.balance_minor),
+            0,
+          );
+          if (input.amountMinor > available)
+            throw new Error("El importe supera la deuda seleccionada.");
+          const id = randomUUID();
+          const timestamp = nowIso();
+          const movementId = randomUUID();
+          this.db
+            .prepare(
+              `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash,
+          payment_method_id, order_id, user_id, reason, created_at) VALUES (?, ?, 'INCOME', ?, ?, ?, NULL, ?, ?, ?)`,
+            )
+            .run(
+              movementId,
+              session.id,
+              input.amountMinor,
+              method.affects_cash,
+              method.id,
+              this.adminUserId,
+              `Cobro cuenta corriente cliente ${input.customerId} · recibo ${id}`,
+              timestamp,
+            );
+          this.db
+            .prepare(
+              `INSERT INTO customer_account_receipts(id, customer_id, cash_session_id, cash_movement_id, payment_method_id, amount_minor, reference, created_by_user_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              id,
+              input.customerId,
+              session.id,
+              movementId,
+              method.id,
+              input.amountMinor,
+              input.reference?.trim() || null,
+              this.adminUserId,
+              timestamp,
+            );
+          let remaining = input.amountMinor;
+          const allocations: Array<{ orderId: string; amountMinor: number }> =
+            [];
+          for (const charge of selected) {
+            if (!remaining) break;
+            const amount = Math.min(remaining, Number(charge.balance_minor));
+            this.db
+              .prepare(
+                "INSERT INTO customer_account_allocations(receipt_id, order_id, amount_minor) VALUES (?, ?, ?)",
+              )
+              .run(id, charge.order_id, amount);
+            allocations.push({
+              orderId: String(charge.order_id),
+              amountMinor: amount,
+            });
+            remaining -= amount;
+          }
+          this.audit({
+            entityType: "CUSTOMER",
+            entityId: input.customerId,
+            action: "CUSTOMER_ACCOUNT_SETTLED",
+            after: {
+              receiptId: id,
+              amountMinor: input.amountMinor,
+              allocations,
+            },
+          });
+          this.event("Customer", input.customerId, "CustomerAccountSettled", {
+            receiptId: id,
+            amountMinor: input.amountMinor,
+          });
+          return this.getCustomerProfile({
+            customerId: input.customerId,
+            page: 1,
+            pageSize: 10,
+          });
+        });
+        return run();
+      },
+    );
   }
 
   getCustomerProfile(input: {
@@ -4294,15 +5090,27 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       (total, row) => total + Number(row.total_minor),
       0,
     );
-    const accountCharges = this.db.prepare(`SELECT c.order_id, o.number AS order_number, c.created_at, c.amount_minor,
+    const accountCharges = this.db
+      .prepare(
+        `SELECT c.order_id, o.number AS order_number, c.created_at, c.amount_minor,
       COALESCE(SUM(a.amount_minor), 0) AS settled_minor
       FROM customer_account_charges c JOIN orders o ON o.id = c.order_id
       LEFT JOIN customer_account_allocations a ON a.order_id = c.order_id
-      WHERE c.customer_id = ? GROUP BY c.order_id ORDER BY c.created_at, o.number`).all(input.customerId) as Row[];
-    const outstandingMinor = accountCharges.reduce((sum, charge) => sum + Number(charge.amount_minor) - Number(charge.settled_minor), 0);
-    const accountReceipts = this.db.prepare(`SELECT r.id, r.created_at, r.amount_minor, r.reference, pm.code AS method_code, pm.name AS method_name
+      WHERE c.customer_id = ? GROUP BY c.order_id ORDER BY c.created_at, o.number`,
+      )
+      .all(input.customerId) as Row[];
+    const outstandingMinor = accountCharges.reduce(
+      (sum, charge) =>
+        sum + Number(charge.amount_minor) - Number(charge.settled_minor),
+      0,
+    );
+    const accountReceipts = this.db
+      .prepare(
+        `SELECT r.id, r.created_at, r.amount_minor, r.reference, pm.code AS method_code, pm.name AS method_name
       FROM customer_account_receipts r JOIN payment_methods pm ON pm.id = r.payment_method_id
-      WHERE r.customer_id = ? ORDER BY r.created_at DESC, r.id DESC`).all(input.customerId) as Row[];
+      WHERE r.customer_id = ? ORDER BY r.created_at DESC, r.id DESC`,
+      )
+      .all(input.customerId) as Row[];
     const gaps = metricRows
       .slice(1)
       .map((row, index) =>
@@ -4389,17 +5197,32 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return {
       customer: this.customerDto(customerRow),
       accountCharges: accountCharges.map((charge) => ({
-        orderId: String(charge.order_id), orderNumber: Number(charge.order_number), createdAt: String(charge.created_at),
-        amountMinor: Number(charge.amount_minor), settledMinor: Number(charge.settled_minor),
-        outstandingMinor: Number(charge.amount_minor) - Number(charge.settled_minor),
+        orderId: String(charge.order_id),
+        orderNumber: Number(charge.order_number),
+        createdAt: String(charge.created_at),
+        amountMinor: Number(charge.amount_minor),
+        settledMinor: Number(charge.settled_minor),
+        outstandingMinor:
+          Number(charge.amount_minor) - Number(charge.settled_minor),
       })),
       accountReceipts: accountReceipts.map((receipt) => ({
-        id: String(receipt.id), createdAt: String(receipt.created_at), amountMinor: Number(receipt.amount_minor),
-        methodCode: String(receipt.method_code), methodName: String(receipt.method_name),
+        id: String(receipt.id),
+        createdAt: String(receipt.created_at),
+        amountMinor: Number(receipt.amount_minor),
+        methodCode: String(receipt.method_code),
+        methodName: String(receipt.method_name),
         reference: receipt.reference == null ? null : String(receipt.reference),
-        allocations: (this.db.prepare(`SELECT a.order_id, o.number AS order_number, a.amount_minor FROM customer_account_allocations a
-          JOIN orders o ON o.id = a.order_id WHERE a.receipt_id = ? ORDER BY o.number`).all(receipt.id) as Row[]).map((allocation) => ({
-          orderId: String(allocation.order_id), orderNumber: Number(allocation.order_number), amountMinor: Number(allocation.amount_minor),
+        allocations: (
+          this.db
+            .prepare(
+              `SELECT a.order_id, o.number AS order_number, a.amount_minor FROM customer_account_allocations a
+          JOIN orders o ON o.id = a.order_id WHERE a.receipt_id = ? ORDER BY o.number`,
+            )
+            .all(receipt.id) as Row[]
+        ).map((allocation) => ({
+          orderId: String(allocation.order_id),
+          orderNumber: Number(allocation.order_number),
+          amountMinor: Number(allocation.amount_minor),
         })),
       })),
       metrics: {
@@ -4460,11 +5283,18 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           "Una ficha fusionada no se puede reactivar; abrí la ficha receptora.",
         );
       if (!input.active) {
-        const debt = this.db.prepare(`SELECT 1 FROM customer_account_charges c
+        const debt = this.db
+          .prepare(
+            `SELECT 1 FROM customer_account_charges c
           LEFT JOIN customer_account_allocations a ON a.order_id = c.order_id
           WHERE c.customer_id = ? GROUP BY c.order_id
-          HAVING c.amount_minor > COALESCE(SUM(a.amount_minor), 0) LIMIT 1`).get(input.customerId);
-        if (debt) throw new Error("El cliente tiene deuda de cuenta corriente; cobrá o fusioná la ficha antes de archivarla.");
+          HAVING c.amount_minor > COALESCE(SUM(a.amount_minor), 0) LIMIT 1`,
+          )
+          .get(input.customerId);
+        if (debt)
+          throw new Error(
+            "El cliente tiene deuda de cuenta corriente; cobrá o fusioná la ficha antes de archivarla.",
+          );
         const pending = this.db
           .prepare(
             `SELECT number FROM orders WHERE customer_id = ?
@@ -4575,8 +5405,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           "UPDATE orders SET customer_id = ?, updated_at = ? WHERE customer_id = ?",
         )
         .run(target.id, timestamp, source.id);
-      this.db.prepare("UPDATE customer_account_charges SET customer_id = ? WHERE customer_id = ?").run(target.id, source.id);
-      this.db.prepare("UPDATE customer_account_receipts SET customer_id = ? WHERE customer_id = ?").run(target.id, source.id);
+      this.db
+        .prepare(
+          "UPDATE customer_account_charges SET customer_id = ? WHERE customer_id = ?",
+        )
+        .run(target.id, source.id);
+      this.db
+        .prepare(
+          "UPDATE customer_account_receipts SET customer_id = ? WHERE customer_id = ?",
+        )
+        .run(target.id, source.id);
       const combinedTags = [...new Set([...target.tags, ...source.tags])];
       const combinedNotes =
         [
@@ -4855,8 +5693,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         const parentRow = this.db
           .prepare("SELECT id, parent_product_id FROM products WHERE id = ?")
           .get(input.parentProductId) as
-          | { id: string; parent_product_id: string | null }
-          | undefined;
+          { id: string; parent_product_id: string | null } | undefined;
         if (!parentRow) {
           throw new Error("El producto base indicado no existe.");
         }
@@ -4968,8 +5805,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         const parentRow = this.db
           .prepare("SELECT id, parent_product_id FROM products WHERE id = ?")
           .get(parentProductId) as
-          | { id: string; parent_product_id: string | null }
-          | undefined;
+          { id: string; parent_product_id: string | null } | undefined;
         if (!parentRow) {
           throw new Error("El producto base indicado no existe.");
         }
@@ -5298,197 +6134,557 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   private financeExpenseDto(row: Row): FinanceExpenseDto {
     return {
-      id: String(row.id), title: String(row.title), category: String(row.category),
-      kind: String(row.kind) as FinanceExpenseDto["kind"], amountMinor: Number(row.amount_minor),
-      incurredOn: String(row.incurred_on), dueOn: String(row.due_on),
+      id: String(row.id),
+      title: String(row.title),
+      category: String(row.category),
+      kind: String(row.kind) as FinanceExpenseDto["kind"],
+      amountMinor: Number(row.amount_minor),
+      incurredOn: String(row.incurred_on),
+      dueOn: String(row.due_on),
       paidAt: row.paid_at == null ? null : String(row.paid_at),
-      paymentMethodCode: row.payment_method_code == null ? null : String(row.payment_method_code),
+      paymentMethodCode:
+        row.payment_method_code == null
+          ? null
+          : String(row.payment_method_code),
       employeeId: row.employee_id == null ? null : String(row.employee_id),
-      employeeName: row.employee_name == null ? null : String(row.employee_name),
+      employeeName:
+        row.employee_name == null ? null : String(row.employee_name),
       recurringId: row.recurring_id == null ? null : String(row.recurring_id),
       note: row.note == null ? null : String(row.note),
     };
   }
 
   private financeRecurringDto(row: Row): FinanceRecurringDto {
-    return {id: String(row.id), title: String(row.title), category: String(row.category),
-      kind: String(row.kind) as FinanceRecurringDto["kind"], amountMinor: Number(row.amount_minor),
-      dayOfMonth: Number(row.day_of_month), startMonth: String(row.start_month),
-      employeeId: row.employee_id == null ? null : String(row.employee_id), active: flag(row.active),
-      stopMonth: row.stop_month == null ? null : String(row.stop_month)};
+    return {
+      id: String(row.id),
+      title: String(row.title),
+      category: String(row.category),
+      kind: String(row.kind) as FinanceRecurringDto["kind"],
+      amountMinor: Number(row.amount_minor),
+      dayOfMonth: Number(row.day_of_month),
+      startMonth: String(row.start_month),
+      employeeId: row.employee_id == null ? null : String(row.employee_id),
+      active: flag(row.active),
+      stopMonth: row.stop_month == null ? null : String(row.stop_month),
+    };
   }
 
   private financeExpense(id: string): FinanceExpenseDto {
-    const row = requireRow(this.db.prepare(`SELECT e.*, u.full_name AS employee_name, pm.code AS payment_method_code
+    const row = requireRow(
+      this.db
+        .prepare(
+          `SELECT e.*, u.full_name AS employee_name, pm.code AS payment_method_code
       FROM finance_expenses e LEFT JOIN users u ON u.id = e.employee_id
-      LEFT JOIN payment_methods pm ON pm.id = e.payment_method_id WHERE e.id = ?`).get(id) as Row | undefined, "El gasto no existe.");
+      LEFT JOIN payment_methods pm ON pm.id = e.payment_method_id WHERE e.id = ?`,
+        )
+        .get(id) as Row | undefined,
+      "El gasto no existe.",
+    );
     return this.financeExpenseDto(row);
   }
 
   private materializeRecurring(from: string, to: string) {
-    const rules = this.db.prepare("SELECT * FROM finance_recurring WHERE start_month <= ? AND (stop_month IS NULL OR stop_month >= ?)").all(to.slice(0, 7), from.slice(0, 7)) as Row[];
-    const insert = this.db.prepare(`INSERT OR IGNORE INTO finance_expenses(id,title,category,kind,amount_minor,incurred_on,due_on,employee_id,recurring_id,created_at)
+    const rules = this.db
+      .prepare(
+        "SELECT * FROM finance_recurring WHERE start_month <= ? AND (stop_month IS NULL OR stop_month >= ?)",
+      )
+      .all(to.slice(0, 7), from.slice(0, 7)) as Row[];
+    const insert = this.db
+      .prepare(`INSERT OR IGNORE INTO finance_expenses(id,title,category,kind,amount_minor,incurred_on,due_on,employee_id,recurring_id,created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?)`);
     let month = from.slice(0, 7);
     while (month <= to.slice(0, 7)) {
       const [year, number] = month.split("-").map(Number);
       for (const rule of rules) {
-        if (String(rule.start_month) > month || (rule.stop_month && String(rule.stop_month) < month)) continue;
+        if (
+          String(rule.start_month) > month ||
+          (rule.stop_month && String(rule.stop_month) < month)
+        )
+          continue;
         const lastDay = new Date(Date.UTC(year!, number!, 0)).getUTCDate();
         const day = Math.min(Number(rule.day_of_month), lastDay);
         const date = `${month}-${String(day).padStart(2, "0")}`;
-        insert.run(randomUUID(), rule.title, rule.category, rule.kind, rule.amount_minor, date, date, rule.employee_id, rule.id, nowIso());
+        insert.run(
+          randomUUID(),
+          rule.title,
+          rule.category,
+          rule.kind,
+          rule.amount_minor,
+          date,
+          date,
+          rule.employee_id,
+          rule.id,
+          nowIso(),
+        );
       }
       month = new Date(Date.UTC(year!, number!, 1)).toISOString().slice(0, 7);
     }
   }
 
-  getFinanceReport(input: {from: string; to: string}): FinanceReportDto {
+  getFinanceReport(input: { from: string; to: string }): FinanceReportDto {
     assertPermission(this.currentUser().permissions, "finance.view");
     const valid = /^\d{4}-\d{2}-\d{2}$/;
-    if (!valid.test(input.from) || !valid.test(input.to) || input.from > input.to ||
-      Number.isNaN(Date.parse(input.from)) || Number.isNaN(Date.parse(input.to)) ||
-      (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000 > 1096)
+    if (
+      !valid.test(input.from) ||
+      !valid.test(input.to) ||
+      input.from > input.to ||
+      Number.isNaN(Date.parse(input.from)) ||
+      Number.isNaN(Date.parse(input.to)) ||
+      (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000 > 1096
+    )
       throw new Error("Elegí un período válido de hasta tres años.");
-    this.db.transaction(() => this.materializeRecurring(input.from, input.to))();
-    const financeExpenses = (this.db.prepare(`SELECT e.*, u.full_name AS employee_name, pm.code AS payment_method_code
+    this.db.transaction(() =>
+      this.materializeRecurring(input.from, input.to),
+    )();
+    const financeExpenses = (
+      this.db
+        .prepare(
+          `SELECT e.*, u.full_name AS employee_name, pm.code AS payment_method_code
       FROM finance_expenses e LEFT JOIN users u ON u.id = e.employee_id
       LEFT JOIN payment_methods pm ON pm.id = e.payment_method_id
-      WHERE e.incurred_on BETWEEN ? AND ? ORDER BY e.incurred_on DESC, e.created_at DESC`).all(input.from, input.to) as Row[]).map((row) => this.financeExpenseDto(row));
-    const cashExpenses = (this.db.prepare(`SELECT cm.id, cm.amount_minor, cm.reason, cm.created_at, pm.code AS payment_method_code
+      WHERE e.incurred_on BETWEEN ? AND ? ORDER BY e.incurred_on DESC, e.created_at DESC`,
+        )
+        .all(input.from, input.to) as Row[]
+    ).map((row) => this.financeExpenseDto(row));
+    const cashExpenses = (
+      this.db
+        .prepare(
+          `SELECT cm.id, cm.amount_minor, cm.reason, cm.created_at, pm.code AS payment_method_code
       FROM cash_movements cm LEFT JOIN payment_methods pm ON pm.id = cm.payment_method_id
       WHERE cm.type = 'EXPENSE' AND substr(cm.created_at,1,10) BETWEEN ? AND ?
         AND cm.reference_id IS NULL
         AND NOT EXISTS (SELECT 1 FROM cash_movements reversal WHERE reversal.reference_id = cm.id)
         AND NOT EXISTS (SELECT 1 FROM finance_expenses e WHERE e.cash_movement_id = cm.id)
-      ORDER BY cm.created_at DESC`).all(input.from, input.to) as Row[]).map((row): FinanceExpenseDto => ({
-        id: `cash-${String(row.id)}`, title: String(row.reason || "Gasto de caja"), category: "Caja sin clasificar", kind: "GENERAL",
-        amountMinor: Number(row.amount_minor), incurredOn: String(row.created_at).slice(0,10), dueOn: String(row.created_at).slice(0,10),
-        paidAt: String(row.created_at), paymentMethodCode: row.payment_method_code == null ? null : String(row.payment_method_code),
-        employeeId: null, employeeName: null, recurringId: null, note: "Movimiento de caja existente",
-      }));
-    const expenses = [...financeExpenses, ...cashExpenses].sort((a,b) => b.incurredOn.localeCompare(a.incurredOn));
-    const recurring = (this.db.prepare("SELECT * FROM finance_recurring ORDER BY active DESC, title COLLATE NOCASE").all() as Row[]).map((row) => this.financeRecurringDto(row));
-    const orderRows = this.db.prepare(`SELECT o.id, o.total_minor, o.deposit_minor, o.confirmed_at, o.created_at,
+      ORDER BY cm.created_at DESC`,
+        )
+        .all(input.from, input.to) as Row[]
+    ).map((row): FinanceExpenseDto => ({
+      id: `cash-${String(row.id)}`,
+      title: String(row.reason || "Gasto de caja"),
+      category: "Caja sin clasificar",
+      kind: "GENERAL",
+      amountMinor: Number(row.amount_minor),
+      incurredOn: String(row.created_at).slice(0, 10),
+      dueOn: String(row.created_at).slice(0, 10),
+      paidAt: String(row.created_at),
+      paymentMethodCode:
+        row.payment_method_code == null
+          ? null
+          : String(row.payment_method_code),
+      employeeId: null,
+      employeeName: null,
+      recurringId: null,
+      note: "Movimiento de caja existente",
+    }));
+    const expenses = [...financeExpenses, ...cashExpenses].sort((a, b) =>
+      b.incurredOn.localeCompare(a.incurredOn),
+    );
+    const recurring = (
+      this.db
+        .prepare(
+          "SELECT * FROM finance_recurring ORDER BY active DESC, title COLLATE NOCASE",
+        )
+        .all() as Row[]
+    ).map((row) => this.financeRecurringDto(row));
+    const orderRows = this.db
+      .prepare(
+        `SELECT o.id, o.total_minor, o.deposit_minor, o.confirmed_at, o.created_at,
       COALESCE((SELECT SUM(pr.amount_minor) FROM payment_refunds pr WHERE pr.order_id = o.id),0) AS refunds_minor
       FROM orders o WHERE o.lifecycle_status = 'CONFIRMED' AND o.operational_status <> 'CANCELLED'
-      AND substr(COALESCE(o.confirmed_at,o.created_at),1,10) BETWEEN ? AND ?`).all(input.from, input.to) as Row[];
-    const costRows = this.db.prepare(`SELECT o.id AS order_id, oc.total_cost_minor
+      AND substr(COALESCE(o.confirmed_at,o.created_at),1,10) BETWEEN ? AND ?`,
+      )
+      .all(input.from, input.to) as Row[];
+    const costRows = this.db
+      .prepare(
+        `SELECT o.id AS order_id, oc.total_cost_minor
       FROM orders o JOIN order_items oi ON oi.order_id = o.id
       LEFT JOIN finance_order_item_costs oc ON oc.order_item_id = oi.id
       WHERE o.lifecycle_status = 'CONFIRMED' AND o.operational_status <> 'CANCELLED'
-      AND substr(COALESCE(o.confirmed_at,o.created_at),1,10) BETWEEN ? AND ?`).all(input.from, input.to) as Row[];
-    const purchasesMinor = Number((this.db.prepare("SELECT COALESCE(SUM(total_minor),0) AS total FROM purchases WHERE substr(created_at,1,10) BETWEEN ? AND ?").get(input.from, input.to) as Row).total);
-    const salesMinor = orderRows.reduce((sum, row) => sum + Number(row.total_minor) + Number(row.deposit_minor ?? 0) - Number(row.refunds_minor), 0);
-    const refundsMinor = orderRows.reduce((sum, row) => sum + Number(row.refunds_minor), 0);
-    const cogsMinor = costRows.reduce((sum, row) => sum + Number(row.total_cost_minor ?? 0), 0);
-    const expensesMinor = expenses.reduce((sum, item) => sum + item.amountMinor, 0);
-    const payrollMinor = expenses.filter((item) => item.kind === "PAYROLL").reduce((sum, item) => sum + item.amountMinor, 0);
-    const fixedMinor = expenses.filter((item) => item.kind === "FIXED").reduce((sum, item) => sum + item.amountMinor, 0);
-    const monthlyMap = new Map<string, {month: string; salesMinor: number; cogsMinor: number; expensesMinor: number}>();
+      AND substr(COALESCE(o.confirmed_at,o.created_at),1,10) BETWEEN ? AND ?`,
+      )
+      .all(input.from, input.to) as Row[];
+    const purchasesMinor = Number(
+      (
+        this.db
+          .prepare(
+            "SELECT COALESCE(SUM(total_minor),0) AS total FROM purchases WHERE substr(created_at,1,10) BETWEEN ? AND ?",
+          )
+          .get(input.from, input.to) as Row
+      ).total,
+    );
+    const salesMinor = orderRows.reduce(
+      (sum, row) =>
+        sum +
+        Number(row.total_minor) +
+        Number(row.deposit_minor ?? 0) -
+        Number(row.refunds_minor),
+      0,
+    );
+    const refundsMinor = orderRows.reduce(
+      (sum, row) => sum + Number(row.refunds_minor),
+      0,
+    );
+    const cogsMinor = costRows.reduce(
+      (sum, row) => sum + Number(row.total_cost_minor ?? 0),
+      0,
+    );
+    const expensesMinor = expenses.reduce(
+      (sum, item) => sum + item.amountMinor,
+      0,
+    );
+    const payrollMinor = expenses
+      .filter((item) => item.kind === "PAYROLL")
+      .reduce((sum, item) => sum + item.amountMinor, 0);
+    const fixedMinor = expenses
+      .filter((item) => item.kind === "FIXED")
+      .reduce((sum, item) => sum + item.amountMinor, 0);
+    const monthlyMap = new Map<
+      string,
+      {
+        month: string;
+        salesMinor: number;
+        cogsMinor: number;
+        expensesMinor: number;
+      }
+    >();
     const monthRow = (month: string) => {
       let entry = monthlyMap.get(month);
-      if (!entry) {entry = {month, salesMinor: 0, cogsMinor: 0, expensesMinor: 0}; monthlyMap.set(month, entry);}
+      if (!entry) {
+        entry = { month, salesMinor: 0, cogsMinor: 0, expensesMinor: 0 };
+        monthlyMap.set(month, entry);
+      }
       return entry;
     };
-    const orderMonths = new Map(orderRows.map((row) => [String(row.id), String(row.confirmed_at ?? row.created_at).slice(0, 7)]));
-    for (const row of orderRows) monthRow(orderMonths.get(String(row.id))!).salesMinor += Number(row.total_minor) + Number(row.deposit_minor ?? 0) - Number(row.refunds_minor);
-    for (const row of costRows) monthRow(orderMonths.get(String(row.order_id))!).cogsMinor += Number(row.total_cost_minor ?? 0);
-    for (const item of expenses) monthRow(item.incurredOn.slice(0, 7)).expensesMinor += item.amountMinor;
-    const products = this.db.prepare("SELECT id, name FROM products WHERE active = 1 ORDER BY name COLLATE NOCASE").all() as Row[];
+    const orderMonths = new Map(
+      orderRows.map((row) => [
+        String(row.id),
+        String(row.confirmed_at ?? row.created_at).slice(0, 7),
+      ]),
+    );
+    for (const row of orderRows)
+      monthRow(orderMonths.get(String(row.id))!).salesMinor +=
+        Number(row.total_minor) +
+        Number(row.deposit_minor ?? 0) -
+        Number(row.refunds_minor);
+    for (const row of costRows)
+      monthRow(orderMonths.get(String(row.order_id))!).cogsMinor += Number(
+        row.total_cost_minor ?? 0,
+      );
+    for (const item of expenses)
+      monthRow(item.incurredOn.slice(0, 7)).expensesMinor += item.amountMinor;
+    const products = this.db
+      .prepare(
+        "SELECT id, name FROM products WHERE active = 1 ORDER BY name COLLATE NOCASE",
+      )
+      .all() as Row[];
     return {
-      from: input.from, to: input.to, salesMinor, refundsMinor, cogsMinor,
-      unknownCostItems: costRows.filter((row) => row.total_cost_minor == null).length,
-      costedItems: costRows.filter((row) => row.total_cost_minor != null).length,
-      expensesMinor, payrollMinor, fixedMinor,
-      unpaidMinor: expenses.filter((item) => !item.paidAt).reduce((sum, item) => sum + item.amountMinor, 0),
-      purchasesMinor, grossProfitMinor: salesMinor - cogsMinor,
+      from: input.from,
+      to: input.to,
+      salesMinor,
+      refundsMinor,
+      cogsMinor,
+      unknownCostItems: costRows.filter((row) => row.total_cost_minor == null)
+        .length,
+      costedItems: costRows.filter((row) => row.total_cost_minor != null)
+        .length,
+      expensesMinor,
+      payrollMinor,
+      fixedMinor,
+      unpaidMinor: expenses
+        .filter((item) => !item.paidAt)
+        .reduce((sum, item) => sum + item.amountMinor, 0),
+      purchasesMinor,
+      grossProfitMinor: salesMinor - cogsMinor,
       estimatedOperatingProfitMinor: salesMinor - cogsMinor - expensesMinor,
-      expenses, recurring,
-      productCosts: products.map((product) => ({productId: String(product.id), productName: String(product.name), ...this.currentProductCost(String(product.id))})),
-      monthly: [...monthlyMap.values()].sort((a,b) => a.month.localeCompare(b.month)),
+      expenses,
+      recurring,
+      productCosts: products.map((product) => ({
+        productId: String(product.id),
+        productName: String(product.name),
+        ...this.currentProductCost(String(product.id)),
+      })),
+      monthly: [...monthlyMap.values()].sort((a, b) =>
+        a.month.localeCompare(b.month),
+      ),
     };
   }
 
   createFinanceExpense(input: CreateFinanceExpenseInput): FinanceExpenseDto {
-    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "createFinanceExpense", undefined, input, () => {
-      assertPermission(this.currentUser().permissions, "finance.manage");
-      if (!input.title.trim() || !input.category.trim() || !["GENERAL","FIXED","PAYROLL"].includes(input.kind) ||
-        !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(input.incurredOn) || Number.isNaN(Date.parse(input.incurredOn)))
-        throw new Error("Completá un gasto válido.");
-      if (input.kind === "PAYROLL" && !input.employeeId) throw new Error("Seleccioná un empleado para el sueldo.");
-      if (input.employeeId) requireRow(this.db.prepare("SELECT id FROM users WHERE id = ?").get(input.employeeId) as Row | undefined, "El empleado no existe.");
-      const dueOn = input.dueOn ?? input.incurredOn;
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dueOn) || Number.isNaN(Date.parse(dueOn))) throw new Error("La fecha de vencimiento no es válida.");
-      const id = randomUUID();
-      this.db.prepare(`INSERT INTO finance_expenses(id,title,category,kind,amount_minor,incurred_on,due_on,employee_id,note,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(id,input.title.trim(),input.category.trim(),input.kind,input.amountMinor,input.incurredOn,dueOn,input.employeeId ?? null,input.note?.trim() || null,nowIso());
-      this.audit({entityType: "FINANCE_EXPENSE", entityId: id, action: "FINANCE_EXPENSE_CREATED", permission: "finance.manage", after: input});
-      return this.financeExpense(id);
-    });
+    return this.idempotentTransaction(
+      input.idempotencyKey,
+      input.terminalId,
+      "createFinanceExpense",
+      undefined,
+      input,
+      () => {
+        assertPermission(this.currentUser().permissions, "finance.manage");
+        if (
+          !input.title.trim() ||
+          !input.category.trim() ||
+          !["GENERAL", "FIXED", "PAYROLL"].includes(input.kind) ||
+          !Number.isSafeInteger(input.amountMinor) ||
+          input.amountMinor <= 0 ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(input.incurredOn) ||
+          Number.isNaN(Date.parse(input.incurredOn))
+        )
+          throw new Error("Completá un gasto válido.");
+        if (input.kind === "PAYROLL" && !input.employeeId)
+          throw new Error("Seleccioná un empleado para el sueldo.");
+        if (input.employeeId)
+          requireRow(
+            this.db
+              .prepare("SELECT id FROM users WHERE id = ?")
+              .get(input.employeeId) as Row | undefined,
+            "El empleado no existe.",
+          );
+        const dueOn = input.dueOn ?? input.incurredOn;
+        if (
+          !/^\d{4}-\d{2}-\d{2}$/.test(dueOn) ||
+          Number.isNaN(Date.parse(dueOn))
+        )
+          throw new Error("La fecha de vencimiento no es válida.");
+        const id = randomUUID();
+        this.db
+          .prepare(
+            `INSERT INTO finance_expenses(id,title,category,kind,amount_minor,incurred_on,due_on,employee_id,note,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            id,
+            input.title.trim(),
+            input.category.trim(),
+            input.kind,
+            input.amountMinor,
+            input.incurredOn,
+            dueOn,
+            input.employeeId ?? null,
+            input.note?.trim() || null,
+            nowIso(),
+          );
+        this.audit({
+          entityType: "FINANCE_EXPENSE",
+          entityId: id,
+          action: "FINANCE_EXPENSE_CREATED",
+          permission: "finance.manage",
+          after: input,
+        });
+        return this.financeExpense(id);
+      },
+    );
   }
 
-  payFinanceExpense(input: {expenseId: Id; paymentMethodCode: string; fromCash: boolean; idempotencyKey?: string; terminalId?: string}): FinanceExpenseDto {
-    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "payFinanceExpense", undefined, input, () => {
-      assertPermission(this.currentUser().permissions, "finance.manage");
-      const expense = this.financeExpense(input.expenseId);
-      if (expense.paidAt) throw new Error("El gasto ya está pagado.");
-      const method = requireRow(this.db.prepare("SELECT * FROM payment_methods WHERE code = ? AND active = 1").get(input.paymentMethodCode) as Row | undefined, "El medio de pago no está disponible.");
-      if (input.paymentMethodCode === "ACCOUNT") throw new Error("Cuenta corriente no es un medio para pagar gastos.");
-      let movementId: string | null = null;
-      if (input.fromCash) {
-        const session = this.requireOpenCashSessionRow();
-        if (flag(method.affects_cash) && expense.amountMinor > this.cashSessionDto(session).expectedAmountMinor)
-          throw new Error("La caja no tiene efectivo suficiente para pagar este gasto.");
-        movementId = randomUUID();
-        this.db.prepare(`INSERT INTO cash_movements(id,cash_session_id,type,amount_minor,affects_cash,payment_method_id,order_id,user_id,reason,created_at)
-          VALUES (?,?,'EXPENSE',?,?,?,NULL,?,?,?)`).run(movementId,session.id,expense.amountMinor,method.affects_cash,method.id,this.adminUserId,`Gasto finanzas: ${expense.title}`,nowIso());
-      }
-      this.db.prepare("UPDATE finance_expenses SET paid_at = ?, payment_method_id = ?, cash_movement_id = ? WHERE id = ?").run(nowIso(),method.id,movementId,expense.id);
-      this.audit({entityType: "FINANCE_EXPENSE", entityId: expense.id, action: "FINANCE_EXPENSE_PAID", permission: "finance.manage", after: {methodCode: input.paymentMethodCode, fromCash: input.fromCash}});
-      return this.financeExpense(expense.id);
-    });
+  payFinanceExpense(input: {
+    expenseId: Id;
+    paymentMethodCode: string;
+    fromCash: boolean;
+    idempotencyKey?: string;
+    terminalId?: string;
+  }): FinanceExpenseDto {
+    return this.idempotentTransaction(
+      input.idempotencyKey,
+      input.terminalId,
+      "payFinanceExpense",
+      undefined,
+      input,
+      () => {
+        assertPermission(this.currentUser().permissions, "finance.manage");
+        const expense = this.financeExpense(input.expenseId);
+        if (expense.paidAt) throw new Error("El gasto ya está pagado.");
+        const method = requireRow(
+          this.db
+            .prepare(
+              "SELECT * FROM payment_methods WHERE code = ? AND active = 1",
+            )
+            .get(input.paymentMethodCode) as Row | undefined,
+          "El medio de pago no está disponible.",
+        );
+        if (input.paymentMethodCode === "ACCOUNT")
+          throw new Error("Cuenta corriente no es un medio para pagar gastos.");
+        let movementId: string | null = null;
+        if (input.fromCash) {
+          const session = this.requireOpenCashSessionRow();
+          if (
+            flag(method.affects_cash) &&
+            expense.amountMinor >
+              this.cashSessionDto(session).expectedAmountMinor
+          )
+            throw new Error(
+              "La caja no tiene efectivo suficiente para pagar este gasto.",
+            );
+          movementId = randomUUID();
+          this.db
+            .prepare(
+              `INSERT INTO cash_movements(id,cash_session_id,type,amount_minor,affects_cash,payment_method_id,order_id,user_id,reason,created_at)
+          VALUES (?,?,'EXPENSE',?,?,?,NULL,?,?,?)`,
+            )
+            .run(
+              movementId,
+              session.id,
+              expense.amountMinor,
+              method.affects_cash,
+              method.id,
+              this.adminUserId,
+              `Gasto finanzas: ${expense.title}`,
+              nowIso(),
+            );
+        }
+        this.db
+          .prepare(
+            "UPDATE finance_expenses SET paid_at = ?, payment_method_id = ?, cash_movement_id = ? WHERE id = ?",
+          )
+          .run(nowIso(), method.id, movementId, expense.id);
+        this.audit({
+          entityType: "FINANCE_EXPENSE",
+          entityId: expense.id,
+          action: "FINANCE_EXPENSE_PAID",
+          permission: "finance.manage",
+          after: {
+            methodCode: input.paymentMethodCode,
+            fromCash: input.fromCash,
+          },
+        });
+        return this.financeExpense(expense.id);
+      },
+    );
   }
 
-  createFinanceRecurring(input: CreateFinanceRecurringInput): FinanceRecurringDto {
-    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "createFinanceRecurring", undefined, input, () => {
-      assertPermission(this.currentUser().permissions, "finance.manage");
-      if (!input.title.trim() || !input.category.trim() || !["FIXED","PAYROLL"].includes(input.kind) ||
-        !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 || !Number.isInteger(input.dayOfMonth) || input.dayOfMonth < 1 || input.dayOfMonth > 31 ||
-        !/^\d{4}-(0[1-9]|1[0-2])$/.test(input.startMonth)) throw new Error("Completá un gasto fijo válido.");
-      if (input.kind === "PAYROLL" && !input.employeeId) throw new Error("Seleccioná un empleado para el sueldo fijo.");
-      if (input.employeeId) requireRow(this.db.prepare("SELECT id FROM users WHERE id = ?").get(input.employeeId) as Row | undefined, "El empleado no existe.");
-      const id = randomUUID();
-      this.db.prepare(`INSERT INTO finance_recurring(id,title,category,kind,amount_minor,day_of_month,start_month,employee_id,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?)`).run(id,input.title.trim(),input.category.trim(),input.kind,input.amountMinor,input.dayOfMonth,input.startMonth,input.employeeId ?? null,nowIso());
-      this.audit({entityType: "FINANCE_RECURRING", entityId: id, action: "FINANCE_RECURRING_CREATED", permission: "finance.manage", after: input});
-      return this.financeRecurringDto(this.db.prepare("SELECT * FROM finance_recurring WHERE id = ?").get(id) as Row);
-    });
+  createFinanceRecurring(
+    input: CreateFinanceRecurringInput,
+  ): FinanceRecurringDto {
+    return this.idempotentTransaction(
+      input.idempotencyKey,
+      input.terminalId,
+      "createFinanceRecurring",
+      undefined,
+      input,
+      () => {
+        assertPermission(this.currentUser().permissions, "finance.manage");
+        if (
+          !input.title.trim() ||
+          !input.category.trim() ||
+          !["FIXED", "PAYROLL"].includes(input.kind) ||
+          !Number.isSafeInteger(input.amountMinor) ||
+          input.amountMinor <= 0 ||
+          !Number.isInteger(input.dayOfMonth) ||
+          input.dayOfMonth < 1 ||
+          input.dayOfMonth > 31 ||
+          !/^\d{4}-(0[1-9]|1[0-2])$/.test(input.startMonth)
+        )
+          throw new Error("Completá un gasto fijo válido.");
+        if (input.kind === "PAYROLL" && !input.employeeId)
+          throw new Error("Seleccioná un empleado para el sueldo fijo.");
+        if (input.employeeId)
+          requireRow(
+            this.db
+              .prepare("SELECT id FROM users WHERE id = ?")
+              .get(input.employeeId) as Row | undefined,
+            "El empleado no existe.",
+          );
+        const id = randomUUID();
+        this.db
+          .prepare(
+            `INSERT INTO finance_recurring(id,title,category,kind,amount_minor,day_of_month,start_month,employee_id,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            id,
+            input.title.trim(),
+            input.category.trim(),
+            input.kind,
+            input.amountMinor,
+            input.dayOfMonth,
+            input.startMonth,
+            input.employeeId ?? null,
+            nowIso(),
+          );
+        this.audit({
+          entityType: "FINANCE_RECURRING",
+          entityId: id,
+          action: "FINANCE_RECURRING_CREATED",
+          permission: "finance.manage",
+          after: input,
+        });
+        return this.financeRecurringDto(
+          this.db
+            .prepare("SELECT * FROM finance_recurring WHERE id = ?")
+            .get(id) as Row,
+        );
+      },
+    );
   }
 
-  stopFinanceRecurring(input: {recurringId: Id}): FinanceRecurringDto {
+  stopFinanceRecurring(input: { recurringId: Id }): FinanceRecurringDto {
     assertPermission(this.currentUser().permissions, "finance.manage");
     const run = this.db.transaction(() => {
-      requireRow(this.db.prepare("SELECT id FROM finance_recurring WHERE id = ? AND active = 1").get(input.recurringId) as Row | undefined, "El gasto fijo no está activo.");
+      requireRow(
+        this.db
+          .prepare(
+            "SELECT id FROM finance_recurring WHERE id = ? AND active = 1",
+          )
+          .get(input.recurringId) as Row | undefined,
+        "El gasto fijo no está activo.",
+      );
       const now = nowIso();
       const [year, month] = now.slice(0, 7).split("-").map(Number);
-      const previousMonth = new Date(Date.UTC(year!, month! - 2, 1)).toISOString().slice(0, 7);
-      this.db.prepare("UPDATE finance_recurring SET active = 0, stop_month = ? WHERE id = ?").run(previousMonth, input.recurringId);
-      this.db.prepare("DELETE FROM finance_expenses WHERE recurring_id = ? AND paid_at IS NULL AND incurred_on > date('now')").run(input.recurringId);
-      this.audit({entityType: "FINANCE_RECURRING", entityId: input.recurringId, action: "FINANCE_RECURRING_STOPPED", permission: "finance.manage"});
-      return this.financeRecurringDto(this.db.prepare("SELECT * FROM finance_recurring WHERE id = ?").get(input.recurringId) as Row);
+      const previousMonth = new Date(Date.UTC(year!, month! - 2, 1))
+        .toISOString()
+        .slice(0, 7);
+      this.db
+        .prepare(
+          "UPDATE finance_recurring SET active = 0, stop_month = ? WHERE id = ?",
+        )
+        .run(previousMonth, input.recurringId);
+      this.db
+        .prepare(
+          "DELETE FROM finance_expenses WHERE recurring_id = ? AND paid_at IS NULL AND incurred_on > date('now')",
+        )
+        .run(input.recurringId);
+      this.audit({
+        entityType: "FINANCE_RECURRING",
+        entityId: input.recurringId,
+        action: "FINANCE_RECURRING_STOPPED",
+        permission: "finance.manage",
+      });
+      return this.financeRecurringDto(
+        this.db
+          .prepare("SELECT * FROM finance_recurring WHERE id = ?")
+          .get(input.recurringId) as Row,
+      );
     });
     return run();
   }
 
-  setFinanceProductCost(input: {productId: Id; unitCostMinor: MoneyMinor | null}): void {
+  setFinanceProductCost(input: {
+    productId: Id;
+    unitCostMinor: MoneyMinor | null;
+  }): void {
     assertPermission(this.currentUser().permissions, "finance.manage");
-    if (input.unitCostMinor != null) nonNegativeMoney(input.unitCostMinor, "costo unitario");
-    requireRow(this.db.prepare("SELECT id FROM products WHERE id = ?").get(input.productId) as Row | undefined, "El producto no existe.");
-    if (input.unitCostMinor == null) this.db.prepare("DELETE FROM finance_product_costs WHERE product_id = ?").run(input.productId);
-    else this.db.prepare(`INSERT INTO finance_product_costs(product_id,unit_cost_minor,updated_at) VALUES (?,?,?)
-      ON CONFLICT(product_id) DO UPDATE SET unit_cost_minor=excluded.unit_cost_minor,updated_at=excluded.updated_at`).run(input.productId,input.unitCostMinor,nowIso());
-    this.audit({entityType: "PRODUCT", entityId: input.productId, action: "FINANCE_PRODUCT_COST_SET", permission: "finance.manage", after: {unitCostMinor: input.unitCostMinor}});
+    if (input.unitCostMinor != null)
+      nonNegativeMoney(input.unitCostMinor, "costo unitario");
+    requireRow(
+      this.db
+        .prepare("SELECT id FROM products WHERE id = ?")
+        .get(input.productId) as Row | undefined,
+      "El producto no existe.",
+    );
+    if (input.unitCostMinor == null)
+      this.db
+        .prepare("DELETE FROM finance_product_costs WHERE product_id = ?")
+        .run(input.productId);
+    else
+      this.db
+        .prepare(
+          `INSERT INTO finance_product_costs(product_id,unit_cost_minor,updated_at) VALUES (?,?,?)
+      ON CONFLICT(product_id) DO UPDATE SET unit_cost_minor=excluded.unit_cost_minor,updated_at=excluded.updated_at`,
+        )
+        .run(input.productId, input.unitCostMinor, nowIso());
+    this.audit({
+      entityType: "PRODUCT",
+      entityId: input.productId,
+      action: "FINANCE_PRODUCT_COST_SET",
+      permission: "finance.manage",
+      after: { unitCostMinor: input.unitCostMinor },
+    });
   }
 
   listPurchases(): PurchaseDto[] {
@@ -5998,22 +7194,22 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
                 ? "INCOME"
                 : "EXPENSE";
             const driverRow = getDriver.get(row.driver_user_id) as
-              | Row
-              | undefined;
+              Row | undefined;
             const driverName = driverRow ? String(driverRow.full_name) : "";
             const movementReason = driverName
               ? `Liquidación de reparto (${driverName}): ${reason}`
               : `Liquidación de reparto: ${reason}`;
             this.db
               .prepare(
-                `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, user_id, reason, created_at)
-          VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+                `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, order_id, user_id, reason, created_at)
+          VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)`,
               )
               .run(
                 randomUUID(),
                 session.id,
                 movementType,
                 row.amount_due_minor,
+                row.order_id,
                 this.adminUserId,
                 movementReason,
                 timestamp,
@@ -6070,10 +7266,26 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             .get(input.movementId);
           if (existingReversal)
             throw new Error("Este movimiento ya fue anulado.");
-          if (this.db.prepare("SELECT 1 FROM customer_account_receipts WHERE cash_movement_id = ?").get(input.movementId))
-            throw new Error("Este ingreso corresponde a un cobro de cuenta corriente y no puede anularse como movimiento suelto.");
-          if (this.db.prepare("SELECT 1 FROM finance_expenses WHERE cash_movement_id = ?").get(input.movementId))
-            throw new Error("Este egreso corresponde a un gasto de Finanzas y no puede anularse como movimiento suelto.");
+          if (
+            this.db
+              .prepare(
+                "SELECT 1 FROM customer_account_receipts WHERE cash_movement_id = ?",
+              )
+              .get(input.movementId)
+          )
+            throw new Error(
+              "Este ingreso corresponde a un cobro de cuenta corriente y no puede anularse como movimiento suelto.",
+            );
+          if (
+            this.db
+              .prepare(
+                "SELECT 1 FROM finance_expenses WHERE cash_movement_id = ?",
+              )
+              .get(input.movementId)
+          )
+            throw new Error(
+              "Este egreso corresponde a un gasto de Finanzas y no puede anularse como movimiento suelto.",
+            );
 
           const originalType = String(original.type);
           if (
@@ -6143,13 +7355,6 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       input,
       () => {
         const run = this.db.transaction(() => {
-          const session = this.requireOpenCashSessionRow();
-          const authorizer = this.authorizePin(
-            input.authorizerPin,
-            "cash.expense",
-          );
-          const timestamp = nowIso();
-
           const row = requireRow(
             this.db
               .prepare("SELECT * FROM delivery_ledger WHERE id = ?")
@@ -6159,43 +7364,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           if (String(row.status) !== "SETTLED") {
             throw new Error("La liquidación no está rendida.");
           }
-
-          const movementType =
-            String(row.direction) === "DRIVER_OWES_BUSINESS"
-              ? "EXPENSE"
-              : "INCOME";
-
-          this.db
-            .prepare(
-              `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, user_id, reason, created_at)
-           VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
-            )
-            .run(
-              randomUUID(),
-              session.id,
-              movementType,
-              row.settled_amount_minor,
-              authorizer.id,
-              `Anulación de liquidación: ${input.reason.trim()}`,
-              timestamp,
-            );
-
-          this.db
-            .prepare(
-              `UPDATE delivery_ledger SET status = 'PENDING', settled_amount_minor = 0, settled_at = NULL, settled_by_user_id = NULL, settlement_reason = NULL WHERE id = ?`,
-            )
-            .run(input.ledgerId);
-
-          this.audit({
-            entityType: "DELIVERY_LEDGER",
-            entityId: input.ledgerId,
-            action: "DELIVERY_SETTLEMENT_REVERSED",
-            permission: "cash.expense",
-            reason: input.reason.trim(),
-            before: { status: "SETTLED" },
-            after: { status: "PENDING" },
-            authorizerUserId: String(authorizer.id),
-          });
+          this.reverseDeliverySettlementInTransaction(
+            input.ledgerId,
+            input.reason.trim(),
+            input.authorizerPin,
+          );
 
           return this.listDeliveryLedger().find(
             (r) => r.id === input.ledgerId,
@@ -6585,7 +7758,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         layout.y < 0 ||
         layout.width < 6 ||
         layout.width > 40 ||
-        layout.height < 8 ||
+        layout.height < 7 ||
         layout.height > 40 ||
         layout.x + layout.width > 100 ||
         layout.y + layout.height > 100

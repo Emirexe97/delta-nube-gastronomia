@@ -3,6 +3,8 @@
 Fecha de revisión: 2026-08-31  
 Estado: correcciones críticas implementadas y verificadas.
 
+> Actualización 2026-10-02: la corrección y reauditoría de pedidos flexibles se documenta en [ORDER_FLOW_E2E_AUDIT.md](qa/ORDER_FLOW_E2E_AUDIT.md). Esa matriz reemplaza las restricciones históricas de cliente obligatorio al crear, tipo inmutable y edición financiera indiscriminadamente bloqueada. Las operaciones sensibles requieren ajustes y auditoría; los pedidos terminales siguen protegidos. Esta auditoría anterior se conserva como historial.
+
 ## Resumen ejecutivo
 
 La auditoría confirmó que el modelo anterior permitía crear directamente pedidos operativos vacíos, imprimirlos y alcanzar estados incompatibles sin validar tipo, productos o pago. Las reglas estaban repartidas entre React y métodos independientes.
@@ -120,6 +122,7 @@ La corrección introduce tres principios:
 - Los códigos internos (`UNPAID`, `TAKEAWAY`, etc.) no se migran: la traducción pertenece a presentación, impresión y exportación.
 - No se implementa login paralelo; la integración futura reutilizará la identidad del POS.
 - No se permite entrega con deuda del cliente por defecto.
-- La devolución total por línea de pago ya está implementada. Los envíos que
-  generaron una rendición permanecen bloqueados hasta incorporar una anulación
-  explícita del asiento del repartidor.
+- La devolución total y parcial por línea de pago está implementada. Los envíos
+  con una rendición saldada requieren su reversión explícita antes de devolver;
+  el saldo residual y el envío ya ganado por el repartidor se conservan. Ver la
+  [reauditoría de pedidos](qa/ORDER_FLOW_E2E_AUDIT.md) para las reglas vigentes.

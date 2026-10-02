@@ -6,6 +6,7 @@ import type {
   CustomerDto,
   OrderDto,
   OrderType,
+  UpdateDraftOrderInput,
 } from "@gastronomy/contracts";
 import {
   Clock,
@@ -418,6 +419,15 @@ function NewOrderModal({
   onClose(): void;
   onSaved(order: OrderDto): void;
 }) {
+  const [selectedType, setSelectedType] = useState<OrderType>(type);
+  const [reason, setReason] = useState("");
+  const [authorizerPin, setAuthorizerPin] = useState("");
+  const [reverseDeliverySettlement, setReverseDeliverySettlement] =
+    useState(false);
+  const [driverCashRemitted, setDriverCashRemitted] = useState(false);
+  const [refundAmounts, setRefundAmounts] = useState<Record<string, string>>(
+    {},
+  );
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [customerAddressId, setCustomerAddressId] = useState<string | null>(
     null,
@@ -430,15 +440,25 @@ function NewOrderModal({
   const [scheduleMode, setScheduleMode] = useState<"QUICK" | "SCHEDULED">(
     "QUICK",
   );
+  const [timingChanged, setTimingChanged] = useState(false);
   const [scheduledAt, setScheduledAt] = useState("");
   const [fee, setFee] = useState("0");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const initializedSession = useRef<string | null>(null);
   const drivers = data.users.filter(
     (user) => user.roleCode === "DELIVERY_DRIVER" && user.active,
   );
   const mutation = useApiMutation(
-    (input: CreateOrderInput) =>
+    (
+      input: CreateOrderInput & {
+        reason?: string;
+        authorizerPin?: string;
+        refunds?: UpdateDraftOrderInput["refunds"];
+        reverseDeliverySettlement?: boolean;
+        driverCashRemitted?: boolean;
+      },
+    ) =>
       editingOrder
         ? window.gastronomy.updateDraftOrder({
             ...input,
@@ -449,7 +469,10 @@ function NewOrderModal({
   );
 
   useEffect(() => {
-    if (open) {
+    const sessionKey = editingOrder?.id ?? (open ? "new" : null);
+    if (open && sessionKey && initializedSession.current !== sessionKey) {
+      initializedSession.current = sessionKey;
+      setSelectedType(editingOrder?.type ?? type);
       const preferredAddress = initialCustomer?.addresses[0];
       setCustomerId(editingOrder?.customerId ?? initialCustomer?.id ?? null);
       setCustomerAddressId(
@@ -469,6 +492,11 @@ function NewOrderModal({
       setDriverUserId(editingOrder?.driverUserId ?? "");
       setNotes(editingOrder?.notes ?? "");
       setError(null);
+      setReason("");
+      setAuthorizerPin("");
+      setReverseDeliverySettlement(false);
+      setDriverCashRemitted(false);
+      setRefundAmounts({});
       const initialDelay = editingOrder?.promisedAt
         ? Math.max(
             1,
@@ -480,6 +508,7 @@ function NewOrderModal({
         : (data.settings.quickDelayMinutes[2] ?? 40);
       setDelay(initialDelay);
       setScheduleMode(editingOrder?.scheduled ? "SCHEDULED" : "QUICK");
+      setTimingChanged(false);
       setScheduledAt(
         toLocalDateTimeInput(
           editingOrder?.promisedAt
@@ -494,48 +523,141 @@ function NewOrderModal({
             0) / 100,
         ).replace(".", ","),
       );
+    } else if (!open) {
+      initializedSession.current = null;
     }
-  }, [
-    data.settings.quickDelayMinutes,
-    editingOrder,
-    initialCustomer,
-    open,
-    type,
-  ]);
+  }, [editingOrder?.id, initialCustomer?.id, open, type]);
+
+  useEffect(() => {
+    if (!editingOrder && open && initializedSession.current === "new") {
+      setSelectedType(type);
+    }
+  }, [editingOrder, open, type]);
+
+  const isPaidEdit = Boolean(editingOrder && editingOrder.paidMinor > 0);
+  const paidTypeChanged = Boolean(
+    editingOrder && selectedType !== editingOrder.type,
+  );
+  const newFeeMinor =
+    selectedType === "DELIVERY" ? (parseMoneyInput(fee) ?? 0) : 0;
+  const previewTotalMinor = editingOrder
+    ? Math.max(
+        0,
+        editingOrder.subtotalMinor -
+          editingOrder.discountMinor -
+          editingOrder.depositMinor +
+          newFeeMinor,
+      )
+    : 0;
+  const refundDueMinor = isPaidEdit
+    ? Math.max(0, editingOrder!.paidMinor - previewTotalMinor)
+    : 0;
+  const refundLines = editingOrder
+    ? editingOrder.payments.filter((payment) => payment.refundableMinor > 0)
+    : [];
+  useEffect(() => {
+    if (!editingOrder || !isPaidEdit) return;
+    setRefundAmounts((current) => {
+      let remaining = refundDueMinor;
+      const next: Record<string, string> = {};
+      for (const payment of refundLines) {
+        const requested =
+          current[payment.id] == null
+            ? 0
+            : (parseMoneyInput(current[payment.id] ?? "0") ?? 0);
+        const amount = Math.min(requested, payment.refundableMinor, remaining);
+        next[payment.id] = String(amount / 100).replace(".", ",");
+        remaining -= amount;
+      }
+      if (remaining > 0) {
+        for (const payment of refundLines) {
+          const already = parseMoneyInput(next[payment.id] ?? "0") ?? 0;
+          const amount = Math.min(payment.refundableMinor - already, remaining);
+          next[payment.id] = String((already + amount) / 100).replace(".", ",");
+          remaining -= amount;
+          if (!remaining) break;
+        }
+      }
+      return next;
+    });
+  }, [editingOrder?.id, refundDueMinor, isPaidEdit]);
+  const refunds = refundLines
+    .map((payment) => ({
+      paymentId: payment.id,
+      amountMinor: parseMoneyInput(refundAmounts[payment.id] ?? "0") ?? 0,
+    }))
+    .filter((refund) => refund.amountMinor > 0);
+  const refundsAllocatedMinor = refunds.reduce(
+    (total, refund) => total + refund.amountMinor,
+    0,
+  );
+  const refundsWithinLimits = refundLines.every(
+    (payment) =>
+      (parseMoneyInput(refundAmounts[payment.id] ?? "0") ?? 0) <=
+      payment.refundableMinor,
+  );
+  const settledDeliveryLedger = Boolean(
+    editingOrder &&
+    data.deliveryLedger.some(
+      (entry) =>
+        entry.orderId === editingOrder.id && entry.status === "SETTLED",
+    ),
+  );
+  const requiresSettlementReversal = settledDeliveryLedger;
+  const requiresDriverCashRemittance = Boolean(
+    editingOrder?.type === "DELIVERY" &&
+    editingOrder.collectedByDriver &&
+    selectedType === "TAKEAWAY",
+  );
 
   const submit = () => {
     if (!name.trim() || !phone.trim()) {
       setError("Completá el nombre y el teléfono del cliente para continuar.");
       return;
     }
-    if (type === "DELIVERY" && !address.trim()) {
+    if (selectedType === "DELIVERY" && !address.trim()) {
       setError("Ingresá la dirección del cliente para continuar.");
       return;
     }
     const promisedAt =
-      scheduleMode === "SCHEDULED"
-        ? new Date(scheduledAt).toISOString()
-        : new Date(Date.now() + delay * 60_000).toISOString();
+      editingOrder && !timingChanged
+        ? editingOrder.promisedAt
+        : scheduleMode === "SCHEDULED"
+          ? new Date(scheduledAt).toISOString()
+          : new Date(Date.now() + delay * 60_000).toISOString();
     mutation.mutate({
-      type,
+      type: selectedType,
       customerId,
-      customerAddressId,
+      customerAddressId: selectedType === "DELIVERY" ? customerAddressId : null,
       customerName: name.trim(),
       customerPhone: phone.trim(),
-      deliveryAddress: address.trim() || null,
-      deliveryFeeMinor: type === "DELIVERY" ? (parseMoneyInput(fee) ?? 0) : 0,
-      driverUserId: type === "DELIVERY" ? driverUserId || null : null,
+      deliveryAddress:
+        selectedType === "DELIVERY" ? address.trim() || null : null,
+      deliveryFeeMinor: newFeeMinor,
+      driverUserId: selectedType === "DELIVERY" ? driverUserId || null : null,
       promisedAt,
       scheduled: scheduleMode === "SCHEDULED",
       notes: notes || null,
+      ...(isPaidEdit
+        ? {
+            reason: reason.trim(),
+            authorizerPin,
+            refunds,
+            reverseDeliverySettlement,
+            driverCashRemitted,
+          }
+        : {}),
     });
   };
   const scheduledValid =
     scheduleMode === "QUICK"
       ? delay > 0
       : Boolean(scheduledAt && new Date(scheduledAt).valueOf() > Date.now());
+  const timingValid = Boolean(editingOrder && !timingChanged) || scheduledValid;
   const customerValid = Boolean(
-    name.trim() && phone.trim() && (type !== "DELIVERY" || address.trim()),
+    name.trim() &&
+    phone.trim() &&
+    (selectedType !== "DELIVERY" || address.trim()),
   );
 
   return (
@@ -545,8 +667,8 @@ function NewOrderModal({
       closeDisabled={mutation.isPending}
       title={
         editingOrder
-          ? `Editar datos · ${typeLabels[type]}`
-          : `Nuevo ${typeLabels[type]}`
+          ? `Editar datos · ${typeLabels[selectedType]}`
+          : `Nuevo ${typeLabels[selectedType]}`
       }
       description={
         editingOrder
@@ -557,13 +679,33 @@ function NewOrderModal({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (scheduledValid) submit();
+          if (timingValid) submit();
         }}
         className="grid gap-4"
       >
+        <Field label="Modalidad del pedido">
+          <Select
+            value={selectedType}
+            onChange={(event) =>
+              setSelectedType(event.target.value as OrderType)
+            }
+          >
+            <option value="TAKEAWAY">Para retirar</option>
+            <option value="DELIVERY">Envío</option>
+          </Select>
+          <p className="mt-1 text-xs text-slate-500">
+            Cambiar la modalidad conserva los datos ingresados y la fecha/hora.
+          </p>
+        </Field>
+        {!editingOrder ? (
+          <div className="rounded-xl border border-brand-200 bg-brand-50 p-3 text-sm text-brand-900">
+            Podés comenzar por los productos. El cliente y, si es envío, su
+            dirección serán obligatorios antes de confirmar.
+          </div>
+        ) : null}
         <OrderCustomerSelector
           open={open}
-          type={type}
+          type={selectedType}
           customerId={customerId}
           name={name}
           phone={phone}
@@ -577,7 +719,7 @@ function NewOrderModal({
           setCustomerAddressId={setCustomerAddressId}
           setDeliveryFee={setFee}
         />
-        {type === "DELIVERY" ? (
+        {selectedType === "DELIVERY" ? (
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Costo de envío">
               <Input
@@ -605,7 +747,10 @@ function NewOrderModal({
           <div className="mb-2 grid grid-cols-2 gap-2">
             <button
               type="button"
-              onClick={() => setScheduleMode("QUICK")}
+              onClick={() => {
+                setTimingChanged(true);
+                setScheduleMode("QUICK");
+              }}
               className={cn(
                 "h-9 rounded-lg text-xs font-bold",
                 scheduleMode === "QUICK"
@@ -617,7 +762,10 @@ function NewOrderModal({
             </button>
             <button
               type="button"
-              onClick={() => setScheduleMode("SCHEDULED")}
+              onClick={() => {
+                setTimingChanged(true);
+                setScheduleMode("SCHEDULED");
+              }}
               className={cn(
                 "h-9 rounded-lg text-xs font-bold",
                 scheduleMode === "SCHEDULED"
@@ -635,7 +783,10 @@ function NewOrderModal({
                   <button
                     type="button"
                     key={minutes}
-                    onClick={() => setDelay(minutes)}
+                    onClick={() => {
+                      setTimingChanged(true);
+                      setDelay(minutes);
+                    }}
                     className={cn(
                       "h-9 rounded-lg px-3 text-xs font-bold",
                       delay === minutes
@@ -649,9 +800,10 @@ function NewOrderModal({
                 <Input
                   className="w-20"
                   value={delay}
-                  onChange={(event) =>
-                    setDelay(Number(event.target.value) || 0)
-                  }
+                  onChange={(event) => {
+                    setTimingChanged(true);
+                    setDelay(Number(event.target.value) || 0);
+                  }}
                   inputMode="numeric"
                 />
               </div>
@@ -669,7 +821,10 @@ function NewOrderModal({
                 type="datetime-local"
                 min={toLocalDateTimeInput(new Date())}
                 value={scheduledAt}
-                onChange={(event) => setScheduledAt(event.target.value)}
+                onChange={(event) => {
+                  setTimingChanged(true);
+                  setScheduledAt(event.target.value);
+                }}
                 required
               />
               <p
@@ -692,6 +847,125 @@ function NewOrderModal({
             placeholder="Detalles para cocina o entrega"
           />
         </Field>
+        {isPaidEdit ? (
+          <div className="grid gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <p className="text-sm font-bold text-amber-950">
+              Cambio de pedido ya cobrado
+            </p>
+            {!paidTypeChanged ? (
+              <p className="text-xs text-amber-900">
+                Un pedido cobrado no admite guardar cambios de datos dentro de
+                la misma modalidad. Cambiá entre retiro y envío para continuar.
+              </p>
+            ) : null}
+            <p className="text-xs text-amber-900">
+              Total actualizado: {formatMoney(previewTotalMinor)} · Cobrado:{" "}
+              {formatMoney(editingOrder!.paidMinor)}
+              {refundDueMinor > 0
+                ? ` · Devolver: ${formatMoney(refundDueMinor)}`
+                : previewTotalMinor > editingOrder!.paidMinor
+                  ? ` · Quedará pendiente: ${formatMoney(previewTotalMinor - editingOrder!.paidMinor)}`
+                  : ""}
+              . Los precios de los productos no se modifican.
+            </p>
+            {refundDueMinor > 0 ? (
+              <>
+                <p className="text-xs text-amber-900">
+                  Indicá cómo se devuelve la diferencia usando los pagos
+                  originales. Cuenta corriente reduce deuda; efectivo y otros
+                  medios requieren devolución efectiva.
+                </p>
+                {editingOrder!.type === "DELIVERY" &&
+                editingOrder!.collectedByDriver ? (
+                  <p className="text-xs font-semibold text-amber-950">
+                    Este efectivo lo cobró el repartidor: la devolución al
+                    cliente debe coordinarse físicamente con él y no se registra
+                    como egreso de caja del negocio.
+                  </p>
+                ) : null}
+                {refundLines.map((payment) => (
+                  <Field
+                    key={payment.id}
+                    label={`${payment.methodName} · máximo ${formatMoney(payment.refundableMinor)}`}
+                  >
+                    <Input
+                      inputMode="decimal"
+                      value={refundAmounts[payment.id] ?? "0"}
+                      onChange={(event) =>
+                        setRefundAmounts((current) => ({
+                          ...current,
+                          [payment.id]: event.target.value,
+                        }))
+                      }
+                    />
+                  </Field>
+                ))}
+                <p
+                  className={cn(
+                    "text-xs font-bold",
+                    refundsAllocatedMinor === refundDueMinor
+                      ? "text-emerald-800"
+                      : "text-rose-700",
+                  )}
+                >
+                  Distribuido: {formatMoney(refundsAllocatedMinor)} de{" "}
+                  {formatMoney(refundDueMinor)}
+                </p>
+              </>
+            ) : null}
+            {requiresSettlementReversal ? (
+              <label className="flex items-start gap-2 text-xs text-amber-950">
+                <input
+                  type="checkbox"
+                  checked={reverseDeliverySettlement}
+                  onChange={(event) =>
+                    setReverseDeliverySettlement(event.target.checked)
+                  }
+                />
+                <span>
+                  Confirmo que se recuperó físicamente el dinero del repartidor
+                  (o se le devolvió el importe que el negocio le adeudaba). La
+                  reversión financiera quedará registrada; no se debe confirmar
+                  antes de realizar este movimiento real.
+                </span>
+              </label>
+            ) : null}
+            {requiresDriverCashRemittance ? (
+              <label className="flex items-start gap-2 text-xs text-amber-950">
+                <input
+                  type="checkbox"
+                  checked={driverCashRemitted}
+                  onChange={(event) =>
+                    setDriverCashRemitted(event.target.checked)
+                  }
+                />
+                <span>
+                  Confirmo que el efectivo del cliente retenido por el
+                  repartidor fue entregado físicamente al negocio. El sistema no
+                  registrará un ingreso ficticio en caja.
+                </span>
+              </label>
+            ) : null}
+            <Field label="Motivo del cambio (obligatorio)">
+              <Textarea
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder="Ej.: el cliente cambió de retiro a envío"
+              />
+            </Field>
+            <Field label="PIN de autorización (obligatorio)">
+              <Input
+                type="password"
+                inputMode="numeric"
+                value={authorizerPin}
+                onChange={(event) =>
+                  setAuthorizerPin(event.target.value.replace(/\D/g, ""))
+                }
+                maxLength={8}
+              />
+            </Field>
+          </div>
+        ) : null}
         {error ? (
           <p
             role="alert"
@@ -714,12 +988,56 @@ function NewOrderModal({
             disabled={
               mutation.isPending ||
               !data.cashSession ||
-              !scheduledValid ||
-              !customerValid
+              !timingValid ||
+              !customerValid ||
+              (isPaidEdit && !paidTypeChanged) ||
+              (isPaidEdit &&
+                (!reason.trim() ||
+                  authorizerPin.length < 4 ||
+                  (requiresSettlementReversal && !reverseDeliverySettlement) ||
+                  (requiresDriverCashRemittance && !driverCashRemitted))) ||
+              (refundDueMinor > 0 &&
+                (refundsAllocatedMinor !== refundDueMinor ||
+                  !refundsWithinLimits))
             }
           >
             {editingOrder ? "Guardar y volver al pedido" : "Crear pedido"}
           </Button>
+          {!editingOrder ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={
+                mutation.isPending || !data.cashSession || !scheduledValid
+              }
+              onClick={() =>
+                mutation.mutate({
+                  type: selectedType,
+                  customerId,
+                  customerAddressId:
+                    selectedType === "DELIVERY" ? customerAddressId : null,
+                  customerName: name.trim() || null,
+                  customerPhone: phone.trim() || null,
+                  deliveryAddress:
+                    selectedType === "DELIVERY" ? address.trim() || null : null,
+                  deliveryFeeMinor:
+                    selectedType === "DELIVERY"
+                      ? (parseMoneyInput(fee) ?? 0)
+                      : 0,
+                  driverUserId:
+                    selectedType === "DELIVERY" ? driverUserId || null : null,
+                  promisedAt:
+                    scheduleMode === "SCHEDULED"
+                      ? new Date(scheduledAt).toISOString()
+                      : new Date(Date.now() + delay * 60_000).toISOString(),
+                  scheduled: scheduleMode === "SCHEDULED",
+                  notes: notes || null,
+                })
+              }
+            >
+              <ShoppingBag size={16} /> Cargar productos primero
+            </Button>
+          ) : null}
         </div>
       </form>
     </Modal>

@@ -54,7 +54,7 @@ test("agrega, persiste y quita observación de comanda por producto", async () =
   });
   await addDialog.getByRole("button", { name: "Agregar a la mesa" }).click();
   await expect(
-    editor.getByText("Muzzarella grande", { exact: true }),
+    editor.getByRole("article").getByText("Muzzarella grande", { exact: true }),
   ).toBeVisible();
 
   await editor

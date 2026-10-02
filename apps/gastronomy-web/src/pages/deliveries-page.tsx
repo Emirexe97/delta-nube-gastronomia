@@ -41,6 +41,9 @@ const formatDateTime = (value: string | null) =>
 export function DeliveriesPage({ data }: { data: BootstrapDto }) {
   const [driverOpen, setDriverOpen] = useState(false);
   const [settleOpen, setSettleOpen] = useState(false);
+  const [reversingRow, setReversingRow] = useState<DeliveryLedgerDto | null>(
+    null,
+  );
   const [driverFilter, setDriverFilter] = useState("ALL");
   const [historyScope, setHistoryScope] =
     useState<DeliveryHistoryScope>("CURRENT_SHIFT");
@@ -72,6 +75,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
       ? scopedActivity
       : scopedActivity.filter((row) => row.driverUserId === driverFilter);
   const pending = ledger.filter((row) => row.status === "PENDING");
+  const settled = ledger.filter((row) => row.status === "SETTLED");
   const selectedRows = ledger.filter(
     (row) => row.status === "PENDING" && selectedIds.includes(row.id),
   );
@@ -159,6 +163,19 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
     pending.length > 0 && pending.every((row) => selectedIds.includes(row.id));
   const toggleAllVisible = () =>
     setSelectedIds(allVisibleSelected ? [] : pending.map((row) => row.id));
+  const selectedDirections = new Set(selectedRows.map((row) => row.direction));
+  const settlementActionLabel =
+    selectedDirections.size === 1 &&
+    selectedDirections.has("BUSINESS_OWES_DRIVER")
+      ? "Pagar envío(s) al repartidor"
+      : selectedDirections.size === 1 &&
+          selectedDirections.has("DRIVER_OWES_BUSINESS")
+        ? "Registrar rendición del repartidor"
+        : "Liquidar movimientos seleccionados";
+  const alreadySettled = settled.reduce(
+    (sum, row) => sum + row.amountDueMinor,
+    0,
+  );
 
   return (
     <div className="panel-enter mx-auto max-w-[1450px] space-y-4">
@@ -184,7 +201,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
                   : undefined
             }
           >
-            <Wallet size={17} /> Liquidar seleccionados ({selectedRows.length})
+            <Wallet size={17} /> {settlementActionLabel} ({selectedRows.length})
           </Button>
         </div>
       </div>
@@ -253,15 +270,21 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         />
         <MetricCard
           icon={<Wallet size={24} />}
-          label="A rendir al negocio"
+          label="Pendiente: repartidor rinde al negocio"
           value={formatMoney(totals.DRIVER_OWES_BUSINESS)}
           tone="green"
         />
         <MetricCard
           icon={<Wallet size={24} />}
-          label="A pagar al repartidor"
+          label="Pendiente: negocio paga al repartidor"
           value={formatMoney(totals.BUSINESS_OWES_DRIVER)}
           tone="blue"
+        />
+        <MetricCard
+          icon={<CheckCircle size={24} />}
+          label="Ya liquidado en el período"
+          value={formatMoney(alreadySettled)}
+          tone="green"
         />
       </section>
 
@@ -333,7 +356,8 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
               Detalle de envíos y rendiciones
             </h3>
             <p className="text-[10px] text-slate-400">
-              La ganancia es el costo de envío; el importe a rendir lo excluye.
+              La ganancia incluye el envío cuando corresponde al repartidor; si
+              el negocio lo retiene, el repartidor rinde el cobro completo.
             </p>
           </div>
           {pending.length ? (
@@ -389,13 +413,18 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
                       </span>
                     </td>
                     <td className="text-right font-extrabold text-brand-700">
-                      {formatMoney(row.deliveryFeeMinor)}
+                      {formatMoney(
+                        data.orders.find((order) => order.id === row.orderId)
+                          ?.deliveryFeeBelongsToDriver === false
+                          ? 0
+                          : row.deliveryFeeMinor,
+                      )}
                     </td>
                     <td>
                       <span className="block">
                         {row.direction === "DRIVER_OWES_BUSINESS"
-                          ? "Rinde al negocio"
-                          : "Negocio paga envío"}
+                          ? "Repartidor rinde al negocio"
+                          : "Negocio paga al repartidor"}
                       </span>
                       <strong className="text-xs">
                         {formatMoney(row.amountDueMinor)}
@@ -408,6 +437,18 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
                       >
                         {row.status === "SETTLED" ? "Liquidado" : "Pendiente"}
                       </Badge>
+                      {row.status === "SETTLED" ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="mt-1"
+                          disabled={!data.cashSession}
+                          onClick={() => setReversingRow(row)}
+                          aria-label={`Revertir liquidación del pedido ${row.orderNumber}`}
+                        >
+                          Revertir liquidación
+                        </Button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -427,12 +468,121 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
       </Card>
 
       <DriverModal open={driverOpen} onClose={() => setDriverOpen(false)} />
+      <ReverseSettlementModal
+        row={reversingRow}
+        onClose={() => setReversingRow(null)}
+      />
       <SettlementModal
         open={settleOpen}
         rows={selectedRows}
         onClose={() => setSettleOpen(false)}
       />
     </div>
+  );
+}
+
+function ReverseSettlementModal({
+  row,
+  onClose,
+}: {
+  row: DeliveryLedgerDto | null;
+  onClose(): void;
+}) {
+  const [reason, setReason] = useState("");
+  const [pin, setPin] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mutation = useApiMutation(
+    (
+      input: Parameters<typeof window.gastronomy.reverseDeliverySettlement>[0],
+    ) => window.gastronomy.reverseDeliverySettlement(input),
+    { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
+  );
+  useEffect(() => {
+    setReason("");
+    setPin("");
+    setConfirmed(false);
+    setError(null);
+  }, [row?.id]);
+  const canSubmit = Boolean(
+    row &&
+    reason.trim() &&
+    /^\d{4,8}$/.test(pin) &&
+    confirmed &&
+    !mutation.isPending,
+  );
+  return (
+    <Modal
+      open={Boolean(row)}
+      onClose={onClose}
+      closeDisabled={mutation.isPending}
+      title="Revertir liquidación del repartidor"
+      description="Registra un contramovimiento de caja y vuelve a dejar la liquidación pendiente; no borra el historial."
+    >
+      <form
+        className="grid gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit && row)
+            mutation.mutate({
+              ledgerId: row.id,
+              reason: reason.trim(),
+              authorizerPin: pin,
+            });
+        }}
+      >
+        {row ? (
+          <p className="rounded-lg bg-amber-50 p-3 text-sm">
+            Pedido #{row.orderNumber} · {row.driverName}.{" "}
+            {row.direction === "BUSINESS_OWES_DRIVER"
+              ? "El repartidor debe devolver al negocio"
+              : "El negocio debe devolver al repartidor"}{" "}
+            {formatMoney(row.settledAmountMinor)}.
+          </p>
+        ) : null}
+        <Field label="Motivo de la reversión">
+          <Input
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+          />
+        </Field>
+        <Field label="PIN de autorización">
+          <Input
+            type="password"
+            inputMode="numeric"
+            maxLength={8}
+            value={pin}
+            onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
+          />
+        </Field>
+        <label className="flex gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            onChange={(event) => setConfirmed(event.target.checked)}
+          />
+          Confirmo que el dinero fue devuelto según el movimiento indicado
+        </label>
+        {error ? (
+          <p role="alert" className="text-sm text-rose-700">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={mutation.isPending}
+            onClick={onClose}
+          >
+            Cancelar
+          </Button>
+          <Button type="submit" disabled={!canSubmit}>
+            Confirmar reversión
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -610,16 +760,20 @@ function SettlementModal({
     <Modal
       open={open}
       onClose={close}
-      title={reviewing ? "Confirmar liquidación" : "Revisar rendición"}
-      description={`${rows.length} movimiento(s) de ${driverDescription}`}
+      title={
+        reviewing ? "Confirmar movimiento de caja" : "Revisar pago o rendición"
+      }
+      description={`${rows.length} movimiento(s) de ${driverDescription}; diferenciá los pagos del negocio al repartidor de las rendiciones que ingresan a caja.`}
     >
       {reviewing ? (
         <div className="grid gap-4">
           <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
             <WarningCircle size={22} className="shrink-0 text-amber-700" />
             <p className="text-xs leading-5 text-amber-900">
-              Se crearán movimientos de caja y estas filas quedarán liquidadas.
-              Verificá repartidor, importes y sentido antes de confirmar.
+              Se crearán movimientos de caja: los pagos salen de caja hacia el
+              repartidor y las rendiciones ingresan a caja. Las filas
+              seleccionadas quedarán liquidadas. Verificá repartidor, importes y
+              sentido antes de confirmar.
             </p>
           </div>
           <SettlementSummary
@@ -645,7 +799,7 @@ function SettlementModal({
             </Button>
             <Button disabled={mutation.isPending} onClick={confirm}>
               <CheckCircle />
-              {mutation.isPending ? "Liquidando…" : "Confirmar liquidación"}
+              {mutation.isPending ? "Registrando…" : "Confirmar movimiento"}
             </Button>
           </div>
         </div>
@@ -677,7 +831,9 @@ function SettlementModal({
                 {rows.map((row) => (
                   <tr key={row.id}>
                     <td className="font-bold">#{row.orderNumber}</td>
-                    <td className="font-semibold">{row.driverName || "Repartidor"}</td>
+                    <td className="font-semibold">
+                      {row.driverName || "Repartidor"}
+                    </td>
                     <td>
                       {row.direction === "DRIVER_OWES_BUSINESS"
                         ? "Ingresa a caja"
@@ -749,7 +905,7 @@ function SettlementSummary({
     <div className="grid gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 sm:grid-cols-3">
       <div className="bg-white p-3">
         <p className="text-[10px] font-bold uppercase text-slate-400">
-          Ingresa a caja
+          Repartidor rinde al negocio · ingresa a caja
         </p>
         <p className="text-lg font-extrabold text-emerald-700">
           {formatMoney(driverOwes)}
@@ -757,7 +913,7 @@ function SettlementSummary({
       </div>
       <div className="bg-white p-3">
         <p className="text-[10px] font-bold uppercase text-slate-400">
-          Sale de caja
+          Negocio paga al repartidor · sale de caja
         </p>
         <p className="text-lg font-extrabold text-rose-700">
           {formatMoney(businessOwes)}

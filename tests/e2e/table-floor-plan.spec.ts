@@ -52,18 +52,19 @@ test("crea un sector, diseña una mesa y la opera desde el plano", async () => {
   dialog = page.getByRole("dialog");
   await dialog.getByLabel("Número de mesa").fill("91");
   await dialog.getByRole("button", { name: "Agregar mesa" }).click();
+  await expect(dialog).toBeHidden();
 
   await expect(
     page.getByRole("button", { name: "Editar mesa 91" }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 10_000 });
   await page.getByLabel("Nombre opcional").fill("Ventana");
   await page.getByLabel("Forma").selectOption("ROUND");
   await page.getByRole("button", { name: "Guardar mesa" }).click();
   await expect(page.getByText("Plano guardado.")).toBeVisible();
 
-  const before = await page
-    .getByRole("button", { name: "Editar mesa 91" })
-    .boundingBox();
+  const movingTable = page.getByRole("button", { name: "Editar mesa 91" });
+  await movingTable.scrollIntoViewIfNeeded();
+  const before = await movingTable.boundingBox();
   expect(before).not.toBeNull();
   if (before) {
     await page.mouse.move(
@@ -77,6 +78,16 @@ test("crea un sector, diseña una mesa y la opera desde el plano", async () => {
     );
     await page.mouse.up();
   }
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async () =>
+          (await window.gastronomy.bootstrap()).tables.find(
+            (table) => table.number === 91,
+          )?.layoutX ?? 0,
+      ),
+    )
+    .toBeGreaterThan(5);
 
   await page.getByRole("button", { name: "Terminar edición" }).click();
   await page.getByRole("button", { name: "Abrir mesa 91" }).click();
@@ -120,6 +131,7 @@ test("sincroniza altas, cambios y eliminaciones entre ambas vistas", async () =>
   const createDialog = page.getByRole("dialog", { name: /Agregar mesa a/ });
   await createDialog.getByLabel("Número de mesa").fill(String(newNumber));
   await createDialog.getByRole("button", { name: "Agregar mesa" }).click();
+  await expect(createDialog).toBeHidden();
   const planTable = page.getByRole("button", {
     name: `Editar mesa ${newNumber}`,
   });

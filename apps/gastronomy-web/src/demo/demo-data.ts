@@ -21,6 +21,7 @@ export const demoSettings: AppSettingsDto = {
   allowCloseWithPendingOrders: false,
   touchProductPanelEnabled: true,
   deliverySettlementEnabled: true,
+  deliveryFeeBelongsToDriver: true,
   deliveryDriverPaymentMode: "ACCUMULATED",
   enabledOrderStatuses: [
     "PENDING",

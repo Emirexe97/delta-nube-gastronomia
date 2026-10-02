@@ -72,6 +72,13 @@ test("alinea controles vecinos aunque sólo uno tenga texto de ayuda", async () 
   await expectSameControlRow(
     dialog.getByLabel("Nombre"),
     dialog.getByLabel("Código"),
-    dialog.getByLabel("Stock inicial"),
+  );
+  // Stock is now a dedicated, four-column inventory section rather than a
+  // field in the product identity row.
+  await expectSameControlRow(
+    dialog.getByLabel("Stock actual"),
+    dialog.getByLabel("Objetivo"),
+    dialog.getByLabel("Mínimo"),
+    dialog.getByLabel("Crítico"),
   );
 });

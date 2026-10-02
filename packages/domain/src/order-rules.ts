@@ -59,7 +59,10 @@ export function guardOrderAction(
       return deny("El pedido ya está confirmado.");
     if (!hasItems)
       return deny("Agregá al menos un producto válido antes de confirmar.");
-    if (order.totalMinor <= 0)
+    if (
+      order.totalMinor <= 0 &&
+      !(order.totalMinor === 0 && order.depositMinor > 0)
+    )
       return deny("El total del pedido debe ser mayor que cero.");
     if (order.type === "DINE_IN" && !order.tableId)
       return deny("Seleccioná una mesa válida.");
@@ -74,7 +77,11 @@ export function guardOrderAction(
   if (action === "EDIT")
     return terminal
       ? deny("El pedido finalizado no admite edición normal.")
-      : allow();
+      : order.paidMinor > 0
+        ? deny(
+            "Un pedido con pagos no admite edición normal; usá un ajuste autorizado.",
+          )
+        : allow();
   if (order.lifecycleStatus === "DRAFT")
     return deny("Confirmá el borrador para continuar.", "CONFIRM");
   if (
@@ -127,6 +134,10 @@ export function assertOperationalTransition(
   order: OrderDto,
   to: OrderOperationalStatus,
 ) {
+  if (to === "CANCELLED")
+    throw new Error(
+      "Usá Cancelar pedido con motivo y PIN; si tiene pagos, devolvelos antes de cancelar.",
+    );
   if (order.lifecycleStatus === "DRAFT")
     throw new Error("Confirmá el borrador antes de cambiar su estado.");
   if (order.operationalStatus === to)

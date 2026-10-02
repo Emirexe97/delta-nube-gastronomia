@@ -994,8 +994,8 @@ export function TableFloorPlan({
       state.startRect,
       state.handle,
       pointer,
-      state.target === "TABLE" ? 4 : 2,
-      state.target === "TABLE" ? 4 : 2,
+      state.target === "TABLE" ? 6 : 2,
+      state.target === "TABLE" ? 7 : 2,
       state.target === "TABLE" ? 40 : 100,
       state.target === "TABLE" ? 40 : 100,
     );
@@ -2009,7 +2009,7 @@ export function TableFloorPlan({
                   <Field label="Ancho %">
                     <Input
                       type="number"
-                      min={4}
+                      min={6}
                       max={40}
                       value={draft.layoutWidth}
                       onChange={(event) =>
@@ -2023,7 +2023,7 @@ export function TableFloorPlan({
                   <Field label="Alto %">
                     <Input
                       type="number"
-                      min={4}
+                      min={7}
                       max={40}
                       value={draft.layoutHeight}
                       onChange={(event) =>

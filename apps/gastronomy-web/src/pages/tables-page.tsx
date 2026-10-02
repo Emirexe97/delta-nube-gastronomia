@@ -754,8 +754,15 @@ function QuickEntry({
           tableAdvanceRef.current = false;
           return;
         }
-        handleOpenFullOrder(currentOrder.id);
-        resetFlow();
+        setOrder(currentOrder);
+        setWaiterUserId(currentOrder.waiterUserId ?? "");
+        const waiter = eligibleWaiters.find(
+          (candidate) => candidate.id === currentOrder.waiterUserId,
+        );
+        setWaiterNumber(waiter ? String(waiter.staffNumber) : "");
+        setStep("ITEM");
+        setStatus(null);
+        resetLine();
         return;
       }
       setStatus(existed ? `Mesa ${number} lista` : `Mesa ${number} creada`);
@@ -783,8 +790,10 @@ function QuickEntry({
       return;
     }
     if (order) {
-      handleOpenFullOrder(order.id);
-      resetFlow();
+      setStep("ITEM");
+      setError(null);
+      setStatus(null);
+      resetLine();
       return;
     }
     waiterAdvanceRef.current = true;
@@ -793,8 +802,11 @@ function QuickEntry({
         tableId: table.id,
         waiterUserId: waiter.id,
       });
-      handleOpenFullOrder(created.id);
-      resetFlow();
+      setOrder(created);
+      setStep("ITEM");
+      setError(null);
+      setStatus(null);
+      resetLine();
     } catch (value) {
       fail(humanError(value), waiterRef);
     } finally {
@@ -1119,11 +1131,7 @@ function QuickEntry({
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
-                    if (waiterUserId) {
-                      void submitWaiter();
-                    } else {
-                      focus(waiterNameRef);
-                    }
+                    focus(waiterNameRef);
                   } else if (event.key === "Enter" && event.shiftKey) {
                     event.preventDefault();
                     setStep("TABLE");
@@ -1222,7 +1230,7 @@ function QuickEntry({
                     onClick={() => handleOpenFullOrder(order.id)}
                   >
                     <Eye size={15} className="shrink-0" />
-                    <span>Ver pedido</span>
+                    <span>Abrir pedido completo</span>
                   </Button>
                 </div>
               </div>
@@ -1257,7 +1265,10 @@ function QuickEntry({
                     placeholder="0"
                   />
                 </Field>
-                <Field label="Código / ID" className="sm:col-span-1 lg:col-span-2">
+                <Field
+                  label="Código / ID"
+                  className="sm:col-span-1 lg:col-span-2"
+                >
                   <Input
                     className="h-9"
                     ref={codeRef}
@@ -1445,7 +1456,10 @@ function QuickEntry({
                     ) : null}
                   </div>
                 </div>
-                <Field label="Precio salón" className="sm:col-span-1 lg:col-span-2">
+                <Field
+                  label="Precio salón"
+                  className="sm:col-span-1 lg:col-span-2"
+                >
                   <Input
                     ref={priceRef}
                     inputMode="decimal"
@@ -1656,7 +1670,8 @@ function ClosedTablesHistorySection({
             Mesas cobradas o canceladas en este turno
             {allClosedOrders.length > 0 ? (
               <>
-                {" "}· Total cobrado:{" "}
+                {" "}
+                · Total cobrado:{" "}
                 <strong className="whitespace-nowrap font-extrabold text-brand-700">
                   {formatMoney(totalBilledMinor)}
                 </strong>
@@ -1713,7 +1728,9 @@ function ClosedTablesHistorySection({
                 );
                 const paymentMethodsText = activePayments?.length
                   ? Array.from(
-                      new Set(activePayments.map((payment) => payment.methodName)),
+                      new Set(
+                        activePayments.map((payment) => payment.methodName),
+                      ),
                     ).join(", ")
                   : isCancelled
                     ? "Cancelada"

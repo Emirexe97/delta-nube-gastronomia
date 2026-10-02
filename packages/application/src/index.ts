@@ -53,7 +53,6 @@ import type {
 import {
   assertMoneyMinor,
   assertAppSettings,
-  assertOffPremiseCustomer,
   nonNegativeMoney,
 } from "@gastronomy/domain";
 
@@ -117,6 +116,7 @@ function validateProductInventory(input: ProductInventoryInput) {
 
 export interface GastronomyRepository {
   bootstrap(): BootstrapDto;
+  getOrder(orderId: Id): OrderDto;
   ensureTable(
     number: number,
   ): import("@gastronomy/contracts").RestaurantTableDto;
@@ -254,12 +254,23 @@ export interface GastronomyRepository {
   }): import("@gastronomy/contracts").ModifierDto;
   listPurchases(): PurchaseDto[];
   createPurchase(input: CreatePurchaseInput): PurchaseDto;
-  getFinanceReport(input: {from: string; to: string}): FinanceReportDto;
+  getFinanceReport(input: { from: string; to: string }): FinanceReportDto;
   createFinanceExpense(input: CreateFinanceExpenseInput): FinanceExpenseDto;
-  payFinanceExpense(input: {expenseId: Id; paymentMethodCode: string; fromCash: boolean; idempotencyKey?: string; terminalId?: string}): FinanceExpenseDto;
-  createFinanceRecurring(input: CreateFinanceRecurringInput): FinanceRecurringDto;
-  stopFinanceRecurring(input: {recurringId: Id}): FinanceRecurringDto;
-  setFinanceProductCost(input: {productId: Id; unitCostMinor: MoneyMinor | null}): void;
+  payFinanceExpense(input: {
+    expenseId: Id;
+    paymentMethodCode: string;
+    fromCash: boolean;
+    idempotencyKey?: string;
+    terminalId?: string;
+  }): FinanceExpenseDto;
+  createFinanceRecurring(
+    input: CreateFinanceRecurringInput,
+  ): FinanceRecurringDto;
+  stopFinanceRecurring(input: { recurringId: Id }): FinanceRecurringDto;
+  setFinanceProductCost(input: {
+    productId: Id;
+    unitCostMinor: MoneyMinor | null;
+  }): void;
   adjustStock(input: {
     productId: Id;
     newStockMinor: number;
@@ -443,7 +454,7 @@ export class GastronomyApplication {
   createOrder(input: CreateOrderInput) {
     if (input.type === "DINE_IN" && !input.tableId)
       throw new Error("Seleccioná una mesa.");
-    assertOffPremiseCustomer(input);
+    // Drafts may start with products; identity is enforced when confirming.
     nonNegativeMoney(input.deliveryFeeMinor ?? 0, "costo de delivery");
     return this.repository.createOrder({
       ...input,
@@ -454,8 +465,14 @@ export class GastronomyApplication {
   }
 
   updateDraftOrder(input: UpdateDraftOrderInput) {
-    assertOffPremiseCustomer(input);
     nonNegativeMoney(input.deliveryFeeMinor ?? 0, "costo de delivery");
+    if (
+      input.refunds?.some(
+        (refund) =>
+          !Number.isSafeInteger(refund.amountMinor) || refund.amountMinor <= 0,
+      )
+    )
+      throw new Error("Los importes a devolver deben ser mayores que cero.");
     return this.repository.updateDraftOrder({
       ...input,
       customerName: input.customerName?.trim() || null,
@@ -582,6 +599,11 @@ export class GastronomyApplication {
   }
 
   refundPayment(input: RefundPaymentInput) {
+    if (
+      input.amountMinor != null &&
+      (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0)
+    )
+      throw new Error("El importe a devolver debe ser mayor que cero.");
     if (!input.reason.trim())
       throw new Error("La devolución requiere un motivo.");
     if (!/^\d{4,8}$/.test(input.authorizerPin))
@@ -593,7 +615,10 @@ export class GastronomyApplication {
   }
 
   completeOrder(input: PayOrderInput & { finalStatus: "DELIVERED" }) {
-    if (!input.payments.length)
+    if (
+      !input.payments.length &&
+      this.repository.getOrder(input.orderId).paymentStatus !== "PAID"
+    )
       throw new Error("Agregá al menos un medio de pago.");
     for (const payment of input.payments) {
       if (!Number.isInteger(payment.amountMinor) || payment.amountMinor <= 0)
@@ -934,7 +959,7 @@ export class GastronomyApplication {
     });
   }
 
-  getFinanceReport(input: {from: string; to: string}) {
+  getFinanceReport(input: { from: string; to: string }) {
     return this.repository.getFinanceReport(input);
   }
 
@@ -942,7 +967,9 @@ export class GastronomyApplication {
     return this.repository.createFinanceExpense(input);
   }
 
-  payFinanceExpense(input: Parameters<GastronomyRepository["payFinanceExpense"]>[0]) {
+  payFinanceExpense(
+    input: Parameters<GastronomyRepository["payFinanceExpense"]>[0],
+  ) {
     return this.repository.payFinanceExpense(input);
   }
 
@@ -950,11 +977,14 @@ export class GastronomyApplication {
     return this.repository.createFinanceRecurring(input);
   }
 
-  stopFinanceRecurring(input: {recurringId: Id}) {
+  stopFinanceRecurring(input: { recurringId: Id }) {
     return this.repository.stopFinanceRecurring(input);
   }
 
-  setFinanceProductCost(input: {productId: Id; unitCostMinor: MoneyMinor | null}) {
+  setFinanceProductCost(input: {
+    productId: Id;
+    unitCostMinor: MoneyMinor | null;
+  }) {
     return this.repository.setFinanceProductCost(input);
   }
 

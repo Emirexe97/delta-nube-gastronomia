@@ -13,7 +13,15 @@ import {
   SlidersHorizontal,
   TextT,
 } from "@phosphor-icons/react";
-import { Button, Card, Field, Input, Select, Textarea, cn } from "@gastronomy/ui";
+import {
+  Button,
+  Card,
+  Field,
+  Input,
+  Select,
+  Textarea,
+  cn,
+} from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { humanError } from "../lib";
 
@@ -238,13 +246,43 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             </label>
           ))}
         </div>
-        {settings.deliverySettlementEnabled ? (
+        <label className="mt-3 flex items-start gap-3 rounded-lg border border-slate-100 p-3 text-xs font-semibold text-slate-700">
+          <input
+            type="checkbox"
+            checked={settings.deliveryFeeBelongsToDriver ?? true}
+            onChange={(event) =>
+              setSettings((current) => ({
+                ...current,
+                deliveryFeeBelongsToDriver: event.target.checked,
+                deliverySettlementEnabled: event.target.checked
+                  ? true
+                  : current.deliverySettlementEnabled,
+              }))
+            }
+            className="mt-0.5 h-4 w-4 accent-brand-600"
+          />
+          <span>
+            <span className="block">
+              El cobro del envío corresponde al repartidor
+            </span>
+            <span className="mt-1 block font-normal text-slate-500">
+              Desactivado: el negocio conserva el cobro del envío. Activado: se
+              registra en la cuenta del repartidor, permite pagarle desde
+              Repartidores y los pagos afectan el cierre de caja. Activarlo
+              también habilita la liquidación; cada pedido conserva la
+              titularidad definida en su primer cobro.
+            </span>
+          </span>
+        </label>
+        {settings.deliverySettlementEnabled &&
+        (settings.deliveryFeeBelongsToDriver ?? true) ? (
           <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50/50 p-3.5 space-y-2">
             <label className="text-xs font-bold text-slate-800">
               Modalidad de pago a repartidores
             </label>
             <p className="text-[11px] text-slate-500">
-              Elegí si los envíos se abonan en el momento del cobro o se acumulan para su rendición en lote:
+              Elegí si los envíos se abonan en el momento del cobro o se
+              acumulan para su rendición en lote:
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
               <label
@@ -273,9 +311,12 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                   className="mt-0.5 h-3.5 w-3.5 accent-brand-600"
                 />
                 <div>
-                  <span className="font-bold block">Acumular en Repartidores</span>
+                  <span className="font-bold block">
+                    Acumular en Repartidores
+                  </span>
                   <span className="text-[11px] text-slate-500">
-                    Los envíos quedan en la cuenta del repartidor para liquidarse en lote al final del turno.
+                    Los envíos quedan en la cuenta del repartidor para
+                    liquidarse en lote al final del turno.
                   </span>
                 </div>
               </label>
@@ -303,9 +344,12 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                   className="mt-0.5 h-3.5 w-3.5 accent-brand-600"
                 />
                 <div>
-                  <span className="font-bold block">Pagar al cobrar pedido</span>
+                  <span className="font-bold block">
+                    Pagar al cobrar pedido
+                  </span>
                   <span className="text-[11px] text-slate-500">
-                    Al cobrar o entregar, se preselecciona pagar el envío y se registra el egreso de caja en el momento.
+                    Al cobrar o entregar, se preselecciona pagar el envío y se
+                    registra el egreso de caja en el momento.
                   </span>
                 </div>
               </label>

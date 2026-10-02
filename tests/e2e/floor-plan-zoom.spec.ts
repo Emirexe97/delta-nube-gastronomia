@@ -42,7 +42,9 @@ test("permite hacer zoom y alejar con controles y con la rueda del mouse en el p
   // 1. Controles flotantes de zoom presentes y en 100%
   const zoomControls = page.getByTestId("floor-plan-zoom-controls");
   await expect(zoomControls).toBeVisible();
-  await expect(page.getByRole("button", { name: "Restablecer zoom" })).toHaveText("100%");
+  await expect(
+    page.getByRole("button", { name: "Restablecer zoom" }),
+  ).toHaveText("100%");
 
   const canvas = page.locator("[data-floor-canvas]");
   await expect(canvas).toBeVisible();
@@ -50,22 +52,30 @@ test("permite hacer zoom y alejar con controles y con la rueda del mouse en el p
 
   // 2. Acercar con el botón flotante (+)
   await page.getByRole("button", { name: "Acercar plano" }).click();
-  await expect(page.getByRole("button", { name: "Restablecer zoom" })).toHaveText("118%");
+  await expect(
+    page.getByRole("button", { name: "Restablecer zoom" }),
+  ).toHaveText("118%");
   await expect(canvas).toHaveCSS("transform", /matrix\(1\.18/);
 
   // 3. Alejar con el botón flotante (-)
   await page.getByRole("button", { name: "Alejar plano" }).click();
-  await expect(page.getByRole("button", { name: "Restablecer zoom" })).toHaveText("100%");
+  await expect(
+    page.getByRole("button", { name: "Restablecer zoom" }),
+  ).toHaveText("100%");
 
   // 4. Zoom mediante rueda del mouse (wheel event)
   const viewport = page.getByRole("region", { name: "Editor del plano" });
   await viewport.hover();
   await page.mouse.wheel(0, -200); // Rueda hacia arriba (zoom in)
-  await expect(page.getByRole("button", { name: "Restablecer zoom" })).not.toHaveText("100%");
+  await expect(
+    page.getByRole("button", { name: "Restablecer zoom" }),
+  ).not.toHaveText("100%");
 
   // 5. Restablecer con el botón de porcentaje o centrar
   await page.getByRole("button", { name: "Centrar y restablecer" }).click();
-  await expect(page.getByRole("button", { name: "Restablecer zoom" })).toHaveText("100%");
+  await expect(
+    page.getByRole("button", { name: "Restablecer zoom" }),
+  ).toHaveText("100%");
   await expect(canvas).toHaveCSS("transform", /matrix\(1,\s*0,\s*0,\s*1/);
 
   // 6. Verificar que las mesas se pueden abrir aun con zoom aplicado
@@ -85,15 +95,28 @@ test("permite hacer zoom y alejar con controles y con la rueda del mouse en el p
   const viewportBounds = await viewport.boundingBox();
   expect(viewportBounds).not.toBeNull();
   if (viewportBounds) {
-    await page.mouse.move(
-      viewportBounds.x + viewportBounds.width / 2,
-      viewportBounds.y + viewportBounds.height / 2,
-    );
+    const blankPoint = await viewport.evaluate((region) => {
+      const canvas = region.querySelector("[data-floor-canvas]");
+      if (!canvas) return null;
+      const bounds = region.getBoundingClientRect();
+      for (let y = bounds.top + 16; y < bounds.bottom - 16; y += 12) {
+        for (let x = bounds.left + 16; x < bounds.right - 16; x += 12) {
+          const target = document.elementFromPoint(x, y);
+          if (
+            target &&
+            canvas.contains(target) &&
+            !target.closest("button, [role=button], input, select")
+          )
+            return { x, y };
+        }
+      }
+      return null;
+    });
+    expect(blankPoint).not.toBeNull();
+    if (!blankPoint) return;
+    await page.mouse.move(blankPoint.x, blankPoint.y);
     await page.mouse.down();
-    await page.mouse.move(
-      viewportBounds.x + viewportBounds.width / 2 + 60,
-      viewportBounds.y + viewportBounds.height / 2 + 40,
-    );
+    await page.mouse.move(blankPoint.x + 60, blankPoint.y + 40);
     await page.mouse.up();
   }
   const afterPanTransform = await canvas.evaluate(
@@ -114,6 +137,8 @@ test("permite hacer zoom y alejar con controles y con la rueda del mouse en el p
   await sectorDialog.getByLabel("Nombre del sector").fill("Patio");
   await sectorDialog.getByRole("button", { name: "Guardar" }).click();
   await expect(page.getByRole("tab", { name: "Patio · 0" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Restablecer zoom" })).toHaveText("100%");
+  await expect(
+    page.getByRole("button", { name: "Restablecer zoom" }),
+  ).toHaveText("100%");
   await expect(canvas).toHaveCSS("transform", /matrix\(1,\s*0,\s*0,\s*1/);
 });

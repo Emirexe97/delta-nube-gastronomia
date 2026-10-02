@@ -74,6 +74,8 @@ export interface AppSettingsDto {
   allowCloseWithPendingOrders: boolean;
   touchProductPanelEnabled: boolean;
   deliverySettlementEnabled: boolean;
+  /** Whether delivery fees belong to the driver; absent legacy values mean true. */
+  deliveryFeeBelongsToDriver?: boolean;
   deliveryDriverPaymentMode?: "ON_ORDER_PAYMENT" | "ACCUMULATED";
   enabledOrderStatuses: OrderOperationalStatus[];
   quickDelayMinutes: number[];
@@ -183,8 +185,27 @@ export interface CustomerSearchPageDto {
 
 export interface CustomerProfileDto {
   customer: CustomerDto;
-  accountCharges: Array<{ orderId: Id; orderNumber: number; createdAt: IsoDateTime; amountMinor: MoneyMinor; settledMinor: MoneyMinor; outstandingMinor: MoneyMinor }>;
-  accountReceipts: Array<{ id: Id; createdAt: IsoDateTime; amountMinor: MoneyMinor; methodCode: string; methodName: string; reference: string | null; allocations: Array<{ orderId: Id; orderNumber: number; amountMinor: MoneyMinor }> }>;
+  accountCharges: Array<{
+    orderId: Id;
+    orderNumber: number;
+    createdAt: IsoDateTime;
+    amountMinor: MoneyMinor;
+    settledMinor: MoneyMinor;
+    outstandingMinor: MoneyMinor;
+  }>;
+  accountReceipts: Array<{
+    id: Id;
+    createdAt: IsoDateTime;
+    amountMinor: MoneyMinor;
+    methodCode: string;
+    methodName: string;
+    reference: string | null;
+    allocations: Array<{
+      orderId: Id;
+      orderNumber: number;
+      amountMinor: MoneyMinor;
+    }>;
+  }>;
   metrics: {
     orderCount: number;
     totalSpentMinor: MoneyMinor;
@@ -334,6 +355,8 @@ export interface OrderDto {
   deliveryAddressSnapshot: string | null;
   deliveryAddressNotesSnapshot: string | null;
   deliveryFeeMinor: MoneyMinor;
+  /** Ownership selected when payment was first recorded; absent until then. */
+  deliveryFeeBelongsToDriver?: boolean;
   promisedAt: IsoDateTime | null;
   scheduled: boolean;
   waiterUserId: Id | null;
@@ -705,6 +728,15 @@ export interface CreateOrderInput extends IdempotentRequest {
 
 export interface UpdateDraftOrderInput extends CreateOrderInput {
   orderId: Id;
+  /** Required authorization for changes after payment. */
+  reason?: string;
+  authorizerPin?: string;
+  /** Exact refunds needed when the updated total is below the amount funded. */
+  refunds?: Array<{ paymentId: Id; amountMinor: MoneyMinor }>;
+  /** Confirm physical recovery/return of a previously settled driver amount. */
+  reverseDeliverySettlement?: boolean;
+  /** Remaining driver-held customer cash has physically been remitted to the business. */
+  driverCashRemitted?: boolean;
 }
 
 export interface ConfirmOrderInput extends IdempotentRequest {
@@ -784,6 +816,9 @@ export interface RefundPaymentInput extends IdempotentRequest {
   paymentId: Id;
   reason: string;
   authorizerPin: string;
+  /** Omit to refund the complete remaining payment. */
+  amountMinor?: MoneyMinor;
+  reverseDeliverySettlement?: boolean;
 }
 
 export interface PrinterDeviceDto {
@@ -888,8 +923,18 @@ export interface FinanceReportDto {
   estimatedOperatingProfitMinor: MoneyMinor;
   expenses: FinanceExpenseDto[];
   recurring: FinanceRecurringDto[];
-  productCosts: Array<{productId: Id; productName: string; unitCostMinor: MoneyMinor | null; source: "MANUAL" | "PURCHASE" | "UNKNOWN"}>;
-  monthly: Array<{month: string; salesMinor: MoneyMinor; cogsMinor: MoneyMinor; expensesMinor: MoneyMinor}>;
+  productCosts: Array<{
+    productId: Id;
+    productName: string;
+    unitCostMinor: MoneyMinor | null;
+    source: "MANUAL" | "PURCHASE" | "UNKNOWN";
+  }>;
+  monthly: Array<{
+    month: string;
+    salesMinor: MoneyMinor;
+    cogsMinor: MoneyMinor;
+    expensesMinor: MoneyMinor;
+  }>;
 }
 
 export interface CreateFinanceExpenseInput extends IdempotentRequest {
@@ -1032,7 +1077,9 @@ export interface DesktopApi {
     page: number;
     pageSize: number;
   }): Promise<CustomerProfileDto>;
-  settleCustomerAccount(input: SettleCustomerAccountInput): Promise<CustomerProfileDto>;
+  settleCustomerAccount(
+    input: SettleCustomerAccountInput,
+  ): Promise<CustomerProfileDto>;
   createCustomer(input: {
     name: string;
     phone: string;
@@ -1103,12 +1150,30 @@ export interface DesktopApi {
   }): Promise<ModifierDto>;
   listPurchases(): Promise<PurchaseDto[]>;
   createPurchase(input: CreatePurchaseInput): Promise<PurchaseDto>;
-  getFinanceReport(input: {from: string; to: string}): Promise<FinanceReportDto>;
-  createFinanceExpense(input: CreateFinanceExpenseInput): Promise<FinanceExpenseDto>;
-  payFinanceExpense(input: {expenseId: Id; paymentMethodCode: string; fromCash: boolean} & IdempotentRequest): Promise<FinanceExpenseDto>;
-  createFinanceRecurring(input: CreateFinanceRecurringInput): Promise<FinanceRecurringDto>;
-  stopFinanceRecurring(input: {recurringId: Id}): Promise<FinanceRecurringDto>;
-  setFinanceProductCost(input: {productId: Id; unitCostMinor: MoneyMinor | null}): Promise<void>;
+  getFinanceReport(input: {
+    from: string;
+    to: string;
+  }): Promise<FinanceReportDto>;
+  createFinanceExpense(
+    input: CreateFinanceExpenseInput,
+  ): Promise<FinanceExpenseDto>;
+  payFinanceExpense(
+    input: {
+      expenseId: Id;
+      paymentMethodCode: string;
+      fromCash: boolean;
+    } & IdempotentRequest,
+  ): Promise<FinanceExpenseDto>;
+  createFinanceRecurring(
+    input: CreateFinanceRecurringInput,
+  ): Promise<FinanceRecurringDto>;
+  stopFinanceRecurring(input: {
+    recurringId: Id;
+  }): Promise<FinanceRecurringDto>;
+  setFinanceProductCost(input: {
+    productId: Id;
+    unitCostMinor: MoneyMinor | null;
+  }): Promise<void>;
   adjustStock(input: {
     productId: Id;
     newStockMinor: number;

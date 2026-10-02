@@ -1,4 +1,12 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useNavigate } from "react-router-dom";
 import type {
   BootstrapDto,
   CustomerDto,
@@ -61,6 +69,7 @@ export function OrderEditor({
   onClose(): void;
   onEditDraft?(orderId: string): void;
 }) {
+  const navigate = useNavigate();
   const order = data.orders.find((candidate) => candidate.id === orderId);
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
@@ -108,10 +117,7 @@ export function OrderEditor({
     if (!search.trim()) return false;
     const q = normalizeSearch(search);
     return (
-      q.includes("mitad") ||
-      q.includes("media") ||
-      q === "mm" ||
-      q === "mym"
+      q.includes("mitad") || q.includes("media") || q === "mm" || q === "mym"
     );
   }, [search]);
 
@@ -188,7 +194,9 @@ export function OrderEditor({
   }, [search, categoryId]);
 
   useEffect(() => {
-    const el = document.getElementById(`order-editor-product-${activeProductIndex}`);
+    const el = document.getElementById(
+      `order-editor-product-${activeProductIndex}`,
+    );
     el?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeProductIndex]);
 
@@ -460,7 +468,8 @@ export function OrderEditor({
     print.mutate({
       orderId: order.id,
       kind,
-      confirmFirst: kind === "KITCHEN_ORDER" && order.lifecycleStatus === "DRAFT",
+      confirmFirst:
+        kind === "KITCHEN_ORDER" && order.lifecycleStatus === "DRAFT",
     });
   };
 
@@ -484,9 +493,7 @@ export function OrderEditor({
       if (nestedDialogOpen) return;
 
       if (event.key === "F6") {
-        const canOpenHalf =
-          !locked &&
-          data.products.length >= 2;
+        const canOpenHalf = !locked && data.products.length >= 2;
         if (canOpenHalf) {
           event.preventDefault();
           setHalfOpen(true);
@@ -496,9 +503,7 @@ export function OrderEditor({
 
       if (event.key === "F7") {
         const canPrintComanda =
-          order.items.length > 0 &&
-          !print.isPending &&
-          !Boolean(pendingPrint);
+          order.items.length > 0 && !print.isPending && !Boolean(pendingPrint);
         if (canPrintComanda) {
           event.preventDefault();
           requestPrint("KITCHEN_ORDER");
@@ -548,10 +553,10 @@ export function OrderEditor({
 
   const isPizzaCategory = Boolean(
     categoryId &&
-      data.categories
-        .find((category) => category.id === categoryId)
-        ?.name.toLocaleLowerCase("es-AR")
-        .includes("pizza"),
+    data.categories
+      .find((category) => category.id === categoryId)
+      ?.name.toLocaleLowerCase("es-AR")
+      .includes("pizza"),
   );
   const showHalfAndHalfCard =
     !locked &&
@@ -636,7 +641,9 @@ export function OrderEditor({
                 if (event.key === "ArrowUp") {
                   event.preventDefault();
                   setActiveProductIndex((prev) =>
-                    products.length ? (prev - 1 + products.length) % products.length : 0,
+                    products.length
+                      ? (prev - 1 + products.length) % products.length
+                      : 0,
                   );
                   return;
                 }
@@ -657,7 +664,8 @@ export function OrderEditor({
                     setHalfOpen(true);
                     return;
                   }
-                  const targetProduct = products[activeProductIndex] ?? products[0];
+                  const targetProduct =
+                    products[activeProductIndex] ?? products[0];
                   if (targetProduct) {
                     event.preventDefault();
                     event.stopPropagation();
@@ -756,9 +764,7 @@ export function OrderEditor({
               );
               const hasVariants = variants.length > 0;
               const disabled =
-                locked ||
-                addItem.isPending ||
-                (!hasVariants && price == null);
+                locked || addItem.isPending || (!hasVariants && price == null);
               const isSelected = index === activeProductIndex;
 
               return (
@@ -782,7 +788,8 @@ export function OrderEditor({
                   }}
                   className={cn(
                     "focus-ring group m-1 flex min-h-[76px] cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-300 hover:shadow-sm scroll-m-2",
-                    isSelected && "border-brand-500 ring-2 ring-brand-500/80 shadow-md bg-brand-50/20",
+                    isSelected &&
+                      "border-brand-500 ring-2 ring-brand-500/80 shadow-md bg-brand-50/20",
                     disabled && "cursor-not-allowed opacity-50",
                   )}
                 >
@@ -819,7 +826,9 @@ export function OrderEditor({
                           className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800"
                         >
                           <span>Base</span>
-                          <span className="text-brand-700">{formatMoney(price)}</span>
+                          <span className="text-brand-700">
+                            {formatMoney(price)}
+                          </span>
                         </button>
                       ) : null}
                       {variants.map((v) => {
@@ -1328,17 +1337,16 @@ export function OrderEditor({
                   : nextOperationalLabel}
               </Button>
             </div>
-            {order.type !== "DINE_IN" &&
-            onEditDraft &&
-            !locked &&
-            order.paidMinor === 0 ? (
+            {order.type !== "DINE_IN" && onEditDraft && !locked ? (
               <Button
                 variant="secondary"
                 className="mt-2 w-full"
                 onClick={() => onEditDraft(order.id)}
               >
                 <ArrowLeft size={16} />
-                Volver a datos del cliente y envío
+                {order.paidMinor > 0
+                  ? "Cambiar cliente, modalidad o envío (requiere autorización)"
+                  : "Volver a datos del cliente y envío"}
               </Button>
             ) : null}
             {isDraft ? (
@@ -1375,7 +1383,8 @@ export function OrderEditor({
               <div
                 className={cn(
                   "mt-2 grid gap-2",
-                  (order.type === "DINE_IN" && order.tableId) || order.items.length
+                  (order.type === "DINE_IN" && order.tableId) ||
+                    order.items.length
                     ? "grid-cols-2"
                     : "grid-cols-1",
                 )}
@@ -1631,7 +1640,13 @@ export function OrderEditor({
       <RefundPaymentModal
         open={refundOpen}
         order={order}
+        data={data}
         onClose={() => setRefundOpen(false)}
+        onGoToSettlements={() => {
+          setRefundOpen(false);
+          onClose();
+          navigate("/repartidores");
+        }}
         onError={setError}
       />
       <CancelModal
@@ -1694,6 +1709,29 @@ export function OrderEditor({
             >
               {driverError}
             </p>
+          ) : null}
+          {data.deliveryLedger.some(
+            (entry) => entry.orderId === order.id && entry.status === "SETTLED",
+          ) ? (
+            <div className="grid gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs text-amber-950">
+                Revertí primero desde Repartidores &gt; Revertir liquidación. La
+                reasignación se habilitará después de registrar la devolución
+                física del dinero.
+              </p>
+              <Button
+                type="button"
+                variant="secondary"
+                className="justify-self-start"
+                onClick={() => {
+                  setDriverOpen(false);
+                  onClose();
+                  navigate("/repartidores");
+                }}
+              >
+                Ir a Repartidores
+              </Button>
+            </div>
           ) : null}
           <div className="flex justify-end gap-2">
             <Button
@@ -1889,30 +1927,50 @@ function ItemNotesModal({
 function RefundPaymentModal({
   open,
   order,
+  data,
   onClose,
+  onGoToSettlements,
   onError,
 }: {
   open: boolean;
   order: OrderDto;
+  data: BootstrapDto;
   onClose(): void;
+  onGoToSettlements(): void;
   onError(value: string): void;
 }) {
   const refundable = order.payments.filter(
     (payment) => payment.refundableMinor > 0,
   );
   const [paymentId, setPaymentId] = useState("");
+  const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
+  const [reverseDeliverySettlement, setReverseDeliverySettlement] =
+    useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const settledLedger = data.deliveryLedger.some(
+    (entry) => entry.orderId === order.id && entry.status === "SETTLED",
+  );
   useEffect(() => {
     if (open) {
       setPaymentId(refundable[0]?.id ?? "");
+      setAmount(
+        String((refundable[0]?.refundableMinor ?? 0) / 100).replace(".", ","),
+      );
       setReason("");
       setPin("");
+      setReverseDeliverySettlement(false);
       setLocalError(null);
     }
   }, [open, order.id]);
   const selected = refundable.find((payment) => payment.id === paymentId);
+  const selectedAmountMinor = parseMoneyInput(amount) ?? 0;
+  const canRefund = Boolean(
+    selected &&
+    selectedAmountMinor > 0 &&
+    selectedAmountMinor <= selected.refundableMinor,
+  );
   const mutation = useApiMutation(
     (input: Parameters<typeof window.gastronomy.refundPayment>[0]) =>
       window.gastronomy.refundPayment(input),
@@ -1931,7 +1989,7 @@ function RefundPaymentModal({
       onClose={onClose}
       closeDisabled={mutation.isPending}
       title="Devolver o anular pago"
-      description="Se revierte la línea completa, se corrige la caja y queda una auditoría"
+      description="Elegí el importe a devolver; queda registrado con motivo y autorización"
     >
       <form
         className="grid gap-4"
@@ -1941,22 +1999,34 @@ function RefundPaymentModal({
           const submittedPaymentId = String(formData.get("paymentId") ?? "");
           const submittedReason = String(formData.get("reason") ?? "").trim();
           const submittedPin = String(formData.get("authorizerPin") ?? "");
+          const submittedAmount = parseMoneyInput(
+            String(formData.get("amountMinor") ?? ""),
+          );
+          const submittedReverse =
+            formData.get("reverseDeliverySettlement") === "on";
           if (
             !submittedPaymentId ||
+            submittedAmount == null ||
+            submittedAmount <= 0 ||
+            !selected ||
+            submittedAmount > selected.refundableMinor ||
             !submittedReason ||
             submittedPin.length < 4 ||
+            (settledLedger && !submittedReverse) ||
             mutation.isPending
           ) {
             setLocalError(
-              "Completá el pago, el motivo y el PIN para continuar.",
+              "Verificá el importe disponible, el motivo, el PIN y la autorización de reversión de liquidación.",
             );
             return;
           }
           mutation.mutate({
             orderId: order.id,
             paymentId: submittedPaymentId,
+            amountMinor: submittedAmount,
             reason: submittedReason,
             authorizerPin: submittedPin,
+            reverseDeliverySettlement: submittedReverse,
           });
         }}
       >
@@ -1969,7 +2039,20 @@ function RefundPaymentModal({
             autoFocus
             name="paymentId"
             value={paymentId}
-            onChange={(event) => setPaymentId(event.target.value)}
+            onChange={(event) => {
+              const nextId = event.target.value;
+              setPaymentId(nextId);
+              const nextPayment = refundable.find(
+                (payment) => payment.id === nextId,
+              );
+              setAmount(
+                String((nextPayment?.refundableMinor ?? 0) / 100).replace(
+                  ".",
+                  ",",
+                ),
+              );
+              setLocalError(null);
+            }}
           >
             {refundable.map((payment) => (
               <option key={payment.id} value={payment.id}>
@@ -1979,13 +2062,60 @@ function RefundPaymentModal({
           </Select>
         </Field>
         {selected ? (
-          <div className="flex items-center justify-between rounded-xl bg-slate-950 p-4 text-white">
-            <span className="text-xs font-semibold text-slate-300">
-              Importe a devolver
-            </span>
-            <strong className="text-xl">
-              {formatMoney(selected.refundableMinor)}
-            </strong>
+          <>
+            <Field
+              label={`Importe a devolver · máximo ${formatMoney(selected.refundableMinor)}`}
+            >
+              <Input
+                name="amountMinor"
+                inputMode="decimal"
+                value={amount}
+                onChange={(event) => setAmount(event.target.value)}
+              />
+            </Field>
+            {selected.methodCode === "ACCOUNT" ? (
+              <p className="-mt-2 text-xs text-amber-800">
+                Esto reduce la deuda pendiente del cliente. Si ya abonó esta
+                deuda, el backend puede rechazar la devolución: corregí el
+                recibo de pago del cliente.
+              </p>
+            ) : selected.methodCode === "CASH" && order.collectedByDriver ? (
+              <p className="-mt-2 text-xs text-amber-800">
+                Este efectivo lo cobró el repartidor: coordiná la devolución al
+                cliente con él. No se descontará de la caja del negocio.
+              </p>
+            ) : selected.methodCode === "CASH" ? (
+              <p className="-mt-2 text-xs text-slate-600">
+                La devolución en efectivo se descontará de la caja del negocio.
+              </p>
+            ) : null}
+          </>
+        ) : null}
+        {settledLedger ? (
+          <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <label className="flex items-start gap-2 text-xs text-amber-950">
+              <input
+                name="reverseDeliverySettlement"
+                type="checkbox"
+                checked={reverseDeliverySettlement}
+                onChange={(event) =>
+                  setReverseDeliverySettlement(event.target.checked)
+                }
+              />
+              <span>
+                Confirmo que se realizó físicamente la devolución del dinero de
+                la liquidación al repartidor. También se revertirá su registro;
+                no confirmes antes de hacer el movimiento real.
+              </span>
+            </label>
+            <Button
+              type="button"
+              variant="secondary"
+              className="justify-self-start"
+              onClick={onGoToSettlements}
+            >
+              Ir a Repartidores para revertir la liquidación
+            </Button>
           </div>
         ) : null}
         <Field label="Motivo">
@@ -2024,7 +2154,17 @@ function RefundPaymentModal({
           >
             Volver
           </Button>
-          <Button type="submit" variant="danger" disabled={mutation.isPending}>
+          <Button
+            type="submit"
+            variant="danger"
+            disabled={
+              mutation.isPending ||
+              !canRefund ||
+              !reason.trim() ||
+              pin.length < 4 ||
+              (settledLedger && !reverseDeliverySettlement)
+            }
+          >
             <ArrowCounterClockwise size={16} />
             {mutation.isPending ? "Devolviendo…" : "Confirmar devolución"}
           </Button>
@@ -2410,7 +2550,9 @@ function DepositModal({
         </Field>
         {isDepositOverBase ? (
           <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
-            La seña ({formatMoney(parsed)}) supera el consumo actual ({formatMoney(currentBase)}). El saldo a cobrar quedará en $0 hasta que se carguen más consumos.
+            La seña ({formatMoney(parsed)}) supera el consumo actual (
+            {formatMoney(currentBase)}). El saldo a cobrar quedará en $0 hasta
+            que se carguen más consumos.
           </p>
         ) : null}
         {localError ? (
@@ -2428,7 +2570,11 @@ function DepositModal({
               variant="danger"
               disabled={mutation.isPending || pin.length < 4}
               onClick={() => handleApply(0, "")}
-              title={pin.length < 4 ? "Ingresá el PIN para autorizar quitar la seña" : undefined}
+              title={
+                pin.length < 4
+                  ? "Ingresá el PIN para autorizar quitar la seña"
+                  : undefined
+              }
             >
               Quitar seña
             </Button>
@@ -2824,7 +2970,9 @@ function HalfAndHalfModal({
         product.categoryName.toLocaleLowerCase("es-AR").includes("pizza") ||
         product.name.toLocaleLowerCase("es-AR").includes("pizza"),
     );
-    return pizzaCategoryOrName.length > 0 ? pizzaCategoryOrName : activeWithPrice;
+    return pizzaCategoryOrName.length > 0
+      ? pizzaCategoryOrName
+      : activeWithPrice;
   }, [data.products, priceListCode]);
 
   const firstProduct = useMemo(
@@ -2986,6 +3134,7 @@ function PaymentModal({
   const [customerResults, setCustomerResults] = useState<CustomerDto[]>([]);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const defaultCashUntouched = useRef(true);
   const [localError, setLocalError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
   const defaultChangeMethod = useMemo(
@@ -2997,8 +3146,19 @@ function PaymentModal({
   );
   const [changeMethodCode, setChangeMethodCode] =
     useState<string>(defaultChangeMethod);
+  const deliveryFeeBelongsToDriver =
+    order.deliveryFeeBelongsToDriver ??
+    data.settings.deliveryFeeBelongsToDriver ??
+    true;
+  const canSettleDriverFee =
+    order.type === "DELIVERY" &&
+    Boolean(order.driverUserId) &&
+    data.settings.deliverySettlementEnabled &&
+    deliveryFeeBelongsToDriver &&
+    order.deliveryFeeMinor > 0;
   const [payDriverNow, setPayDriverNow] = useState(
-    data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
+    canSettleDriverFee &&
+      data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
   );
   const firstPaymentInputRef = useRef<HTMLInputElement>(null);
 
@@ -3009,13 +3169,19 @@ function PaymentModal({
     }
     const exact = String(remaining / 100);
     setValues({ CASH: exact });
+    defaultCashUntouched.current = true;
     setCustomerId(order.customerId);
-    setCustomerQuery("");
+    setCustomerQuery(
+      order.customerNameSnapshot ?? order.customerPhoneSnapshot ?? "",
+    );
     setCustomerResults([]);
+    setCustomerName(order.customerNameSnapshot ?? "");
+    setCustomerPhone(order.customerPhoneSnapshot ?? "");
     setReferences({});
     setChangeMethodCode(defaultChangeMethod);
     setPayDriverNow(
-      data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
+      canSettleDriverFee &&
+        data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
     );
     setLocalError(null);
     setInitialized(true);
@@ -3028,6 +3194,7 @@ function PaymentModal({
     remaining,
     defaultChangeMethod,
     data.settings.deliveryDriverPaymentMode,
+    canSettleDriverFee,
   ]);
 
   const mutation = useApiMutation(
@@ -3072,7 +3239,8 @@ function PaymentModal({
     .filter((item) => item.amountMinor > 0);
 
   const allocated = payments.reduce((sum, item) => sum + item.amountMinor, 0);
-  const accountAmount = payments.find((item) => item.methodCode === "ACCOUNT")?.amountMinor ?? 0;
+  const accountAmount =
+    payments.find((item) => item.methodCode === "ACCOUNT")?.amountMinor ?? 0;
   const changeDue = Math.max(0, allocated - remaining);
 
   const selectedChangeMethod = data.paymentMethods.find(
@@ -3091,6 +3259,7 @@ function PaymentModal({
     order.type === "DELIVERY" &&
     Boolean(order.driverUserId) &&
     data.settings.deliverySettlementEnabled &&
+    deliveryFeeBelongsToDriver &&
     order.deliveryFeeMinor > 0;
 
   const canSubmit =
@@ -3099,6 +3268,12 @@ function PaymentModal({
     (!accountAmount || (Boolean(customerId) && allocated === remaining)) &&
     !isCashChangeInsufficient &&
     !mutation.isPending;
+
+  const loadToAccount = () => {
+    defaultCashUntouched.current = false;
+    setValues({ ACCOUNT: String(remaining / 100) });
+    setLocalError(null);
+  };
 
   const submitPayment = () => {
     if (!canSubmit) return;
@@ -3159,7 +3334,8 @@ function PaymentModal({
           <p className="text-3xl font-extrabold">{formatMoney(remaining)}</p>
           {order.depositMinor > 0 ? (
             <p className="mt-1 text-xs text-indigo-200">
-              Total {formatMoney(order.totalMinor + order.depositMinor)} − Seña {formatMoney(order.depositMinor)}
+              Total {formatMoney(order.totalMinor + order.depositMinor)} − Seña{" "}
+              {formatMoney(order.depositMinor)}
             </p>
           ) : null}
         </div>
@@ -3175,6 +3351,21 @@ function PaymentModal({
                     value={values[method.code] ?? ""}
                     onChange={(event) => {
                       setLocalError(null);
+                      if (method.code === "CASH")
+                        defaultCashUntouched.current = false;
+                      if (
+                        method.code === "ACCOUNT" &&
+                        defaultCashUntouched.current &&
+                        (parseMoneyInput(event.target.value) ?? 0) > 0
+                      ) {
+                        defaultCashUntouched.current = false;
+                        setValues((current) => ({
+                          ...current,
+                          CASH: "0",
+                          [method.code]: event.target.value,
+                        }));
+                        return;
+                      }
                       setValues((current) => ({
                         ...current,
                         [method.code]: event.target.value,
@@ -3202,45 +3393,145 @@ function PaymentModal({
             ))}
         </div>
 
+        {data.paymentMethods.some(
+          (method) => method.code === "ACCOUNT" && method.active,
+        ) && remaining > 0 ? (
+          <Button
+            type="button"
+            variant="secondary"
+            className="mt-3"
+            onClick={loadToAccount}
+          >
+            Cargar saldo completo a cuenta corriente
+          </Button>
+        ) : null}
+
         {accountAmount > 0 ? (
           <section className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3 space-y-2">
-            <p className="text-xs font-bold text-indigo-900">Cuenta corriente · cliente obligatorio</p>
-            <p className="text-xs text-indigo-700">Se cerrará el pedido y se cargará {formatMoney(accountAmount)} como deuda, sin ingreso de efectivo.</p>
+            <p className="text-xs font-bold text-indigo-900">
+              Cuenta corriente · cliente obligatorio
+            </p>
+            <p className="text-xs text-indigo-700">
+              {completeOnPay
+                ? "Se registrará el cobro y el pedido se entregará/cerrará."
+                : "Se registrará el cobro y el pedido quedará pagado, sin entregarse ni cerrarse."}{" "}
+              El importe {formatMoney(accountAmount)} se cargará como deuda, sin
+              ingreso de efectivo.
+            </p>
+            {order.type === "DELIVERY" &&
+            payments.some((payment) => payment.methodCode === "CASH") ? (
+              <p className="text-xs font-semibold text-indigo-700">
+                El efectivo de este cobro mixto se registra como recibido en la
+                caja del negocio, no por el repartidor.
+              </p>
+            ) : null}
+            {!customerId ? (
+              <p role="alert" className="text-xs font-semibold text-rose-700">
+                Seleccioná una ficha de cliente activa para habilitar el cobro
+                en cuenta corriente. Los datos escritos en el pedido son sólo
+                una referencia y no vinculan una ficha.
+              </p>
+            ) : null}
             {customerId ? (
               <div className="flex items-center gap-2 text-xs">
-                <span className="font-bold">{order.customerId === customerId ? order.customerNameSnapshot : customerResults.find((customer) => customer.id === customerId)?.name ?? customerName}</span>
-                {!order.customerId ? <Button type="button" variant="secondary" onClick={() => setCustomerId(null)}>Cambiar</Button> : null}
+                <span className="font-bold">
+                  {customerResults.find(
+                    (customer) => customer.id === customerId,
+                  )?.name ??
+                    order.customerNameSnapshot ??
+                    customerName ??
+                    "Cliente seleccionado"}
+                </span>
+                {!order.customerId ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => setCustomerId(null)}
+                  >
+                    Cambiar
+                  </Button>
+                ) : null}
               </div>
             ) : (
               <>
                 <div className="flex gap-2">
-                  <Input aria-label="Buscar cliente para cuenta corriente" value={customerQuery} onChange={(event) => setCustomerQuery(event.target.value)} placeholder="Nombre o teléfono" />
-                  <Button type="button" variant="secondary" onClick={async () => {
-                    try { setCustomerResults((await window.gastronomy.searchCustomers(customerQuery)).filter((customer) => customer.active)); setLocalError(null); }
-                    catch (error) { setLocalError(humanError(error)); }
-                  }}>Buscar</Button>
+                  <Input
+                    aria-label="Buscar cliente para cuenta corriente"
+                    value={customerQuery}
+                    onChange={(event) => setCustomerQuery(event.target.value)}
+                    placeholder="Nombre o teléfono"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={async () => {
+                      try {
+                        setCustomerResults(
+                          (
+                            await window.gastronomy.searchCustomers(
+                              customerQuery,
+                            )
+                          ).filter((customer) => customer.active),
+                        );
+                        setLocalError(null);
+                      } catch (error) {
+                        setLocalError(humanError(error));
+                      }
+                    }}
+                  >
+                    Buscar
+                  </Button>
                 </div>
                 {customerResults.map((customer) => (
-                  <button type="button" key={customer.id} className="block w-full rounded-lg bg-white p-2 text-left text-xs hover:bg-indigo-100" onClick={() => setCustomerId(customer.id)}>{customer.name} · {customer.phone}</button>
+                  <button
+                    type="button"
+                    key={customer.id}
+                    className="block w-full rounded-lg bg-white p-2 text-left text-xs hover:bg-indigo-100"
+                    onClick={() => setCustomerId(customer.id)}
+                  >
+                    {customer.name} · {customer.phone}
+                  </button>
                 ))}
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <Input aria-label="Nombre del cliente nuevo" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Nuevo cliente · nombre" />
-                  <Input aria-label="Teléfono del cliente nuevo" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} placeholder="Teléfono" />
+                  <Input
+                    aria-label="Nombre del cliente nuevo"
+                    value={customerName}
+                    onChange={(event) => setCustomerName(event.target.value)}
+                    placeholder="Nuevo cliente · nombre"
+                  />
+                  <Input
+                    aria-label="Teléfono del cliente nuevo"
+                    value={customerPhone}
+                    onChange={(event) => setCustomerPhone(event.target.value)}
+                    placeholder="Teléfono"
+                  />
                 </div>
-                <Button type="button" variant="secondary" disabled={!customerName.trim() || !customerPhone.trim()} onClick={async () => {
-                  try {
-                    const customer = await window.gastronomy.createCustomer({name: customerName.trim(), phone: customerPhone.trim()});
-                    setCustomerId(customer.id);
-                    setCustomerResults([customer]);
-                    setLocalError(null);
-                  } catch (error) { setLocalError(humanError(error)); }
-                }}>Crear y seleccionar cliente</Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={!customerName.trim() || !customerPhone.trim()}
+                  onClick={async () => {
+                    try {
+                      const customer = await window.gastronomy.createCustomer({
+                        name: customerName.trim(),
+                        phone: customerPhone.trim(),
+                      });
+                      setCustomerId(customer.id);
+                      setCustomerResults([customer]);
+                      setLocalError(null);
+                    } catch (error) {
+                      setLocalError(humanError(error));
+                    }
+                  }}
+                >
+                  Crear y seleccionar cliente
+                </Button>
               </>
             )}
           </section>
         ) : null}
 
-        {changeDue > 0 ? (
+        {changeDue > 0 && !accountAmount ? (
           <div className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50/80 p-3.5 space-y-2.5">
             <div className="flex items-center justify-between">
               <div>
@@ -3264,7 +3555,9 @@ function PaymentModal({
                 }}
               >
                 {data.paymentMethods
-                  .filter((method) => method.active && method.code !== "ACCOUNT")
+                  .filter(
+                    (method) => method.active && method.code !== "ACCOUNT",
+                  )
                   .map((method) => (
                     <option key={method.code} value={method.code}>
                       {method.name}{" "}
@@ -3280,7 +3573,9 @@ function PaymentModal({
                 role="alert"
                 className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs font-semibold text-rose-700"
               >
-                La caja no cuenta con efectivo suficiente ({formatMoney(drawerCashAvailable)}) para entregar este vuelto ({formatMoney(changeDue)}).
+                La caja no cuenta con efectivo suficiente (
+                {formatMoney(drawerCashAvailable)}) para entregar este vuelto (
+                {formatMoney(changeDue)}).
               </p>
             ) : null}
           </div>
@@ -3297,7 +3592,8 @@ function PaymentModal({
               />
               <div className="text-xs">
                 <span className="font-bold text-slate-800">
-                  Pagar envío al repartidor ahora ({formatMoney(order.deliveryFeeMinor)})
+                  Pagar envío al repartidor ahora (
+                  {formatMoney(order.deliveryFeeMinor)})
                 </span>
                 <p className="text-slate-500 mt-0.5">
                   {payDriverNow
@@ -3321,17 +3617,29 @@ function PaymentModal({
         >
           <span>
             {allocated > remaining
-              ? "Total abonado (con sobrepago)"
+              ? accountAmount > 0
+                ? "Exceso asignado"
+                : "Total abonado (con sobrepago)"
               : allocated === remaining
                 ? "Asignado"
                 : "Falta abonar"}
           </span>
           <span>
             {allocated > remaining
-              ? `${formatMoney(allocated)} · Vuelto: ${formatMoney(changeDue)}`
+              ? accountAmount > 0
+                ? `${formatMoney(allocated)} / ${formatMoney(remaining)}`
+                : `${formatMoney(allocated)} · Vuelto: ${formatMoney(changeDue)}`
               : `${formatMoney(allocated)} / ${formatMoney(remaining)}`}
           </span>
         </div>
+
+        {accountAmount > 0 && allocated > remaining ? (
+          <p role="alert" className="mt-2 text-xs font-semibold text-rose-700">
+            La cuenta corriente no admite vuelto: hay{" "}
+            {formatMoney(allocated - remaining)} de más. Ajustá los importes
+            para que el total coincida exactamente con el saldo.
+          </p>
+        ) : null}
 
         {localError ? (
           <p
@@ -3491,9 +3799,7 @@ function ChangeTableModal({
     return data.tables
       .filter(
         (table) =>
-          table.active &&
-          table.id !== order.tableId &&
-          !table.currentOrderId,
+          table.active && table.id !== order.tableId && !table.currentOrderId,
       )
       .sort((a, b) => a.number - b.number);
   }, [data.tables, order.tableId]);
@@ -3743,7 +4049,8 @@ function SelectVariantModal({
 
       if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
         event.preventDefault();
-        const prev = (selectedIndex - 1 + allOptions.length) % allOptions.length;
+        const prev =
+          (selectedIndex - 1 + allOptions.length) % allOptions.length;
         setSelectedIndex(prev);
         buttonRefs.current[prev]?.focus();
         buttonRefs.current[prev]?.scrollIntoView({ block: "nearest" });
@@ -3832,7 +4139,8 @@ function SelectVariantModal({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    if (e.repeat || Date.now() - openedAtRef.current < 250) return;
+                    if (e.repeat || Date.now() - openedAtRef.current < 250)
+                      return;
                     if (price != null) onSelect(product);
                   }
                 }}
@@ -3860,7 +4168,9 @@ function SelectVariantModal({
                         {idx + 1}
                       </kbd>
                     ) : null}
-                    <span className="font-bold text-slate-800">{shortName}</span>
+                    <span className="font-bold text-slate-800">
+                      {shortName}
+                    </span>
                     {isBase ? (
                       <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">
                         Padre / Base
@@ -3875,7 +4185,8 @@ function SelectVariantModal({
                     {product.code ? <span>Cód: {product.code}</span> : null}
                     {product.stockMinor != null ? (
                       <span>
-                        Stock: {(product.stockMinor / 1000).toLocaleString("es-AR")} u.
+                        Stock:{" "}
+                        {(product.stockMinor / 1000).toLocaleString("es-AR")} u.
                       </span>
                     ) : null}
                   </div>
@@ -3896,5 +4207,3 @@ function SelectVariantModal({
     </Modal>
   );
 }
-
-

@@ -102,6 +102,18 @@ El artefacto se genera en
 `apps/desktop-shell/release/Delta Nube Gastronomía Setup 0.1.11.exe`. El comando
 recompila primero SQLite para la ABI exacta de Electron.
 
+## Pedidos con fecha y hora
+
+En un pedido para retirar o envío, elegir **Fecha y hora** conserva el horario seleccionado aunque se refresquen los datos mientras se completa el formulario. La comanda y la cuenta muestran **PEDIDO PROGRAMADO**, fecha completa y hora destacadas en un recuadro de alto contraste, apto para papel térmico de 58/80 mm. La impresión utiliza la hora guardada del pedido, en Buenos Aires; **Demora rápida** mantiene el formato habitual de entrega.
+
+## Envíos, repartidores y cierre de caja
+
+- En **Configuración → Opciones operativas**, activar **El cobro del envío corresponde al repartidor** habilita las liquidaciones. Elegir **Acumular en Repartidores** para pagar los envíos desde esa sección, o **Pagar al cobrar pedido** para abonarlos al cobrar.
+- Para pagar desde **Repartidores**, seleccionar los movimientos pendientes, revisar el importe que sale de caja, ingresar el PIN y confirmar. El pago se registra como egreso de efectivo y reduce el efectivo esperado del turno donde se paga, aunque el cliente haya abonado por transferencia.
+- Si la opción está desactivada, el negocio conserva el cobro del envío: no genera una deuda por ese importe. Si el repartidor cobra al cliente, debe rendir al negocio el total, incluido el envío.
+- La opción queda guardada con el primer pago del pedido. Cambiarla después no altera ese pedido ni rendiciones históricas pendientes.
+- El informe, la vista previa y el ticket de cierre desglosan los egresos en efectivo, incluidos los pagos a repartidores. Las ventas por medio de pago siguen mostrando ventas: no deben confundirse con el efectivo disponible. El arqueo es del turno completo, aun cuando se filtren las ventas del informe.
+
 ## Autorizaciones locales
 
 El modo standalone no presenta login. El PIN se usa únicamente para autorizar

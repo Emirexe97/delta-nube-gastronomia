@@ -43,6 +43,113 @@ async function previewWindow() {
     .find((candidate) => candidate.url().includes("print-preview-controls"))!;
 }
 
+test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ticket", async () => {
+  await launch();
+  const setup = await page.evaluate(async () => {
+    const api = window.gastronomy;
+    const data = await api.bootstrap();
+    await api.saveSettings({
+      ...data.settings,
+      deliverySettlementEnabled: true,
+      deliveryFeeBelongsToDriver: true,
+      deliveryDriverPaymentMode: "ACCUMULATED",
+      printing: {
+        ...data.settings.printing,
+        bill: { ...data.settings.printing.bill, mode: "SYSTEM_DIALOG" },
+      },
+    });
+    const session = await api.openCashSession({
+      openingAmountMinor: 1_000_000,
+    });
+    const driver = await api.createDriver({
+      fullName: "Repartidor cierre",
+      authorizerPin: "1234",
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente cierre",
+      customerPhone: "11 5555-1212",
+      deliveryAddress: "Calle Cierre 123",
+      deliveryFeeMinor: 250_000,
+      driverUserId: driver.id,
+    });
+    await api.addOrderItem({
+      orderId: order.id,
+      productId: data.products[0]!.id,
+    });
+    const confirmed = await api.confirmOrder({ orderId: order.id });
+    await api.completeOrder({
+      orderId: order.id,
+      finalStatus: "DELIVERED",
+      payments: [{ methodCode: "TRANSFER", amountMinor: confirmed.totalMinor }],
+    });
+    return { sessionId: session.id, totalMinor: confirmed.totalMinor };
+  });
+  await page.reload();
+  await page.getByRole("link", { name: "Repartidores" }).click();
+  await page
+    .getByRole("checkbox", { name: /Seleccionar movimiento del pedido/ })
+    .check();
+  await page.getByRole("button", { name: /Pagar envío/ }).click();
+  const settle = page.getByRole("dialog", { name: "Revisar pago o rendición" });
+  await settle.getByLabel(/PIN/).fill("1234");
+  await settle.getByRole("button", { name: /Revisar/ }).click();
+  await page
+    .getByRole("dialog", { name: "Confirmar movimiento de caja" })
+    .getByRole("button", { name: "Confirmar movimiento" })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Confirmar movimiento de caja" }),
+  ).not.toBeVisible();
+  const closed = await page.evaluate(async ({ sessionId, totalMinor }) => {
+    const api = window.gastronomy;
+    const report = await api.getCashSessionReport({ cashSessionId: sessionId });
+    if (
+      report.session.expectedAmountMinor !== 750_000 ||
+      report.session.cashExpenseMinor !== 250_000
+    )
+      throw new Error("El pago del repartidor no se descontó de caja");
+    if (report.totals.salesMinor !== totalMinor)
+      throw new Error("Se alteraron las ventas");
+    return api.closeCashSession({
+      countedAmountMinor: 750_000,
+      closingFloatAmountMinor: 0,
+    });
+  }, setup);
+  expect(closed.differenceMinor).toBe(0);
+  await page.reload();
+  await page.getByRole("link", { name: "Caja" }).click();
+  await page.getByRole("button", { name: "Ver informe", exact: true }).click();
+  const report = page.getByRole("dialog", { name: "Informe de caja" });
+  await expect(
+    report.getByText("Egresos en efectivo (incluye repartidores)", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    report.getByText("Efectivo esperado", { exact: true }),
+  ).toBeVisible();
+  await report.getByRole("button", { name: "Imprimir informe" }).click();
+  const printModal = page.getByRole("dialog", {
+    name: "Imprimir informe de caja",
+  });
+  await expect(
+    printModal.getByText("Egresos en efectivo (incluye repartidores)", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
+  const preview = await previewWindow();
+  await expect(
+    preview.getByText("Egresos en efectivo (incluye repartidores)", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    preview.getByText("Efectivo esperado", { exact: true }),
+  ).toBeVisible();
+});
+
 test.afterEach(async () => {
   await app?.evaluate(({ BrowserWindow }) => {
     for (const window of BrowserWindow.getAllWindows()) window.destroy();
@@ -114,7 +221,7 @@ test("previsualiza el informe sin cerrar y lo conserva en el historial al cerrar
   await expect(
     preview.getByText(`INFORME DE CAJA #${setup.sessionNumber}`),
   ).toBeVisible();
-  await expect(preview.getByText("Ventas")).toBeVisible();
+  await expect(preview.getByText("Ventas", { exact: true })).toBeVisible();
   await expect(preview.getByText("Pedidos", { exact: true })).toBeVisible();
   await expect(preview.getByText(/\$\s*[\d.]+/).first()).toBeVisible();
 
@@ -203,7 +310,11 @@ test("permite seleccionar secciones del informe y desglosa mesas por mozo con vi
         bill: { ...data.settings.printing.bill, mode: "SYSTEM_DIALOG" },
       },
     });
-    return { sessionNumber: session.number, total: withItem.totalMinor, tableNumber: 15 };
+    return {
+      sessionNumber: session.number,
+      total: withItem.totalMinor,
+      tableNumber: 15,
+    };
   });
 
   await page.reload();
@@ -232,12 +343,16 @@ test("permite seleccionar secciones del informe y desglosa mesas por mozo con vi
     printModal.getByText("Por medio de pago", { exact: true }),
   ).toBeVisible();
 
-  await expect(
-    printModal.locator("span", { hasText: "Mesa 15" }).first(),
-  ).toBeVisible();
-  await expect(printModal.getByText(/Total Administrador:/)).toBeVisible();
+  await expect(printModal.getByRole("checkbox")).toHaveCount(5);
+  await expect(printModal.locator("input[type='checkbox']:checked")).toHaveCount(0);
+  await expect(printModal.getByText(/Total Administrador:/)).toHaveCount(0);
 
-  await printModal.getByRole("button", { name: "Solo obligatorias" }).click();
+  await printModal.getByRole("button", { name: "Todas", exact: true }).click();
+  await expect(printModal.locator("input[type='checkbox']:checked")).toHaveCount(5);
+  await printModal.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await report.getByRole("button", { name: "Imprimir informe" }).click();
+  await expect(printModal.locator("input[type='checkbox']:checked")).toHaveCount(0);
+
   await printModal.locator("label", { hasText: "Por mozo" }).locator("input[type='checkbox']").check();
 
   await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
@@ -246,8 +361,12 @@ test("permite seleccionar secciones del informe y desglosa mesas por mozo con vi
   await expect(
     preview.getByText(`INFORME DE CAJA #${setup.sessionNumber}`),
   ).toBeVisible();
-  await expect(preview.getByRole("heading", { name: "Por mozo" })).toBeVisible();
-  await expect(preview.locator("span", { hasText: "Mesa 15" }).first()).toBeVisible();
+  await expect(
+    preview.getByRole("heading", { name: "Por mozo" }),
+  ).toBeVisible();
+  await expect(
+    preview.locator("span", { hasText: "Mesa 15" }).first(),
+  ).toBeVisible();
   await expect(preview.getByText(/Total Administrador:/)).toBeVisible();
 
   await preview.getByRole("button", { name: "Cancelar" }).click();

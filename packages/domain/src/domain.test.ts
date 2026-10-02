@@ -129,6 +129,26 @@ test("delivery transferencia: negocio debe fee al repartidor", () => {
   );
 });
 
+test("si el envío pertenece al negocio, repartidor rinde el total y negocio no le debe fee", () => {
+  assert.deepEqual(calculateDeliverySettlement({
+    restaurantAmountMinor: 2_000_000,
+    deliveryFeeMinor: 300_000,
+    paymentDestination: "DRIVER",
+    deliveryFeeBelongsToDriver: false,
+  }), {
+    customerTotalMinor: 2_300_000,
+    driverCollectedMinor: 2_300_000,
+    driverOwesBusinessMinor: 2_300_000,
+    businessOwesDriverMinor: 0,
+  });
+  assert.equal(calculateDeliverySettlement({
+    restaurantAmountMinor: 2_000_000,
+    deliveryFeeMinor: 300_000,
+    paymentDestination: "BUSINESS",
+    deliveryFeeBelongsToDriver: false,
+  }).businessOwesDriverMinor, 0);
+});
+
 test("asignación de pagos con sobrepago y vuelto", () => {
   // Pago exacto sin vuelto
   assert.equal(assertPaymentAllocation(27_000_000, 0, 27_000_000, 0), 27_000_000);

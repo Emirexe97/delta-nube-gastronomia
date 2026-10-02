@@ -1,10 +1,55 @@
-import type { CashMovementType } from "@gastronomy/contracts";
+import type { CashMovementType, CashSessionDto } from "@gastronomy/contracts";
 import { assertMoneyMinor, nonNegativeMoney } from "./money";
 
 export interface CashMovementValue {
   type: CashMovementType;
   amountMinor: number;
   affectsCash?: boolean;
+}
+
+/** Cash movements, not gross sales by payment method, reconcile the drawer. */
+export function cashReportBreakdown(
+  session: Pick<
+    CashSessionDto,
+    | "openingAmountMinor"
+    | "expectedAmountMinor"
+    | "cashSalesMinor"
+    | "cashIncomeMinor"
+    | "cashExpenseMinor"
+    | "cashWithdrawalMinor"
+    | "cashRefundMinor"
+  >,
+) {
+  const rows = [
+    { label: "Cambio inicial", amountMinor: session.openingAmountMinor },
+    { label: "Ventas en efectivo", amountMinor: session.cashSalesMinor ?? 0 },
+    {
+      label: "Otros ingresos en efectivo",
+      amountMinor: session.cashIncomeMinor ?? 0,
+    },
+    {
+      label: "Egresos en efectivo (incluye repartidores)",
+      amountMinor: -(session.cashExpenseMinor ?? 0),
+    },
+    {
+      label: "Retiros de efectivo",
+      amountMinor: -(session.cashWithdrawalMinor ?? 0),
+    },
+    {
+      label: "Devoluciones en efectivo",
+      amountMinor: -(session.cashRefundMinor ?? 0),
+    },
+  ];
+  // Signed adjustments and legacy summaries must reconcile with the saved close.
+  const otherMinor =
+    session.expectedAmountMinor -
+    rows.reduce((sum, row) => sum + row.amountMinor, 0);
+  if (otherMinor !== 0)
+    rows.push({
+      label: "Ajustes y otros movimientos",
+      amountMinor: otherMinor,
+    });
+  return rows;
 }
 
 export function calculateExpectedCash(

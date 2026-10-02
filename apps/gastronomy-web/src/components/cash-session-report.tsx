@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { cashReportBreakdown } from "@gastronomy/domain";
 import type {
   CashSessionHistoryItemDto,
   CashSessionReportFilters,
@@ -313,6 +314,46 @@ export function CashSessionReportModal({
                 </div>
               ))}
             </div>
+            <Card className="p-3">
+              <h3 className="text-sm font-bold">
+                Composición del efectivo esperado
+              </h3>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Los pagos a repartidores se descuentan como egresos. Las ventas
+                por medio de pago no representan el efectivo disponible.
+                {Object.values(applied).some(Boolean)
+                  ? " El arqueo corresponde al turno completo, sin aplicar filtros de ventas."
+                  : ""}
+              </p>
+              <div className="mt-3 space-y-1 text-xs">
+                {cashReportBreakdown(data.session).map((row) => (
+                  <div key={row.label} className="flex justify-between gap-3">
+                    <span>{row.label}</span>
+                    <strong>{formatMoney(row.amountMinor)}</strong>
+                  </div>
+                ))}
+                <div className="flex justify-between gap-3 border-t border-slate-200 pt-2 font-bold">
+                  <span>Efectivo esperado</span>
+                  <span>{formatMoney(data.session.expectedAmountMinor)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span>Efectivo contado</span>
+                  <span>
+                    {data.session.countedAmountMinor == null
+                      ? "—"
+                      : formatMoney(data.session.countedAmountMinor)}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span>Diferencia</span>
+                  <span>
+                    {data.session.differenceMinor == null
+                      ? "—"
+                      : formatMoney(data.session.differenceMinor)}
+                  </span>
+                </div>
+              </div>
+            </Card>
             {data.detailAvailable ? (
               <>
                 <Aggregates data={data} />
@@ -368,7 +409,7 @@ export function CashSessionReportModal({
                             {m.paymentMethodName ??
                               (m.paymentMethodCode === "CASH"
                                 ? "Efectivo"
-                                : m.paymentMethodCode ?? "—")}
+                                : (m.paymentMethodCode ?? "—"))}
                           </td>
                           <td>
                             {new Date(m.createdAt).toLocaleString("es-AR")}
@@ -496,6 +537,14 @@ function Aggregates({ data }: { data: CashSessionReportDto }) {
   );
 }
 
+const mandatoryOnlyPrintSections: CashSessionReportPrintSections = {
+  byProduct: false,
+  byCategory: false,
+  byTable: false,
+  byWaiter: false,
+  orderDetails: false,
+};
+
 export function PrintCashSessionReportModal({
   open,
   onClose,
@@ -511,13 +560,12 @@ export function PrintCashSessionReportModal({
   onPrint: (sections: CashSessionReportPrintSections) => void;
   isPrinting: boolean;
 }) {
-  const [sections, setSections] = useState<CashSessionReportPrintSections>({
-    byProduct: true,
-    byCategory: true,
-    byTable: true,
-    byWaiter: true,
-    orderDetails: false,
-  });
+  const [sections, setSections] = useState<CashSessionReportPrintSections>(
+    () => ({ ...mandatoryOnlyPrintSections }),
+  );
+  useEffect(() => {
+    if (open) setSections({ ...mandatoryOnlyPrintSections });
+  }, [open]);
 
   const toggle = (key: keyof CashSessionReportPrintSections) => {
     setSections((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -534,13 +582,7 @@ export function PrintCashSessionReportModal({
   };
 
   const selectMandatoryOnly = () => {
-    setSections({
-      byProduct: false,
-      byCategory: false,
-      byTable: false,
-      byWaiter: false,
-      orderDetails: false,
-    });
+    setSections({ ...mandatoryOnlyPrintSections });
   };
 
   const appliedFilterCount = Object.values(appliedFilters).filter(Boolean).length;
@@ -686,10 +728,28 @@ export function PrintCashSessionReportModal({
             </div>
             <div className="my-2 border-t border-dashed border-slate-400" />
             <div className="space-y-0.5 text-[10px]">
-              <div><strong>Día comercial:</strong> {data.session.businessDate}</div>
-              <div><strong>Apertura:</strong> {new Date(data.session.openedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}</div>
-              <div><strong>Cierre:</strong> {data.session.closedAt ? new Date(data.session.closedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }) : "En curso"}</div>
-              <div><strong>Responsable:</strong> {data.session.openedByName}</div>
+              <div>
+                <strong>Día comercial:</strong> {data.session.businessDate}
+              </div>
+              <div>
+                <strong>Apertura:</strong>{" "}
+                {new Date(data.session.openedAt).toLocaleTimeString("es-AR", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </div>
+              <div>
+                <strong>Cierre:</strong>{" "}
+                {data.session.closedAt
+                  ? new Date(data.session.closedAt).toLocaleTimeString(
+                      "es-AR",
+                      { hour: "2-digit", minute: "2-digit" },
+                    )
+                  : "En curso"}
+              </div>
+              <div>
+                <strong>Responsable:</strong> {data.session.openedByName}
+              </div>
             </div>
 
             <div className="my-2 border-t border-dashed border-slate-400" />
@@ -720,11 +780,39 @@ export function PrintCashSessionReportModal({
             <div className="my-2 border-t border-dashed border-slate-400" />
             <div className="font-bold uppercase text-[10px] tracking-wide mb-1">ARQUEO</div>
             <div className="space-y-0.5">
-              <div className="flex justify-between"><span>Apertura</span><span>{formatMoney(data.session.openingAmountMinor)}</span></div>
-              <div className="flex justify-between"><span>Esperado</span><span>{formatMoney(data.session.expectedAmountMinor)}</span></div>
-              <div className="flex justify-between"><span>Contado</span><span>{data.session.countedAmountMinor != null ? formatMoney(data.session.countedAmountMinor) : "—"}</span></div>
-              <div className="flex justify-between font-bold"><span>Diferencia</span><span>{data.session.differenceMinor != null ? formatMoney(data.session.differenceMinor) : "—"}</span></div>
+              {cashReportBreakdown(data.session).map((row) => (
+                <div key={row.label} className="flex justify-between gap-2">
+                  <span>{row.label}</span>
+                  <span>{formatMoney(row.amountMinor)}</span>
+                </div>
+              ))}
+              <div className="flex justify-between font-bold">
+                <span>Efectivo esperado</span>
+                <span>{formatMoney(data.session.expectedAmountMinor)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Contado</span>
+                <span>
+                  {data.session.countedAmountMinor != null
+                    ? formatMoney(data.session.countedAmountMinor)
+                    : "—"}
+                </span>
+              </div>
+              <div className="flex justify-between font-bold">
+                <span>Diferencia</span>
+                <span>
+                  {data.session.differenceMinor != null
+                    ? formatMoney(data.session.differenceMinor)
+                    : "—"}
+                </span>
+              </div>
             </div>
+
+            <p className="mt-1 text-[10px] text-slate-600">
+              Arqueo del turno completo. Los pagos a repartidores ya están
+              incluidos en los egresos; no se descuentan nuevamente de las
+              ventas.
+            </p>
 
             <div className="my-2 border-t border-dashed border-slate-400" />
             <div className="font-bold uppercase text-[10px] tracking-wide mb-1">POR TIPO</div>
@@ -828,7 +916,10 @@ export function PrintCashSessionReportModal({
                 <div className="space-y-0.5 text-[10px]">
                   {data.orders.map((o) => (
                     <div key={o.id} className="flex justify-between">
-                      <span className="truncate pr-2">#{o.number} · {o.items[0]?.productNameSnapshot ?? o.type}</span>
+                      <span className="truncate pr-2">
+                        #{o.number} ·{" "}
+                        {o.items[0]?.productNameSnapshot ?? o.type}
+                      </span>
                       <strong>{formatMoney(o.totalMinor)}</strong>
                     </div>
                   ))}

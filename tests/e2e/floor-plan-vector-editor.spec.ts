@@ -49,6 +49,10 @@ test("redimensiona una mesa y conserva sus dimensiones tras recarga", async () =
   const dialog = page.getByRole("dialog", { name: /Agregar mesa a/ });
   await dialog.getByLabel("Número de mesa").fill(String(number));
   await dialog.getByRole("button", { name: "Agregar mesa" }).click();
+  await expect(
+    page.getByRole("button", { name: `Editar mesa ${number}` }),
+  ).toBeVisible();
+  await expect(dialog).toBeHidden();
   await page.getByRole("button", { name: `Editar mesa ${number}` }).click();
   const before = await page.evaluate(
     async (n) =>
@@ -58,9 +62,17 @@ test("redimensiona una mesa y conserva sus dimensiones tras recarga", async () =
   const handle = page.getByRole("button", {
     name: `Redimensionar mesa ${number} hacia sureste`,
   });
+  await handle.scrollIntoViewIfNeeded();
   const box = await handle.boundingBox();
   expect(box).not.toBeNull();
   if (box) {
+    expect(
+      await page.evaluate(
+        ({ x, y }) =>
+          document.elementFromPoint(x, y)?.getAttribute("aria-label"),
+        { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+      ),
+    ).toBe(`Redimensionar mesa ${number} hacia sureste`);
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.move(
@@ -70,6 +82,27 @@ test("redimensiona una mesa y conserva sus dimensiones tras recarga", async () =
     await page.mouse.up();
   }
   await expect(page.getByRole("status")).toHaveText("Plano guardado.");
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async ({ n, width, height }) => {
+          const resized = (await window.gastronomy.bootstrap()).tables.find(
+            (t) => t.number === n,
+          );
+          return Boolean(
+            resized &&
+            resized.layoutWidth > width &&
+            resized.layoutHeight > height,
+          );
+        },
+        {
+          n: number,
+          width: before?.layoutWidth ?? 0,
+          height: before?.layoutHeight ?? 0,
+        },
+      ),
+    )
+    .toBe(true);
   const after = await page.evaluate(
     async (n) =>
       (await window.gastronomy.bootstrap()).tables.find((t) => t.number === n),
@@ -77,6 +110,8 @@ test("redimensiona una mesa y conserva sus dimensiones tras recarga", async () =
   );
   expect(after?.layoutWidth).toBeGreaterThan(before?.layoutWidth ?? 0);
   expect(after?.layoutHeight).toBeGreaterThan(before?.layoutHeight ?? 0);
+  expect(after?.layoutWidth).toBeGreaterThanOrEqual(6);
+  expect(after?.layoutHeight).toBeGreaterThanOrEqual(7);
   await page.reload();
   const persisted = await page.evaluate(
     async (n) =>
@@ -136,7 +171,7 @@ test("dibuja un polígono, edita un nodo y persiste geometría y relleno", async
     ),
   );
   const shapeHandle = page.getByRole("button", {
-    name: "Redimensionar figura Área dibujada hacia sureste",
+    name: "Redimensionar figura Área dibujada hacia este",
   });
   const shapeHandleBox = await shapeHandle.boundingBox();
   expect(shapeHandleBox).not.toBeNull();
@@ -146,11 +181,64 @@ test("dibuja un polígono, edita un nodo y persiste geometría y relleno", async
       shapeHandleBox.y + shapeHandleBox.height / 2,
     );
     await page.mouse.down();
-    await page.mouse.move(shapeHandleBox.x + 55, shapeHandleBox.y + 40);
+    await page.mouse.move(shapeHandleBox.x + 55, shapeHandleBox.y);
     await page.mouse.up();
   }
   await expect(page.getByRole("status")).toHaveText("Figura guardada.");
   const saved = await page.evaluate(async () =>
+    (await window.gastronomy.bootstrap()).floorPlanShapes.find(
+      (s) => s.label === "Área dibujada",
+    ),
+  );
+  const heightHandle = page.getByRole("button", {
+    name: "Redimensionar figura Área dibujada hacia sur",
+    exact: true,
+  });
+  await heightHandle.scrollIntoViewIfNeeded();
+  const heightHandleBox = await heightHandle.boundingBox();
+  expect(heightHandleBox).not.toBeNull();
+  if (heightHandleBox) {
+    const pointerTarget = await page.evaluate(
+      ({ x, y }) => {
+        const target = document.elementFromPoint(x, y);
+        return {
+          label: target?.getAttribute("aria-label"),
+          viewportHeight: window.innerHeight,
+        };
+      },
+      {
+        x: heightHandleBox.x + heightHandleBox.width / 2,
+        y: heightHandleBox.y + heightHandleBox.height / 2,
+      },
+    );
+    expect(pointerTarget.label).toBe(
+      "Redimensionar figura Área dibujada hacia sur",
+    );
+    expect(heightHandleBox.y + heightHandleBox.height / 2 + 50).toBeLessThan(
+      pointerTarget.viewportHeight,
+    );
+    await page.mouse.move(
+      heightHandleBox.x + heightHandleBox.width / 2,
+      heightHandleBox.y + heightHandleBox.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      heightHandleBox.x + heightHandleBox.width / 2,
+      heightHandleBox.y + heightHandleBox.height / 2 + 50,
+    );
+    await page.mouse.up();
+  }
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async () =>
+          (await window.gastronomy.bootstrap()).floorPlanShapes.find(
+            (s) => s.label === "Área dibujada",
+          )?.layoutHeight ?? 0,
+      ),
+    )
+    .toBeGreaterThan(saved?.layoutHeight ?? 0);
+  const resized = await page.evaluate(async () =>
     (await window.gastronomy.bootstrap()).floorPlanShapes.find(
       (s) => s.label === "Área dibujada",
     ),
@@ -162,7 +250,7 @@ test("dibuja un polígono, edita un nodo y persiste geometría y relleno", async
   });
   expect(saved?.points).toHaveLength(4);
   expect(saved?.layoutWidth).toBeGreaterThan(beforeResize?.layoutWidth ?? 0);
-  expect(saved?.layoutHeight).toBeGreaterThan(beforeResize?.layoutHeight ?? 0);
+  expect(resized?.layoutHeight).toBeGreaterThan(saved?.layoutHeight ?? 0);
   await page.reload();
   expect(
     await page.evaluate(async () =>

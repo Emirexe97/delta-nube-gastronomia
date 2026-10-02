@@ -845,4 +845,10 @@ INSERT OR IGNORE INTO role_permissions(role_id, permission_code)
   SELECT id, 'finance.manage' FROM roles WHERE code IN ('ADMIN','MANAGER');
 `,
   },
+  {
+    version: 29,
+    name: "snapshot_delivery_fee_ownership_on_payment",
+    sql: String.raw`ALTER TABLE orders ADD COLUMN delivery_fee_belongs_to_driver INTEGER;
+UPDATE orders SET delivery_fee_belongs_to_driver = 1 WHERE paid_minor > 0;`,
+  },
 ];

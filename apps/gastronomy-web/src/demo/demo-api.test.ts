@@ -23,66 +23,148 @@ describe("API de demostración", () => {
   it("finanzas tolera pedidos antiguos de demo sin seña ni devolución", async () => {
     const storage = new MemoryStorage();
     const api = createDemoApi(storage);
-    const date = new Date().toISOString().slice(0,10);
-    await api.getFinanceReport({from: date, to: date});
+    const date = new Date().toISOString().slice(0, 10);
+    await api.getFinanceReport({ from: date, to: date });
     const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
     for (const order of saved.data.orders) {
       delete order.depositMinor;
       for (const payment of order.payments) delete payment.refundedMinor;
     }
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
-    const report = await createDemoApi(storage).getFinanceReport({from: date, to: date});
+    const report = await createDemoApi(storage).getFinanceReport({
+      from: date,
+      to: date,
+    });
     expect(Number.isFinite(report.salesMinor)).toBe(true);
     expect(report.salesMinor).toBeGreaterThan(0);
   });
   it("finanzas demo calcula costos, fijos y sueldos sin duplicar compras", async () => {
     const api = createDemoApi(new MemoryStorage());
-    const date = new Date().toISOString().slice(0,10);
-    const initialReport = await api.getFinanceReport({from: date, to: date});
+    const date = new Date().toISOString().slice(0, 10);
+    const initialReport = await api.getFinanceReport({ from: date, to: date });
     expect(Number.isFinite(initialReport.salesMinor)).toBe(true);
-    const product = (await api.bootstrap()).products.find((item) => item.active)!;
-    await api.setFinanceProductCost({productId: product.id, unitCostMinor: 123_000});
-    expect((await api.getFinanceReport({from: date, to: date})).unknownCostItems).toBe(initialReport.unknownCostItems);
-    const order = await api.createOrder({type: "TAKEAWAY", customerName: "Cliente finanzas", customerPhone: "11 1234-9876"});
-    await api.addOrderItem({orderId: order.id, productId: product.id});
-    await api.confirmOrder({orderId: order.id});
-    const salary = await api.createFinanceExpense({title: "Sueldo", category: "Personal", kind: "PAYROLL", employeeId: "user-admin", amountMinor: 100_000, incurredOn: date});
-    await api.createFinanceRecurring({title: "Alquiler", category: "Local", kind: "FIXED", amountMinor: 200_000, dayOfMonth: Number(date.slice(8)), startMonth: date.slice(0,7)});
-    const report = await api.getFinanceReport({from: date, to: date});
+    const product = (await api.bootstrap()).products.find(
+      (item) => item.active,
+    )!;
+    await api.setFinanceProductCost({
+      productId: product.id,
+      unitCostMinor: 123_000,
+    });
+    expect(
+      (await api.getFinanceReport({ from: date, to: date })).unknownCostItems,
+    ).toBe(initialReport.unknownCostItems);
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Cliente finanzas",
+      customerPhone: "11 1234-9876",
+    });
+    await api.addOrderItem({ orderId: order.id, productId: product.id });
+    await api.confirmOrder({ orderId: order.id });
+    const salary = await api.createFinanceExpense({
+      title: "Sueldo",
+      category: "Personal",
+      kind: "PAYROLL",
+      employeeId: "user-admin",
+      amountMinor: 100_000,
+      incurredOn: date,
+    });
+    await api.createFinanceRecurring({
+      title: "Alquiler",
+      category: "Local",
+      kind: "FIXED",
+      amountMinor: 200_000,
+      dayOfMonth: Number(date.slice(8)),
+      startMonth: date.slice(0, 7),
+    });
+    const report = await api.getFinanceReport({ from: date, to: date });
     expect(report.cogsMinor).toBeGreaterThanOrEqual(123_000);
     expect(report.expensesMinor).toBe(300_000);
-    expect((await api.getFinanceReport({from: date, to: date})).expenses.length).toBe(2);
-    await api.payFinanceExpense({expenseId: salary.id, paymentMethodCode: "CASH", fromCash: true});
-    expect((await api.getFinanceReport({from: date, to: date})).expenses.find((item) => item.id === salary.id)?.paidAt).not.toBeNull();
+    expect(
+      (await api.getFinanceReport({ from: date, to: date })).expenses.length,
+    ).toBe(2);
+    await api.payFinanceExpense({
+      expenseId: salary.id,
+      paymentMethodCode: "CASH",
+      fromCash: true,
+    });
+    expect(
+      (await api.getFinanceReport({ from: date, to: date })).expenses.find(
+        (item) => item.id === salary.id,
+      )?.paidAt,
+    ).not.toBeNull();
   });
   it("no regenera un gasto fijo detenido en el mismo mes", async () => {
     const api = createDemoApi(new MemoryStorage());
-    const date = new Date().toISOString().slice(0,10);
-    const rule = await api.createFinanceRecurring({title: "Servicio", category: "Local", kind: "FIXED", amountMinor: 10_000, dayOfMonth: Number(date.slice(8)), startMonth: date.slice(0,7)});
-    await api.stopFinanceRecurring({recurringId: rule.id});
-    expect((await api.getFinanceReport({from: date.slice(0,7) + "-01", to: date})).expenses).toHaveLength(0);
+    const date = new Date().toISOString().slice(0, 10);
+    const rule = await api.createFinanceRecurring({
+      title: "Servicio",
+      category: "Local",
+      kind: "FIXED",
+      amountMinor: 10_000,
+      dayOfMonth: Number(date.slice(8)),
+      startMonth: date.slice(0, 7),
+    });
+    await api.stopFinanceRecurring({ recurringId: rule.id });
+    expect(
+      (await api.getFinanceReport({ from: date.slice(0, 7) + "-01", to: date }))
+        .expenses,
+    ).toHaveLength(0);
   });
   it("mantiene deuda de cuenta corriente y registra cobro posterior", async () => {
     const api = createDemoApi(new MemoryStorage());
-    const customer = await api.createCustomer({name: "Cliente fiado", phone: "11 4444-8888"});
-    const product = (await api.bootstrap()).products.find((item) => item.active)!;
-    const draft = await api.createOrder({type: "TAKEAWAY", customerId: customer.id, customerName: customer.name, customerPhone: customer.phone});
-    const withItem = await api.addOrderItem({orderId: draft.id, productId: product.id});
-    await api.confirmOrder({orderId: draft.id});
-    await api.payOrder({orderId: draft.id, payments: [{methodCode: "ACCOUNT", amountMinor: withItem.totalMinor}]});
-    const before = await api.getCustomerProfile({customerId: customer.id, page: 1, pageSize: 10});
+    const customer = await api.createCustomer({
+      name: "Cliente fiado",
+      phone: "11 4444-8888",
+    });
+    const product = (await api.bootstrap()).products.find(
+      (item) => item.active,
+    )!;
+    const draft = await api.createOrder({
+      type: "TAKEAWAY",
+      customerId: customer.id,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+    });
+    const withItem = await api.addOrderItem({
+      orderId: draft.id,
+      productId: product.id,
+    });
+    await api.confirmOrder({ orderId: draft.id });
+    await api.payOrder({
+      orderId: draft.id,
+      payments: [{ methodCode: "ACCOUNT", amountMinor: withItem.totalMinor }],
+    });
+    const before = await api.getCustomerProfile({
+      customerId: customer.id,
+      page: 1,
+      pageSize: 10,
+    });
     expect(before.metrics.outstandingMinor).toBe(withItem.totalMinor);
-    const searchBefore = await api.searchCustomersPage({query: "Cliente fiado", page: 1, pageSize: 10});
+    const searchBefore = await api.searchCustomersPage({
+      query: "Cliente fiado",
+      page: 1,
+      pageSize: 10,
+    });
     expect(searchBefore.items[0]?.outstandingMinor).toBe(withItem.totalMinor);
     expect(searchBefore.items[0]?.orderCount).toBe(1);
     expect(searchBefore.items[0]?.totalSpentMinor).toBe(withItem.totalMinor);
     expect(searchBefore.items[0]?.totalPaidMinor).toBe(withItem.totalMinor);
     expect(searchBefore.items[0]?.pendingCount).toBe(1);
-    const after = await api.settleCustomerAccount({customerId: customer.id, methodCode: "CASH", amountMinor: 100});
+    const after = await api.settleCustomerAccount({
+      customerId: customer.id,
+      methodCode: "CASH",
+      amountMinor: 100,
+    });
     expect(after.metrics.outstandingMinor).toBe(withItem.totalMinor - 100);
     expect(after.accountReceipts[0]?.allocations[0]?.orderId).toBe(draft.id);
-    const searchAfter = await api.searchCustomersPage({query: "Cliente fiado", page: 1, pageSize: 10});
-    expect(searchAfter.items[0]?.outstandingMinor).toBe(withItem.totalMinor - 100);
+    const searchAfter = await api.searchCustomersPage({
+      query: "Cliente fiado",
+      page: 1,
+      pageSize: 10,
+    });
+    expect(searchAfter.items[0]?.outstandingMinor).toBe(
+      withItem.totalMinor - 100,
+    );
   });
   it("crea pedidos para retirar y clientes nuevos sin dirección", async () => {
     const api = createDemoApi(new MemoryStorage());
@@ -202,6 +284,25 @@ describe("API de demostración", () => {
     const api = createDemoApi(new MemoryStorage());
     const terrace = await api.createTableSector({ name: "Patio" });
     const table = await api.ensureTable({ number: 81 });
+    const placed = await api.updateTable({
+      tableId: table.id,
+      number: table.number,
+      active: true,
+      sectorId: terrace.id,
+      layoutX: 5,
+      layoutY: 5,
+      layoutWidth: 7,
+      layoutHeight: 7,
+    });
+    expect(placed).toMatchObject({ sectorId: terrace.id, layoutHeight: 7 });
+    await expect(
+      api.updateTable({
+        tableId: table.id,
+        number: table.number,
+        active: true,
+        layoutHeight: 6,
+      }),
+    ).rejects.toThrow(/tamaño/);
     const updated = await api.updateTable({
       tableId: table.id,
       number: table.number,
@@ -677,7 +778,7 @@ describe("API de demostración", () => {
     ).toBe(originalPrice);
   });
 
-  it("edita datos del borrador y aprende el valor de envío por dirección", async () => {
+  it("edita datos del borrador y actualiza el costo de la dirección como SQLite", async () => {
     const api = createDemoApi(new MemoryStorage());
     const customer = await api.createCustomer({
       name: "Cliente con dos destinos",
@@ -726,6 +827,18 @@ describe("API de demostración", () => {
       deliveryFeeMinor: 575_000,
       notes: "Portón lateral",
     });
+    expect(
+      (await api.searchCustomers("Ruta 5"))[0]!.addresses[1],
+    ).toMatchObject({ deliveryFeeMinor: 575_000 });
+    await api.updateDraftOrder({ orderId: draft.id, type: "TAKEAWAY" });
+    const converted = await api.updateDraftOrder({
+      orderId: draft.id,
+      type: "DELIVERY",
+      customerId: customer.id,
+      customerAddressId: customer.addresses[1]!.id,
+      deliveryFeeMinor: 600_000,
+    });
+    expect(converted.deliveryFeeMinor).toBe(600_000);
     expect(
       (await api.searchCustomers("Ruta 5"))[0]!.addresses[1],
     ).toMatchObject({ deliveryFeeMinor: 575_000 });
@@ -1016,24 +1129,765 @@ describe("API de demostración", () => {
     ).resolves.toMatchObject({ active: false });
   });
 
-  it("exige nombre, teléfono y dirección en envíos y pedidos para retirar", async () => {
+  it("permite cargar productos antes del cliente y exige sus datos al confirmar", async () => {
     const api = createDemoApi(new MemoryStorage());
-    await expect(api.createOrder({ type: "TAKEAWAY" })).rejects.toThrow(
+    const product = (await api.bootstrap()).products.find(
+      (item) => item.active,
+    )!;
+    const draft = await api.createOrder({ type: "TAKEAWAY" });
+    await api.addOrderItem({ orderId: draft.id, productId: product.id });
+    await expect(api.confirmOrder({ orderId: draft.id })).rejects.toThrow(
       "nombre",
     );
+    await api.updateDraftOrder({
+      orderId: draft.id,
+      type: "TAKEAWAY",
+      customerName: "Cliente",
+    });
+    await expect(api.confirmOrder({ orderId: draft.id })).rejects.toThrow(
+      "teléfono",
+    );
+    const delivery = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente",
+      customerPhone: "11 3333-4444",
+    });
+    await api.addOrderItem({ orderId: delivery.id, productId: product.id });
+    await expect(api.confirmOrder({ orderId: delivery.id })).rejects.toThrow(
+      "dirección",
+    );
+  });
+
+  it("no permite cancelar por la transición genérica ni sin devolución", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Cliente cancelación",
+      customerPhone: "11 4000-9999",
+    });
+    await api.addOrderItem({ orderId: order.id, productId: "prod-muzza" });
+    await api.confirmOrder({ orderId: order.id });
+    const populated = (await api.bootstrap()).orders.find(
+      (candidate) => candidate.id === order.id,
+    )!;
+    await api.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
     await expect(
-      api.createOrder({
-        type: "TAKEAWAY",
-        customerName: "Cliente",
+      api.updateOrderStatus({ orderId: order.id, status: "CANCELLED" }),
+    ).rejects.toThrow("Cancelar pedido");
+    await expect(
+      api.cancelOrder({
+        orderId: order.id,
+        reason: "duplicado",
+        authorizerPin: "1234",
       }),
-    ).rejects.toThrow("teléfono");
+    ).rejects.toThrow("devolución");
+  });
+
+  it("impide reabrir estados terminales y sincroniza repartidor del ledger pendiente", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const driverA = await api.createDriver({
+      fullName: "Repartidor A",
+      authorizerPin: "1234",
+    });
+    const driverB = await api.createDriver({
+      fullName: "Repartidor B",
+      authorizerPin: "1234",
+    });
+    const bootstrap = await api.bootstrap();
+    await api.saveSettings({
+      ...bootstrap.settings,
+      deliveryFeeBelongsToDriver: false,
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente",
+      customerPhone: "11 2222-1212",
+      deliveryAddress: "Calle 10",
+      deliveryFeeMinor: 10_000,
+      driverUserId: driverA.id,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    const paid = await api.payOrder({
+      orderId: order.id,
+      collectedByDriver: true,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+    const ledgerBefore = (await api.bootstrap()).deliveryLedger.find(
+      (row) => row.orderId === order.id,
+    )!;
+    expect(ledgerBefore.driverUserId).toBe(driverA.id);
+    await api.assignDeliveryDriver({
+      orderId: order.id,
+      driverUserId: driverB.id,
+    });
+    expect(
+      (await api.bootstrap()).deliveryLedger.find(
+        (row) => row.orderId === order.id,
+      )?.driverUserId,
+    ).toBe(driverB.id);
+    await api.updateOrderStatus({ orderId: order.id, status: "READY" });
+    await api.updateOrderStatus({
+      orderId: order.id,
+      status: "OUT_FOR_DELIVERY",
+    });
+    await api.updateOrderStatus({ orderId: order.id, status: "DELIVERED" });
+    await api.refundPayment({
+      orderId: order.id,
+      paymentId: paid.payments[0]!.id,
+      amountMinor: 1_000,
+      reason: "Devolución parcial",
+      authorizerPin: "1234",
+    });
+    expect(
+      (await api.bootstrap()).deliveryLedger.find(
+        (row) => row.orderId === order.id,
+      ),
+    ).toMatchObject({
+      status: "PENDING",
+      amountDueMinor: populated.totalMinor - 1_000,
+    });
     await expect(
-      api.createOrder({
+      api.updateOrderStatus({ orderId: order.id, status: "READY" }),
+    ).rejects.toThrow("No se puede pasar");
+    expect(paid.paymentStatus).toBe("PAID");
+  });
+
+  it("permite cambiar retiro/envío conservando productos y ajustando saldo con devolución exacta", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const customer = await api.createCustomer({
+      name: "Cliente cambio modalidad",
+      phone: "11 4000-1212",
+      addresses: [{ label: "Casa", address: "Calle Uno 10" }],
+    });
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerId: customer.id,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+    });
+    const withItem = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    const originalPrice = withItem.items[0]!.unitPriceMinorSnapshot;
+    await api.confirmOrder({ orderId: order.id });
+    const paid = await api.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "CASH", amountMinor: withItem.totalMinor }],
+    });
+    const delivery = await api.updateDraftOrder({
+      orderId: order.id,
+      type: "DELIVERY",
+      customerId: customer.id,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+      deliveryAddress: customer.addresses[0]!.address,
+      deliveryFeeMinor: 50_000,
+      authorizerPin: "1234",
+      reason: "Cliente pidió envío",
+    });
+    expect(delivery).toMatchObject({
+      type: "DELIVERY",
+      paymentStatus: "PARTIALLY_PAID",
+      deliveryAddressSnapshot: "Calle Uno 10",
+    });
+    expect(delivery.items[0]!.unitPriceMinorSnapshot).toBe(originalPrice);
+    const paidDelivery = await api.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "CASH", amountMinor: 50_000 }],
+    });
+    const convertedBack = await api.updateDraftOrder({
+      orderId: order.id,
+      type: "TAKEAWAY",
+      customerId: customer.id,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+      deliveryFeeMinor: 0,
+      refunds: [
+        { paymentId: paidDelivery.payments[1]!.id, amountMinor: 50_000 },
+      ],
+      authorizerPin: "1234",
+      reason: "Cliente retira",
+    });
+    expect(convertedBack).toMatchObject({
+      type: "TAKEAWAY",
+      paymentStatus: "PAID",
+      deliveryAddressSnapshot: null,
+      deliveryFeeMinor: 0,
+    });
+  });
+
+  it("el efectivo cobrado por el repartidor no entra en caja demo", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    const driver = await api.createDriver({
+      fullName: "Repartidor efectivo",
+      authorizerPin: "1234",
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente delivery",
+      customerPhone: "11 4000-3131",
+      deliveryAddress: "Calle Dos 20",
+      deliveryFeeMinor: 10_000,
+      driverUserId: driver.id,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    const before = (await api.bootstrap()).cashSession!.expectedAmountMinor;
+    const delivered = await api.completeOrder({
+      orderId: order.id,
+      finalStatus: "DELIVERED",
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+    const after = await api.bootstrap();
+    expect(delivered.collectedByDriver).toBe(true);
+    expect(after.cashSession!.expectedAmountMinor).toBe(before);
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    expect(
+      saved.movements.filter(
+        (movement: any) =>
+          movement.orderId === order.id && movement.type === "SALE",
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          amountMinor: populated.totalMinor,
+          affectsCash: false,
+        }),
+      ]),
+    );
+  });
+
+  it("al convertir un envío cobrado por el repartidor exige rendir el neto en caja", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const driver = await api.createDriver({
+      fullName: "Repartidor modalidad",
+      authorizerPin: "1234",
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente modalidad",
+      customerPhone: "11 4000-1214",
+      deliveryAddress: "Calle Tres 30",
+      deliveryFeeMinor: 20_000,
+      driverUserId: driver.id,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    const paid = await api.payOrder({
+      orderId: order.id,
+      collectedByDriver: true,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+    const input = {
+      orderId: order.id,
+      type: "TAKEAWAY" as const,
+      customerName: "Cliente modalidad",
+      customerPhone: "11 4000-1214",
+      refunds: [{ paymentId: paid.payments[0]!.id, amountMinor: 20_000 }],
+      authorizerPin: "1234",
+      reason: "Cliente retirará",
+    };
+    const before = (await api.bootstrap()).cashSession!.expectedAmountMinor;
+    await expect(api.updateDraftOrder(input)).rejects.toThrow(
+      "rendición física",
+    );
+    const converted = await api.updateDraftOrder({
+      ...input,
+      driverCashRemitted: true,
+    });
+    expect(converted).toMatchObject({
+      type: "TAKEAWAY",
+      collectedByDriver: false,
+      paymentStatus: "PAID",
+    });
+    expect((await api.bootstrap()).cashSession!.expectedAmountMinor).toBe(
+      before + populated.totalMinor - 20_000,
+    );
+  });
+
+  it("sólo acepta cobros de repartidor en efectivo, con repartidor y responsable consistente", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const driver = await api.createDriver({
+      fullName: "Repartidor responsable",
+      authorizerPin: "1234",
+    });
+    const createDelivery = async () => {
+      const order = await api.createOrder({
         type: "DELIVERY",
-        customerName: "Cliente",
-        customerPhone: "11 3333-4444",
+        customerName: "Cliente cobro",
+        customerPhone: "11 4000-8181",
+        deliveryAddress: "Calle 11",
+        driverUserId: driver.id,
+      });
+      const populated = await api.addOrderItem({
+        orderId: order.id,
+        productId: "prod-muzza",
+      });
+      await api.confirmOrder({ orderId: order.id });
+      return { order, populated };
+    };
+    const transfer = await createDelivery();
+    const expectedBefore = (await api.bootstrap()).cashSession!
+      .expectedAmountMinor;
+    await expect(
+      api.payOrder({
+        orderId: transfer.order.id,
+        collectedByDriver: true,
+        payments: [
+          {
+            methodCode: "TRANSFER",
+            amountMinor: transfer.populated.totalMinor,
+          },
+        ],
       }),
-    ).rejects.toThrow("dirección");
+    ).rejects.toThrow("sólo puede rendir efectivo");
+    expect(
+      (await api.bootstrap()).orders.find(
+        (candidate) => candidate.id === transfer.order.id,
+      )!.payments,
+    ).toHaveLength(0);
+    expect((await api.bootstrap()).cashSession!.expectedAmountMinor).toBe(
+      expectedBefore,
+    );
+
+    const noDriverOrder = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente sin repartidor",
+      customerPhone: "11 4000-8182",
+      deliveryAddress: "Calle 12",
+    });
+    const noDriver = await api.addOrderItem({
+      orderId: noDriverOrder.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: noDriverOrder.id });
+    await expect(
+      api.payOrder({
+        orderId: noDriverOrder.id,
+        collectedByDriver: true,
+        payments: [{ methodCode: "CASH", amountMinor: noDriver.totalMinor }],
+      }),
+    ).rejects.toThrow("Asigná un repartidor activo");
+
+    const mixed = await createDelivery();
+    const half = Math.floor(mixed.populated.totalMinor / 2);
+    await expect(
+      api.payOrder({
+        orderId: mixed.order.id,
+        collectedByDriver: true,
+        payments: [
+          { methodCode: "CASH", amountMinor: half },
+          {
+            methodCode: "TRANSFER",
+            amountMinor: mixed.populated.totalMinor - half,
+          },
+        ],
+      }),
+    ).rejects.toThrow("sólo puede rendir efectivo");
+
+    const businessFirst = await createDelivery();
+    await api.payOrder({
+      orderId: businessFirst.order.id,
+      payments: [
+        { methodCode: "CASH", amountMinor: businessFirst.populated.totalMinor },
+      ],
+    });
+    const businessPayment = (await api.bootstrap()).orders.find(
+      (candidate) => candidate.id === businessFirst.order.id,
+    )!.payments[0]!;
+    await api.refundPayment({
+      orderId: businessFirst.order.id,
+      paymentId: businessPayment.id,
+      amountMinor: 10_000,
+      reason: "Devolución parcial",
+      authorizerPin: "1234",
+    });
+    const partial = (await api.bootstrap()).orders.find(
+      (candidate) => candidate.id === businessFirst.order.id,
+    )!.paidMinor;
+    const afterBusinessPayment = (await api.bootstrap()).orders.find(
+      (candidate) => candidate.id === businessFirst.order.id,
+    )!;
+    await expect(
+      api.payOrder({
+        orderId: businessFirst.order.id,
+        collectedByDriver: true,
+        payments: [
+          {
+            methodCode: "CASH",
+            amountMinor: businessFirst.populated.totalMinor - partial,
+          },
+        ],
+      }),
+    ).rejects.toThrow("mismo responsable");
+    expect(
+      (await api.bootstrap()).orders.find(
+        (candidate) => candidate.id === businessFirst.order.id,
+      ),
+    ).toMatchObject({
+      paidMinor: afterBusinessPayment.paidMinor,
+      collectedByDriver: false,
+      paymentStatus: afterBusinessPayment.paymentStatus,
+      payments: afterBusinessPayment.payments,
+    });
+
+    const driverFirst = await createDelivery();
+    const driverPaid = await api.payOrder({
+      orderId: driverFirst.order.id,
+      collectedByDriver: true,
+      payments: [
+        { methodCode: "CASH", amountMinor: driverFirst.populated.totalMinor },
+      ],
+    });
+    await api.refundPayment({
+      orderId: driverFirst.order.id,
+      paymentId: driverPaid.payments[0]!.id,
+      amountMinor: 10_000,
+      reason: "Devolución parcial",
+      authorizerPin: "1234",
+    });
+    const driverRemaining = (await api.bootstrap()).orders.find(
+      (candidate) => candidate.id === driverFirst.order.id,
+    )!.paidMinor;
+    const afterDriverPayment = (await api.bootstrap()).orders.find(
+      (candidate) => candidate.id === driverFirst.order.id,
+    )!;
+    await expect(
+      api.payOrder({
+        orderId: driverFirst.order.id,
+        payments: [{ methodCode: "CASH", amountMinor: driverRemaining }],
+      }),
+    ).rejects.toThrow("mismo responsable");
+    expect(
+      (await api.bootstrap()).orders.find(
+        (candidate) => candidate.id === driverFirst.order.id,
+      ),
+    ).toMatchObject({
+      paidMinor: afterDriverPayment.paidMinor,
+      collectedByDriver: true,
+      paymentStatus: afterDriverPayment.paymentStatus,
+      payments: afterDriverPayment.payments,
+    });
+  });
+
+  it("permite devolver sólo la deuda aún pendiente de cobro en cuenta corriente", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const customer = await api.createCustomer({
+      name: "Cliente devolución deuda",
+      phone: "11 4000-1414",
+    });
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerId: customer.id,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    const paid = await api.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "ACCOUNT", amountMinor: populated.totalMinor }],
+    });
+    await api.settleCustomerAccount({
+      customerId: customer.id,
+      methodCode: "CASH",
+      amountMinor: 100,
+    });
+    const refunded = await api.refundPayment({
+      orderId: order.id,
+      paymentId: paid.payments[0]!.id,
+      amountMinor: 50,
+      reason: "Ajuste",
+      authorizerPin: "1234",
+    });
+    expect(refunded.payments[0]!.refundedMinor).toBe(50);
+    await expect(
+      api.refundPayment({
+        orderId: order.id,
+        paymentId: paid.payments[0]!.id,
+        amountMinor: populated.totalMinor - 99,
+        reason: "Exceso",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("cuenta ya cobrado");
+  });
+
+  it("mantiene el envío ganado en pedidos entregados y voltea saldo firmado al repartir una devolución", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const driver = await api.createDriver({
+      fullName: "Repartidor fee ganado",
+      authorizerPin: "1234",
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente devolución",
+      customerPhone: "11 4000-7777",
+      deliveryAddress: "Calle 7",
+      deliveryFeeMinor: 20_000,
+      driverUserId: driver.id,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    const delivered = await api.completeOrder({
+      orderId: order.id,
+      finalStatus: "DELIVERED",
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+    const payment = delivered.payments[0]!;
+    const foodRefund = populated.totalMinor - 20_000 + 5_000;
+    await api.refundPayment({
+      orderId: order.id,
+      paymentId: payment.id,
+      amountMinor: foodRefund,
+      reason: "Devolución de productos",
+      authorizerPin: "1234",
+    });
+    expect(
+      (await api.bootstrap()).deliveryLedger.find(
+        (row) => row.orderId === order.id,
+      ),
+    ).toMatchObject({
+      direction: "BUSINESS_OWES_DRIVER",
+      amountDueMinor: 5_000,
+      status: "PENDING",
+    });
+    await api.refundPayment({
+      orderId: order.id,
+      paymentId: payment.id,
+      reason: "Devolución total",
+      authorizerPin: "1234",
+    });
+    expect(
+      (await api.bootstrap()).deliveryLedger.find(
+        (row) => row.orderId === order.id,
+      ),
+    ).toMatchObject({
+      direction: "BUSINESS_OWES_DRIVER",
+      amountDueMinor: 20_000,
+      status: "PENDING",
+    });
+  });
+
+  it("elimina la liquidación del repartidor si se devuelve todo antes de entregar", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const bootstrap = await api.bootstrap();
+    await api.saveSettings({
+      ...bootstrap.settings,
+      deliveryFeeBelongsToDriver: false,
+    });
+    const driver = await api.createDriver({
+      fullName: "Repartidor no entregado",
+      authorizerPin: "1234",
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente sin entrega",
+      customerPhone: "11 4000-7878",
+      deliveryAddress: "Calle 8",
+      deliveryFeeMinor: 20_000,
+      driverUserId: driver.id,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    const paid = await api.payOrder({
+      orderId: order.id,
+      collectedByDriver: true,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+    expect(
+      (await api.bootstrap()).deliveryLedger.some(
+        (row) => row.orderId === order.id,
+      ),
+    ).toBe(true);
+    await api.refundPayment({
+      orderId: order.id,
+      paymentId: paid.payments[0]!.id,
+      reason: "Pedido cancelado antes de salir",
+      authorizerPin: "1234",
+    });
+    expect(
+      (await api.bootstrap()).deliveryLedger.some(
+        (row) => row.orderId === order.id,
+      ),
+    ).toBe(false);
+  });
+
+  it("rechaza cambiar a retiro si la seña excedería el nuevo total y no modifica nada", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente seña total",
+      customerPhone: "11 4000-7778",
+      deliveryAddress: "Calle 9",
+      deliveryFeeMinor: 200_000,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    const deposited = await api.applyOrderDeposit({
+      orderId: order.id,
+      depositMinor: populated.totalMinor,
+      notes: "Seña completa",
+      authorizerPin: "1234",
+    });
+    const before = await api.bootstrap();
+    const stockBefore = before.products.find(
+      (product) => product.id === "prod-muzza",
+    )!.stockMinor;
+    const cashBefore = before.cashSession!.expectedAmountMinor;
+    await expect(
+      api.updateDraftOrder({
+        orderId: order.id,
+        type: "TAKEAWAY",
+        customerName: "Cliente seña total",
+        customerPhone: "11 4000-7778",
+        reason: "Pasará a retirar",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("La seña supera el nuevo importe");
+    const after = await api.bootstrap();
+    const unchanged = after.orders.find(
+      (candidate) => candidate.id === order.id,
+    )!;
+    expect(unchanged).toMatchObject({
+      type: "DELIVERY",
+      depositMinor: deposited.depositMinor,
+      deliveryFeeMinor: 200_000,
+    });
+    expect(
+      after.products.find((product) => product.id === "prod-muzza")!.stockMinor,
+    ).toBe(stockBefore);
+    expect(after.cashSession!.expectedAmountMinor).toBe(cashBefore);
+  });
+
+  it("bloquea la edición sin ajuste autorizado de pedidos pagados o terminales", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Cliente protegido",
+      customerPhone: "11 4000-9191",
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    await api.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+    await expect(
+      api.removeOrderItemModifier({
+        orderId: order.id,
+        modifierId: "modifier-no-existe",
+      }),
+    ).rejects.toThrow("pagos");
+    await expect(
+      api.applyOrderDiscount({
+        orderId: order.id,
+        mode: "FIXED",
+        value: 10_000,
+        reason: "Ajuste",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("pagos");
+    await expect(
+      api.applyOrderDeposit({
+        orderId: order.id,
+        depositMinor: 10_000,
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("pagos");
+    await api.updateOrderStatus({ orderId: order.id, status: "DELIVERED" });
+    await expect(
+      api.removeOrderItemModifier({
+        orderId: order.id,
+        modifierId: "modifier-no-existe",
+      }),
+    ).rejects.toThrow("finalizado");
+    await expect(
+      api.applyOrderDiscount({
+        orderId: order.id,
+        mode: "FIXED",
+        value: 10_000,
+        reason: "Ajuste",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("finalizado");
+    await expect(
+      api.applyOrderDeposit({
+        orderId: order.id,
+        depositMinor: 10_000,
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("finalizado");
+  });
+
+  it("captura titularidad del costo de envío si la seña cubre un envío confirmado", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const initial = await api.bootstrap();
+    await api.saveSettings({
+      ...initial.settings,
+      deliveryFeeBelongsToDriver: false,
+    });
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente seña envío",
+      customerPhone: "11 4000-9192",
+      deliveryAddress: "Calle 19",
+      deliveryFeeMinor: 20_000,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    await api.applyOrderDeposit({
+      orderId: order.id,
+      depositMinor: populated.totalMinor,
+      authorizerPin: "1234",
+    });
+    expect(
+      (await api.bootstrap()).orders.find(
+        (candidate) => candidate.id === order.id,
+      )?.deliveryFeeBelongsToDriver,
+    ).toBe(false);
+    const afterDeposit = await api.bootstrap();
+    await api.saveSettings({
+      ...afterDeposit.settings,
+      deliveryFeeBelongsToDriver: true,
+    });
+    expect(
+      (await api.bootstrap()).orders.find(
+        (candidate) => candidate.id === order.id,
+      )?.deliveryFeeBelongsToDriver,
+    ).toBe(false);
   });
 
   it("detecta ediciones concurrentes entre dos pestañas demo", async () => {
@@ -1317,6 +2171,99 @@ describe("API de demostración", () => {
       paymentStatus: "UNPAID",
     });
     expect(unchanged?.payments).toHaveLength(0);
+  });
+
+  it("permite cuenta corriente pura o combinada con efectivo al entregar un envío", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const customer = await api.createCustomer({
+      name: "Cliente envío cuenta",
+      phone: "11 4000-1234",
+    });
+    const driver = await api.createDriver({
+      fullName: "Repartidor cuenta demo",
+      authorizerPin: "1234",
+    });
+    const before = await api.bootstrap();
+
+    const createDelivery = async () => {
+      const order = await api.createOrder({
+        type: "DELIVERY",
+        customerId: customer.id,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        deliveryAddress: "Calle Cuenta 123",
+        driverUserId: driver.id,
+      });
+      const populated = await api.addOrderItem({
+        orderId: order.id,
+        productId: "prod-muzza",
+      });
+      return { order, populated };
+    };
+
+    const pure = await createDelivery();
+    const purePaid = await api.completeOrder({
+      orderId: pure.order.id,
+      finalStatus: "DELIVERED",
+      payments: [
+        { methodCode: "ACCOUNT", amountMinor: pure.populated.totalMinor },
+      ],
+    });
+    expect(purePaid).toMatchObject({
+      paymentStatus: "PAID",
+      operationalStatus: "DELIVERED",
+      collectedByDriver: false,
+    });
+
+    const mixed = await createDelivery();
+    const cashMinor = Math.floor(mixed.populated.totalMinor / 2);
+    const accountMinor = mixed.populated.totalMinor - cashMinor;
+    const mixedPaid = await api.completeOrder({
+      orderId: mixed.order.id,
+      finalStatus: "DELIVERED",
+      payments: [
+        {
+          methodCode: "CASH",
+          amountMinor: cashMinor,
+          receivedMinor: cashMinor,
+        },
+        { methodCode: "ACCOUNT", amountMinor: accountMinor },
+      ],
+    });
+    expect(mixedPaid).toMatchObject({
+      paymentStatus: "PAID",
+      operationalStatus: "DELIVERED",
+      collectedByDriver: false,
+    });
+
+    const afterPayment = await api.bootstrap();
+    expect(afterPayment.cashSession?.expectedAmountMinor).toBe(
+      (before.cashSession?.expectedAmountMinor ?? 0) + cashMinor,
+    );
+    const profileBeforeReceipt = await api.getCustomerProfile({
+      customerId: customer.id,
+      page: 1,
+      pageSize: 10,
+    });
+    expect(profileBeforeReceipt.metrics.outstandingMinor).toBe(
+      pure.populated.totalMinor + accountMinor,
+    );
+    const salesBeforeReceipt = profileBeforeReceipt.metrics.totalSpentMinor;
+
+    const profileAfterReceipt = await api.settleCustomerAccount({
+      customerId: customer.id,
+      methodCode: "CASH",
+      amountMinor: accountMinor,
+    });
+    expect(profileAfterReceipt.metrics.outstandingMinor).toBe(
+      pure.populated.totalMinor,
+    );
+    expect(profileAfterReceipt.metrics.totalSpentMinor).toBe(
+      salesBeforeReceipt,
+    );
+    expect((await api.bootstrap()).cashSession?.expectedAmountMinor).toBe(
+      (before.cashSession?.expectedAmountMinor ?? 0) + cashMinor + accountMinor,
+    );
   });
 
   it("cuenta actividad del repartidor creado después aunque el ledger esté desactivado", async () => {
@@ -1849,7 +2796,9 @@ describe("API de demostración", () => {
   it("permite pagar al repartidor en el momento al cobrar en demo", async () => {
     const api = createDemoApi(new MemoryStorage());
     const bootstrap = await api.bootstrap();
-    const driver = bootstrap.users.find((u) => u.roleCode === "DELIVERY_DRIVER")!;
+    const driver = bootstrap.users.find(
+      (u) => u.roleCode === "DELIVERY_DRIVER",
+    )!;
 
     const order = await api.createOrder({
       type: "DELIVERY",
@@ -1876,6 +2825,231 @@ describe("API de demostración", () => {
     expect(ledger).toBeDefined();
     expect(ledger?.status).toBe("SETTLED");
     expect(ledger?.settledAmountMinor).toBe(250_000);
+    expect(after.cashSession?.cashExpenseMinor).toBe(250_000);
+    expect(after.cashSession?.expectedAmountMinor).toBe(
+      bootstrap.cashSession!.expectedAmountMinor - 250_000,
+    );
+    await api.closeCashSession({
+      countedAmountMinor: after.cashSession!.expectedAmountMinor,
+      force: true,
+      reason: "Cierre con pago de envío",
+      authorizerPin: "1234",
+    });
+    const closed = await api.getCashSessionReport({
+      cashSessionId: bootstrap.cashSession!.id,
+    });
+    expect(closed.session.cashExpenseMinor).toBe(250_000);
+    expect(
+      closed.movements.some(
+        (movement) =>
+          movement.type === "EXPENSE" && movement.orderId === order.id,
+      ),
+    ).toBe(true);
+  });
+
+  it("si el negocio retiene el envío no paga ni genera deuda al repartidor", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const bootstrap = await api.bootstrap();
+    await api.saveSettings({
+      ...bootstrap.settings,
+      deliveryFeeBelongsToDriver: false,
+    });
+    const activityBaseline =
+      (await api.bootstrap()).driverDeliveryActivity.find(
+        (row) => row.driverUserId === "user-driver",
+      )?.earningsMinor ?? 0;
+    const driver = bootstrap.users.find(
+      (u) => u.roleCode === "DELIVERY_DRIVER",
+    )!;
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Fee negocio",
+      customerPhone: "11 7777-1111",
+      deliveryAddress: "Calle 123",
+      deliveryFeeMinor: 250_000,
+      driverUserId: driver.id,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    await api.payOrder({
+      orderId: order.id,
+      payDriverNow: true,
+      payments: [{ methodCode: "TRANSFER", amountMinor: populated.totalMinor }],
+    });
+    let after = await api.bootstrap();
+    expect(after.deliveryLedger.some((row) => row.orderId === order.id)).toBe(
+      false,
+    );
+    expect(after.cashSession?.cashExpenseMinor).toBe(0);
+    expect(after.cashSession?.expectedAmountMinor).toBe(
+      bootstrap.cashSession!.expectedAmountMinor,
+    );
+
+    // If the driver collected the customer payment, all money belongs to the business.
+    const driverPaidOrder = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Driver cobra",
+      customerPhone: "11 7777-2222",
+      deliveryAddress: "Calle 456",
+      deliveryFeeMinor: 250_000,
+      driverUserId: driver.id,
+    });
+    const driverPaidPopulated = await api.addOrderItem({
+      orderId: driverPaidOrder.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: driverPaidOrder.id });
+    await api.payOrder({
+      orderId: driverPaidOrder.id,
+      collectedByDriver: true,
+      payments: [
+        { methodCode: "CASH", amountMinor: driverPaidPopulated.totalMinor },
+      ],
+    });
+    await api.updateOrderStatus({
+      orderId: driverPaidOrder.id,
+      status: "OUT_FOR_DELIVERY",
+    });
+    await api.updateOrderStatus({
+      orderId: driverPaidOrder.id,
+      status: "DELIVERED",
+    });
+    after = await api.bootstrap();
+    const ledger = after.deliveryLedger.find(
+      (row) => row.orderId === driverPaidOrder.id,
+    )!;
+    expect(ledger.amountDueMinor).toBe(driverPaidPopulated.totalMinor);
+    expect(ledger.direction).toBe("DRIVER_OWES_BUSINESS");
+    const activity = after.driverDeliveryActivity.find(
+      (row) => row.driverUserId === driver.id,
+    );
+    expect(activity?.deliveryCount).toBeGreaterThan(0);
+    expect(activity?.earningsMinor).toBe(activityBaseline);
+  });
+
+  it("conserva y permite liquidar deudas ya creadas al cambiar la configuración", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const initial = await api.bootstrap();
+    const driver = initial.users.find((u) => u.roleCode === "DELIVERY_DRIVER")!;
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Deuda existente",
+      customerPhone: "11 7777-3333",
+      deliveryAddress: "Calle 789",
+      deliveryFeeMinor: 250_000,
+      driverUserId: driver.id,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+    await api.payOrder({
+      orderId: order.id,
+      collectedByDriver: true,
+      payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    });
+    await api.updateOrderStatus({
+      orderId: order.id,
+      status: "OUT_FOR_DELIVERY",
+    });
+    await api.updateOrderStatus({ orderId: order.id, status: "DELIVERED" });
+    const pending = (await api.bootstrap()).deliveryLedger.find(
+      (row) => row.orderId === order.id,
+    )!;
+    expect(pending.amountDueMinor).toBe(populated.totalMinor - 250_000);
+
+    const current = await api.bootstrap();
+    await api.saveSettings({
+      ...current.settings,
+      deliveryFeeBelongsToDriver: false,
+    });
+    expect(
+      (await api.bootstrap()).deliveryLedger.find(
+        (row) => row.id === pending.id,
+      )?.status,
+    ).toBe("PENDING");
+    const settled = await api.settleDelivery({
+      ledgerIds: [pending.id],
+      reason: "Rendición de deuda existente",
+      authorizerPin: "1234",
+    });
+    expect(settled[0]?.status).toBe("SETTLED");
+  });
+
+  it("preserva la titularidad capturada en un pago parcial aunque cambien los ajustes", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    const bootstrap = await api.bootstrap();
+    const driver = bootstrap.users.find(
+      (u) => u.roleCode === "DELIVERY_DRIVER",
+    )!;
+    const order = await api.createOrder({
+      type: "DELIVERY",
+      customerName: "Pago parcial",
+      customerPhone: "11 7777-4444",
+      deliveryAddress: "Calle 987",
+      deliveryFeeMinor: 250_000,
+      driverUserId: driver.id,
+    });
+    const populated = await api.addOrderItem({
+      orderId: order.id,
+      productId: "prod-muzza",
+    });
+    await api.confirmOrder({ orderId: order.id });
+
+    // Seed a legacy/ongoing partial payment state: normal checkout accepts the
+    // remaining balance in one tender operation, but persisted orders can be partial.
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    const storedOrder = saved.data.orders.find(
+      (item: { id: string }) => item.id === order.id,
+    );
+    const partialMinor = 100_000;
+    storedOrder.deliveryFeeBelongsToDriver = true;
+    storedOrder.paidMinor = partialMinor;
+    storedOrder.paymentStatus = "PARTIALLY_PAID";
+    storedOrder.cashSessionPaidId = bootstrap.cashSession!.id;
+    storedOrder.payments = [
+      {
+        id: "partial-payment",
+        methodCode: "TRANSFER",
+        methodName: "Transferencia",
+        amountMinor: partialMinor,
+        receivedMinor: null,
+        reference: null,
+        createdAt: new Date().toISOString(),
+        refundedMinor: 0,
+        refundableMinor: partialMinor,
+        status: "ACTIVE",
+      },
+    ];
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+
+    const resumedApi = createDemoApi(storage);
+    const current = await resumedApi.bootstrap();
+    await resumedApi.saveSettings({
+      ...current.settings,
+      deliveryFeeBelongsToDriver: false,
+    });
+    const completed = await resumedApi.payOrder({
+      orderId: order.id,
+      payDriverNow: true,
+      payments: [
+        {
+          methodCode: "TRANSFER",
+          amountMinor: populated.totalMinor - partialMinor,
+        },
+      ],
+    });
+    expect(completed.deliveryFeeBelongsToDriver).toBe(true);
+    const after = await resumedApi.bootstrap();
+    const ledger = after.deliveryLedger.find((row) => row.orderId === order.id);
+    expect(ledger?.status).toBe("SETTLED");
+    expect(ledger?.settledAmountMinor).toBe(250_000);
+    expect(after.cashSession?.cashExpenseMinor).toBe(250_000);
   });
 
   it("permite agregar pizza mitad y mitad combinando dos variedades", async () => {
@@ -2069,11 +3243,15 @@ describe("API de demostración", () => {
 
     await api.payOrder({
       orderId: order1.id,
-      payments: [{ methodCode: "TRANSFER", amountMinor: freshOrder1.totalMinor }],
+      payments: [
+        { methodCode: "TRANSFER", amountMinor: freshOrder1.totalMinor },
+      ],
     });
     await api.payOrder({
       orderId: order2.id,
-      payments: [{ methodCode: "TRANSFER", amountMinor: freshOrder2.totalMinor }],
+      payments: [
+        { methodCode: "TRANSFER", amountMinor: freshOrder2.totalMinor },
+      ],
     });
 
     await api.updateOrderStatus({ orderId: order1.id, status: "DELIVERED" });
@@ -2096,12 +3274,12 @@ describe("API de demostración", () => {
     expect(settled.every((s) => s.status === "SETTLED")).toBe(true);
 
     const after = await api.bootstrap();
-    expect(
-      after.deliveryLedger.find((l) => l.id === ledger1.id)?.status,
-    ).toBe("SETTLED");
-    expect(
-      after.deliveryLedger.find((l) => l.id === ledger2.id)?.status,
-    ).toBe("SETTLED");
+    expect(after.deliveryLedger.find((l) => l.id === ledger1.id)?.status).toBe(
+      "SETTLED",
+    );
+    expect(after.deliveryLedger.find((l) => l.id === ledger2.id)?.status).toBe(
+      "SETTLED",
+    );
   });
 
   it("unifica productos duplicados al agregar y permite modificar la cantidad con updateOrderItemQuantity", async () => {
@@ -2152,5 +3330,3 @@ describe("API de demostración", () => {
     ).rejects.toThrow("La cantidad debe ser mayor que cero.");
   });
 });
-
-

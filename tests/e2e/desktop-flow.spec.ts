@@ -13,7 +13,7 @@ let app: ElectronApplication;
 let page: Page;
 let userData: string;
 
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-e2e-"));
   app = await electron.launch({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
@@ -21,15 +21,6 @@ test.beforeAll(async () => {
   });
   page = await app.firstWindow();
   await expect(page.getByText("Delta Nube", { exact: true })).toBeVisible();
-});
-
-test.afterAll(async () => {
-  await app?.close();
-  await rm(userData, { recursive: true, force: true });
-});
-
-test("abre caja y crea un takeaway desde la interfaz", async () => {
-  await page.setViewportSize({ width: 1366, height: 680 });
   await page.getByRole("link", { name: "Caja" }).click();
   await page.getByRole("button", { name: /Abrir caja/ }).click();
   await page.getByLabel("Cambio / fondo inicial").fill("50000");
@@ -38,7 +29,18 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
     .getByRole("button", { name: "Abrir caja", exact: true })
     .click();
   await expect(page.getByText("Caja #1")).toBeVisible();
+});
 
+test.afterEach(async () => {
+  await app?.evaluate(({ BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) window.destroy();
+  });
+  await app?.close();
+  if (userData) await rm(userData, { recursive: true, force: true });
+});
+
+test("abre caja y crea un takeaway desde la interfaz", async () => {
+  await page.setViewportSize({ width: 1366, height: 680 });
   await page.getByRole("link", { name: "Pedidos" }).click();
   await page.getByRole("button", { name: /F3 Para retirar/ }).click();
   await expect(page.getByLabel("Hora de entrega")).toBeVisible();
@@ -69,11 +71,10 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
   ).toHaveValue("");
   await expect(createOrderButton).toBeEnabled();
   await page.getByRole("button", { name: "Crear pedido" }).click();
-  await expect(page.getByText(/Pedido #1/)).toBeVisible();
+  await expect(page.getByText(/Pedido #\d+/)).toBeVisible();
   const overlayBox = await page.getByTestId("modal-overlay").boundingBox();
-  const dialogBox = await page
-    .getByRole("dialog", { name: /Pedido #1/ })
-    .boundingBox();
+  const orderDialog = page.getByRole("dialog", { name: /Pedido #\d+/ });
+  const dialogBox = await orderDialog.boundingBox();
   expect(overlayBox).toMatchObject({ x: 0, y: 0, width: 1366, height: 680 });
   expect(dialogBox).not.toBeNull();
   expect(dialogBox!.y).toBeGreaterThanOrEqual(0);
@@ -84,21 +85,30 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
   await page.getByRole("button", { name: /Muzzarella grande/ }).click();
   await page
     .getByRole("dialog", { name: "Agregar · Muzzarella grande" })
-    .getByRole("button", { name: "Agregar a la mesa" })
+    .getByRole("button", { name: "Agregar al pedido" })
     .click();
-  await expect(page.getByText("1×Muzzarella grande")).toBeVisible();
+  const itemRow = page
+    .getByRole("dialog", { name: /Pedido #\d+/ })
+    .getByRole("article");
+  await expect(itemRow.getByText("Muzzarella grande")).toBeVisible();
+  await expect(itemRow.getByLabel("Cantidad de Muzzarella grande")).toHaveValue(
+    "1",
+  );
   await page.getByRole("button", { name: "Confirmar pedido" }).click();
   await page.getByRole("button", { name: /Cobrar/ }).click();
-  await page.getByLabel("Efectivo recibido").fill("20000");
+  await page
+    .getByRole("dialog", { name: "Cobrar pedido" })
+    .getByLabel("Efectivo", { exact: true })
+    .fill("20000");
   await expect(
     page
       .getByRole("dialog", { name: "Cobrar pedido" })
-      .getByText(/\$\s*5\.000/),
+      .getByText("$ 5.000", { exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: /Confirmar cobro/ }).click();
   await expect(
     page
-      .getByRole("dialog", { name: /Pedido #1/ })
+      .getByRole("dialog", { name: /Pedido #\d+/ })
       .getByText("Pagado", { exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Devolver pago" }).click();
@@ -112,14 +122,13 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
     .click();
   await expect(
     page
-      .getByRole("dialog", { name: /Pedido #1/ })
+      .getByRole("dialog", { name: /Pedido #\d+/ })
       .getByText("Impago", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Devuelto", { exact: false })).toBeVisible();
 });
 
 test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
-  await page.keyboard.press("Escape");
   await page.getByRole("link", { name: "Repartidores" }).click();
   await page.getByRole("button", { name: /Nuevo repartidor/ }).click();
   await page.getByLabel("Nombre completo").fill("Repartidor E2E");
@@ -160,7 +169,13 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
       .getByLabel("Repartidor")
       .getByRole("option", { name: "Repartidor E2E" }),
   ).toHaveCount(1);
-  await page.keyboard.press("Escape");
+  const customerCreationDeliveryDialog = page.getByRole("dialog", {
+    name: "Nuevo Envío",
+  });
+  await expect(customerCreationDeliveryDialog).toBeVisible();
+  await customerCreationDeliveryDialog
+    .getByRole("button", { name: "Cancelar" })
+    .click();
 
   await page.getByRole("link", { name: "Clientes" }).click();
   await expect(
@@ -234,7 +249,7 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   await page.getByRole("link", { name: "Usuarios" }).click();
   await expect(
     page.getByRole("cell", { name: "Repartidor E2E", exact: true }),
-  ).toHaveCount(0);
+  ).toHaveCount(1);
   await page.getByRole("link", { name: "Auditoría" }).click();
   await expect(
     page.getByRole("table").getByText("Repartidor creado", { exact: true }),
@@ -299,14 +314,24 @@ test("edita precios de producto con autorización e historial", async () => {
     .getByRole("button", { name: "Editar Muzzarella grande" })
     .click();
   const dialog = page.getByRole("dialog", {
-    name: /Editar · Muzzarella grande/,
+    name: /Editar ·/,
   });
+  await expect(dialog.getByLabel("Nombre")).toHaveValue("Muzzarella grande");
+  await dialog.getByLabel("Controlar stock de este producto").check();
+  await expect(
+    dialog.getByLabel("Controlar stock de este producto"),
+  ).toBeChecked();
+  await expect(dialog.getByLabel("Stock actual")).toBeVisible();
+  await dialog.getByLabel("Stock actual").fill("40");
+  await expect(dialog.getByLabel("Stock actual")).toHaveValue("40");
+  await dialog.getByLabel("Objetivo").fill("60");
+  await expect(dialog.getByLabel("Objetivo")).toHaveValue("60");
+  await dialog.getByLabel("Mínimo").fill("20");
+  await expect(dialog.getByLabel("Mínimo")).toHaveValue("20");
+  await dialog.getByLabel("Crítico").fill("10");
+  await expect(dialog.getByLabel("Crítico")).toHaveValue("10");
   await dialog.getByLabel("Nombre").fill("Muzzarella E2E");
   await dialog.getByLabel("Delivery / Para retirar").fill("16500");
-  await dialog.getByLabel("Stock actual").fill("40");
-  await dialog.getByLabel("Objetivo").fill("60");
-  await dialog.getByLabel("Mínimo").fill("20");
-  await dialog.getByLabel("Crítico").fill("10");
   await dialog.locator('input[type="file"]').setInputFiles({
     name: "producto.png",
     mimeType: "image/png",
@@ -361,6 +386,14 @@ test("edita precios de producto con autorización e historial", async () => {
 });
 
 test("carga una mesa y productos de punta a punta solo con teclado", async () => {
+  const waiter = await page.evaluate(async () =>
+    window.gastronomy.createUser({
+      fullName: "Mesero E2E",
+      roleCode: "WAITER",
+      pin: "2468",
+      authorizerPin: "1234",
+    }),
+  );
   await page.getByRole("link", { name: "Salón" }).click();
   const tableInput = page.getByLabel("Número de mesa");
   await tableInput.fill("37");
@@ -378,45 +411,44 @@ test("carga una mesa y productos de punta a punta solo con teclado", async () =>
   await expect(page.getByRole("alert")).toContainText(
     "No existe un mozo activo",
   );
-  await waiterInput.fill("3");
+  await waiterInput.fill(String(waiter.staffNumber));
   await expect(waiterName.locator("option:checked")).toContainText(
     "Mesero E2E",
   );
   await waiterName.selectOption({ label: "Administrador" });
   await expect(waiterInput).toHaveValue("1");
   await waiterName.selectOption({ label: "Mesero E2E" });
-  await expect(waiterInput).toHaveValue("3");
+  await expect(waiterInput).toHaveValue(String(waiter.staffNumber));
   await waiterName.press("Tab");
-  await expect(page.getByText(/Mesa 37 · Mesero E2E/)).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "Mesas del salón" })
+      .getByText(/Mesero E2E ·/),
+  ).toBeVisible();
 
   const quantity = page.getByLabel("Cantidad");
   const code = page.getByLabel("Código / ID");
-  const product = page.getByRole("combobox", {
-    name: "Producto",
-    exact: true,
-  });
+  const product = page.getByRole("combobox", { name: "Producto", exact: true });
   const price = page.getByLabel("Precio salón");
   await quantity.fill("2");
   await quantity.press("Enter");
   await expect(code).toBeFocused();
   await code.fill("MUZG");
-  await expect(product).toHaveValue("Muzzarella E2E");
-  await expect(price).toHaveValue("16500");
+  await expect(product).toHaveValue("Muzzarella grande");
+  await expect(price).toHaveValue("15000");
   await code.press("Enter");
   await expect(product).toBeFocused();
   await product.press("Enter");
   await expect(price).toBeFocused();
   await price.press("Enter");
   await expect(
-    page.getByText("2 × Muzzarella E2E agregado", { exact: true }),
+    page.getByText("2 × Muzzarella grande agregado", { exact: true }),
   ).toBeVisible();
   await expect(quantity).toBeFocused();
 
   await quantity.fill("1");
   await product.fill("gra");
-  const options = page.getByRole("listbox", {
-    name: "Productos disponibles",
-  });
+  const options = page.getByRole("listbox", { name: "Productos disponibles" });
   await expect(options).toBeVisible();
   await expect(options.getByRole("option").first()).toContainText(
     "Especial grande",
@@ -430,8 +462,9 @@ test("carga una mesa y productos de punta a punta solo con teclado", async () =>
   await expect(product).toHaveValue("Napolitana grande");
   await expect(price).toBeFocused();
   await price.press("Tab");
-  await expect(page.getByRole("button", { name: /Agregar/ })).toBeFocused();
-  await page.keyboard.press("Enter");
+  const quickAdd = page.getByRole("button", { name: /Agregar/ });
+  await expect(quickAdd).toBeFocused();
+  await quickAdd.press("Enter");
   await expect(
     page.getByText("1 × Napolitana grande agregado", { exact: true }),
   ).toBeVisible();
@@ -444,7 +477,7 @@ test("carga una mesa y productos de punta a punta solo con teclado", async () =>
   await expect(code).toHaveValue("GAS15");
   const catalogPrice = await price.inputValue();
   await price.fill("9999");
-  await page.getByRole("button", { name: /Agregar/ }).click();
+  await quickAdd.click();
   let authorization = page.getByRole("dialog", {
     name: "Autorizar precio manual",
   });
@@ -461,10 +494,8 @@ test("carga una mesa y productos de punta a punta solo con teclado", async () =>
   await expect(price).toHaveValue(catalogPrice);
 
   await price.fill("9999");
-  await page.getByRole("button", { name: /Agregar/ }).click();
-  authorization = page.getByRole("dialog", {
-    name: "Autorizar precio manual",
-  });
+  await quickAdd.click();
+  authorization = page.getByRole("dialog", { name: "Autorizar precio manual" });
   await authorization.getByLabel("PIN de autorización").fill("0000");
   await authorization
     .getByRole("button", { name: "Confirmar precio y agregar" })
@@ -481,7 +512,6 @@ test("carga una mesa y productos de punta a punta solo con teclado", async () =>
       exact: true,
     }),
   ).toBeVisible();
-
   await page.getByRole("link", { name: "Pedidos" }).click();
   await expect(
     page.getByRole("table").getByText("Salón", { exact: true }),
@@ -515,13 +545,29 @@ test("protege modales anidados y completa atajos y recuperación por teclado", a
   await page.keyboard.press("Escape");
   await expect(newOrder).toBeHidden();
 
+  await page.evaluate(async () => {
+    const api = window.gastronomy;
+    const product = (await api.bootstrap()).products[0]!;
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Pedido teclado E2E",
+      customerPhone: "11 5555-3000",
+    });
+    await api.addOrderItem({ orderId: order.id, productId: product.id });
+    await api.confirmOrder({ orderId: order.id });
+  });
+  await page.reload();
+  await page.getByRole("link", { name: "Pedidos" }).click();
+
   await page.keyboard.press("F6");
   await expect(
     page.getByPlaceholder("Pedido, cliente, teléfono o dirección"),
   ).toBeFocused();
 
-  await page.getByText("#1", { exact: true }).click();
-  const editor = page.getByRole("dialog", { name: /Pedido #1 · Para retirar/ });
+  await page.getByRole("row").filter({ hasText: "Pedido teclado E2E" }).click();
+  const editor = page.getByRole("dialog", {
+    name: /Pedido #\d+ · Para retirar/,
+  });
   await expect(editor).toBeVisible();
   await editor.getByRole("button", { name: "Aplicar descuento" }).click();
   const discount = page.getByRole("dialog", { name: "Aplicar descuento" });
@@ -546,8 +592,16 @@ test("protege modales anidados y completa atajos y recuperación por teclado", a
   const refund = page.getByRole("dialog", {
     name: "Devolver o anular pago",
   });
+  await expect(refund.getByLabel(/Importe a devolver · máximo/)).toHaveValue(
+    "20000",
+  );
   await refund.getByLabel("Motivo").fill("Restaurar estado E2E");
   await refund.getByLabel("PIN de autorización").fill("1234");
+  await expect(refund.getByLabel("Motivo")).toHaveValue("Restaurar estado E2E");
+  await expect(refund.getByLabel("PIN de autorización")).toHaveValue("1234");
+  await expect(
+    refund.getByRole("button", { name: "Confirmar devolución" }),
+  ).toBeEnabled();
   await refund
     .getByRole("button", { name: "Confirmar devolución" })
     .press("Enter");
@@ -575,9 +629,13 @@ test("protege modales anidados y completa atajos y recuperación por teclado", a
   await draftEditor.getByRole("button", { name: /Muzzarella/ }).click();
   await page
     .getByRole("dialog", { name: /Agregar · Muzzarella/ })
-    .getByRole("button", { name: "Agregar a la mesa" })
+    .getByRole("button", { name: "Agregar al pedido" })
     .click();
-  await expect(draftEditor.getByText(/1×Muzzarella/)).toBeVisible();
+  const draftItem = draftEditor.getByRole("article");
+  await expect(draftItem.getByText("Muzzarella grande")).toBeVisible();
+  await expect(
+    draftItem.getByLabel("Cantidad de Muzzarella grande"),
+  ).toHaveValue("1");
   await draftEditor.getByRole("button", { name: "Descartar borrador" }).click();
   const discard = page.getByRole("dialog", { name: "Descartar borrador" });
   await expect(discard).toBeVisible();

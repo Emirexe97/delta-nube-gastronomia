@@ -40,9 +40,12 @@ export function assertOrderTransition(
 export function paymentStatusFor(
   totalMinor: number,
   paidMinor: number,
+  depositMinor: number = 0,
 ): PaymentStatus {
   nonNegativeMoney(totalMinor, "total");
   nonNegativeMoney(paidMinor, "importe pagado");
+  nonNegativeMoney(depositMinor, "seña");
+  if (totalMinor === 0 && depositMinor > 0) return "PAID";
   if (paidMinor <= 0) return "UNPAID";
   if (paidMinor < totalMinor) return "PARTIALLY_PAID";
   return "PAID";
