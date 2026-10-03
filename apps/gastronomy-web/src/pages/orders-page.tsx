@@ -436,13 +436,14 @@ function NewOrderModal({
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [driverUserId, setDriverUserId] = useState("");
-  const [delay, setDelay] = useState(40);
+  const [delay, setDelay] = useState("40");
   const [scheduleMode, setScheduleMode] = useState<"QUICK" | "SCHEDULED">(
     "QUICK",
   );
   const [timingChanged, setTimingChanged] = useState(false);
   const [scheduledAt, setScheduledAt] = useState("");
   const [fee, setFee] = useState("0");
+  const initialForm = useRef<string | null>(null);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const initializedSession = useRef<string | null>(null);
@@ -465,7 +466,13 @@ function NewOrderModal({
             orderId: editingOrder.id,
           })
         : window.gastronomy.createOrder(input),
-    { onSuccess: onSaved, onError: (value) => setError(humanError(value)) },
+    {
+      onSuccess: (order) => {
+        initialForm.current = null;
+        onSaved(order);
+      },
+      onError: (value) => setError(humanError(value)),
+    },
   );
 
   useEffect(() => {
@@ -506,7 +513,7 @@ function NewOrderModal({
             ),
           )
         : (data.settings.quickDelayMinutes[2] ?? 40);
-      setDelay(initialDelay);
+      setDelay(String(initialDelay));
       setScheduleMode(editingOrder?.scheduled ? "SCHEDULED" : "QUICK");
       setTimingChanged(false);
       setScheduledAt(
@@ -523,6 +530,7 @@ function NewOrderModal({
             0) / 100,
         ).replace(".", ","),
       );
+      initialForm.current = null;
     } else if (!open) {
       initializedSession.current = null;
     }
@@ -538,8 +546,9 @@ function NewOrderModal({
   const paidTypeChanged = Boolean(
     editingOrder && selectedType !== editingOrder.type,
   );
-  const newFeeMinor =
-    selectedType === "DELIVERY" ? (parseMoneyInput(fee) ?? 0) : 0;
+  const parsedFeeMinor = parseMoneyInput(fee);
+  const feeValid = selectedType !== "DELIVERY" || parsedFeeMinor !== null;
+  const newFeeMinor = selectedType === "DELIVERY" ? (parsedFeeMinor ?? 0) : 0;
   const previewTotalMinor = editingOrder
     ? Math.max(
         0,
@@ -610,7 +619,34 @@ function NewOrderModal({
     selectedType === "TAKEAWAY",
   );
 
+  const quickDelay = Number(delay);
+  const quickDate = new Date(Date.now() + quickDelay * 60_000);
+  const scheduledDate = new Date(scheduledAt);
+  const scheduledValid =
+    scheduleMode === "QUICK"
+      ? Number.isFinite(quickDelay) &&
+        Number.isInteger(quickDelay) &&
+        quickDelay > 0 &&
+        Number.isFinite(quickDate.valueOf())
+      : Boolean(
+          scheduledAt &&
+          Number.isFinite(scheduledDate.valueOf()) &&
+          scheduledDate.valueOf() > Date.now(),
+        );
+  const timingValid = Boolean(editingOrder && !timingChanged) || scheduledValid;
   const submit = () => {
+    if (!feeValid) {
+      setError("Ingresá un costo de envío válido y no negativo.");
+      return;
+    }
+    if (!timingValid) {
+      setError(
+        scheduleMode === "QUICK"
+          ? "Ingresá una demora entera y positiva válida."
+          : "Elegí una fecha y hora futuras válidas.",
+      );
+      return;
+    }
     if (!name.trim() || !phone.trim()) {
       setError("Completá el nombre y el teléfono del cliente para continuar.");
       return;
@@ -623,8 +659,8 @@ function NewOrderModal({
       editingOrder && !timingChanged
         ? editingOrder.promisedAt
         : scheduleMode === "SCHEDULED"
-          ? new Date(scheduledAt).toISOString()
-          : new Date(Date.now() + delay * 60_000).toISOString();
+          ? scheduledDate.toISOString()
+          : quickDate.toISOString();
     mutation.mutate({
       type: selectedType,
       customerId,
@@ -649,22 +685,51 @@ function NewOrderModal({
         : {}),
     });
   };
-  const scheduledValid =
-    scheduleMode === "QUICK"
-      ? delay > 0
-      : Boolean(scheduledAt && new Date(scheduledAt).valueOf() > Date.now());
-  const timingValid = Boolean(editingOrder && !timingChanged) || scheduledValid;
   const customerValid = Boolean(
     name.trim() &&
     phone.trim() &&
     (selectedType !== "DELIVERY" || address.trim()),
   );
+  const currentForm = JSON.stringify({
+    selectedType,
+    customerId,
+    customerAddressId,
+    name,
+    phone,
+    address,
+    driverUserId,
+    delay,
+    scheduleMode,
+    timingChanged,
+    scheduledAt,
+    fee,
+    notes,
+    reason,
+    authorizerPin,
+    reverseDeliverySettlement,
+    driverCashRemitted,
+    refundAmounts,
+  });
+  if (open && initialForm.current === null) initialForm.current = currentForm;
+  const hasChanges = Boolean(
+    initialForm.current && initialForm.current !== currentForm,
+  );
+  const cancel = () => {
+    if (mutation.isPending) return;
+    if (
+      hasChanges &&
+      !window.confirm("Hay cambios sin guardar. ¿Querés cerrar igualmente?")
+    )
+      return;
+    onClose();
+  };
 
   return (
     <Modal
       open={open}
       onClose={onClose}
       closeDisabled={mutation.isPending}
+      confirmClose={hasChanges && !mutation.isPending}
       title={
         editingOrder
           ? `Editar datos · ${typeLabels[selectedType]}`
@@ -698,9 +763,9 @@ function NewOrderModal({
           </p>
         </Field>
         {!editingOrder ? (
-          <div className="rounded-xl border border-brand-200 bg-brand-50 p-3 text-sm text-brand-900">
-            Podés comenzar por los productos. El cliente y, si es envío, su
-            dirección serán obligatorios antes de confirmar.
+          <div className="text-xs text-slate-500">
+            Podés comenzar por los productos; cliente y dirección (si es envío)
+            serán obligatorios al confirmar.
           </div>
         ) : null}
         <OrderCustomerSelector
@@ -727,6 +792,14 @@ function NewOrderModal({
                 onChange={(event) => setFee(event.target.value)}
                 inputMode="decimal"
               />
+              {!feeValid ? (
+                <span
+                  role="alert"
+                  className="text-xs font-medium text-rose-600"
+                >
+                  Ingresá un costo válido (vacío equivale a 0).
+                </span>
+              ) : null}
             </Field>
             <Field label="Repartidor">
               <Select
@@ -785,11 +858,11 @@ function NewOrderModal({
                     key={minutes}
                     onClick={() => {
                       setTimingChanged(true);
-                      setDelay(minutes);
+                      setDelay(String(minutes));
                     }}
                     className={cn(
                       "h-9 rounded-lg px-3 text-xs font-bold",
-                      delay === minutes
+                      Number(delay) === minutes
                         ? "bg-brand-600 text-white"
                         : "bg-slate-100 text-slate-500",
                     )}
@@ -802,18 +875,25 @@ function NewOrderModal({
                   value={delay}
                   onChange={(event) => {
                     setTimingChanged(true);
-                    setDelay(Number(event.target.value) || 0);
+                    setDelay(event.target.value);
                   }}
                   inputMode="numeric"
                 />
               </div>
               <p className="text-xs font-bold text-brand-700">
                 Hora de entrega:{" "}
-                {new Date(Date.now() + delay * 60_000).toLocaleTimeString(
-                  "es-AR",
-                  { hour: "2-digit", minute: "2-digit" },
-                )}
+                {Number.isFinite(quickDate.valueOf())
+                  ? quickDate.toLocaleTimeString("es-AR", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                  : "—"}
               </p>
+              {!scheduledValid ? (
+                <p role="alert" className="text-xs font-medium text-rose-600">
+                  Ingresá una demora entera y positiva válida.
+                </p>
+              ) : null}
             </>
           ) : (
             <>
@@ -978,7 +1058,7 @@ function NewOrderModal({
           <Button
             type="button"
             variant="secondary"
-            onClick={onClose}
+            onClick={cancel}
             disabled={mutation.isPending}
           >
             Cancelar
@@ -988,6 +1068,7 @@ function NewOrderModal({
             disabled={
               mutation.isPending ||
               !data.cashSession ||
+              !feeValid ||
               !timingValid ||
               !customerValid ||
               (isPaidEdit && !paidTypeChanged) ||
@@ -1008,7 +1089,10 @@ function NewOrderModal({
               type="button"
               variant="secondary"
               disabled={
-                mutation.isPending || !data.cashSession || !scheduledValid
+                mutation.isPending ||
+                !data.cashSession ||
+                !scheduledValid ||
+                !feeValid
               }
               onClick={() =>
                 mutation.mutate({
@@ -1021,15 +1105,13 @@ function NewOrderModal({
                   deliveryAddress:
                     selectedType === "DELIVERY" ? address.trim() || null : null,
                   deliveryFeeMinor:
-                    selectedType === "DELIVERY"
-                      ? (parseMoneyInput(fee) ?? 0)
-                      : 0,
+                    selectedType === "DELIVERY" ? newFeeMinor : 0,
                   driverUserId:
                     selectedType === "DELIVERY" ? driverUserId || null : null,
                   promisedAt:
                     scheduleMode === "SCHEDULED"
-                      ? new Date(scheduledAt).toISOString()
-                      : new Date(Date.now() + delay * 60_000).toISOString(),
+                      ? scheduledDate.toISOString()
+                      : quickDate.toISOString(),
                   scheduled: scheduleMode === "SCHEDULED",
                   notes: notes || null,
                 })

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { BootstrapDto, FinanceExpenseDto, FinanceReportDto, FinanceExpenseKind } from "@gastronomy/contracts";
 import { ArrowClockwise, ChartBar, Coins, DownloadSimple, Plus, WarningCircle } from "@phosphor-icons/react";
 import { Badge, Button, Card, Field, Input, Select } from "@gastronomy/ui";
-import { formatMoney, humanError, parseMoneyInput } from "../lib";
+import { csvCell } from "@gastronomy/domain";
+import { formatMoney, humanError, moneyInputValue, parseMoneyInput } from "../lib";
 
 const today = () => {
   const date = new Date();
@@ -13,7 +14,6 @@ const monthEnd = (month: string) => {
   const [year, value] = month.split("-").map(Number);
   return `${month}-${new Date(year!, value!, 0).getDate()}`;
 };
-const money = (value: string) => parseMoneyInput(value) ?? 0;
 
 export function FinancePage({ data }: { data: BootstrapDto }) {
   const [month, setMonth] = useState(thisMonth);
@@ -59,6 +59,9 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
     for (const item of report?.expenses ?? []) grouped.set(item.category, (grouped.get(item.category) ?? 0) + item.amountMinor);
     return [...grouped].sort((a,b) => b[1] - a[1]);
   }, [report]);
+  const unitCostMinor = parseMoneyInput(unitCost);
+  const costInvalid = Boolean(unitCost.trim()) && unitCostMinor == null;
+
   const coverage = report && report.costedItems + report.unknownCostItems > 0
     ? Math.round(100 * report.costedItems / (report.costedItems + report.unknownCostItems)) : 0;
 
@@ -71,14 +74,13 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
   }
 
   function exportCsv() {
-    if (!report) return;
-    const quote = (value: string | number | null) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    if (!report || loading || report.from !== from || report.to !== to) return;
     const rows = [
-      ["Fecha", "Tipo", "Categoría", "Descripción", "Importe", "Estado", "Empleado", "Medio"],
+      ["Fecha", "Tipo", "Categoría", "Descripción", "Importe (pesos)", "Estado", "Empleado", "Medio"],
       ...report.expenses.map((item) => [item.incurredOn, item.kind, item.category, item.title,
-        (item.amountMinor / 100).toFixed(2), item.paidAt ? "Pagado" : "Pendiente", item.employeeName ?? "", item.paymentMethodCode ?? ""]),
+        moneyInputValue(item.amountMinor, true).replace(",", "."), item.paidAt ? "Pagado" : "Pendiente", item.employeeName ?? "", item.paymentMethodCode ?? ""]),
     ];
-    const csv = "\ufeff" + rows.map((row) => row.map(quote).join(";")).join("\r\n");
+    const csv = "\ufeff" + rows.map((row) => row.map((value) => csvCell(value)).join(";")).join("\r\n");
     const url = URL.createObjectURL(new Blob([csv], {type: "text/csv;charset=utf-8"}));
     const anchor = document.createElement("a"); anchor.href = url; anchor.download = `finanzas-${from}-${to}.csv`; anchor.click();
     URL.revokeObjectURL(url);
@@ -100,7 +102,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
           <p className="mt-1 max-w-2xl text-xs text-slate-300">Ventas, costo estimado de lo vendido, sueldos y gastos devengados. Compras de stock separadas para no contarlas dos veces.</p>
         </div>
         <div className="flex gap-2"><Button type="button" variant="secondary" onClick={() => setReload((value) => value + 1)}><ArrowClockwise size={16}/> Actualizar</Button>
-          <Button type="button" variant="secondary" disabled={!report} onClick={exportCsv}><DownloadSimple size={16}/> CSV</Button></div>
+          <Button type="button" variant="secondary" disabled={!report || loading || report.from !== from || report.to !== to} onClick={exportCsv}><DownloadSimple size={16}/> CSV</Button></div>
       </div>
     </header>
 
@@ -142,7 +144,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
 
       <section className="grid gap-3 xl:grid-cols-[1fr_1.4fr]">
         <Card className="p-4"><h2 className="text-sm font-extrabold">Registrar gasto o sueldo</h2><p className="mt-1 text-xs text-slate-500">Devenga en la fecha indicada; pagar desde caja es un paso separado.</p>
-          <form className="mt-3 grid gap-3" onSubmit={async (event) => {event.preventDefault(); const amountMinor = money(amount); if (!amountMinor) {setError("Ingresá un importe válido."); return;}
+          <form className="mt-3 grid gap-3" onSubmit={async (event) => {event.preventDefault(); const amountMinor = parseMoneyInput(amount); if (amountMinor == null || amountMinor <= 0) {setError("Ingresá un importe válido."); return;}
             const saved = repeat
               ? await run(() => window.gastronomy.createFinanceRecurring({title,category,kind: kind === "PAYROLL" ? "PAYROLL" : "FIXED",amountMinor,dayOfMonth: Number(dayOfMonth),startMonth: incurredOn.slice(0,7),employeeId: employeeId || null,idempotencyKey: crypto.randomUUID()}),"Gasto fijo configurado.")
               : await run(() => window.gastronomy.createFinanceExpense({title,category,kind,amountMinor,incurredOn,dueOn,employeeId: employeeId || null,note: note || null,idempotencyKey: crypto.randomUUID()}),"Gasto registrado.");
@@ -180,10 +182,11 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
             <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 p-2 text-xs"><span><b>{item.title}</b> · día {item.dayOfMonth} · desde {item.startMonth}</span><span className="flex items-center gap-2"><b>{formatMoney(item.amountMinor)}</b><Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => window.gastronomy.stopFinanceRecurring({recurringId: item.id}),"Gasto fijo detenido.")}>Detener</Button></span></div>) : <p className="text-xs text-slate-500">Sin reglas mensuales.</p>}</div>
         </Card>
         <Card className="p-4"><h2 className="text-sm font-extrabold">Costo unitario para ventas futuras</h2><p className="mt-1 text-xs text-slate-500">La última compra aporta el costo automáticamente. Un costo manual tiene prioridad; las ventas ya registradas mantienen su valor original.</p>
-          <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={(event) => {event.preventDefault(); void run(() => window.gastronomy.setFinanceProductCost({productId,unitCostMinor: money(unitCost)}),"Costo actualizado.");}}>
-            <Field label="Producto"><Select value={productId} onChange={(event) => {const id = event.target.value;setProductId(id);const cost = report.productCosts.find((item) => item.productId === id)?.unitCostMinor;setUnitCost(cost == null ? "" : String(cost / 100));}} required><option value="">Elegir producto</option>{report.productCosts.map((item) => <option key={item.productId} value={item.productId}>{item.productName} · {item.unitCostMinor == null ? "sin costo" : formatMoney(item.unitCostMinor)} ({item.source})</option>)}</Select></Field>
+          <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={(event) => {event.preventDefault(); if (!productId || !unitCost.trim() || unitCostMinor == null) {setError("Ingresá un costo válido, mayor o igual a cero."); return;} void run(() => window.gastronomy.setFinanceProductCost({productId,unitCostMinor}),"Costo actualizado.");}}>
+            <Field label="Producto"><Select value={productId} onChange={(event) => {const id = event.target.value;setProductId(id);const cost = report.productCosts.find((item) => item.productId === id)?.unitCostMinor;setUnitCost(cost == null ? "" : moneyInputValue(cost));}} required><option value="">Elegir producto</option>{report.productCosts.map((item) => <option key={item.productId} value={item.productId}>{item.productName} · {item.unitCostMinor == null ? "sin costo" : formatMoney(item.unitCostMinor)} ({item.source})</option>)}</Select></Field>
             <Field label="Costo unitario"><Input inputMode="decimal" value={unitCost} onChange={(event) => setUnitCost(event.target.value)} placeholder="0,00" required /></Field>
-            <Button type="submit" disabled={!productId || !unitCost.trim() || busy}>Guardar costo</Button>
+            {costInvalid ? <p role="alert" className="text-xs font-semibold text-rose-700">Ingresá un costo válido, mayor o igual a cero.</p> : null}
+            <Button type="submit" disabled={!productId || !unitCost.trim() || costInvalid || busy}>Guardar costo</Button>
             {report.productCosts.find((item) => item.productId === productId)?.source === "MANUAL" ? <Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => window.gastronomy.setFinanceProductCost({productId,unitCostMinor: null}),"Se vuelve a usar el costo de compras.")}>Usar costo de compras</Button> : null}
           </form>
         </Card>

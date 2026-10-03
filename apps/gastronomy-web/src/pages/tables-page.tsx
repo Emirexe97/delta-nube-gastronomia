@@ -52,6 +52,8 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
   const lastScrollTopRef = useRef<number>(0);
   const [view, setView] = useState<"CLASSIC" | "PLAN">("CLASSIC");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [selectedOrderSnapshot, setSelectedOrderSnapshot] =
+    useState<OrderDto | null>(null);
   const [openingTable, setOpeningTable] = useState<RestaurantTableDto | null>(
     null,
   );
@@ -234,7 +236,10 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
 
       <QuickEntry
         data={data}
-        onOpenFullOrder={setSelectedOrderId}
+        onOpenFullOrder={(orderId, snapshot) => {
+          setSelectedOrderSnapshot(snapshot ?? null);
+          setSelectedOrderId(orderId);
+        }}
         removedEvent={removedEvent}
         isEditorOpen={Boolean(selectedOrderId)}
       />
@@ -407,7 +412,11 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
       <OrderEditor
         data={data}
         orderId={selectedOrderId}
-        onClose={() => setSelectedOrderId(null)}
+        fallbackOrder={selectedOrderSnapshot}
+        onClose={() => {
+          setSelectedOrderId(null);
+          setSelectedOrderSnapshot(null);
+        }}
       />
       <Modal
         open={Boolean(deletingTable)}
@@ -487,7 +496,7 @@ function QuickEntry({
   isEditorOpen,
 }: {
   data: BootstrapDto;
-  onOpenFullOrder(orderId: string): void;
+  onOpenFullOrder(orderId: string, snapshot?: OrderDto): void;
   removedEvent?: { tableId: string; revision: number } | null;
   isEditorOpen?: boolean;
 }) {
@@ -530,7 +539,7 @@ function QuickEntry({
 
   const handleOpenFullOrder = (orderId: string) => {
     openedByQuickEntryRef.current = true;
-    onOpenFullOrder(orderId);
+    onOpenFullOrder(orderId, order ?? undefined);
   };
 
   useEffect(() => {
@@ -754,15 +763,9 @@ function QuickEntry({
           tableAdvanceRef.current = false;
           return;
         }
-        setOrder(currentOrder);
-        setWaiterUserId(currentOrder.waiterUserId ?? "");
-        const waiter = eligibleWaiters.find(
-          (candidate) => candidate.id === currentOrder.waiterUserId,
-        );
-        setWaiterNumber(waiter ? String(waiter.staffNumber) : "");
-        setStep("ITEM");
-        setStatus(null);
-        resetLine();
+        openedByQuickEntryRef.current = true;
+        onOpenFullOrder(currentOrder.id, currentOrder);
+        resetFlow();
         return;
       }
       setStatus(existed ? `Mesa ${number} lista` : `Mesa ${number} creada`);
@@ -790,10 +793,9 @@ function QuickEntry({
       return;
     }
     if (order) {
-      setStep("ITEM");
-      setError(null);
-      setStatus(null);
-      resetLine();
+      openedByQuickEntryRef.current = true;
+      onOpenFullOrder(order.id, order);
+      resetFlow();
       return;
     }
     waiterAdvanceRef.current = true;
@@ -802,11 +804,9 @@ function QuickEntry({
         tableId: table.id,
         waiterUserId: waiter.id,
       });
-      setOrder(created);
-      setStep("ITEM");
-      setError(null);
-      setStatus(null);
-      resetLine();
+      openedByQuickEntryRef.current = true;
+      onOpenFullOrder(created.id, created);
+      resetFlow();
     } catch (value) {
       fail(humanError(value), waiterRef);
     } finally {

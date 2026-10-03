@@ -132,6 +132,7 @@ test("confirmación exige escribir número explícito", async () => {
 
 test("elimina mesa usada por QuickEntry y permite recrearla sin estado latente", async () => {
   const tableInput = page.getByLabel(/^Número de mesa/);
+  const previousOrderIds: string[] = [];
   for (let i = 0; i < 2; i += 1) {
     await tableInput.fill("55");
     await tableInput.press("Enter");
@@ -142,7 +143,22 @@ test("elimina mesa usada por QuickEntry y permite recrearla sin estado latente",
     const name = page.getByLabel(/^Nombre de mozo/);
     await expect(name).toBeFocused();
     await name.press("Enter");
-    await expect(page.getByLabel("Cantidad")).toBeFocused();
+    const editor = page.getByRole("dialog", { name: /Pedido #\d+ · Salón/ });
+    await expect(editor).toBeVisible();
+    await expect(editor.getByText("Mesa 55", { exact: true })).toBeVisible();
+    await expect(editor.getByPlaceholder(/Código, nombre, categoría/)).toBeFocused();
+    const opened = await page.evaluate(async () => {
+      const data = await window.gastronomy.bootstrap();
+      const table = data.tables.find((candidate) => candidate.number === 55)!;
+      return { table, order: data.orders.find((candidate) => candidate.id === table.currentOrderId)! };
+    });
+    expect(opened.table.active).toBe(true);
+    expect(opened.order.items).toHaveLength(0);
+    expect(opened.order.payments).toHaveLength(0);
+    expect(previousOrderIds).not.toContain(opened.order.id);
+    previousOrderIds.push(opened.order.id);
+    await editor.getByRole("button", { name: "Cerrar", exact: true }).click();
+    await expect(editor).toBeHidden();
     await page.getByRole("button", { name: "Eliminar mesa 55" }).click();
     await page.getByLabel("Confirmación número de mesa").fill("55");
     await page
@@ -155,5 +171,17 @@ test("elimina mesa usada por QuickEntry y permite recrearla sin estado latente",
     await expect(
       page.getByRole("button", { name: "Eliminar mesa 55" }),
     ).toHaveCount(0);
+    const removed = await page.evaluate(async (orderId) => {
+      const data = await window.gastronomy.bootstrap();
+      return {
+        table: data.tables.find((candidate) => candidate.number === 55)!,
+        order: data.orders.find((candidate) => candidate.id === orderId)!,
+      };
+    }, opened.order.id);
+    expect(removed.table.active).toBe(false);
+    expect(removed.table.currentOrderId).toBeNull();
+    expect(removed.order.operationalStatus).toBe("CANCELLED");
+    expect(removed.order.items).toHaveLength(0);
+    expect(removed.order.payments).toHaveLength(0);
   }
 });

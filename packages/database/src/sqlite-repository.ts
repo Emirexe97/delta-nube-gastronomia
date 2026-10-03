@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import Database from "better-sqlite3-multiple-ciphers";
 import bcrypt from "bcryptjs";
 import type { GastronomyRepository } from "@gastronomy/application";
+import { AUDIT_FILTER_ACTIONS } from "@gastronomy/contracts";
 import type {
   AddHalfAndHalfItemInput,
   AddOrderItemInput,
@@ -65,6 +66,7 @@ import type {
   UserDto,
 } from "@gastronomy/contracts";
 import {
+  csvCell,
   DEFAULT_ROLE_PERMISSIONS,
   SYSTEM_PERMISSIONS,
   assertOperationalTransition,
@@ -89,47 +91,7 @@ import { migrations } from "./migrations";
 type SqliteDatabase = InstanceType<typeof Database>;
 type Row = Record<string, unknown>;
 
-const SENSITIVE_AUDIT_ACTIONS = new Set([
-  "CASH_OPENED",
-  "CASH_INCOME",
-  "CASH_EXPENSE",
-  "CASH_WITHDRAWAL",
-  "CASH_ADJUSTMENT",
-  "CASH_CLOSED",
-  "CASH_FORCE_CLOSED",
-  "ORDER_ITEM_PRICE_OVERRIDDEN",
-  "ORDER_EDITED_AFTER_PRINT",
-  "ORDER_ITEM_REMOVED",
-  "ORDER_MODIFIER_REMOVED",
-  "ORDER_DISCOUNT_APPLIED",
-  "ORDER_DEPOSIT_APPLIED",
-  "PAYMENT_REFUNDED",
-  "ORDER_CANCELLED",
-  "ORDER_TABLE_CHANGED",
-  "CUSTOMER_ARCHIVED",
-  "CUSTOMER_MERGED",
-  "CUSTOMER_MERGE_RECEIVED",
-  "CATEGORY_DELETED",
-  "PRODUCT_DELETED",
-  "PRODUCT_UPDATED",
-  "PRODUCTS_BULK_UPDATED",
-  "STOCK_ADJUSTED",
-  "USER_CREATED",
-  "DRIVER_CREATED",
-  "USER_UPDATED",
-  "USER_DELETED",
-  "DELIVERY_SETTLED",
-  "CASH_REVERSED",
-  "DELIVERY_SETTLEMENT_REVERSED",
-  "TABLE_DELETED",
-  "TABLE_SECTOR_DELETED",
-  "SETTINGS_UPDATED",
-  "FINANCE_EXPENSE_CREATED",
-  "FINANCE_EXPENSE_PAID",
-  "FINANCE_RECURRING_CREATED",
-  "FINANCE_RECURRING_STOPPED",
-  "FINANCE_PRODUCT_COST_SET",
-]);
+const SENSITIVE_AUDIT_ACTIONS = new Set<string>(AUDIT_FILTER_ACTIONS);
 
 const ROLE_LABELS: Record<string, string> = {
   ADMIN: "Administrador",
@@ -256,6 +218,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("busy_timeout = 5000");
     this.db.pragma("synchronous = NORMAL");
+    this.db.function(
+      "audit_contains",
+      { deterministic: true },
+      (value: unknown, query: unknown) =>
+        Number(
+          String(value ?? "")
+            .toLocaleLowerCase("es-AR")
+            .includes(String(query ?? "").toLocaleLowerCase("es-AR")),
+        ),
+    );
     this.migrate();
     this.recoverInterruptedPrintClaims();
     this.seed(options);
@@ -5362,6 +5334,51 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const source = this.customerDto(sourceRow);
       const target = this.customerDto(targetRow);
       const timestamp = nowIso();
+      const combinedTags = [...new Set([...target.tags, ...source.tags])];
+      const combinedNotes =
+        [
+          target.notes,
+          source.notes
+            ? `Ficha fusionada de ${source.name}: ${source.notes}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join("\n") || null;
+      const combinedPreferences =
+        [target.preferences, source.preferences]
+          .filter(Boolean)
+          .filter((value, index, values) => values.indexOf(value) === index)
+          .join("\n") || null;
+      const combinedAddresses = target.addresses.map((address) => ({ ...address }));
+      for (const address of source.addresses) {
+        const duplicate = combinedAddresses.find(
+          (candidate) =>
+            candidate.address.trim().toLocaleLowerCase("es-AR") ===
+            address.address.trim().toLocaleLowerCase("es-AR"),
+        );
+        if (duplicate) {
+          duplicate.deliveryFeeMinor = Math.max(
+            duplicate.deliveryFeeMinor,
+            address.deliveryFeeMinor,
+          );
+          duplicate.notes ??= address.notes;
+        } else combinedAddresses.push({ ...address });
+      }
+      try {
+        this.validateCustomerInput({
+          name: target.name,
+          phone: target.phone,
+          notes: combinedNotes,
+          preferences: combinedPreferences,
+          tags: combinedTags,
+          preferredPaymentMethodCode:
+            target.preferredPaymentMethodCode ?? source.preferredPaymentMethodCode,
+          addresses: combinedAddresses,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "Revisá los datos.";
+        throw new Error(`No se fusionaron las fichas: ${detail} Reducí los datos combinados; no se perdió información.`);
+      }
       const targetAddresses = new Map(
         target.addresses.map((address) => [
           address.address.trim().toLocaleLowerCase("es-AR"),
@@ -5389,8 +5406,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           );
           continue;
         }
+        const addressId = randomUUID();
         insertAddress.run(
-          randomUUID(),
+          addressId,
           target.id,
           address.label,
           address.address,
@@ -5399,6 +5417,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           timestamp,
           timestamp,
         );
+        targetAddresses.set(key, { ...address, id: addressId });
       }
       this.db
         .prepare(
@@ -5415,21 +5434,6 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           "UPDATE customer_account_receipts SET customer_id = ? WHERE customer_id = ?",
         )
         .run(target.id, source.id);
-      const combinedTags = [...new Set([...target.tags, ...source.tags])];
-      const combinedNotes =
-        [
-          target.notes,
-          source.notes
-            ? `Ficha fusionada de ${source.name}: ${source.notes}`
-            : null,
-        ]
-          .filter(Boolean)
-          .join("\n") || null;
-      const combinedPreferences =
-        [target.preferences, source.preferences]
-          .filter(Boolean)
-          .filter((value, index, values) => values.indexOf(value) === index)
-          .join("\n") || null;
       this.db
         .prepare(
           `UPDATE customers SET notes = ?, preferences = ?, tags_json = ?,
@@ -7886,15 +7890,25 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return run();
   }
 
-  exportSalesCsv(): string {
+  exportSalesCsv(filters?: ReportFilters): string {
+    const where = ["o.lifecycle_status = 'CONFIRMED'"];
+    const params: unknown[] = [];
+    if (filters?.dateFrom) {
+      where.push("cs.business_date >= ?");
+      params.push(filters.dateFrom);
+    }
+    if (filters?.dateTo) {
+      where.push("cs.business_date <= ?");
+      params.push(filters.dateTo);
+    }
     const rows = this.db
       .prepare(
         `SELECT o.number, cs.business_date, o.created_at, o.type, o.operational_status,
       o.payment_status, o.customer_name_snapshot, o.customer_phone_snapshot, o.subtotal_minor,
       o.discount_minor, o.delivery_fee_minor, o.total_minor, o.paid_minor
-      FROM orders o JOIN cash_sessions cs ON cs.id = o.cash_session_created_id WHERE o.lifecycle_status = 'CONFIRMED' ORDER BY o.created_at`,
+      FROM orders o JOIN cash_sessions cs ON cs.id = o.cash_session_created_id WHERE ${where.join(" AND ")} ORDER BY o.created_at, o.id`,
       )
-      .all() as Row[];
+      .all(...params) as Row[];
     const headers = [
       "pedido",
       "dia_comercial",
@@ -7904,14 +7918,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       "pago",
       "cliente",
       "telefono",
-      "subtotal",
-      "descuento",
-      "envio",
-      "total",
-      "pagado",
+      "subtotal_ars",
+      "descuento_ars",
+      "envio_ars",
+      "total_ars",
+      "pagado_ars",
     ];
-    const cell = (value: unknown) =>
-      `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const pesos = (value: unknown) => (Number(value ?? 0) / 100).toFixed(2);
     return [
       headers.join(","),
       ...rows.map((row) =>
@@ -7945,13 +7958,22 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           )[String(row.payment_status)] ?? row.payment_status,
           row.customer_name_snapshot,
           row.customer_phone_snapshot,
-          row.subtotal_minor,
-          row.discount_minor,
-          row.delivery_fee_minor,
-          row.total_minor,
-          row.paid_minor,
+          pesos(row.subtotal_minor),
+          pesos(row.discount_minor),
+          pesos(row.delivery_fee_minor),
+          pesos(row.total_minor),
+          pesos(row.paid_minor),
         ]
-          .map(cell)
+          .map((value, index) =>
+            csvCell(
+              value == null
+                ? null
+                : typeof value === "number"
+                  ? value
+                  : String(value),
+              index >= 8,
+            ),
+          )
           .join(","),
       ),
     ].join("\r\n");
@@ -8475,6 +8497,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     dateTo?: BusinessDate;
     action?: string;
     limit?: number;
+    search?: string;
+    offset?: number;
   }): AuditEntryDto[] {
     const auditedActions = [...SENSITIVE_AUDIT_ACTIONS];
     const where: string[] = [
@@ -8493,13 +8517,27 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       where.push("a.action = ?");
       params.push(input.action.trim());
     }
-    params.push(Math.min(Math.max(input.limit ?? 200, 1), 1000));
+    const search = input.search?.trim();
+    if (search) {
+      where.push(`(
+        audit_contains(COALESCE(operator.full_name, ''), ?) = 1 OR
+        audit_contains(COALESCE(authorizer.full_name, ''), ?) = 1 OR
+        audit_contains(a.action, ?) = 1 OR
+        audit_contains(a.entity_type, ?) = 1 OR
+        audit_contains(a.entity_id, ?) = 1 OR
+        audit_contains(COALESCE(a.reason, ''), ?) = 1
+      )`);
+      params.push(search, search, search, search, search, search);
+    }
+    const limit = Math.min(Math.max(Math.floor(input.limit ?? 200), 1), 1000);
+    const offset = Math.max(0, Math.floor(input.offset ?? 0));
+    params.push(limit, offset);
     const rows = this.db
       .prepare(
         `SELECT a.*, operator.full_name AS operator_name, authorizer.full_name AS authorizer_name
       FROM audit_log a LEFT JOIN users operator ON operator.id = a.operator_user_id
       LEFT JOIN users authorizer ON authorizer.id = a.authorizer_user_id
-      ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY a.timestamp DESC LIMIT ?`,
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY a.timestamp DESC, a.id DESC LIMIT ? OFFSET ?`,
       )
       .all(...params) as Row[];
     return rows.map((row) => ({

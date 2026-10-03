@@ -3,6 +3,48 @@ export type IsoDateTime = string;
 export type BusinessDate = string;
 export type MoneyMinor = number;
 
+export const AUDIT_FILTER_ACTIONS = [
+  "CASH_OPENED",
+  "CASH_INCOME",
+  "CASH_EXPENSE",
+  "CASH_WITHDRAWAL",
+  "CASH_ADJUSTMENT",
+  "CASH_CLOSED",
+  "CASH_FORCE_CLOSED",
+  "ORDER_ITEM_PRICE_OVERRIDDEN",
+  "ORDER_EDITED_AFTER_PRINT",
+  "ORDER_ITEM_REMOVED",
+  "ORDER_MODIFIER_REMOVED",
+  "ORDER_DISCOUNT_APPLIED",
+  "ORDER_DEPOSIT_APPLIED",
+  "PAYMENT_REFUNDED",
+  "ORDER_CANCELLED",
+  "ORDER_TABLE_CHANGED",
+  "CUSTOMER_ARCHIVED",
+  "CUSTOMER_MERGED",
+  "CUSTOMER_MERGE_RECEIVED",
+  "CATEGORY_DELETED",
+  "PRODUCT_DELETED",
+  "PRODUCT_UPDATED",
+  "PRODUCTS_BULK_UPDATED",
+  "STOCK_ADJUSTED",
+  "USER_CREATED",
+  "DRIVER_CREATED",
+  "USER_UPDATED",
+  "USER_DELETED",
+  "DELIVERY_SETTLED",
+  "CASH_REVERSED",
+  "DELIVERY_SETTLEMENT_REVERSED",
+  "TABLE_DELETED",
+  "TABLE_SECTOR_DELETED",
+  "SETTINGS_UPDATED",
+  "FINANCE_EXPENSE_CREATED",
+  "FINANCE_EXPENSE_PAID",
+  "FINANCE_RECURRING_CREATED",
+  "FINANCE_RECURRING_STOPPED",
+  "FINANCE_PRODUCT_COST_SET",
+] as const;
+
 export type OrderType = "DINE_IN" | "TAKEAWAY" | "DELIVERY";
 export type OrderOperationalStatus =
   | "PENDING"
@@ -1263,13 +1305,15 @@ export interface DesktopApi {
     shape?: RestaurantTableDto["shape"];
   }): Promise<RestaurantTableDto>;
   deleteTable(input: { tableId: Id }): Promise<{ deleted: true }>;
-  exportSalesCsv(): Promise<{ path: string | null }>;
+  exportSalesCsv(filters?: ReportFilters): Promise<{ path: string | null }>;
   getDetailedReport(filters: ReportFilters): Promise<DetailedReportDto>;
   getAuditLog(input: {
     dateFrom?: BusinessDate;
     dateTo?: BusinessDate;
     action?: string;
     limit?: number;
+    search?: string;
+    offset?: number;
   }): Promise<AuditEntryDto[]>;
   createBackup(): Promise<{ path: string | null }>;
   restoreBackup(): Promise<{ path: string | null; restored: boolean }>;

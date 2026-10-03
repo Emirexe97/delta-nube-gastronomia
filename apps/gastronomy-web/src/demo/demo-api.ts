@@ -3543,6 +3543,38 @@ export function createDemoApi(
         throw new Error("No se encontraron ambas fichas.");
       if (!source.active || !target.active)
         throw new Error("Sólo se pueden fusionar fichas activas.");
+      const mergedTags = [...new Set([...target.tags, ...source.tags])];
+      const mergedAddresses = target.addresses.map((address) => ({ ...address }));
+      for (const address of source.addresses) {
+        const duplicate = mergedAddresses.find(
+          (candidate) =>
+            candidate.address.trim().toLocaleLowerCase("es-AR") ===
+            address.address.trim().toLocaleLowerCase("es-AR"),
+        );
+        if (!duplicate) mergedAddresses.push({ ...address });
+        else {
+          duplicate.deliveryFeeMinor = Math.max(duplicate.deliveryFeeMinor, address.deliveryFeeMinor);
+          duplicate.notes ??= address.notes;
+        }
+      }
+      const mergeValidationError = (detail: string) =>
+        new Error(`No se fusionaron las fichas: ${detail} Reducí los datos combinados; no se perdió información.`);
+      if (mergedTags.length > 12 || mergedTags.some((tag) => tag.length > 30))
+        throw mergeValidationError("Usá hasta 12 etiquetas de 30 caracteres como máximo.");
+      if (mergedAddresses.length > 20)
+        throw mergeValidationError("Un cliente puede tener hasta 20 direcciones.");
+      const mergedNotes = [target.notes, source.notes ? `Ficha fusionada de ${source.name}: ${source.notes}` : null].filter(Boolean).join("\n");
+      const mergedPreferences = source.preferences && source.preferences !== target.preferences
+        ? [target.preferences, source.preferences].filter(Boolean).join("\n")
+        : target.preferences;
+      if (mergedNotes.length > 1000)
+        throw mergeValidationError("Las notas del cliente admiten hasta 1000 caracteres.");
+      if ((mergedPreferences?.length ?? 0) > 1000)
+        throw mergeValidationError("Las preferencias admiten hasta 1000 caracteres.");
+      for (const address of mergedAddresses) {
+        if (address.label.trim().length > 60 || address.address.trim().length > 240 || (address.notes?.trim().length ?? 0) > 500)
+          throw mergeValidationError("Revisá las direcciones: etiqueta 60, dirección 240 y referencia 500 caracteres como máximo.");
+      }
       for (const address of source.addresses) {
         const duplicate = target.addresses.find(
           (candidate) =>
@@ -3564,20 +3596,13 @@ export function createDemoApi(
         if (order.customerId === source.id) order.customerId = target.id;
       for (const receipt of state.accountReceipts ?? [])
         if (receipt.customerId === source.id) receipt.customerId = target.id;
-      target.tags = [...new Set([...target.tags, ...source.tags])];
+      target.tags = mergedTags;
       if (!target.preferredPaymentMethodCode)
         target.preferredPaymentMethodCode = source.preferredPaymentMethodCode;
       if (source.notes)
-        target.notes = [
-          target.notes,
-          `Ficha fusionada de ${source.name}: ${source.notes}`,
-        ]
-          .filter(Boolean)
-          .join("\n");
+        target.notes = mergedNotes;
       if (source.preferences && source.preferences !== target.preferences)
-        target.preferences = [target.preferences, source.preferences]
-          .filter(Boolean)
-          .join("\n");
+        target.preferences = mergedPreferences;
       target.updatedAt = now();
       source.active = false;
       source.mergedIntoCustomerId = target.id;
@@ -4887,7 +4912,9 @@ export function createDemoApi(
       return { deleted: true } as const;
     },
 
-    async exportSalesCsv() {
+    async exportSalesCsv(_filters?: ReportFilters) {
+      if (_filters && _filters.dateFrom > _filters.dateTo)
+        throw new Error("El rango de fechas no es válido.");
       return {
         path: "Demostración: exportación simulada (no se creó ningún archivo)",
       };
@@ -5071,9 +5098,11 @@ export function createDemoApi(
               (!input.dateFrom ||
                 (entry.businessDate ?? "") >= input.dateFrom) &&
               (!input.dateTo || (entry.businessDate ?? "") <= input.dateTo) &&
-              (!input.action || entry.action === input.action),
+              (!input.action || entry.action === input.action) &&
+              (!input.search?.trim() || [entry.operatorName, entry.authorizerName, entry.action, entry.entityType, entry.entityId, entry.reason].some((value) => value?.toLocaleLowerCase("es-AR").includes(input.search!.trim().toLocaleLowerCase("es-AR")))),
           )
-          .slice(0, input.limit ?? 200),
+          .sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.id.localeCompare(a.id))
+          .slice(Math.max(0, Math.floor(input.offset ?? 0)), Math.max(0, Math.floor(input.offset ?? 0)) + Math.min(Math.max(input.limit ?? 200, 1), 1000)),
       );
     },
 

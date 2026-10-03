@@ -173,9 +173,13 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
     name: "Nuevo Envío",
   });
   await expect(customerCreationDeliveryDialog).toBeVisible();
-  await customerCreationDeliveryDialog
-    .getByRole("button", { name: "Cancelar" })
+  const cancelConfirmation = page.waitForEvent("dialog");
+  const cancelDelivery = customerCreationDeliveryDialog
+    .getByRole("button", { name: "Cancelar", exact: true })
     .click();
+  await (await cancelConfirmation).accept();
+  await cancelDelivery;
+  await expect(customerCreationDeliveryDialog).toBeHidden();
 
   await page.getByRole("link", { name: "Clientes" }).click();
   await expect(
@@ -385,10 +389,10 @@ test("edita precios de producto con autorización e historial", async () => {
   ).toContainText("$ 16.500");
 });
 
-test("carga una mesa y productos de punta a punta solo con teclado", async () => {
+test("carga una mesa y agrega productos desde el editor con teclado", async () => {
   const waiter = await page.evaluate(async () =>
     window.gastronomy.createUser({
-      fullName: "Mesero E2E",
+      fullName: "Mesero teclado E2E",
       roleCode: "WAITER",
       pin: "2468",
       authorizerPin: "1234",
@@ -399,119 +403,89 @@ test("carga una mesa y productos de punta a punta solo con teclado", async () =>
   await tableInput.fill("37");
   await tableInput.press("Tab");
   await expect(page.getByText("Mesa 37 creada", { exact: true })).toBeVisible();
-
   const waiterInput = page.getByLabel(/^Número de mozo/);
   const waiterName = page.getByLabel(/^Nombre de mozo/);
   await expect(waiterInput).toBeFocused();
   await waiterInput.fill("999");
-  await expect(waiterName).toHaveValue("");
-  await waiterInput.press("Tab");
+  await waiterInput.press("Enter");
   await expect(waiterName).toBeFocused();
-  await waiterName.press("Tab");
+  await waiterName.press("Enter");
   await expect(page.getByRole("alert")).toContainText(
     "No existe un mozo activo",
   );
   await waiterInput.fill(String(waiter.staffNumber));
   await expect(waiterName.locator("option:checked")).toContainText(
-    "Mesero E2E",
+    "Mesero teclado E2E",
   );
   await waiterName.selectOption({ label: "Administrador" });
   await expect(waiterInput).toHaveValue("1");
-  await waiterName.selectOption({ label: "Mesero E2E" });
+  await waiterName.selectOption({ label: "Mesero teclado E2E" });
   await expect(waiterInput).toHaveValue(String(waiter.staffNumber));
-  await waiterName.press("Tab");
-  await expect(
-    page
-      .getByRole("region", { name: "Mesas del salón" })
-      .getByText(/Mesero E2E ·/),
-  ).toBeVisible();
+  await waiterName.press("Enter");
+  const editor = page.getByRole("dialog", { name: /Pedido #\d+ · Salón/ });
+  await expect(editor).toBeVisible();
 
-  const quantity = page.getByLabel("Cantidad");
-  const code = page.getByLabel("Código / ID");
-  const product = page.getByRole("combobox", { name: "Producto", exact: true });
-  const price = page.getByLabel("Precio salón");
-  await quantity.fill("2");
-  await quantity.press("Enter");
-  await expect(code).toBeFocused();
-  await code.fill("MUZG");
-  await expect(product).toHaveValue("Muzzarella grande");
-  await expect(price).toHaveValue("15000");
-  await code.press("Enter");
-  await expect(product).toBeFocused();
-  await product.press("Enter");
-  await expect(price).toBeFocused();
-  await price.press("Enter");
-  await expect(
-    page.getByText("2 × Muzzarella grande agregado", { exact: true }),
-  ).toBeVisible();
-  await expect(quantity).toBeFocused();
-
-  await quantity.fill("1");
-  await product.fill("gra");
-  const options = page.getByRole("listbox", { name: "Productos disponibles" });
-  await expect(options).toBeVisible();
-  await expect(options.getByRole("option").first()).toContainText(
-    "Especial grande",
+  const search = editor.getByPlaceholder(/Código, nombre, categoría/);
+  await search.fill("MUZG");
+  await editor
+    .getByRole("button", { name: /Muzzarella grande/ })
+    .press("Enter");
+  const pizza = page.getByRole("dialog", {
+    name: "Agregar · Muzzarella grande",
+  });
+  await expect(pizza.getByLabel("Precio unitario")).toHaveValue("15000");
+  await pizza.getByLabel("Cantidad", { exact: true }).fill("2");
+  await pizza.getByRole("button", { name: "Agregar a la mesa" }).press("Enter");
+  await expect(pizza).toBeHidden();
+  await expect(editor.getByLabel("Cantidad de Muzzarella grande")).toHaveValue(
+    "2",
   );
-  await expect(code).toHaveValue("ESPG");
-  await product.press("ArrowDown");
-  await expect(code).toHaveValue("MUZG");
-  await product.press("ArrowDown");
-  await expect(code).toHaveValue("NAPG");
-  await product.press("Tab");
-  await expect(product).toHaveValue("Napolitana grande");
-  await expect(price).toBeFocused();
-  await price.press("Tab");
-  const quickAdd = page.getByRole("button", { name: /Agregar/ });
-  await expect(quickAdd).toBeFocused();
-  await quickAdd.press("Enter");
-  await expect(
-    page.getByText("1 × Napolitana grande agregado", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText(/3 unidades/)).toBeVisible();
 
-  await quantity.fill("1");
-  await product.fill("Gas");
-  await page.getByRole("option", { name: /Gaseosa 1,5 L/ }).click();
-  await expect(product).toHaveValue("Gaseosa 1,5 L");
-  await expect(code).toHaveValue("GAS15");
+  await search.fill("Gaseosa");
+  const sodaProduct = editor.getByRole("button", { name: /Gaseosa 1,5 L/ });
+  await sodaProduct.press("Enter");
+  const soda = page.getByRole("dialog", { name: "Agregar · Gaseosa 1,5 L" });
+  const price = soda.getByLabel("Precio unitario");
   const catalogPrice = await price.inputValue();
   await price.fill("9999");
-  await quickAdd.click();
-  let authorization = page.getByRole("dialog", {
-    name: "Autorizar precio manual",
-  });
-  await expect(authorization).toBeVisible();
   await expect(
-    authorization.getByText("El precio del catálogo no se modifica.", {
-      exact: false,
-    }),
-  ).toBeVisible();
-  await authorization
-    .getByRole("button", { name: "Volver sin modificar el precio" })
-    .click();
-  await expect(authorization).toBeHidden();
+    soda.getByRole("button", { name: "Agregar a la mesa" }),
+  ).toBeDisabled();
+  await soda
+    .getByRole("button", { name: "Cancelar", exact: true })
+    .press("Enter");
+  await expect(soda).toBeHidden();
+  await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveCount(0);
+  await search.fill("Gaseosa");
+  await sodaProduct.press("Enter");
   await expect(price).toHaveValue(catalogPrice);
-
   await price.fill("9999");
-  await quickAdd.click();
-  authorization = page.getByRole("dialog", { name: "Autorizar precio manual" });
-  await authorization.getByLabel("PIN de autorización").fill("0000");
-  await authorization
-    .getByRole("button", { name: "Confirmar precio y agregar" })
-    .click();
-  await expect(authorization.getByRole("alert")).toContainText(
-    "PIN incorrecto",
-  );
-  await authorization.getByLabel("PIN de autorización").fill("1234");
-  await authorization
-    .getByRole("button", { name: "Confirmar precio y agregar" })
-    .click();
-  await expect(
-    page.getByText("1 × Gaseosa 1,5 L agregado con precio autorizado", {
-      exact: true,
-    }),
-  ).toBeVisible();
+  await soda.getByLabel("PIN para autorizar el precio manual").fill("0000");
+  await soda.getByRole("button", { name: "Agregar a la mesa" }).press("Enter");
+  await expect(soda.getByRole("alert")).toContainText("PIN incorrecto");
+  await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveCount(0);
+  await soda.getByLabel("PIN para autorizar el precio manual").fill("1234");
+  await soda.getByRole("button", { name: "Agregar a la mesa" }).press("Enter");
+  await expect(soda).toBeHidden();
+  await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveValue("1");
+  const persisted = await page.evaluate(async () => {
+    const data = await window.gastronomy.bootstrap();
+    const order = data.orders.find((item) => item.tableNumber === 37)!;
+    return {
+      items: order.items,
+      product: data.products.find((item) => item.code === "GAS15")!,
+    };
+  });
+  expect(persisted.items.reduce((sum, item) => sum + item.quantity, 0)).toBe(3);
+  expect(
+    persisted.items.find((item) => item.productNameSnapshot === "Gaseosa 1,5 L")
+      ?.unitPriceMinorSnapshot,
+  ).toBe(999900);
+  expect(
+    persisted.product.prices.find((item) => item.priceListCode === "SALON")
+      ?.amountMinor,
+  ).toBe(Math.round(Number(catalogPrice.replace(",", ".")) * 100));
+  await editor.getByRole("button", { name: "Cerrar", exact: true }).click();
   await page.getByRole("link", { name: "Pedidos" }).click();
   await expect(
     page.getByRole("table").getByText("Salón", { exact: true }),
@@ -521,7 +495,6 @@ test("carga una mesa y productos de punta a punta solo con teclado", async () =>
     page.getByText("Mesas por cobrar", { exact: true }),
   ).toBeVisible();
 });
-
 test("protege modales anidados y completa atajos y recuperación por teclado", async () => {
   await page.getByRole("link", { name: "Pedidos" }).click();
 

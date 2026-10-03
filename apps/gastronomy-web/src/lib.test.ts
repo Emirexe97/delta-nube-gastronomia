@@ -5,6 +5,8 @@ import {
   paymentText,
   salesByChannel,
   parseMoneyInput,
+  moneyInputValue,
+  localDateValue,
   parseStockInput,
   promisedTiming,
   rankProducts,
@@ -150,6 +152,32 @@ describe("parseMoneyInput", () => {
   it("rechaza importes que superan el entero seguro", () => {
     expect(parseMoneyInput("1500,25")).toBe(150_025);
     expect(parseMoneyInput("9999999999999999")).toBeNull();
+  });
+});
+
+describe("moneyInputValue", () => {
+  it("precarga los centavos usando el separador que interpreta el formulario", () => {
+    for (const minor of [0, 1, 15005, 15050, 150500]) {
+      expect(parseMoneyInput(moneyInputValue(minor))).toBe(minor);
+    }
+    expect(moneyInputValue(15050)).toBe("150,50");
+    expect(moneyInputValue(15005)).toBe("150,05");
+    expect(moneyInputValue(2000000)).toBe("20000");
+    expect(moneyInputValue(2000000, true)).toBe("20000,00");
+  });
+
+  it("no redondea al formatear el límite seguro y rechaza importes inválidos", () => {
+    expect(moneyInputValue(Number.MAX_SAFE_INTEGER)).toBe("90071992547409,91");
+    expect(() => moneyInputValue(Infinity)).toThrow(RangeError);
+    expect(() => moneyInputValue(1.5)).toThrow(RangeError);
+  });
+});
+
+describe("localDateValue", () => {
+  it("usa los componentes del día local y no el día UTC", () => {
+    const date = new Date(2026, 9, 3, 21, 30);
+    expect(localDateValue(date)).toBe("2026-10-03");
+    expect(localDateValue(new Date(2026, 0, 2, 0, 5))).toBe("2026-01-02");
   });
 });
 

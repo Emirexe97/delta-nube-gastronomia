@@ -367,13 +367,15 @@ export interface GastronomyRepository {
     shape?: import("@gastronomy/contracts").RestaurantTableDto["shape"];
   }): import("@gastronomy/contracts").RestaurantTableDto;
   deleteTable(input: { tableId: Id }): { deleted: true };
-  exportSalesCsv(): string;
+  exportSalesCsv(filters?: ReportFilters): string;
   getDetailedReport(filters: ReportFilters): DetailedReportDto;
   getAuditLog(input: {
     dateFrom?: BusinessDate;
     dateTo?: BusinessDate;
     action?: string;
     limit?: number;
+    search?: string;
+    offset?: number;
   }): AuditEntryDto[];
   saveSettings(settings: AppSettingsDto): AppSettingsDto;
   getDashboard(businessDate?: BusinessDate): DashboardSummaryDto;
@@ -1125,8 +1127,14 @@ export class GastronomyApplication {
     return this.repository.deleteTable(input);
   }
 
-  exportSalesCsv() {
-    return this.repository.exportSalesCsv();
+  exportSalesCsv(filters?: ReportFilters) {
+    if (filters) this.assertReportDateRange(filters);
+    return this.repository.exportSalesCsv(filters);
+  }
+
+  private assertReportDateRange(filters: ReportFilters) {
+    if (filters.dateFrom > filters.dateTo)
+      throw new Error("El rango de fechas no es válido.");
   }
 
   listCashSessionHistory() {
@@ -1139,8 +1147,7 @@ export class GastronomyApplication {
   }
 
   getDetailedReport(filters: ReportFilters) {
-    if (filters.dateFrom > filters.dateTo)
-      throw new Error("El rango de fechas no es válido.");
+    this.assertReportDateRange(filters);
     return this.repository.getDetailedReport(filters);
   }
 
@@ -1149,10 +1156,17 @@ export class GastronomyApplication {
     dateTo?: BusinessDate;
     action?: string;
     limit?: number;
+    search?: string;
+    offset?: number;
   }) {
+    const requestedLimit = input.limit ?? 200;
+    const requestedOffset = input.offset ?? 0;
+    if (!Number.isFinite(requestedLimit) || !Number.isFinite(requestedOffset))
+      throw new Error("La paginación de auditoría no es válida.");
     return this.repository.getAuditLog({
       ...input,
-      limit: Math.min(Math.max(input.limit ?? 200, 1), 1000),
+      limit: Math.min(Math.max(Math.floor(requestedLimit), 1), 1000),
+      offset: Math.max(Math.floor(requestedOffset), 0),
     });
   }
 

@@ -9,22 +9,23 @@ import {
   Wallet,
 } from "@phosphor-icons/react";
 import { Button, Card, Field, Input } from "@gastronomy/ui";
-import { formatMoney, typeLabels } from "../lib";
+import { formatMoney, localDateValue, typeLabels } from "../lib";
 import { useApiMutation } from "../api";
 
-const dateValue = (offset = 0) =>
-  new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
-
 export function ReportsPage({ data }: { data: BootstrapDto }) {
-  const [dateFrom, setDateFrom] = useState(dateValue(-6));
-  const [dateTo, setDateTo] = useState(dateValue());
+  const [dateFrom, setDateFrom] = useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 6);
+    return localDateValue(date);
+  });
+  const [dateTo, setDateTo] = useState(() => localDateValue());
   const [message, setMessage] = useState<string | null>(null);
   const report = useQuery({
     queryKey: ["detailed-report", dateFrom, dateTo],
     queryFn: () => window.gastronomy.getDetailedReport({ dateFrom, dateTo }),
   });
   const exportMutation = useApiMutation(
-    () => window.gastronomy.exportSalesCsv(),
+    () => window.gastronomy.exportSalesCsv({ dateFrom, dateTo }),
     {
       onSuccess: (result) =>
         setMessage(
@@ -36,6 +37,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
     },
   );
   const summary = report.data;
+  const validPeriod = Boolean(dateFrom && dateTo && dateFrom <= dateTo);
   return (
     <div
       data-enter-navigation
@@ -50,7 +52,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
         </div>
         <Button
           variant="secondary"
-          disabled={exportMutation.isPending}
+          disabled={exportMutation.isPending || !validPeriod}
           onClick={() => exportMutation.mutate()}
         >
           <DownloadSimple />
@@ -73,6 +75,12 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
               onChange={(event) => setDateTo(event.target.value)}
             />
           </Field>
+          {!validPeriod ? (
+            <p role="alert" className="self-end pb-2 text-xs text-rose-700">
+              Ingresá un período válido: la fecha inicial no puede ser posterior
+              a la final.
+            </p>
+          ) : null}
           <div className="self-end pb-1 text-xs leading-5 text-slate-400 sm:col-span-2 lg:col-span-1">
             Las ventas se muestran netas en su día original; las devoluciones de
             caja se muestran en el día en que se realizaron.
@@ -84,7 +92,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
           {message}
         </div>
       ) : null}
-      {report.isLoading ? (
+      {!validPeriod ? null : report.isLoading ? (
         <Card className="grid h-64 place-items-center text-xs font-semibold text-slate-400">
           Calculando informe…
         </Card>
@@ -305,7 +313,14 @@ function ReportTable({
             <thead>
               <tr>
                 {headers.map((header, index) => (
-                  <th key={header} className={index ? "text-right whitespace-nowrap" : "whitespace-nowrap"}>
+                  <th
+                    key={header}
+                    className={
+                      index
+                        ? "text-right whitespace-nowrap"
+                        : "whitespace-nowrap"
+                    }
+                  >
                     {header}
                   </th>
                 ))}
@@ -318,7 +333,9 @@ function ReportTable({
                     <td
                       key={cellIndex}
                       className={
-                        cellIndex ? "whitespace-nowrap text-right font-semibold" : "font-semibold"
+                        cellIndex
+                          ? "whitespace-nowrap text-right font-semibold"
+                          : "font-semibold"
                       }
                     >
                       {cell}

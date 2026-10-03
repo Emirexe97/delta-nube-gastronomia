@@ -1,39 +1,54 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ClockCounterClockwise, MagnifyingGlass } from "@phosphor-icons/react";
-import { Badge, Card, Field, Input, Select } from "@gastronomy/ui";
-import { auditActionLabel, auditEntityLabel, permissionLabel } from "../lib";
+import { AUDIT_FILTER_ACTIONS } from "@gastronomy/contracts";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ClockCounterClockwise,
+  MagnifyingGlass,
+} from "@phosphor-icons/react";
+import { Badge, Button, Card, Field, Input, Select } from "@gastronomy/ui";
+import {
+  auditActionLabel,
+  auditEntityLabel,
+  humanError,
+  localDateValue,
+  permissionLabel,
+} from "../lib";
 
-const today = () => new Date().toISOString().slice(0, 10);
-const daysAgo = (days: number) =>
-  new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+const PAGE_SIZE = 100;
+const daysAgo = (days: number) => {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return localDateValue(date);
+};
 
 export function AuditPage() {
-  const [dateFrom, setDateFrom] = useState(daysAgo(30));
-  const [dateTo, setDateTo] = useState(today());
+  const [dateFrom, setDateFrom] = useState(() => daysAgo(30));
+  const [dateTo, setDateTo] = useState(() => localDateValue());
   const [action, setAction] = useState("");
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
   const query = useQuery({
-    queryKey: ["audit", dateFrom, dateTo, action],
+    queryKey: ["audit", dateFrom, dateTo, action, search, page],
     queryFn: () =>
       window.gastronomy.getAuditLog({
         dateFrom,
         dateTo,
         action: action || undefined,
-        limit: 500,
+        search: search.trim() || undefined,
+        offset: page * PAGE_SIZE,
+        limit: PAGE_SIZE + 1,
       }),
   });
-  const rows = useMemo(
-    () =>
-      (query.data ?? []).filter((row) =>
-        `${row.action} ${row.entityType} ${row.entityId} ${row.operatorName ?? ""} ${row.authorizerName ?? ""} ${row.reason ?? ""}`
-          .toLocaleLowerCase()
-          .includes(search.toLocaleLowerCase()),
-      ),
-    [query.data, search],
-  );
+  const rows = (query.data ?? []).slice(0, PAGE_SIZE);
+  const hasNext = (query.data?.length ?? 0) > PAGE_SIZE;
   const actions = [
-    ...new Set((query.data ?? []).map((row) => row.action)),
+    ...new Set([
+      ...AUDIT_FILTER_ACTIONS,
+      ...(query.data ?? []).map((row) => row.action),
+      ...(action ? [action] : []),
+    ]),
   ].sort();
   return (
     <div className="panel-enter mx-auto max-w-[1450px] space-y-4">
@@ -50,20 +65,29 @@ export function AuditPage() {
             <Input
               type="date"
               value={dateFrom}
-              onChange={(event) => setDateFrom(event.target.value)}
+              onChange={(event) => {
+                setDateFrom(event.target.value);
+                setPage(0);
+              }}
             />
           </Field>
           <Field label="Hasta">
             <Input
               type="date"
               value={dateTo}
-              onChange={(event) => setDateTo(event.target.value)}
+              onChange={(event) => {
+                setDateTo(event.target.value);
+                setPage(0);
+              }}
             />
           </Field>
           <Field label="Acción">
             <Select
               value={action}
-              onChange={(event) => setAction(event.target.value)}
+              onChange={(event) => {
+                setAction(event.target.value);
+                setPage(0);
+              }}
             >
               <option value="">Todas</option>
               {actions.map((value) => (
@@ -78,7 +102,10 @@ export function AuditPage() {
               <MagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <Input
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setPage(0);
+                }}
                 className="pl-9"
                 placeholder="Entidad, usuario o motivo"
               />
@@ -91,8 +118,29 @@ export function AuditPage() {
           <div className="grid h-56 place-items-center text-xs font-semibold text-slate-400">
             Cargando auditoría…
           </div>
+        ) : query.isError ? (
+          <div
+            role="alert"
+            className="grid min-h-56 place-items-center p-5 text-center"
+          >
+            <div>
+              <p className="text-sm font-semibold text-rose-700">
+                No se pudo cargar la auditoría
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                {humanError(query.error)}
+              </p>
+              <Button
+                className="mt-3"
+                variant="secondary"
+                onClick={() => void query.refetch()}
+              >
+                Reintentar
+              </Button>
+            </div>
+          </div>
         ) : rows.length ? (
-          <div className="max-h-[calc(100vh-270px)] overflow-auto">
+          <div className="max-h-[calc(100vh-310px)] overflow-auto">
             <table className="dn-table min-w-[700px]">
               <thead>
                 <tr>
@@ -172,6 +220,29 @@ export function AuditPage() {
             </div>
           </div>
         )}
+        {!query.isLoading && !query.isError ? (
+          <div className="flex items-center justify-end gap-2 border-t border-slate-100 p-2">
+            <span className="mr-2 text-xs text-slate-500">
+              Página {page + 1}
+            </span>
+            <Button
+              variant="secondary"
+              disabled={page === 0 || query.isFetching}
+              onClick={() => setPage((value) => Math.max(0, value - 1))}
+            >
+              <ArrowLeft />
+              Anterior
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={!hasNext || query.isFetching}
+              onClick={() => setPage((value) => value + 1)}
+            >
+              Siguiente
+              <ArrowRight />
+            </Button>
+          </div>
+        ) : null}
       </Card>
     </div>
   );

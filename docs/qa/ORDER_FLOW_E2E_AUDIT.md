@@ -2,6 +2,8 @@
 
 Fecha: 2026-10-02. Estado: **correcciones implementadas y reauditoría aprobada**.
 
+Actualización 2026-10-03: por requerimiento del usuario, la carga rápida de salón debe abrir el modal de productos al confirmar mesa y mozo. Este criterio reemplaza la decisión de carga inline registrada originalmente en OF-14; las demás reglas de esta auditoría se mantienen.
+
 El pedido conserva su identidad, productos, precios cotizados, stock y horario al cambiar entre retiro y envío. Los cambios posteriores al cobro deben registrar diferencias y contramovimientos, nunca reescribir pagos históricos.
 
 ## Recorrido esperado
@@ -30,7 +32,7 @@ El pedido conserva su identidad, productos, precios cotizados, stock y horario a
 | OF-11 | Alta       | Un cambio de modalidad podía ocultar una seña superior al nuevo importe. Rechazarlo y exigir ajuste externo previo.                                                                           | Verificado |
 | OF-12 | Alta       | La bandera de cobro en puerta admitía medios no efectivos o mezclaba custodios entre cuotas. Validar efectivo, driver y custodio original antes de cobrar.                                    | Verificado |
 | OF-13 | Alta, demo | Los modificadores, descuentos o señas podían cambiar un pedido cobrado por API aunque la UI estuviera bloqueada. La guarda de edición normal también protege pagos e historial terminal.      | Verificado |
-| OF-14 | Funcional  | Carga rápida de salón abría inmediatamente el editor completo y reseteaba los pasos, dejando inaccesible la carga inline. Continuar con artículos; editor completo mediante acción explícita. | Verificado |
+| OF-14 | Funcional  | Carga rápida de salón debe abrir el modal de productos después de confirmar mesa y mozo, con mouse o teclado. Conservar el pedido recién creado mientras se refrescan los datos. Criterio actualizado el 2026-10-03. | Verificado |
 | OF-15 | Funcional  | Alta de mesa desde plano persistía altura 7 y luego fallaba contra mínimo 8. Alinear validación SQLite/demo y límites del editor con el tamaño predeterminado válido.                         | Verificado |
 | OF-16 | Paridad    | La edición normal del envío actualizaba tarifa guardada en SQLite pero no en demo. Conservar el flujo histórico en ambos; una conversión de canal sólo modifica la cotización del pedido.     | Verificado |
 | QA-01 | Cobertura  | `desktop-flow` tenía selectores antiguos y dependencia entre casos. Aislar fixtures y cubrir las nuevas variantes.                                                                            | Verificado |

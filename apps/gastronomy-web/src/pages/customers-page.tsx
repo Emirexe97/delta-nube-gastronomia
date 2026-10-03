@@ -40,6 +40,7 @@ import { useApiMutation } from "../api";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import {
   formatMoney,
+  moneyInputValue,
   formatTime,
   humanError,
   parseMoneyInput,
@@ -1567,7 +1568,7 @@ function CustomerProfileModal({
                 <h3 className="text-sm font-extrabold text-indigo-950">Cuenta corriente</h3>
                 <p className="text-xs text-indigo-700">Deuda pendiente: <strong>{formatMoney(metrics?.outstandingMinor ?? 0)}</strong></p>
               </div>
-              <Button type="button" disabled={!cashOpen || !metrics?.outstandingMinor || settling} onClick={() => {setSettleOpen(true); setSettleAmount(String((metrics?.outstandingMinor ?? 0) / 100)); setSelectedOrders([]); setSettleError(null);}}>Registrar pago</Button>
+              <Button type="button" disabled={!cashOpen || !metrics?.outstandingMinor || settling} onClick={() => {setSettleOpen(true); setSettleAmount(moneyInputValue(metrics?.outstandingMinor ?? 0)); setSelectedOrders([]); setSettleError(null);}}>Registrar pago</Button>
             </div>
             {!cashOpen ? <p className="text-xs text-amber-700">Abrí una caja para registrar cobros.</p> : null}
             {openCharges.length ? <div className="space-y-1 text-xs">
@@ -2051,7 +2052,6 @@ function MergeCustomerModal({
         </div>
         <Field
           label="Buscar ficha receptora"
-          hint="La búsqueda comienza después de 0,1 segundos."
         >
           <Input
             value={target ? target.name : query}

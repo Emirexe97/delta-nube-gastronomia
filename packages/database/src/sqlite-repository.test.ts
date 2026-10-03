@@ -2803,6 +2803,37 @@ test("búsqueda textual de clientes no se degrada a teléfono vacío", () => {
   });
 });
 
+test("CSV de ventas admite filtros por día comercial y explicita moneda", () => {
+  withRepository((repository) => {
+    const cash = repository.openCashSession({ openingAmountMinor: 0 });
+    let order = repository.createOrder(takeawayOrder({ customerName: "=1+1" }));
+    order = repository.addOrderItem({ orderId: order.id, productId: "starter-muzza-grande" });
+    repository.confirmOrder({ orderId: order.id });
+    const csv = repository.exportSalesCsv({ dateFrom: cash.businessDate, dateTo: cash.businessDate });
+    assert.equal(csv.split("\r\n").length, 2);
+    assert.match(csv, /subtotal_ars,descuento_ars,envio_ars,total_ars,pagado_ars/);
+    assert.match(csv, /"'=1\+1"/);
+    assert.match(csv, /"\d+\.\d{2}"/);
+    const outside = repository.exportSalesCsv({ dateFrom: "2099-01-01", dateTo: "2099-01-31" });
+    assert.equal(outside.split("\r\n").length, 1);
+  });
+});
+
+test("auditoría busca literal antes de paginar y ordena empates por id", () => {
+  withRepository((repository) => {
+    const insert = repository.db.prepare(`INSERT INTO audit_log
+      (id, timestamp, business_date, entity_type, entity_id, action, reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    for (const [id, reason] of [["audit-a", "ticket %_valor Ácido"], ["audit-b", "ticket axvalor"], ["audit-c", "otra razón"]]) {
+      insert.run(id, "2026-06-01T12:00:00.000Z", "2026-06-01", "ORDER", id, "ORDER_CANCELLED", reason);
+    }
+    assert.deepEqual(repository.getAuditLog({ search: "%_", limit: 10 }).map((entry) => entry.id), ["audit-a"]);
+    assert.deepEqual(repository.getAuditLog({ search: "ácido", limit: 10 }).map((entry) => entry.id), ["audit-a"]);
+    assert.deepEqual(repository.getAuditLog({ search: "ticket", limit: 1 }).map((entry) => entry.id), ["audit-b"]);
+    assert.deepEqual(repository.getAuditLog({ search: "ticket", limit: 1, offset: 1 }).map((entry) => entry.id), ["audit-a"]);
+  });
+});
+
 test("pagina clientes en SQLite con total real y orden estable", () => {
   withRepository((repository) => {
     for (let index = 0; index < 53; index += 1) {
@@ -2840,6 +2871,64 @@ test("pagina clientes en SQLite con total real y orden estable", () => {
     );
     assert.equal(first.items[0]?.name, "Escala paginada 00");
     assert.equal(second.items[0]?.name, "Escala paginada 20");
+  });
+});
+
+test("la fusión rechaza límites combinados antes de alterar fichas", () => {
+  withRepository((repository) => {
+    const source = repository.createCustomer({
+      name: "Origen límite", phone: "26 2777-1000",
+      tags: Array.from({ length: 7 }, (_, i) => `Origen${i}`),
+      addresses: Array.from({ length: 11 }, (_, i) => ({ label: `Casa ${i}`, address: `Calle origen ${i}` })),
+    });
+    const target = repository.createCustomer({
+      name: "Destino límite", phone: "26 2777-2000",
+      tags: Array.from({ length: 6 }, (_, i) => `Destino${i}`),
+      addresses: Array.from({ length: 10 }, (_, i) => ({ label: `Casa ${i}`, address: `Calle destino ${i}` })),
+    });
+    assert.throws(() => repository.mergeCustomers({
+      sourceCustomerId: source.id, targetCustomerId: target.id,
+      reason: "Prueba límite", authorizerPin: "2468",
+    }), /hasta 12 etiquetas/);
+    assert.equal(repository.searchCustomersPage({ query: "Origen límite", page: 1, pageSize: 10, status: "ACTIVE" }).items[0]?.active, true);
+    const unchanged = repository.searchCustomersPage({ query: "Destino límite", page: 1, pageSize: 10, status: "ACTIVE" }).items[0]!;
+    assert.equal(unchanged.addresses.length, 10);
+    assert.equal(unchanged.tags.length, 6);
+  });
+});
+
+test("fusión atómica rechaza límites de notas, preferencias y direcciones", () => {
+  const scenarios = [
+    { source: { notes: "s".repeat(600) }, target: { notes: "t".repeat(600) }, error: /notas del cliente/ },
+    { source: { preferences: "s".repeat(600) }, target: { preferences: "t".repeat(600) }, error: /preferencias/ },
+    { source: { addresses: Array.from({ length: 11 }, (_, i) => ({ label: `S${i}`, address: `Source ${i}` })) }, target: { addresses: Array.from({ length: 10 }, (_, i) => ({ label: `T${i}`, address: `Target ${i}` })) }, error: /hasta 20 direcciones/ },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    withRepository((repository) => {
+      const source = repository.createCustomer({ name: `Origen ${index}`, phone: `26 2778-100${index}`, ...scenario.source });
+      const target = repository.createCustomer({ name: `Destino ${index}`, phone: `26 2778-200${index}`, ...scenario.target });
+      assert.throws(() => repository.mergeCustomers({ sourceCustomerId: source.id, targetCustomerId: target.id, reason: "Validar atomicidad", authorizerPin: "2468" }), scenario.error);
+      const active = repository.searchCustomersPage({ query: `Origen ${index}`, page: 1, pageSize: 2, status: "ACTIVE" });
+      assert.equal(active.items[0]?.id, source.id);
+      assert.equal(repository.searchCustomersPage({ query: `Destino ${index}`, page: 1, pageSize: 2, status: "ACTIVE" }).items[0]?.id, target.id);
+    });
+  }
+});
+
+test("el snapshot previo de fusión conserva tarifas de direcciones duplicadas", () => {
+  withRepository((repository) => {
+    const source = repository.createCustomer({
+      name: "Origen duplicado", phone: "26 2779-1000",
+      addresses: [
+        { label: "Casa A", address: "Calle repetida 1", deliveryFeeMinor: 100 },
+        { label: "Casa B", address: "CALLE REPETIDA 1", deliveryFeeMinor: 200 },
+      ],
+    });
+    const target = repository.createCustomer({ name: "Destino duplicado", phone: "26 2779-2000" });
+    repository.mergeCustomers({ sourceCustomerId: source.id, targetCustomerId: target.id, reason: "Revisión de snapshot", authorizerPin: "2468" });
+    const audit = repository.getAuditLog({ action: "CUSTOMER_MERGED" })[0]!;
+    const before = JSON.parse(audit.beforeJson!) as { addresses: Array<{ deliveryFeeMinor: number }> };
+    assert.deepEqual(before.addresses.map(({ deliveryFeeMinor }) => deliveryFeeMinor), [100, 200]);
   });
 });
 

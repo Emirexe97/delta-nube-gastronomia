@@ -37,6 +37,7 @@ import {
 } from "../components/cash-session-report";
 import {
   formatMoney,
+  moneyInputValue,
   humanError,
   paidOrdersForSession,
   paymentText,
@@ -667,7 +668,7 @@ function CloseCashModal({
   useEffect(() => {
     if (!open) return;
     setCounted("");
-    setClosingFloat(String(session.openingAmountMinor / 100));
+    setClosingFloat(moneyInputValue(session.openingAmountMinor));
     setForce(false);
     setReason("");
     setPin("");

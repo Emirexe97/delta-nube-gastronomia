@@ -10,6 +10,23 @@ import { formatMoney as domainFormatMoney } from "@gastronomy/domain";
 
 export const formatMoney = domainFormatMoney;
 
+export function moneyInputValue(amountMinor: number, fixedDecimals = false): string {
+  if (!Number.isSafeInteger(amountMinor)) {
+    throw new RangeError("El importe debe ser un entero seguro en centavos.");
+  }
+  const minor = BigInt(amountMinor);
+  const absolute = minor < 0n ? -minor : minor;
+  const whole = `${minor < 0n ? "-" : ""}${absolute / 100n}`;
+  const cents = absolute % 100n;
+  return cents === 0n && !fixedDecimals
+    ? whole
+    : `${whole},${String(cents).padStart(2, "0")}`;
+}
+
+export function localDateValue(date = new Date()): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 export function formatTime(value: string | null) {
   return value
     ? new Date(value).toLocaleTimeString("es-AR", {

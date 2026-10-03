@@ -48,6 +48,7 @@ import { isDemoMode } from "../demo/install-demo";
 import { calculateHalfAndHalfBase, guardOrderAction } from "@gastronomy/domain";
 import {
   formatMoney,
+  moneyInputValue,
   humanError,
   normalizeSearch,
   paymentStatusLabels,
@@ -61,16 +62,20 @@ import {
 export function OrderEditor({
   data,
   orderId,
+  fallbackOrder,
   onClose,
   onEditDraft,
 }: {
   data: BootstrapDto;
   orderId: string | null;
+  fallbackOrder?: OrderDto | null;
   onClose(): void;
   onEditDraft?(orderId: string): void;
 }) {
   const navigate = useNavigate();
-  const order = data.orders.find((candidate) => candidate.id === orderId);
+  const order =
+    data.orders.find((candidate) => candidate.id === orderId) ??
+    (fallbackOrder?.id === orderId ? fallbackOrder : undefined);
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [completeOnPay, setCompleteOnPay] = useState(false);
@@ -898,7 +903,7 @@ export function OrderEditor({
                 </Badge>
               </div>
               <p className="mt-1 text-[10px] text-slate-400">
-                {order.items.length} línea(s) · versión autoguardada
+                {order.items.length} línea(s) · Guardado
               </p>
             </div>
             <div className="flex flex-col items-end gap-1">
@@ -2450,7 +2455,7 @@ function DepositModal({
 
   useEffect(() => {
     if (!open) return;
-    setValue(order.depositMinor > 0 ? String(order.depositMinor / 100) : "");
+    setValue(order.depositMinor > 0 ? moneyInputValue(order.depositMinor) : "");
     setNotes(order.depositNotes ?? "");
     setPin("");
     setLocalError(null);
@@ -3167,7 +3172,7 @@ function PaymentModal({
       setInitialized(false);
       return;
     }
-    const exact = String(remaining / 100);
+    const exact = moneyInputValue(remaining);
     setValues({ CASH: exact });
     defaultCashUntouched.current = true;
     setCustomerId(order.customerId);
@@ -3271,7 +3276,7 @@ function PaymentModal({
 
   const loadToAccount = () => {
     defaultCashUntouched.current = false;
-    setValues({ ACCOUNT: String(remaining / 100) });
+    setValues({ ACCOUNT: moneyInputValue(remaining) });
     setLocalError(null);
   };
 

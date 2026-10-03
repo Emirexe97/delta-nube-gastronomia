@@ -1129,6 +1129,32 @@ describe("API de demostración", () => {
     ).resolves.toMatchObject({ active: false });
   });
 
+  it("rechaza una fusión demo que excede etiquetas sin alterar las fichas", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const source = await api.createCustomer({ name: "Origen fusión", phone: "26 2888-1000", tags: Array.from({ length: 7 }, (_, i) => `Origen${i}`) });
+    const target = await api.createCustomer({ name: "Destino fusión", phone: "26 2888-2000", tags: Array.from({ length: 6 }, (_, i) => `Destino${i}`) });
+    await expect(api.mergeCustomers({ sourceCustomerId: source.id, targetCustomerId: target.id, reason: "Prueba", authorizerPin: "1234" })).rejects.toThrow("hasta 12 etiquetas");
+    await expect(api.searchCustomersPage({ query: "Origen fusión", page: 1, pageSize: 10, status: "ACTIVE" })).resolves.toMatchObject({ items: [expect.objectContaining({ active: true })] });
+    await expect(api.searchCustomersPage({ query: "Destino fusión", page: 1, pageSize: 10, status: "ACTIVE" })).resolves.toMatchObject({ items: [expect.objectContaining({ tags: target.tags })] });
+  });
+
+  it("no muta direcciones duplicadas de origen si la validación de fusión falla", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const sourceAddresses = [
+      { label: "Casa A", address: "Calle repetida 1", deliveryFeeMinor: 100, notes: "referencia A" },
+      { label: "Casa B", address: "CALLE REPETIDA 1", deliveryFeeMinor: 200, notes: "referencia B" },
+    ];
+    const source = await api.createCustomer({ name: "Origen con direcciones repetidas", phone: "26 2999-1000", notes: "s".repeat(800), addresses: sourceAddresses });
+    const target = await api.createCustomer({ name: "Destino con notas largas", phone: "26 2999-2000", notes: "t".repeat(250) });
+    await expect(api.mergeCustomers({ sourceCustomerId: source.id, targetCustomerId: target.id, reason: "Validar no mutación", authorizerPin: "1234" })).rejects.toThrow("No se fusionaron las fichas");
+    const unchangedSource = (await api.searchCustomersPage({ query: source.name, page: 1, pageSize: 1, status: "ACTIVE" })).items[0]!;
+    expect(unchangedSource.addresses.map(({ deliveryFeeMinor, notes }) => ({ deliveryFeeMinor, notes }))).toEqual([
+      { deliveryFeeMinor: 100, notes: "referencia A" },
+      { deliveryFeeMinor: 200, notes: "referencia B" },
+    ]);
+    await expect(api.searchCustomersPage({ query: target.name, page: 1, pageSize: 1, status: "ACTIVE" })).resolves.toMatchObject({ items: [expect.objectContaining({ notes: "t".repeat(250), addresses: [] })] });
+  });
+
   it("permite cargar productos antes del cliente y exige sus datos al confirmar", async () => {
     const api = createDemoApi(new MemoryStorage());
     const product = (await api.bootstrap()).products.find(

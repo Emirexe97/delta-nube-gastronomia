@@ -139,10 +139,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                 }
               />
             </Field>
-            <Field
-              label="Cajas simultáneas"
-              hint="Esta versión local opera con una sola caja. La multi-caja se habilitará al integrar terminales identificadas del POS."
-            >
+            <Field label="Cajas simultáneas">
               <Input
                 type="number"
                 min={1}
@@ -150,6 +147,9 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                 value={settings.maxConcurrentCashSessions}
                 disabled
               />
+              <p className="text-[11px] leading-5 text-slate-500">
+                La operación actual admite una caja abierta a la vez.
+              </p>
             </Field>
             <Field label="Precio mitad y mitad">
               <Select
@@ -472,10 +472,9 @@ function PrintingSettingsCard({
             testing={test.isPending}
           />
         </div>
-        <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[10px] text-amber-800">
-          El corte automático depende del controlador de Windows y de la
-          impresora. El perfil conserva el modo de corte y las líneas de avance
-          para la integración térmica.
+        <p className="text-[10px] leading-5 text-slate-500">
+          El corte depende de la impresora y su controlador. El perfil conserva
+          las opciones de corte y avance para la integración térmica.
         </p>
       </div>
     </Card>
