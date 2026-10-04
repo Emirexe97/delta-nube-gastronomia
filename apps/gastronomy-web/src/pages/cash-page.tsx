@@ -31,6 +31,7 @@ import {
   Textarea,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
+import { cashClosingTotals } from "@gastronomy/domain";
 import {
   CashSessionHistory,
   CashSessionReportModal,
@@ -114,7 +115,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                 </p>
               </CashHeader>
               <div className="flex min-h-[104px] flex-col justify-center bg-slate-950 p-4 text-white">
-                <SmallLabel>Efectivo esperado</SmallLabel>
+                <SmallLabel>Efectivo disponible en caja</SmallLabel>
                 <p className="mt-1 text-2xl font-extrabold">
                   {formatMoney(session.expectedAmountMinor)}
                 </p>
@@ -678,6 +679,11 @@ function CloseCashModal({
 
   const countedMinor = parseMoneyInput(counted);
   const closingFloatMinor = parseMoneyInput(closingFloat);
+  const closingTotals = cashClosingTotals({
+    ...session,
+    countedAmountMinor: countedMinor,
+    closingFloatAmountMinor: closingFloatMinor,
+  });
   const differenceMinor =
     countedMinor == null ? null : countedMinor - session.expectedAmountMinor;
   const cashRemovedMinor =
@@ -746,9 +752,9 @@ function CloseCashModal({
           <div className="grid gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 sm:grid-cols-2">
             <ReviewValue
               label="Efectivo esperado"
-              value={session.expectedAmountMinor}
+              value={closingTotals.expectedAmountMinor}
             />
-            <ReviewValue label="Efectivo contado" value={countedMinor ?? 0} />
+            <ReviewValue label="Efectivo contado" value={closingTotals.countedAmountMinor ?? 0} />
             <ReviewValue
               label="Diferencia de arqueo"
               value={differenceMinor ?? 0}
@@ -798,7 +804,7 @@ function CloseCashModal({
           }}
           className="grid gap-4"
         >
-          <CashBreakdown session={session} />
+          <CashBreakdown session={session} closingFloatMinor={closingFloatMinor ?? session.openingAmountMinor} />
           {pendingDeliveryCount ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
               <p className="font-bold">
@@ -812,7 +818,7 @@ function CloseCashModal({
             </div>
           ) : null}
           <div className="grid gap-3 rounded-xl border border-slate-200 p-4 sm:grid-cols-2">
-            <Field label="Efectivo contado">
+            <Field label="Total contado en caja" hint="Incluí el cambio final en este total; se mostrará separado en el informe.">
               <Input
                 autoFocus
                 value={counted}
@@ -927,7 +933,7 @@ function CloseCashModal({
   );
 }
 
-function CashBreakdown({ session }: { session: CashSessionDto }) {
+function CashBreakdown({ session, closingFloatMinor = session.closingFloatAmountMinor ?? session.openingAmountMinor }: { session: CashSessionDto; closingFloatMinor?: number }) {
   const rows = [
     ["Cambio inicial", session.openingAmountMinor],
     ["Ventas en efectivo", session.cashSalesMinor ?? 0],
@@ -935,6 +941,7 @@ function CashBreakdown({ session }: { session: CashSessionDto }) {
     ["Gastos", -(session.cashExpenseMinor ?? 0)],
     ["Retiros", -(session.cashWithdrawalMinor ?? 0)],
     ["Devoluciones", -(session.cashRefundMinor ?? 0)],
+    ["Cambio apartado del efectivo", -closingFloatMinor],
   ] as const;
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200">
@@ -951,7 +958,7 @@ function CashBreakdown({ session }: { session: CashSessionDto }) {
         <div className="flex items-center justify-between py-3">
           <strong>Efectivo esperado</strong>
           <strong className="text-xl">
-            {formatMoney(session.expectedAmountMinor)}
+            {formatMoney(session.expectedAmountMinor - closingFloatMinor)}
           </strong>
         </div>
       </div>

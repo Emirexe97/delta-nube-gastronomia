@@ -253,7 +253,7 @@ test("previsualiza el informe sin cerrar y lo conserva en el historial al cerrar
     name: "Conciliar y cerrar caja",
   });
   await closeDialog
-    .getByLabel("Efectivo contado")
+    .getByLabel("Total contado en caja")
     .fill(String(setup.total / 100));
   await closeDialog.getByRole("button", { name: "Revisar cierre" }).click();
   await page
@@ -370,5 +370,110 @@ test("permite seleccionar secciones del informe y desglosa mesas por mozo con vi
   await expect(preview.getByText(/Total Administrador:/)).toBeVisible();
 
   await preview.getByRole("button", { name: "Cancelar" }).click();
+});
+
+test("separa el cambio final del efectivo neto en revisión, historial e informe imprimible", async () => {
+  await launch();
+  const session = await page.evaluate(async () => {
+    const api = (window as any).gastronomy;
+    const opened = await api.openCashSession({ openingAmountMinor: 100_000 });
+    await api.registerCashMovement({
+      type: "INCOME",
+      amountMinor: 500_000,
+      reason: "Ingreso para prueba de cambio final",
+      paymentMethodCode: "CASH",
+    });
+    await api.saveSettings({
+      ...(await api.bootstrap()).settings,
+      printing: {
+        ...(await api.bootstrap()).settings.printing,
+        bill: {
+          ...(await api.bootstrap()).settings.printing.bill,
+          mode: "SYSTEM_DIALOG",
+        },
+      },
+    });
+    return { id: opened.id, number: opened.number };
+  });
+
+  await page.reload();
+  await page.getByRole("link", { name: "Caja" }).click();
+  await page.getByRole("button", { name: /Conciliar y cerrar caja/ }).click();
+  const closeDialog = page.getByRole("dialog", {
+    name: "Conciliar y cerrar caja",
+  });
+  await closeDialog.getByLabel("Total contado en caja").fill("5900");
+  await closeDialog
+    .getByLabel("Cambio final para la próxima caja")
+    .fill("1500");
+  await closeDialog.getByLabel("Motivo de la diferencia").fill("Conteo E2E");
+  await closeDialog.getByRole("button", { name: "Revisar cierre" }).click();
+
+  const confirmation = page.getByRole("dialog", {
+    name: "Confirmar cierre definitivo",
+  });
+  await expect(confirmation.getByText("Efectivo esperado", { exact: true }).locator(".."))
+    .toContainText("$ 4.500");
+  await expect(confirmation.getByText("Efectivo contado", { exact: true }).locator(".."))
+    .toContainText("$ 4.400");
+  await expect(confirmation.getByText("Diferencia de arqueo", { exact: true }).locator(".."))
+    .toContainText(/-\s*\$\s*100/);
+  await expect(confirmation.getByText("Cambio final", { exact: true }).locator(".."))
+    .toContainText("$ 1.500");
+  await expect(confirmation.getByText("$ 6.000", { exact: true })).toHaveCount(0);
+  await expect(confirmation.getByText("$ 5.900", { exact: true })).toHaveCount(0);
+
+  const beforeClose = await page.evaluate(async (cashSessionId) => {
+    const api = (window as any).gastronomy;
+    const report = await api.getCashSessionReport({ cashSessionId });
+    return report.session;
+  }, session.id);
+  expect(beforeClose.expectedAmountMinor).toBe(600_000);
+  await confirmation
+    .getByRole("button", { name: "Confirmar cierre definitivo" })
+    .click();
+  await expect(page.getByRole("dialog", { name: "Informe de caja" })).toBeVisible();
+
+  const state = await page.evaluate(async (cashSessionId) => {
+    const api = (window as any).gastronomy;
+    const data = await api.bootstrap();
+    const report = await api.getCashSessionReport({ cashSessionId });
+    return { session: data.cashSession, report: report.session };
+  }, session.id);
+  expect(state.session).toBeNull();
+  expect(state.report.countedAmountMinor).toBe(590_000);
+  expect(state.report.expectedAmountMinor).toBe(600_000);
+
+  const report = page.getByRole("dialog", { name: "Informe de caja" });
+  for (const value of ["$ 4.500", "$ 4.400", "$ 1.500"]) {
+    await expect(report.getByText(value, { exact: true })).toBeVisible();
+  }
+  await expect(report.getByText(/-\s*\$\s*100/)).toBeVisible();
+  await expect(report.getByText("Efectivo contado", { exact: true }).locator("..")).toContainText("$ 4.400");
+  await report.getByRole("button", { name: "Imprimir informe" }).click();
+  const printModal = page.getByRole("dialog", {
+    name: "Imprimir informe de caja",
+  });
+  for (const value of ["$ 4.500", "$ 4.400", "$ 1.500"]) {
+    await expect(printModal.getByText(value, { exact: true })).toBeVisible();
+  }
+  await expect(printModal.getByText(/-\s*\$\s*100/)).toBeVisible();
+  await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
+  const preview = await previewWindow();
+  for (const value of ["$ 4.500", "$ 4.400", "$ 1.500"]) {
+    await expect(preview.getByText(value, { exact: true })).toBeVisible();
+  }
+  await expect(preview.getByText(/-\s*\$\s*100/)).toBeVisible();
+  await preview.getByRole("button", { name: "Cancelar" }).click();
+  await expect(printModal).toBeHidden();
+  await report.getByRole("button", { name: "Cerrar", exact: true }).click();
+  await expect(report).toBeHidden();
+  await expect(page.getByText(`#${session.number}`, { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Ver informe", exact: true }).click();
+  const historyReport = page.getByRole("dialog", { name: "Informe de caja" });
+  for (const value of ["$ 4.500", "$ 4.400", "$ 1.500"]) {
+    await expect(historyReport.getByText(value, { exact: true })).toBeVisible();
+  }
+  await expect(historyReport.getByText(/-\s*\$\s*100/)).toBeVisible();
 });
 

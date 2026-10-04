@@ -694,7 +694,7 @@ test("concilia la caja con cambio final distinto y confirmación definitiva", as
   await expect(
     dialog.getByText("Composición del efectivo esperado"),
   ).toBeVisible();
-  await dialog.getByLabel("Efectivo contado").fill("50000");
+  await dialog.getByLabel("Total contado en caja").fill("50000");
   await dialog.getByLabel("Cambio final para la próxima caja").fill("30000");
   await expect(dialog.getByText("Efectivo a retirar")).toBeVisible();
   await dialog

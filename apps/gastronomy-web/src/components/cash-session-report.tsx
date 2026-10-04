@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { cashReportBreakdown } from "@gastronomy/domain";
+import { cashClosingTotals, cashReportBreakdown } from "@gastronomy/domain";
 import type {
   CashSessionHistoryItemDto,
   CashSessionReportFilters,
@@ -319,6 +319,7 @@ export function CashSessionReportModal({
                 Composición del efectivo esperado
               </h3>
               <p className="mt-1 text-[11px] text-slate-500">
+                El cambio final queda aparte del esperado y contado.
                 Los pagos a repartidores se descuentan como egresos. Las ventas
                 por medio de pago no representan el efectivo disponible.
                 {Object.values(applied).some(Boolean)
@@ -326,7 +327,7 @@ export function CashSessionReportModal({
                   : ""}
               </p>
               <div className="mt-3 space-y-1 text-xs">
-                {cashReportBreakdown(data.session).map((row) => (
+                {cashReportBreakdown(data.session, cashClosingTotals(data.session).closingFloatAmountMinor).map((row) => (
                   <div key={row.label} className="flex justify-between gap-3">
                     <span>{row.label}</span>
                     <strong>{formatMoney(row.amountMinor)}</strong>
@@ -334,15 +335,19 @@ export function CashSessionReportModal({
                 ))}
                 <div className="flex justify-between gap-3 border-t border-slate-200 pt-2 font-bold">
                   <span>Efectivo esperado</span>
-                  <span>{formatMoney(data.session.expectedAmountMinor)}</span>
+                  <span>{formatMoney(cashClosingTotals(data.session).expectedAmountMinor)}</span>
                 </div>
                 <div className="flex justify-between gap-3">
                   <span>Efectivo contado</span>
                   <span>
                     {data.session.countedAmountMinor == null
                       ? "—"
-                      : formatMoney(data.session.countedAmountMinor)}
+                      : formatMoney(cashClosingTotals(data.session).countedAmountMinor!)}
                   </span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span>Cambio final</span>
+                  <span>{formatMoney(cashClosingTotals(data.session).closingFloatAmountMinor)}</span>
                 </div>
                 <div className="flex justify-between gap-3">
                   <span>Diferencia</span>
@@ -780,7 +785,7 @@ export function PrintCashSessionReportModal({
             <div className="my-2 border-t border-dashed border-slate-400" />
             <div className="font-bold uppercase text-[10px] tracking-wide mb-1">ARQUEO</div>
             <div className="space-y-0.5">
-              {cashReportBreakdown(data.session).map((row) => (
+              {cashReportBreakdown(data.session, cashClosingTotals(data.session).closingFloatAmountMinor).map((row) => (
                 <div key={row.label} className="flex justify-between gap-2">
                   <span>{row.label}</span>
                   <span>{formatMoney(row.amountMinor)}</span>
@@ -788,15 +793,19 @@ export function PrintCashSessionReportModal({
               ))}
               <div className="flex justify-between font-bold">
                 <span>Efectivo esperado</span>
-                <span>{formatMoney(data.session.expectedAmountMinor)}</span>
+                <span>{formatMoney(cashClosingTotals(data.session).expectedAmountMinor)}</span>
               </div>
               <div className="flex justify-between">
                 <span>Contado</span>
                 <span>
                   {data.session.countedAmountMinor != null
-                    ? formatMoney(data.session.countedAmountMinor)
+                    ? formatMoney(cashClosingTotals(data.session).countedAmountMinor!)
                     : "—"}
                 </span>
+              </div>
+              <div className="flex justify-between">
+                <span>Cambio final</span>
+                <span>{formatMoney(cashClosingTotals(data.session).closingFloatAmountMinor)}</span>
               </div>
               <div className="flex justify-between font-bold">
                 <span>Diferencia</span>

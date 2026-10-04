@@ -7,6 +7,29 @@ export interface CashMovementValue {
   affectsCash?: boolean;
 }
 
+/** Totals shown in the close report exclude the float retained in the drawer. */
+export function cashClosingTotals(
+  session: Pick<
+    CashSessionDto,
+    | "expectedAmountMinor"
+    | "countedAmountMinor"
+    | "openingAmountMinor"
+    | "closingFloatAmountMinor"
+  >,
+) {
+  const closingFloatAmountMinor =
+    session.closingFloatAmountMinor ?? session.openingAmountMinor;
+  return {
+    expectedAmountMinor:
+      session.expectedAmountMinor - closingFloatAmountMinor,
+    countedAmountMinor:
+      session.countedAmountMinor == null
+        ? null
+        : session.countedAmountMinor - closingFloatAmountMinor,
+    closingFloatAmountMinor,
+  };
+}
+
 /** Cash movements, not gross sales by payment method, reconcile the drawer. */
 export function cashReportBreakdown(
   session: Pick<
@@ -19,6 +42,7 @@ export function cashReportBreakdown(
     | "cashWithdrawalMinor"
     | "cashRefundMinor"
   >,
+  retainedFloatMinor = 0,
 ) {
   const rows = [
     { label: "Cambio inicial", amountMinor: session.openingAmountMinor },
@@ -49,6 +73,8 @@ export function cashReportBreakdown(
       label: "Ajustes y otros movimientos",
       amountMinor: otherMinor,
     });
+  if (retainedFloatMinor !== 0)
+    rows.push({ label: "Cambio apartado del efectivo", amountMinor: -retainedFloatMinor });
   return rows;
 }
 
