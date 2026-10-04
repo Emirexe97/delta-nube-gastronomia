@@ -89,9 +89,6 @@ export function CashPage({ data }: { data: BootstrapDto }) {
     <div className="panel-enter mx-auto max-w-[1200px] space-y-4">
       <div>
         <h2 className="text-lg font-extrabold">Caja y día comercial</h2>
-        <p className="text-xs text-slate-400">
-          Los pedidos después de medianoche conservan el día de apertura
-        </p>
       </div>
       {session ? (
         <>
@@ -136,15 +133,6 @@ export function CashPage({ data }: { data: BootstrapDto }) {
               onClick={() => setCloseOpen(true)}
               danger
             />
-            <Card className="p-4">
-              <div className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-emerald-600">
-                <CashRegister size={21} />
-              </div>
-              <p className="mt-3 text-sm font-bold">Operación protegida</p>
-              <p className="mt-1 text-[11px] text-slate-400">
-                Cada venta y movimiento queda asociado a esta caja.
-              </p>
-            </Card>
           </section>
           <section className="grid gap-3 lg:grid-cols-2">
             <CashBreakdown session={session} />
@@ -474,10 +462,14 @@ function OpenCashModal({ open, onClose }: { open: boolean; onClose(): void }) {
       window.gastronomy.openCashSession(input),
     { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
   );
+  const close = () => {
+    if (!mutation.isPending) onClose();
+  };
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={close}
+      closeDisabled={mutation.isPending}
       title="Abrir caja"
       description="El día comercial se toma de este momento"
     >
@@ -512,7 +504,7 @@ function OpenCashModal({ open, onClose }: { open: boolean; onClose(): void }) {
         </Field>
         {error ? <ErrorMessage>{error}</ErrorMessage> : null}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
+          <Button type="button" variant="secondary" onClick={close} disabled={mutation.isPending}>
             Cancelar
           </Button>
           <Button type="submit" disabled={mutation.isPending}>
@@ -557,10 +549,14 @@ function MovementModal({
     (input: CashMovementInput) => window.gastronomy.registerCashMovement(input),
     { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
   );
+  const close = () => {
+    if (!mutation.isPending) onClose();
+  };
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={close}
+      closeDisabled={mutation.isPending}
       title="Movimiento de caja"
       description="Los movimientos sensibles nunca se eliminan"
     >
@@ -624,7 +620,7 @@ function MovementModal({
         </Field>
         {error ? <ErrorMessage>{error}</ErrorMessage> : null}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
+          <Button type="button" variant="secondary" onClick={close} disabled={mutation.isPending}>
             Cancelar
           </Button>
           <Button type="submit" disabled={!reason.trim() || mutation.isPending}>
@@ -876,7 +872,7 @@ function CloseCashModal({
                 <Textarea
                   value={reason}
                   onChange={(event) => setReason(event.target.value)}
-                  placeholder="Dejá una explicación para auditoría"
+                  placeholder="Indicá el motivo"
                   required
                 />
               </Field>

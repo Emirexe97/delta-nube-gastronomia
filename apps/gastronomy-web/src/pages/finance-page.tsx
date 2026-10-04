@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { BootstrapDto, FinanceExpenseDto, FinanceReportDto, FinanceExpenseKind } from "@gastronomy/contracts";
-import { ArrowClockwise, ChartBar, Coins, DownloadSimple, Plus, WarningCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, ChartBar, Coins, DownloadSimple, Plus } from "@phosphor-icons/react";
 import { Badge, Button, Card, Field, Input, Select } from "@gastronomy/ui";
 import { csvCell } from "@gastronomy/domain";
 import { formatMoney, humanError, moneyInputValue, parseMoneyInput } from "../lib";
@@ -99,8 +99,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300">Control de gestión</p>
           <h1 className="mt-1 text-2xl font-black">Finanzas</h1>
-          <p className="mt-1 max-w-2xl text-xs text-slate-300">Ventas, costo estimado de lo vendido, sueldos y gastos devengados. Compras de stock separadas para no contarlas dos veces.</p>
-          <p className="mt-1 max-w-2xl text-xs text-slate-300">Ventas y gastos de caja corresponden a la jornada de apertura de la caja, incluso después de medianoche.</p>
+          <p className="mt-1 max-w-2xl text-xs text-slate-300">Ventas, costo estimado de lo vendido, sueldos y gastos del período. Las compras de stock se muestran aparte.</p>
         </div>
         <div className="flex gap-2"><Button type="button" variant="secondary" onClick={() => setReload((value) => value + 1)}><ArrowClockwise size={16}/> Actualizar</Button>
           <Button type="button" variant="secondary" disabled={!report || loading || report.from !== from || report.to !== to} onClick={exportCsv}><DownloadSimple size={16}/> CSV</Button></div>
@@ -125,8 +124,6 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
         {card("Sueldos", report.payrollMinor, "Importes cargados, no liquidación laboral")}
         {card("Resultado operativo estimado", report.estimatedOperatingProfitMinor, `Pendiente de pago: ${formatMoney(report.unpaidMinor)}`, true)}
       </section>
-      {report.unknownCostItems > 0 ? <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><WarningCircle size={18}/>
-        Hay {report.unknownCostItems} líneas vendidas sin costo registrado. El margen y el resultado son incompletos; cargá costos en esta página para ventas futuras. Las ventas históricas no se recalculan retroactivamente.</div> : null}
       <section className="grid gap-3 lg:grid-cols-2">
         <Card className="p-4"><h2 className="flex items-center gap-2 text-sm font-extrabold"><ChartBar size={17}/> Evolución mensual</h2>
           {report.monthly.length ? <div className="mt-4 space-y-3">{report.monthly.map((row) => {
@@ -144,7 +141,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
       </section>
 
       <section className="grid gap-3 xl:grid-cols-[1fr_1.4fr]">
-        <Card className="p-4"><h2 className="text-sm font-extrabold">Registrar gasto o sueldo</h2><p className="mt-1 text-xs text-slate-500">Devenga en la fecha indicada; pagar desde caja es un paso separado.</p>
+        <Card className="p-4"><h2 className="text-sm font-extrabold">Registrar gasto o sueldo</h2><p className="mt-1 text-xs text-slate-500">Se registra en la fecha indicada; el pago desde caja se carga aparte.</p>
           <form className="mt-3 grid gap-3" onSubmit={async (event) => {event.preventDefault(); const amountMinor = parseMoneyInput(amount); if (amountMinor == null || amountMinor <= 0) {setError("Ingresá un importe válido."); return;}
             const saved = repeat
               ? await run(() => window.gastronomy.createFinanceRecurring({title,category,kind: kind === "PAYROLL" ? "PAYROLL" : "FIXED",amountMinor,dayOfMonth: Number(dayOfMonth),startMonth: incurredOn.slice(0,7),employeeId: employeeId || null,idempotencyKey: crypto.randomUUID()}),"Gasto fijo configurado.")
@@ -178,13 +175,13 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
       </section>
 
       <section className="grid gap-3 xl:grid-cols-2">
-        <Card className="p-4"><h2 className="text-sm font-extrabold">Gastos fijos activos</h2><p className="mt-1 text-xs text-slate-500">Se generan una vez por mes, sin duplicados.</p>
+        <Card className="p-4"><h2 className="text-sm font-extrabold">Gastos fijos activos</h2>
           <div className="mt-3 space-y-2">{report.recurring.filter((item) => item.active).length ? report.recurring.filter((item) => item.active).map((item) =>
-            <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 p-2 text-xs"><span><b>{item.title}</b> · día {item.dayOfMonth} · desde {item.startMonth}</span><span className="flex items-center gap-2"><b>{formatMoney(item.amountMinor)}</b><Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => window.gastronomy.stopFinanceRecurring({recurringId: item.id}),"Gasto fijo detenido.")}>Detener</Button></span></div>) : <p className="text-xs text-slate-500">Sin reglas mensuales.</p>}</div>
+            <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 p-2 text-xs"><span><b>{item.title}</b> · día {item.dayOfMonth} · desde {item.startMonth}</span><span className="flex items-center gap-2"><b>{formatMoney(item.amountMinor)}</b><Button type="button" variant="secondary" disabled={busy} onClick={() => void run(() => window.gastronomy.stopFinanceRecurring({recurringId: item.id}),"Gasto fijo detenido.")}>Detener</Button></span></div>) : <p className="text-xs text-slate-500">Sin gastos fijos.</p>}</div>
         </Card>
-        <Card className="p-4"><h2 className="text-sm font-extrabold">Costo unitario para ventas futuras</h2><p className="mt-1 text-xs text-slate-500">La última compra aporta el costo automáticamente. Un costo manual tiene prioridad; las ventas ya registradas mantienen su valor original.</p>
+        <Card className="p-4"><h2 className="text-sm font-extrabold">Costo unitario para ventas futuras</h2>
           <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={(event) => {event.preventDefault(); if (!productId || !unitCost.trim() || unitCostMinor == null) {setError("Ingresá un costo válido, mayor o igual a cero."); return;} void run(() => window.gastronomy.setFinanceProductCost({productId,unitCostMinor}),"Costo actualizado.");}}>
-            <Field label="Producto"><Select value={productId} onChange={(event) => {const id = event.target.value;setProductId(id);const cost = report.productCosts.find((item) => item.productId === id)?.unitCostMinor;setUnitCost(cost == null ? "" : moneyInputValue(cost));}} required><option value="">Elegir producto</option>{report.productCosts.map((item) => <option key={item.productId} value={item.productId}>{item.productName} · {item.unitCostMinor == null ? "sin costo" : formatMoney(item.unitCostMinor)} ({item.source})</option>)}</Select></Field>
+            <Field label="Producto"><Select value={productId} onChange={(event) => {const id = event.target.value;setProductId(id);const cost = report.productCosts.find((item) => item.productId === id)?.unitCostMinor;setUnitCost(cost == null ? "" : moneyInputValue(cost));}} required><option value="">Elegir producto</option>{report.productCosts.map((item) => <option key={item.productId} value={item.productId}>{item.productName} · {item.unitCostMinor == null ? "sin costo" : formatMoney(item.unitCostMinor)}</option>)}</Select></Field>
             <Field label="Costo unitario"><Input inputMode="decimal" value={unitCost} onChange={(event) => setUnitCost(event.target.value)} placeholder="0,00" required /></Field>
             {costInvalid ? <p role="alert" className="text-xs font-semibold text-rose-700">Ingresá un costo válido, mayor o igual a cero.</p> : null}
             <Button type="submit" disabled={!productId || !unitCost.trim() || costInvalid || busy}>Guardar costo</Button>

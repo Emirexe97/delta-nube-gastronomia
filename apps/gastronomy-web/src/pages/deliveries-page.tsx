@@ -54,17 +54,25 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
   const drivers = data.users.filter(
     (user) => user.roleCode === "DELIVERY_DRIVER" && user.active,
   );
-  const scopedLedger = filterDeliveryLedger(
-    data.deliveryLedger,
-    data.cashSession,
-    historyScope,
-    selectedDate,
+  const scopedLedger = useMemo(
+    () =>
+      filterDeliveryLedger(
+        data.deliveryLedger,
+        data.cashSession,
+        historyScope,
+        selectedDate,
+      ),
+    [data.deliveryLedger, data.cashSession, historyScope, selectedDate],
   );
-  const scopedActivity = filterDriverDeliveryActivity(
-    data.driverDeliveryActivity,
-    data.cashSession,
-    historyScope,
-    selectedDate,
+  const scopedActivity = useMemo(
+    () =>
+      filterDriverDeliveryActivity(
+        data.driverDeliveryActivity,
+        data.cashSession,
+        historyScope,
+        selectedDate,
+      ),
+    [data.driverDeliveryActivity, data.cashSession, historyScope, selectedDate],
   );
   const ledger =
     driverFilter === "ALL"
@@ -95,7 +103,10 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         )
         .map((row) => row.id),
     );
-    setSelectedIds((current) => current.filter((id) => valid.has(id)));
+    setSelectedIds((current) => {
+      const next = current.filter((id) => valid.has(id));
+      return next.length === current.length ? current : next;
+    });
   }, [scopedLedger, driverFilter]);
 
   const totals = useMemo(() => {
@@ -183,7 +194,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         <div>
           <h2 className="text-lg font-extrabold">Repartidores y rendiciones</h2>
           <p className="text-xs text-slate-400">
-            Actividad, ganancias y movimientos que caja debe conciliar
+            Consultá las ganancias y los saldos pendientes de cada repartidor.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -517,7 +528,7 @@ function ReverseSettlementModal({
       onClose={onClose}
       closeDisabled={mutation.isPending}
       title="Revertir liquidación del repartidor"
-      description="Registra un contramovimiento de caja y vuelve a dejar la liquidación pendiente; no borra el historial."
+      description="Registra el movimiento inverso en caja y deja la liquidación pendiente para corregirla."
     >
       <form
         className="grid gap-3"

@@ -185,7 +185,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
         <div>
           <h2 className="text-lg font-extrabold">Clientes</h2>
           <p className="text-xs text-slate-400">
-            Contacto, direcciones e historial operativo de cada cliente
+            Datos de contacto, direcciones e historial de cada cliente
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)}>
@@ -1097,7 +1097,7 @@ function CustomerModal({
             </Select>
           </Field>
         </div>
-        <Field label="Preferencias operativas">
+        <Field label="Preferencias">
           <Textarea
             name="customerPreferences"
             value={preferences}
@@ -1499,7 +1499,7 @@ function CustomerProfileModal({
       title={
         currentCustomer ? `Ficha · ${currentCustomer.name}` : "Ficha de cliente"
       }
-      description="Historial completo, hábitos de compra, direcciones y calidad del padrón."
+      description="Historial de compras, direcciones y preferencias."
     >
       {currentCustomer ? (
         <div className="space-y-4" aria-busy={loading}>

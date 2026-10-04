@@ -216,7 +216,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         <div>
           <h2 className="text-lg font-extrabold">Catálogo, extras y stock</h2>
           <p className="text-xs text-slate-400">
-            Precios por canal y existencias opcionales en milésimas
+            Precios por canal y control opcional de existencias
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -1117,7 +1117,7 @@ function BulkProductsModal({
       onClose={onClose}
       width="max-w-4xl"
       title={`Operación masiva · ${productIds.length} producto${productIds.length === 1 ? "" : "s"}`}
-      description="Los cambios se aplican juntos o no se aplica ninguno; requieren autorización y quedan auditados."
+      description="Ingresá el PIN para autorizar los cambios."
     >
       <form
         className="grid gap-4"
@@ -2068,9 +2068,9 @@ function ProductModal({
       description={
         editing
           ? isVariant
-            ? "Modificá los datos y precios de esta variante. Requiere autorización y queda auditado."
-            : "Los cambios de datos y precios requieren autorización y quedan auditados."
-          : "El precio se guarda como snapshot al agregarlo a un pedido."
+            ? "Modificá los datos y precios de esta variante."
+            : "Modificá los datos y precios del producto."
+          : undefined
       }
     >
       <form
@@ -2483,7 +2483,7 @@ function ProductModal({
               </ul>
             ) : (
               <p className="px-3 py-3 text-xs text-slate-400">
-                Todavía no hay cambios auditados.
+                Todavía no hay cambios registrados.
               </p>
             )}
           </section>

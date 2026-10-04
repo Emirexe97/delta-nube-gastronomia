@@ -81,7 +81,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
               ["settings-general", "General"],
               ["settings-printing", "Impresión"],
               ["settings-print-texts", "Textos"],
-              ["settings-backup", "Backup"],
+              ["settings-backup", "Copias de seguridad"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -366,8 +366,8 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
       <Card id="settings-backup" className="scroll-mt-20 p-4">
         <SectionTitle
           icon={Database}
-          title="Backup y recuperación"
-          detail="SQLite con verificación de integridad"
+          title="Copias de seguridad y restauración"
+          detail="Guardá una copia de los datos o recuperá una copia anterior"
         />
         <div className="mt-4 flex flex-wrap gap-2">
           <Button
@@ -438,7 +438,7 @@ function PrintingSettingsCard({
       <SectionTitle
         icon={Printer}
         title="Impresión"
-        detail="Perfiles separados para comanda y cuenta, compatibles con el modelo del POS"
+        detail="Configurá por separado la impresión de comandas y cuentas"
       />
       <div className="mt-4 grid gap-4">
         <Field

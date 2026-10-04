@@ -633,7 +633,7 @@ function registerIpcHandlers() {
     const result = await dialog.showSaveDialog(mainWindow!, {
       title: "Crear copia de seguridad",
       defaultPath: `gastronomia-backup-${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}.sqlite`,
-      filters: [{ name: "Copia SQLite", extensions: ["sqlite"] }],
+      filters: [{ name: "Copia de seguridad", extensions: ["sqlite"] }],
     });
     if (result.canceled || !result.filePath) return { path: null };
     await rm(result.filePath, { force: true });
@@ -645,7 +645,7 @@ function registerIpcHandlers() {
     const selection = await dialog.showOpenDialog(mainWindow!, {
       title: "Restaurar copia de seguridad",
       properties: ["openFile"],
-      filters: [{ name: "Copia SQLite", extensions: ["sqlite", "db"] }],
+      filters: [{ name: "Copia de seguridad", extensions: ["sqlite", "db"] }],
     });
     const source = selection.filePaths[0];
     if (selection.canceled || !source) return { path: null, restored: false };

@@ -230,7 +230,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         <p className="px-2 text-[11px] text-slate-400">
           {view === "CLASSIC"
             ? "Listado rápido de todas las mesas"
-            : "Plano editable con subpestañas por sector"}
+            : "Plano del salón por sectores"}
         </p>
       </Card>
 
@@ -350,7 +350,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
           }
         }}
         title={`Abrir mesa ${openingTable?.number ?? ""}`}
-        description="La asignación queda visible en el salón y vinculada al pedido."
+        description="La asignación aparecerá junto al pedido."
       >
         <form
           className="grid gap-4"
@@ -362,7 +362,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         >
           <Field
             label="Mesero responsable"
-            hint="Podés elegir un mesero, encargado o administrador activo."
+            hint="Elegí quién estará a cargo de la mesa."
           >
             <Select
               autoFocus
@@ -542,16 +542,6 @@ function QuickEntry({
     onOpenFullOrder(orderId, order ?? undefined);
   };
 
-  useEffect(() => {
-    if (previousEditorOpenRef.current && !isEditorOpen) {
-      if (openedByQuickEntryRef.current) {
-        openedByQuickEntryRef.current = false;
-        window.setTimeout(() => focus(tableRef), 50);
-      }
-    }
-    previousEditorOpenRef.current = Boolean(isEditorOpen);
-  }, [isEditorOpen]);
-
   const activeProducts = useMemo(
     () =>
       data.products
@@ -634,7 +624,7 @@ function QuickEntry({
     if (fresh) setOrder(fresh);
   }, [data.orders, order?.id]);
 
-  const focus = (ref: React.RefObject<HTMLElement | null>) => {
+  const focus = (ref: React.RefObject<HTMLElement | null>, restoreFlow = false) => {
     if (focusFrameRef.current !== null) {
       window.cancelAnimationFrame(focusFrameRef.current);
     }
@@ -644,7 +634,8 @@ function QuickEntry({
       const target = ref.current;
       if (
         target &&
-        (document.activeElement === captured ||
+        ((restoreFlow && !document.querySelector('[role="dialog"]')) ||
+          document.activeElement === captured ||
           document.activeElement === document.body ||
           document.activeElement === target)
       ) {
@@ -690,8 +681,17 @@ function QuickEntry({
     setError(null);
     setStatus(null);
     resetLine();
-    focus(tableRef);
+    focus(tableRef, true);
   };
+  useEffect(() => {
+    if (previousEditorOpenRef.current && !isEditorOpen) {
+      if (openedByQuickEntryRef.current) {
+        openedByQuickEntryRef.current = false;
+        resetFlow();
+      }
+    }
+    previousEditorOpenRef.current = Boolean(isEditorOpen);
+  }, [isEditorOpen]);
   useEffect(() => {
     if (removedEvent?.tableId === table?.id) resetFlow();
   }, [removedEvent]);
@@ -1078,7 +1078,7 @@ function QuickEntry({
                 autoFocus
                 inputMode="numeric"
                 value={tableNumber}
-                disabled={busy || (step !== "TABLE" && !order)}
+                disabled={busy}
                 onChange={(event) => {
                   const next = event.target.value.replace(/\D/g, "");
                   if (next !== tableNumber) {
@@ -1098,6 +1098,7 @@ function QuickEntry({
                     setStep("TABLE");
                   }
                   setError(null);
+                  setStatus(null);
                 }}
                 onKeyDown={(event) => {
                   if (

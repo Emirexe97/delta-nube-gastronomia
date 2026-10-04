@@ -159,7 +159,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
             Para retirar y envíos
           </h2>
           <p className="text-xs text-slate-400">
-            Una sola bandeja operativa, estados y cobros separados
+            Consultá los pedidos para retirar y los envíos.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

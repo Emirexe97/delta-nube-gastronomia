@@ -64,7 +64,7 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
     .getByRole("button", { name: "Guardar y seleccionar" })
     .click();
   await expect(
-    page.getByText("Retiro E2E vinculado a la base de datos"),
+    page.getByText("Retiro E2E seleccionado"),
   ).toBeVisible();
   await expect(
     page.getByLabel("Dirección (opcional)", { exact: true }),
@@ -154,7 +154,7 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
     .getByRole("button", { name: "Guardar y seleccionar" })
     .click();
   await expect(
-    page.getByText("Cliente E2E vinculado a la base de datos"),
+    page.getByText("Cliente E2E seleccionado"),
   ).toBeVisible();
   const customerSearch = page.getByRole("combobox", { name: /Buscar cliente/ });
   await customerSearch.fill("Cliente E2");

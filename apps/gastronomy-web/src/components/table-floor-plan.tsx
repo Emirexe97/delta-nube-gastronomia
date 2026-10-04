@@ -1293,7 +1293,7 @@ export function TableFloorPlan({
         </div>
         <p className="mt-2 text-[11px] text-slate-400">
           {editing
-            ? "Arrastrá para mover. Usá los tiradores para cambiar el tamaño o dibujá áreas y líneas marcando nodos."
+            ? "Arrastrá las mesas y figuras para ubicarlas. También podés dibujar áreas y líneas."
             : "Elegí un sector y tocá una mesa para abrirla o continuar su pedido."}
         </p>
         {message ? (
@@ -2291,7 +2291,6 @@ export function TableFloorPlan({
         title={
           sectorDialog?.mode === "RENAME" ? "Renombrar sector" : "Crear sector"
         }
-        description="Cada sector aparece como una subpestaña independiente dentro del plano."
       >
         <form
           className="grid gap-4"
@@ -2339,7 +2338,6 @@ export function TableFloorPlan({
         open={addTableOpen}
         onClose={() => setAddTableOpen(false)}
         title={`Agregar mesa a ${activeSector?.name ?? "sector"}`}
-        description="La mesa quedará disponible también en la vista clásica y en carga rápida."
       >
         <form
           className="grid gap-4"

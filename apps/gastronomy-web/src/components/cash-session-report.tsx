@@ -818,9 +818,7 @@ export function PrintCashSessionReportModal({
             </div>
 
             <p className="mt-1 text-[10px] text-slate-600">
-              Arqueo del turno completo. Los pagos a repartidores ya están
-              incluidos en los egresos; no se descuentan nuevamente de las
-              ventas.
+              Los pagos a repartidores ya están incluidos en los egresos.
             </p>
 
             <div className="my-2 border-t border-dashed border-slate-400" />

@@ -322,7 +322,7 @@ export function App() {
         <div className="text-center">
           <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" />
           <p className="mt-3 text-sm font-semibold text-slate-500">
-            Preparando operación local…
+            Cargando el programa…
           </p>
         </div>
       </div>

@@ -358,14 +358,14 @@ export function OrderCustomerSelector(props: Props) {
       </div>
       {waiting || searching ? (
         <p className="text-[10px] font-semibold text-brand-700">
-          {waiting ? "Esperando para buscar…" : "Buscando clientes…"}
+            Buscando clientes…
         </p>
       ) : null}
       {props.customerId ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-[10px] font-bold text-emerald-800">
           <span className="flex items-center gap-1">
             <AddressBook size={14} />
-            {selectedCustomer?.name ?? "Cliente"} vinculado a la base de datos
+            {selectedCustomer?.name ?? "Cliente"} seleccionado
           </span>
           <button
             type="button"
@@ -469,8 +469,7 @@ export function OrderCustomerSelector(props: Props) {
           (item) => item.address === props.address.trim(),
         )) ? (
         <p className="rounded-lg border border-sky-200 bg-sky-50 p-2 text-[10px] font-semibold text-sky-800">
-          Los datos editados se usarán sólo en este pedido. La ficha del cliente
-          sigue vinculada y no se modifica automáticamente.
+          Los cambios se aplican sólo a este pedido.
         </p>
       ) : null}
       <CreateCustomerModal
@@ -573,7 +572,7 @@ function CreateCustomerModal({
       open={open}
       onClose={onClose}
       title="Crear cliente sin salir del pedido"
-      description="Al guardar, queda disponible en la base de clientes y seleccionado en este pedido."
+      description="Guardá el cliente para usarlo en este pedido."
     >
       <form
         className="grid gap-4"

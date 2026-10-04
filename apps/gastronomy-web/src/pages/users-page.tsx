@@ -38,7 +38,7 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
         <div>
           <h2 className="text-lg font-extrabold">Usuarios y permisos</h2>
           <p className="text-xs text-slate-400">
-            Roles reutilizables, capacidades y número rápido para salón
+            Asigná roles y un número para identificar al personal en salón
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)}>
@@ -78,10 +78,6 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
                   <span className="text-xs font-semibold">
                     {user.permissions.length}
                   </span>
-                  <p className="max-w-[420px] truncate text-[10px] text-slate-400">
-                    {user.permissions.join(" · ") ||
-                      "Sin capacidades operativas"}
-                  </p>
                 </td>
                 <td>
                   <Badge tone={user.active ? "green" : "slate"}>
@@ -177,7 +173,7 @@ function CreateUserModal({
       open={open}
       onClose={onClose}
       title="Nuevo usuario"
-      description="El autorizante debe poseer users.manage"
+      description="Ingresá el PIN de autorización correspondiente"
     >
       <div className="grid gap-4">
         <Field label="Número de usuario">
@@ -219,7 +215,7 @@ function CreateUserModal({
               maxLength={8}
               placeholder={
                 isDriver
-                  ? "Opcional para repartidor sin acceso al POS"
+                  ? "Opcional para repartidor sin acceso al sistema"
                   : undefined
               }
               onChange={(event) =>
@@ -322,7 +318,6 @@ function EditUserModal({
       open={Boolean(user)}
       onClose={onClose}
       title={`Editar ${user?.fullName ?? "usuario"}`}
-      description="Los cambios quedan auditados"
     >
       <div className="grid gap-4">
         <Field label="Número de usuario">
@@ -369,7 +364,7 @@ function EditUserModal({
             value={newPin}
             placeholder={
               isChangingFromDriverToPos
-                ? "Requerido para acceder al POS"
+                ? "Requerido para iniciar sesión"
                 : undefined
             }
             onChange={(event) =>

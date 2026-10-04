@@ -421,8 +421,8 @@ export function OrderEditor({
           result.status === "SKIPPED"
             ? `${label} no impresa. Podés continuar trabajando y volver a imprimirla cuando quieras.`
             : isDemoMode
-              ? `${label} simulada: se creó el trabajo, pero no fue enviada a una impresora.`
-              : `${label} impresa/enviada según el resultado del dispositivo.`,
+              ? `${label} simulada; no se envió a una impresora.`
+              : `${label} enviada a la impresora.`,
         );
         setPrintConfirmKind(null);
       },
@@ -484,6 +484,7 @@ export function OrderEditor({
       if (event.repeat) return;
       const nestedDialogOpen =
         payOpen ||
+        depositOpen ||
         refundOpen ||
         halfOpen ||
         cancelOpen ||
@@ -491,6 +492,7 @@ export function OrderEditor({
         discountOpen ||
         discardConfirmOpen ||
         driverOpen ||
+        Boolean(printConfirmKind) ||
         Boolean(addingProduct) ||
         Boolean(variantPickerProduct) ||
         Boolean(modifierItemId) ||
@@ -537,6 +539,7 @@ export function OrderEditor({
     addingProduct,
     cancelOpen,
     changeTableOpen,
+    depositOpen,
     discardConfirmOpen,
     discountOpen,
     driverOpen,
@@ -547,6 +550,7 @@ export function OrderEditor({
     orderId,
     payOpen,
     pendingPrint,
+    printConfirmKind,
     print.isPending,
     refundOpen,
     variantPickerProduct,
@@ -1120,7 +1124,7 @@ export function OrderEditor({
                 <span>
                   <b>Impresión pendiente:</b>{" "}
                   {pendingPrint.status === "RECOVERING"
-                    ? "Se está reanudando este trabajo. Esperá el resultado antes de volver a imprimir."
+                    ? "La impresión se está reanudando. Esperá el resultado antes de volver a imprimir."
                     : pendingPrint.status === "QUEUED"
                       ? "La aplicación se cerró antes de confirmar el resultado. Verificá primero si el ticket salió para evitar una copia duplicada."
                       : (pendingPrint.lastError ??
@@ -1803,7 +1807,7 @@ export function OrderEditor({
         onClose={() => setPrintConfirmKind(null)}
         closeDisabled={print.isPending}
         title="Confirmar reimpresión"
-        description="Se creará un nuevo trabajo de impresión"
+        description="Se enviará una nueva impresión"
       >
         <div className="grid gap-4">
           <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">
@@ -2081,7 +2085,7 @@ function RefundPaymentModal({
             {selected.methodCode === "ACCOUNT" ? (
               <p className="-mt-2 text-xs text-amber-800">
                 Esto reduce la deuda pendiente del cliente. Si ya abonó esta
-                deuda, el backend puede rechazar la devolución: corregí el
+                deuda, el sistema puede rechazar la devolución: corregí el
                 recibo de pago del cliente.
               </p>
             ) : selected.methodCode === "CASH" && order.collectedByDriver ? (
@@ -2223,7 +2227,6 @@ function ModifierModal({
       onClose={onClose}
       closeDisabled={mutation.isPending}
       title="Agregar modificador"
-      description="El precio también queda guardado como snapshot"
     >
       <form
         className="grid gap-4"
@@ -2340,7 +2343,7 @@ function DiscountModal({
       onClose={onClose}
       closeDisabled={mutation.isPending}
       title="Aplicar descuento"
-      description="Requiere autorización y queda auditado"
+      description="Ingresá el PIN para autorizar el cambio"
     >
       <form
         className="grid gap-4"
@@ -3720,7 +3723,6 @@ function CancelModal({
       onClose={onClose}
       closeDisabled={mutation.isPending}
       title="Cancelar pedido"
-      description="La operación no se elimina y quedará auditada"
     >
       <form
         className="grid gap-4"
