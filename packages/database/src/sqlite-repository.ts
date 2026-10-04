@@ -218,6 +218,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("busy_timeout = 5000");
     this.db.pragma("synchronous = NORMAL");
+    this.db.function("business_date", { deterministic: true }, (value: unknown) =>
+      businessDateFromOpening(String(value)),
+    );
     this.db.function(
       "audit_contains",
       { deterministic: true },
@@ -6253,9 +6256,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const cashExpenses = (
       this.db
         .prepare(
-          `SELECT cm.id, cm.amount_minor, cm.reason, cm.created_at, pm.code AS payment_method_code
-      FROM cash_movements cm LEFT JOIN payment_methods pm ON pm.id = cm.payment_method_id
-      WHERE cm.type = 'EXPENSE' AND substr(cm.created_at,1,10) BETWEEN ? AND ?
+          `SELECT cm.id, cm.amount_minor, cm.reason, cm.created_at, cs.business_date, pm.code AS payment_method_code
+      FROM cash_movements cm JOIN cash_sessions cs ON cs.id = cm.cash_session_id
+      LEFT JOIN payment_methods pm ON pm.id = cm.payment_method_id
+      WHERE cm.type = 'EXPENSE' AND cs.business_date BETWEEN ? AND ?
         AND cm.reference_id IS NULL
         AND NOT EXISTS (SELECT 1 FROM cash_movements reversal WHERE reversal.reference_id = cm.id)
         AND NOT EXISTS (SELECT 1 FROM finance_expenses e WHERE e.cash_movement_id = cm.id)
@@ -6268,8 +6272,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       category: "Caja sin clasificar",
       kind: "GENERAL",
       amountMinor: Number(row.amount_minor),
-      incurredOn: String(row.created_at).slice(0, 10),
-      dueOn: String(row.created_at).slice(0, 10),
+      incurredOn: String(row.business_date),
+      dueOn: String(row.business_date),
       paidAt: String(row.created_at),
       paymentMethodCode:
         row.payment_method_code == null
@@ -6292,26 +6296,28 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     ).map((row) => this.financeRecurringDto(row));
     const orderRows = this.db
       .prepare(
-        `SELECT o.id, o.total_minor, o.deposit_minor, o.confirmed_at, o.created_at,
+        `SELECT o.id, o.total_minor, o.deposit_minor, cs.business_date,
       COALESCE((SELECT SUM(pr.amount_minor) FROM payment_refunds pr WHERE pr.order_id = o.id),0) AS refunds_minor
-      FROM orders o WHERE o.lifecycle_status = 'CONFIRMED' AND o.operational_status <> 'CANCELLED'
-      AND substr(COALESCE(o.confirmed_at,o.created_at),1,10) BETWEEN ? AND ?`,
+      FROM orders o JOIN cash_sessions cs ON cs.id = o.cash_session_created_id
+      WHERE o.lifecycle_status = 'CONFIRMED' AND o.operational_status <> 'CANCELLED'
+      AND cs.business_date BETWEEN ? AND ?`,
       )
       .all(input.from, input.to) as Row[];
     const costRows = this.db
       .prepare(
         `SELECT o.id AS order_id, oc.total_cost_minor
       FROM orders o JOIN order_items oi ON oi.order_id = o.id
+      JOIN cash_sessions cs ON cs.id = o.cash_session_created_id
       LEFT JOIN finance_order_item_costs oc ON oc.order_item_id = oi.id
       WHERE o.lifecycle_status = 'CONFIRMED' AND o.operational_status <> 'CANCELLED'
-      AND substr(COALESCE(o.confirmed_at,o.created_at),1,10) BETWEEN ? AND ?`,
+      AND cs.business_date BETWEEN ? AND ?`,
       )
       .all(input.from, input.to) as Row[];
     const purchasesMinor = Number(
       (
         this.db
           .prepare(
-            "SELECT COALESCE(SUM(total_minor),0) AS total FROM purchases WHERE substr(created_at,1,10) BETWEEN ? AND ?",
+            "SELECT COALESCE(SUM(total_minor),0) AS total FROM purchases WHERE business_date(created_at) BETWEEN ? AND ?",
           )
           .get(input.from, input.to) as Row
       ).total,
@@ -6362,7 +6368,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const orderMonths = new Map(
       orderRows.map((row) => [
         String(row.id),
-        String(row.confirmed_at ?? row.created_at).slice(0, 7),
+        String(row.business_date).slice(0, 7),
       ]),
     );
     for (const row of orderRows)

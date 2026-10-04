@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3-multiple-ciphers";
 import type { CreateOrderInput } from "@gastronomy/contracts";
 import { migrations } from "./migrations";
+import { businessDateFromOpening } from "@gastronomy/domain";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
 
 const takeawayOrder = (
@@ -984,7 +985,7 @@ test("cobros de cuenta corriente imputan FIFO o pedidos elegidos", () => {
 
 test("finanzas separa ventas, costo congelado, sueldo y gasto fijo de compras", () => {
   withRepository((repository) => {
-    const date = new Date().toISOString().slice(0, 10);
+    const date = businessDateFromOpening(new Date().toISOString());
     repository.openCashSession({ openingAmountMinor: 5_000_000 });
     repository.setFinanceProductCost({
       productId: "starter-muzza-grande",
@@ -1096,6 +1097,59 @@ test("detener un gasto fijo no lo regenera dentro del mes actual", () => {
         .expenses.length,
       0,
     );
+  });
+});
+
+test("finanzas asigna ventas, costos y gastos nocturnos a la jornada de caja", () => {
+  withRepository((repository) => {
+    const cash = repository.openCashSession({ openingAmountMinor: 5_000_000 });
+    repository.db.prepare(
+      "UPDATE cash_sessions SET business_date = '2026-09-30', opened_at = '2026-09-30T19:00:00.000Z' WHERE id = ?",
+    ).run(cash.id);
+    repository.setFinanceProductCost({
+      productId: "starter-muzza-grande",
+      unitCostMinor: 300_000,
+    });
+    let salesMinor = 0;
+    // 22:00 and 01:00 in Argentina, both in the September 30 cash session.
+    for (const timestamp of ["2026-10-01T01:00:00.000Z", "2026-10-01T04:00:00.000Z"]) {
+      const order = repository.createOrder(takeawayOrder());
+      repository.addOrderItem({ orderId: order.id, productId: "starter-muzza-grande" });
+      const confirmed = repository.confirmOrder({ orderId: order.id });
+      salesMinor += confirmed.totalMinor;
+      repository.db.prepare("UPDATE orders SET created_at = ?, confirmed_at = ? WHERE id = ?")
+        .run(timestamp, timestamp, order.id);
+    }
+    const movement = repository.registerCashMovement({
+      type: "EXPENSE",
+      amountMinor: 50_000,
+      paymentMethodCode: "CASH",
+      reason: "Gasto después de medianoche",
+    });
+    repository.db.prepare("UPDATE cash_movements SET created_at = '2026-10-01T04:10:00.000Z' WHERE id = ?")
+      .run(movement.id);
+    const purchase = repository.createPurchase({
+      supplierName: "Proveedor nocturno",
+      authorizerPin: "2468",
+      items: [{ productId: "starter-muzza-grande", quantityMinor: 1_000, unitCostMinor: 450_000 }],
+    });
+    repository.db.prepare("UPDATE purchases SET created_at = '2026-10-01T01:00:00.000Z' WHERE id = ?")
+      .run(purchase.id);
+    const previous = repository.getFinanceReport({ from: "2026-09-30", to: "2026-09-30" });
+    assert.equal(previous.salesMinor, salesMinor);
+    assert.equal(previous.cogsMinor, 600_000);
+    assert.equal(previous.costedItems, 2);
+    assert.equal(previous.expensesMinor, 50_000);
+    assert.equal(previous.expenses[0]?.incurredOn, "2026-09-30");
+    assert.equal(previous.purchasesMinor, 450_000);
+    assert.deepEqual(previous.monthly, [{ month: "2026-09", salesMinor, cogsMinor: 600_000, expensesMinor: 50_000 }]);
+    const next = repository.getFinanceReport({ from: "2026-10-01", to: "2026-10-31" });
+    assert.equal(next.salesMinor, 0);
+    assert.equal(next.cogsMinor, 0);
+    assert.equal(next.costedItems + next.unknownCostItems, 0);
+    assert.equal(next.expensesMinor, 0);
+    assert.equal(next.purchasesMinor, 0);
+    assert.deepEqual(next.monthly, []);
   });
 });
 
@@ -3655,6 +3709,64 @@ test("edición de producto actualiza listas y conserva historial en auditoría",
     assert.equal(audit?.authorizerName, "Administrador");
     assert.match(audit?.beforeJson ?? "", /Muzzarella grande/);
   });
+});
+
+test("reinicio conserva precios editados, auditoría y precio de pedidos nuevos", () => {
+  const path = join(tmpdir(), `gastronomy-price-restart-${randomUUID()}.sqlite`);
+  try {
+    const first = new SqliteGastronomyRepository(path, {
+      adminPin: "2468",
+      seedStarterCatalog: true,
+    });
+    try {
+      first.updateProduct({
+        productId: "starter-muzza-grande",
+        categoryId: "category-1",
+        name: "Chocotorta de prueba",
+        active: true,
+        prices: [
+          { priceListCode: "SALON", amountMinor: 850_000 },
+          { priceListCode: "TAKEAWAY", amountMinor: 850_000 },
+          { priceListCode: "DELIVERY", amountMinor: 850_000 },
+        ],
+        reason: "Actualización de precio antes de cerrar",
+        authorizerPin: "2468",
+      });
+    } finally {
+      first.close();
+    }
+    // Verify both packaged startup and development startup with catalog seeding.
+    for (const seedStarterCatalog of [false, true]) {
+      const reopened = new SqliteGastronomyRepository(path, {
+        seedStarterCatalog,
+      });
+      try {
+        const product = reopened.bootstrap().products.find(
+          (candidate) => candidate.id === "starter-muzza-grande",
+        );
+        assert.equal(product?.name, "Chocotorta de prueba");
+        assert.equal(product?.prices.length, 3);
+        assert.ok(product?.prices.every((price) => price.amountMinor === 850_000));
+        const audit = reopened.getAuditLog({ action: "PRODUCT_UPDATED" });
+        assert.equal(audit.length, 1);
+        assert.equal(audit[0]?.reason, "Actualización de precio antes de cerrar");
+        assert.equal(JSON.parse(audit[0]!.afterJson!).prices[0].amountMinor, 850_000);
+        if (!reopened.bootstrap().cashSession)
+          reopened.openCashSession({ openingAmountMinor: 0 });
+        const order = reopened.createOrder(takeawayOrder());
+        const updated = reopened.addOrderItem({
+          orderId: order.id,
+          productId: "starter-muzza-grande",
+        });
+        assert.equal(updated.items[0]?.unitPriceMinorSnapshot, 850_000);
+      } finally {
+        reopened.close();
+      }
+    }
+  } finally {
+    for (const suffix of ["", "-wal", "-shm"])
+      rmSync(`${path}${suffix}`, { force: true });
+  }
 });
 
 test("reinicio conserva caja y pedido pendiente", () => {

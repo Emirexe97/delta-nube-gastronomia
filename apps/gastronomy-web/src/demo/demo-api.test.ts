@@ -93,6 +93,79 @@ describe("API de demostración", () => {
       )?.paidAt,
     ).not.toBeNull();
   });
+  it("Finanzas demo agrupa ventas y gastos de caja por jornada de Buenos Aires", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    await api.getFinanceReport({ from: "2026-10-03", to: "2026-10-04" });
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    saved.data.cashSession.businessDate = "2026-10-03";
+    saved.data.orders = [
+      {
+        ...saved.data.orders.find(
+          (order: { lifecycleStatus: string }) =>
+            order.lifecycleStatus === "CONFIRMED",
+        ),
+        lifecycleStatus: "CONFIRMED",
+        operationalStatus: "READY",
+        cashSessionCreatedId: saved.data.cashSession.id,
+        createdAt: "2026-10-04T04:15:00.000Z",
+        depositMinor: 0,
+        payments: [],
+      },
+    ];
+    saved.movements = [
+      {
+        id: "movement-midnight-expense",
+        sessionId: saved.data.cashSession.id,
+        type: "EXPENSE",
+        amountMinor: 4_500,
+        affectsCash: true,
+        paymentMethodCode: "CASH",
+        orderId: null,
+        userId: saved.data.currentUser.id,
+        reason: "Gasto nocturno",
+        createdAt: "2026-10-04T02:20:00.000Z",
+      },
+    ];
+    saved.purchases = [
+      {
+        id: "purchase-midnight",
+        supplierName: "Proveedor",
+        invoiceNumber: null,
+        notes: null,
+        totalMinor: 7_800,
+        createdByUserId: saved.data.currentUser.id,
+        createdByUserName: saved.data.currentUser.fullName,
+        createdAt: "2026-10-04T02:25:00.000Z",
+        items: [],
+      },
+    ];
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+
+    const reloaded = createDemoApi(storage);
+    expect((await reloaded.bootstrap()).orders[0]).toMatchObject({
+      lifecycleStatus: "CONFIRMED",
+      cashSessionCreatedId: saved.data.cashSession.id,
+      createdAt: "2026-10-04T04:15:00.000Z",
+    });
+    const report = await reloaded.getFinanceReport({
+      from: "2026-10-03",
+      to: "2026-10-03",
+    });
+    expect(report.salesMinor).toBe(1_950_000);
+    expect(report.monthly).toEqual([
+      expect.objectContaining({ month: "2026-10", salesMinor: 1_950_000 }),
+    ]);
+    expect(report.expenses.find((item) => item.id === "cash-movement-midnight-expense"))
+      .toMatchObject({ incurredOn: "2026-10-03", amountMinor: 4_500 });
+    expect(report.purchasesMinor).toBe(7_800);
+    expect(
+      (await createDemoApi(storage).getFinanceReport({
+        from: "2026-10-04",
+        to: "2026-10-04",
+      })).salesMinor,
+    ).toBe(0);
+  });
   it("no regenera un gasto fijo detenido en el mismo mes", async () => {
     const api = createDemoApi(new MemoryStorage());
     const date = new Date().toISOString().slice(0, 10);

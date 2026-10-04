@@ -100,6 +100,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
         <div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300">Control de gestión</p>
           <h1 className="mt-1 text-2xl font-black">Finanzas</h1>
           <p className="mt-1 max-w-2xl text-xs text-slate-300">Ventas, costo estimado de lo vendido, sueldos y gastos devengados. Compras de stock separadas para no contarlas dos veces.</p>
+          <p className="mt-1 max-w-2xl text-xs text-slate-300">Ventas y gastos de caja corresponden a la jornada de apertura de la caja, incluso después de medianoche.</p>
         </div>
         <div className="flex gap-2"><Button type="button" variant="secondary" onClick={() => setReload((value) => value + 1)}><ArrowClockwise size={16}/> Actualizar</Button>
           <Button type="button" variant="secondary" disabled={!report || loading || report.from !== from || report.to !== to} onClick={exportCsv}><DownloadSimple size={16}/> CSV</Button></div>
@@ -115,7 +116,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
     {error ? <p role="alert" className="rounded-xl bg-rose-50 p-3 text-xs font-semibold text-rose-700">{error}</p> : null}
     {message ? <p role="status" className="rounded-xl bg-emerald-50 p-3 text-xs font-semibold text-emerald-700">{message}</p> : null}
     {loading ? <p className="text-sm text-slate-500">Calculando período…</p> : null}
-    {report ? <>
+    {report && !loading && report.from === from && report.to === to ? <>
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {card("Ventas netas", report.salesMinor, `Devoluciones descontadas: ${formatMoney(report.refundsMinor)}`)}
         {card("Costo vendido", report.cogsMinor, `${report.costedItems} líneas con costo · ${report.unknownCostItems} sin costo`)}

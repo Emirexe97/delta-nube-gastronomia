@@ -30,6 +30,7 @@ import {
   assertOperationalTransition,
   assertOrderAction,
   paymentStatusFor,
+  businessDateFromOpening,
 } from "@gastronomy/domain";
 
 export const DEMO_STORAGE_KEY = "delta-nube-gastronomia.demo.v5";
@@ -4011,6 +4012,14 @@ export function createDemoApi(
         throw new Error("Elegí un período válido de hasta tres años.");
       const expenses = (state.financeExpenses ??= []);
       const recurring = (state.financeRecurring ??= []);
+      const sessionsById = new Map(
+        [state.data.cashSession, ...state.historicalSessions]
+          .filter((session): session is CashSessionDto => session != null)
+          .map((session) => [session.id, session]),
+      );
+      const orderBusinessDate = (order: OrderDto) =>
+        sessionsById.get(order.cashSessionCreatedId)?.businessDate ??
+        businessDateFromOpening(order.createdAt);
       let month = input.from.slice(0, 7);
       while (month <= input.to.slice(0, 7)) {
         const [year, number] = month.split("-").map(Number);
@@ -4054,8 +4063,8 @@ export function createDemoApi(
         (order) =>
           order.lifecycleStatus === "CONFIRMED" &&
           order.operationalStatus !== "CANCELLED" &&
-          order.createdAt.slice(0, 10) >= input.from &&
-          order.createdAt.slice(0, 10) <= input.to,
+          orderBusinessDate(order) >= input.from &&
+          orderBusinessDate(order) <= input.to,
       );
       const paidFinanceMovementIds = new Set(
         Object.values(state.financeExpenseMovements ?? {}),
@@ -4064,8 +4073,10 @@ export function createDemoApi(
         .filter(
           (movement) =>
             movement.type === "EXPENSE" &&
-            movement.createdAt.slice(0, 10) >= input.from &&
-            movement.createdAt.slice(0, 10) <= input.to &&
+            (sessionsById.get(movement.sessionId)?.businessDate ??
+              businessDateFromOpening(movement.createdAt)) >= input.from &&
+            (sessionsById.get(movement.sessionId)?.businessDate ??
+              businessDateFromOpening(movement.createdAt)) <= input.to &&
             !(movement as any).referenceId &&
             !state.movements.some(
               (other) => (other as any).referenceId === movement.id,
@@ -4078,8 +4089,12 @@ export function createDemoApi(
           category: "Caja sin clasificar",
           kind: "GENERAL",
           amountMinor: movement.amountMinor,
-          incurredOn: movement.createdAt.slice(0, 10),
-          dueOn: movement.createdAt.slice(0, 10),
+          incurredOn:
+            sessionsById.get(movement.sessionId)?.businessDate ??
+            businessDateFromOpening(movement.createdAt),
+          dueOn:
+            sessionsById.get(movement.sessionId)?.businessDate ??
+            businessDateFromOpening(movement.createdAt),
           paidAt: movement.createdAt,
           paymentMethodCode: movement.paymentMethodCode,
           employeeId: null,
@@ -4096,7 +4111,7 @@ export function createDemoApi(
       ].sort((a, b) => b.incurredOn.localeCompare(a.incurredOn));
       const costRows = periodOrders.flatMap((order) =>
         order.items.map((item) => ({
-          month: order.createdAt.slice(0, 7),
+          month: orderBusinessDate(order).slice(0, 7),
           cost:
             state.financeItemCosts?.[item.id]?.unitCostMinor == null
               ? null
@@ -4140,7 +4155,7 @@ export function createDemoApi(
         return row;
       };
       for (const order of periodOrders)
-        monthly(order.createdAt.slice(0, 7)).salesMinor +=
+        monthly(orderBusinessDate(order).slice(0, 7)).salesMinor +=
           order.totalMinor +
           (order.depositMinor ?? 0) -
           order.payments.reduce(
@@ -4171,9 +4186,10 @@ export function createDemoApi(
           .reduce((sum, item) => sum + item.amountMinor, 0),
         purchasesMinor: state.purchases
           .filter(
-            (purchase) =>
-              purchase.createdAt.slice(0, 10) >= input.from &&
-              purchase.createdAt.slice(0, 10) <= input.to,
+            (purchase) => {
+              const businessDate = businessDateFromOpening(purchase.createdAt);
+              return businessDate >= input.from && businessDate <= input.to;
+            },
           )
           .reduce((sum, purchase) => sum + purchase.totalMinor, 0),
         grossProfitMinor: salesMinor - cogsMinor,
