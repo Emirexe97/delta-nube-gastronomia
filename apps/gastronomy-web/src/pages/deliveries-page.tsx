@@ -193,7 +193,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-extrabold">Repartidores y rendiciones</h2>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-slate-600">
             Consultá las ganancias y los saldos pendientes de cada repartidor.
           </p>
         </div>
@@ -302,7 +302,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
       <Card className="overflow-hidden">
         <div className="border-b border-slate-100 px-4 py-3">
           <h3 className="text-sm font-bold">Resumen por repartidor</h3>
-          <p className="text-[10px] text-slate-400">
+          <p className="text-xs text-slate-600">
             Elegí una fila para revisar y seleccionar sus movimientos
             pendientes.
           </p>
@@ -353,7 +353,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
             </tbody>
           </table>
           {!driverRows.length ? (
-            <div className="grid h-32 place-items-center text-xs text-slate-400">
+            <div className="grid h-32 place-items-center text-xs text-slate-600">
               Todavía no hay repartidores cargados.
             </div>
           ) : null}
@@ -366,7 +366,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
             <h3 className="text-sm font-bold">
               Detalle de envíos y rendiciones
             </h3>
-            <p className="text-[10px] text-slate-400">
+            <p className="text-xs text-slate-600">
               La ganancia incluye el envío cuando corresponde al repartidor; si
               el negocio lo retiene, el repartidor rinde el cobro completo.
             </p>
@@ -470,7 +470,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
           <div className="grid h-56 place-items-center text-center">
             <div>
               <CheckCircle className="mx-auto text-emerald-400" size={36} />
-              <p className="mt-2 text-sm font-semibold text-slate-500">
+              <p className="mt-2 text-sm font-semibold text-slate-600">
                 No hay envíos para esta selección
               </p>
             </div>
@@ -621,7 +621,7 @@ function MetricCard({
       >
         {icon}
       </div>
-      <p className="mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+      <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-600">
         {label}
       </p>
       <p className="text-2xl font-extrabold">{value}</p>
@@ -915,7 +915,7 @@ function SettlementSummary({
   return (
     <div className="grid gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 sm:grid-cols-3">
       <div className="bg-white p-3">
-        <p className="text-[10px] font-bold uppercase text-slate-400">
+        <p className="text-xs font-bold uppercase text-slate-600">
           Repartidor rinde al negocio · ingresa a caja
         </p>
         <p className="text-lg font-extrabold text-emerald-700">
@@ -923,7 +923,7 @@ function SettlementSummary({
         </p>
       </div>
       <div className="bg-white p-3">
-        <p className="text-[10px] font-bold uppercase text-slate-400">
+        <p className="text-xs font-bold uppercase text-slate-600">
           Negocio paga al repartidor · sale de caja
         </p>
         <p className="text-lg font-extrabold text-rose-700">
@@ -931,7 +931,7 @@ function SettlementSummary({
         </p>
       </div>
       <div className="bg-slate-950 p-3 text-white">
-        <p className="text-[10px] font-bold uppercase text-slate-400">
+        <p className="text-xs font-bold uppercase text-slate-400">
           Efecto neto
         </p>
         <p className="text-lg font-extrabold">

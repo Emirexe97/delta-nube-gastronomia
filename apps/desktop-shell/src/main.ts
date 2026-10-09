@@ -1,6 +1,7 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
-import { copyFile, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { GastronomyApplication } from "@gastronomy/application";
 import type {
   AppSettingsDto,
@@ -11,15 +12,23 @@ import type {
   DesktopApi,
   OrderDto,
 } from "@gastronomy/contracts";
-import { cashClosingTotals, cashReportBreakdown, formatMoney } from "@gastronomy/domain";
+import {
+  cashClosingTotals,
+  cashReportBreakdown,
+  formatMoney,
+} from "@gastronomy/domain";
 import { SqliteGastronomyRepository } from "@gastronomy/database";
 import { printHtml } from "./printer";
 import { scheduledOrderBadge } from "./scheduled-order-ticket.cjs";
+import { createValidatedBackup } from "./safe-backup.cjs";
+import { restoreValidatedCopy } from "./safe-restore.cjs";
+import { isBackgroundTest } from "./e2e-background.cjs";
 
 let mainWindow: BrowserWindow | null = null;
 let repository: SqliteGastronomyRepository | null = null;
 let application: GastronomyApplication | null = null;
 let databasePath = "";
+let backgroundE2e = false;
 
 function services() {
   if (!application || !repository)
@@ -117,10 +126,10 @@ function orderTicketHtml(
               `<div class="row"><span>${escapeHtml(payment.methodName)}</span><span>${escapeHtml(formatMoney(payment.refundableMinor))}</span></div>`,
           )
           .join("")}${
-            order.changeAmountMinor && order.changeAmountMinor > 0
-              ? `<div class="row"><span>Vuelto (${escapeHtml(order.changeMethodName || "Efectivo")})</span><span>${escapeHtml(formatMoney(order.changeAmountMinor))}</span></div>`
-              : ""
-          }</section>`
+          order.changeAmountMinor && order.changeAmountMinor > 0
+            ? `<div class="row"><span>Vuelto (${escapeHtml(order.changeMethodName || "Efectivo")})</span><span>${escapeHtml(formatMoney(order.changeAmountMinor))}</span></div>`
+            : ""
+        }</section>`
       : ""
   }
   ${(isKitchen && template.kitchenFooter) || (!isKitchen && (template.footer || template.nonFiscalLegend)) ? `<footer class="footer">${isKitchen && template.kitchenFooter ? lineBreaks(template.kitchenFooter) : ""}${!isKitchen && template.footer ? `<strong>${lineBreaks(template.footer)}</strong>` : ""}${!isKitchen && template.nonFiscalLegend ? `<br>${lineBreaks(template.nonFiscalLegend)}` : ""}</footer>` : ""}<div aria-hidden="true" style="height:${feedHeightMm}mm"></div></body></html>`;
@@ -267,9 +276,19 @@ function cashSessionReportHtml(
     : `<div class="divider"></div><p class="notice">El detalle de este turno ya no está disponible; se muestra el resumen conservado.</p>`;
 
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    @page{size:${paperMm}mm auto;margin:${marginMm}mm}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;font-weight:700;line-height:1.25;overflow-wrap:anywhere;-webkit-font-smoothing:antialiased}h1,h2,h3,p{margin:0}.center{text-align:center}.title{font-size:calc(${fontSizePx}px + 4pt);font-weight:900;line-height:1.1;text-transform:uppercase}.subtitle{font-size:calc(${fontSizePx}px + 1.5pt);font-weight:900;margin:3px 0 1px}.terminal{font-size:calc(${fontSizePx}px - 1pt);font-weight:700;text-transform:uppercase}.divider{border-top:1.5px dashed #000;margin:6px 0}.meta-line{margin:2px 0;font-size:${fontSizePx}px;font-weight:700}.meta-line strong{font-weight:900}.section-title{font-size:calc(${fontSizePx}px + 1pt);font-weight:900;text-transform:uppercase;margin:6px 0 3px;letter-spacing:0.3px}.row{display:flex;justify-content:space-between;gap:8px;margin:3px 0;font-weight:700;line-height:1.2}.row strong{font-weight:900}.total{border-top:2px solid #000;border-bottom:2px solid #000;padding:3px 0;margin:5px 0;font-size:calc(${fontSizePx}px + 3pt);font-weight:900}.notice{border:1.5px solid #000;padding:6px;font-weight:700;margin:4px 0}.printed-footer{font-size:calc(${fontSizePx}px - 1.5pt);font-weight:700;margin-top:6px}.waiter-group{margin:5px 0 6px}.waiter-name-row{font-size:calc(${fontSizePx}px + 0.5pt);margin-bottom:2px}.waiter-table-row{padding-left:8px;font-weight:600}.waiter-total-row{border-top:1px dashed #000;padding-top:2px;margin-top:2px;font-weight:800}
+    @page{size:${paperMm}mm auto;margin:${marginMm}mm}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;font-weight:700;line-height:1.25;overflow-wrap:anywhere;-webkit-font-smoothing:antialiased}h1,h2,h3,p{margin:0}.center{text-align:center}.title{font-size:calc(${fontSizePx}px + 4pt);font-weight:900;line-height:1.1;text-transform:uppercase}.subtitle{font-size:calc(${fontSizePx}px + 1.5pt);font-weight:900;margin:3px 0 1px}.terminal{font-size:calc(${fontSizePx}px - 1pt);font-weight:700;text-transform:uppercase}.divider{border-top:1.5px dashed #000;margin:6px 0}.meta-line{margin:2px 0;font-size:${fontSizePx}px;font-weight:700}.meta-line strong{font-weight:900}.section-title{font-size:calc(${fontSizePx}px + 1pt);font-weight:900;text-transform:uppercase;margin:6px 0 3px;letter-spacing:0.3px}.row{display:flex;justify-content:space-between;gap:8px;margin:3px 0;font-weight:700;line-height:1.2}.row strong{font-weight:900;white-space:nowrap;flex-shrink:0}.total{border-top:2px solid #000;border-bottom:2px solid #000;padding:3px 0;margin:5px 0;font-size:calc(${fontSizePx}px + 3pt);font-weight:900}.notice{border:1.5px solid #000;padding:6px;font-weight:700;margin:4px 0}.printed-footer{font-size:calc(${fontSizePx}px - 1.5pt);font-weight:700;margin-top:6px}.waiter-group{margin:5px 0 6px}.waiter-name-row{font-size:calc(${fontSizePx}px + 0.5pt);margin-bottom:2px}.waiter-table-row{padding-left:8px;font-weight:600}.waiter-total-row{border-top:1px dashed #000;padding-top:2px;margin-top:2px;font-weight:800}
   </style></head><body><div class="center"><h1 class="title">${escapeHtml(settings.businessName)}</h1><h2 class="subtitle">INFORME DE CAJA #${escapeHtml(session.number)}</h2><p class="terminal">${escapeHtml(settings.printing.terminalLabel)}</p></div><div class="divider"></div>
-  <p class="meta-line"><strong>Día comercial:</strong> ${escapeHtml(session.businessDate)}</p><p class="meta-line"><strong>Apertura:</strong> ${date(session.openedAt)}</p><p class="meta-line"><strong>Cierre:</strong> ${date(session.closedAt)}</p><p class="meta-line"><strong>Responsable:</strong> ${escapeHtml(session.openedByName)}</p>${filters ? `<div class="divider"></div><h3 class="section-title">Filtros</h3>${filters}` : ""}<div class="divider"></div><h3 class="section-title">Resumen</h3><div class="row total"><span>Ventas</span><strong>${money(report.totals.salesMinor)}</strong></div><div class="row"><span>Pedidos</span><strong>${escapeHtml(report.totals.orderCount)}</strong></div><div class="row"><span>Ticket promedio</span><strong>${money(report.totals.averageTicketMinor)}</strong></div><div class="row"><span>Descuentos</span><strong>${money(report.totals.discountsMinor)}</strong></div><div class="row"><span>Devoluciones</span><strong>${money(report.totals.refundsMinor)}</strong></div><div class="divider"></div><h3 class="section-title">Arqueo</h3>${cashReportBreakdown(session, cashClosingTotals(session).closingFloatAmountMinor).map((row) => `<div class="row"><span>${escapeHtml(row.label)}</span><strong>${money(row.amountMinor)}</strong></div>`).join("")}<div class="row total"><span>Efectivo esperado</span><strong>${money(cashClosingTotals(session).expectedAmountMinor)}</strong></div><div class="row"><span>Contado</span><strong>${session.countedAmountMinor == null ? "—" : money(cashClosingTotals(session).countedAmountMinor)}</strong></div><div class="row"><span>Cambio final</span><strong>${money(cashClosingTotals(session).closingFloatAmountMinor)}</strong></div><div class="row"><span>Diferencia</span><strong>${money(session.differenceMinor)}</strong></div><p class="notice">Arqueo del turno completo. Los pagos a repartidores ya están incluidos en los egresos; las ventas no representan el efectivo disponible.</p>${alwaysSections}${optionalSections}<div class="divider"></div><p class="center printed-footer"><strong>Impreso:</strong> ${escapeHtml(new Date().toLocaleString("es-AR"))}</p><div aria-hidden="true" style="height:${Math.max(0, profile.feedLinesBeforeCut) * 3.5}mm"></div></body></html>`;
+  <p class="meta-line"><strong>Día comercial:</strong> ${escapeHtml(session.businessDate)}</p><p class="meta-line"><strong>Apertura:</strong> ${date(session.openedAt)}</p><p class="meta-line"><strong>Cierre:</strong> ${date(session.closedAt)}</p><p class="meta-line"><strong>Responsable:</strong> ${escapeHtml(session.openedByName)}</p>${filters ? `<div class="divider"></div><h3 class="section-title">Filtros</h3>${filters}` : ""}<div class="divider"></div><h3 class="section-title">Resumen</h3><div class="row total"><span>Ventas</span><strong>${money(report.totals.salesMinor)}</strong></div><div class="row"><span>Pedidos</span><strong>${escapeHtml(report.totals.orderCount)}</strong></div><div class="row"><span>Ticket promedio</span><strong>${money(report.totals.averageTicketMinor)}</strong></div><div class="row"><span>Descuentos</span><strong>${money(report.totals.discountsMinor)}</strong></div><div class="row"><span>Devoluciones</span><strong>${money(report.totals.refundsMinor)}</strong></div><div class="divider"></div><h3 class="section-title">Arqueo</h3>${cashReportBreakdown(
+    session,
+    cashClosingTotals(session).closingFloatAmountMinor,
+  )
+    .map(
+      (row) =>
+        `<div class="row"><span>${escapeHtml(row.label)}</span><strong>${money(row.amountMinor)}</strong></div>`,
+    )
+    .join(
+      "",
+    )}<div class="row total"><span>Esperado sin cambio</span><strong>${money(cashClosingTotals(session).expectedAmountMinor)}</strong></div><div class="row"><span>Contado sin cambio</span><strong>${session.countedAmountMinor == null ? "—" : money(cashClosingTotals(session).countedAmountMinor)}</strong></div><div class="row"><span>Cambio final</span><strong>${money(cashClosingTotals(session).closingFloatAmountMinor)}</strong></div><div class="row"><span>Diferencia</span><strong>${money(session.differenceMinor)}</strong></div><p class="notice">Arqueo del turno completo. Los pagos a repartidores ya están incluidos en los egresos; las ventas no representan el efectivo disponible.</p>${alwaysSections}${optionalSections}<div class="divider"></div><p class="center printed-footer"><strong>Impreso:</strong> ${escapeHtml(new Date().toLocaleString("es-AR"))}</p><div aria-hidden="true" style="height:${Math.max(0, profile.feedLinesBeforeCut) * 3.5}mm"></div></body></html>`;
 }
 
 async function printOrder(
@@ -406,6 +425,20 @@ async function executePrintJob(
 }
 
 function registerIpcHandlers() {
+  let restoring = false;
+  let activeOperations = 0;
+  const handleData: typeof ipcMain.handle = (channel, listener) => {
+    ipcMain.handle(channel, async (...args) => {
+      if (restoring)
+        throw new Error("Hay una restauración en curso. Esperá a que termine.");
+      activeOperations += 1;
+      try {
+        return await listener(...args);
+      } finally {
+        activeOperations -= 1;
+      }
+    });
+  };
   type ForwardedDesktopMethod = Exclude<
     keyof DesktopApi,
     | "printOrder"
@@ -469,9 +502,21 @@ function registerIpcHandlers() {
     "createModifier",
     "listPurchases",
     "createPurchase",
+    "correctPurchaseMetadata",
+    "correctPurchaseItemQuantity",
+    "correctPurchaseItemCost",
     "getFinanceReport",
+    "getFinanceProductCosts",
     "createFinanceExpense",
     "payFinanceExpense",
+    "correctFinanceExpense",
+    "cancelFinanceExpense",
+    "unmarkFinanceExpensePayment",
+    "correctFinanceExpenseCashPayment",
+    "correctFinanceExpenseClosedCashPayment",
+    "correctFinanceMonthlyExpense",
+    "cancelFinanceMonthlyExpense",
+    "receiveFinanceExpenseReturn",
     "createFinanceRecurring",
     "stopFinanceRecurring",
     "setFinanceProductCost",
@@ -498,7 +543,7 @@ function registerIpcHandlers() {
     "getAuditLog",
   ] as const);
   for (const method of methods) {
-    ipcMain.handle(`gastronomy:${method}`, async (_event, payload) => {
+    handleData(`gastronomy:${method}`, async (_event, payload) => {
       const { appService } = services();
       const target = appService[method] as (input?: any) => unknown;
       const idempotentMethods = [
@@ -513,6 +558,17 @@ function registerIpcHandlers() {
         "reverseCashMovement",
         "reverseDeliverySettlement",
         "createPurchase",
+        "correctPurchaseMetadata",
+        "correctPurchaseItemQuantity",
+    "correctPurchaseItemCost",
+        "correctFinanceExpense",
+        "cancelFinanceExpense",
+        "unmarkFinanceExpensePayment",
+        "correctFinanceExpenseCashPayment",
+        "correctFinanceExpenseClosedCashPayment",
+        "correctFinanceMonthlyExpense",
+        "cancelFinanceMonthlyExpense",
+        "receiveFinanceExpenseReturn",
       ];
       if (
         idempotentMethods.includes(method) &&
@@ -524,7 +580,7 @@ function registerIpcHandlers() {
       return target.call(appService, payload);
     });
   }
-  ipcMain.handle(
+  handleData(
     "gastronomy:printOrder",
     async (
       _event,
@@ -535,7 +591,7 @@ function registerIpcHandlers() {
       return executePrintJob(job.jobId, payload.orderId, payload.kind);
     },
   );
-  ipcMain.handle(
+  handleData(
     "gastronomy:printCashSessionReport",
     async (
       _event,
@@ -564,7 +620,7 @@ function registerIpcHandlers() {
       };
     },
   );
-  ipcMain.handle("gastronomy:listPrinters", async () => {
+  handleData("gastronomy:listPrinters", async () => {
     if (!mainWindow)
       throw new Error("La ventana principal no está disponible.");
     const printers = await mainWindow.webContents.getPrintersAsync();
@@ -574,7 +630,7 @@ function registerIpcHandlers() {
       isDefault: Boolean((printer as { isDefault?: boolean }).isDefault),
     }));
   });
-  ipcMain.handle(
+  handleData(
     "gastronomy:testPrinter",
     async (
       _event,
@@ -605,7 +661,7 @@ function registerIpcHandlers() {
       };
     },
   );
-  ipcMain.handle(
+  handleData(
     "gastronomy:retryPrint",
     async (_event, payload: { jobId: string }) => {
       const { appService } = services();
@@ -613,22 +669,25 @@ function registerIpcHandlers() {
       return executePrintJob(job.jobId, job.orderId, job.kind);
     },
   );
-  ipcMain.handle("gastronomy:exportSalesCsv", async (_event, filters?: import("@gastronomy/contracts").ReportFilters) => {
-    const { appService } = services();
-    const result = await dialog.showSaveDialog(mainWindow!, {
-      title: "Exportar ventas",
-      defaultPath: `ventas-${new Date().toISOString().slice(0, 10)}.csv`,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (result.canceled || !result.filePath) return { path: null };
-    await writeFile(
-      result.filePath,
-      `\uFEFF${appService.exportSalesCsv(filters)}`,
-      "utf8",
-    );
-    return { path: result.filePath };
-  });
-  ipcMain.handle("gastronomy:createBackup", async () => {
+  handleData(
+    "gastronomy:exportSalesCsv",
+    async (_event, filters?: import("@gastronomy/contracts").ReportFilters) => {
+      const { appService } = services();
+      const result = await dialog.showSaveDialog(mainWindow!, {
+        title: "Exportar ventas",
+        defaultPath: `ventas-${new Date().toISOString().slice(0, 10)}.csv`,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (result.canceled || !result.filePath) return { path: null };
+      await writeFile(
+        result.filePath,
+        `\uFEFF${appService.exportSalesCsv(filters)}`,
+        "utf8",
+      );
+      return { path: result.filePath };
+    },
+  );
+  handleData("gastronomy:createBackup", async () => {
     const { localRepository } = services();
     const result = await dialog.showSaveDialog(mainWindow!, {
       title: "Crear copia de seguridad",
@@ -636,44 +695,93 @@ function registerIpcHandlers() {
       filters: [{ name: "Copia de seguridad", extensions: ["sqlite"] }],
     });
     if (result.canceled || !result.filePath) return { path: null };
-    await rm(result.filePath, { force: true });
-    await localRepository.backupTo(result.filePath);
-    SqliteGastronomyRepository.validateDatabase(result.filePath);
+    const normalizedPath = (path: string) =>
+      process.platform === "win32"
+        ? resolve(path).toLowerCase()
+        : resolve(path);
+    if (
+      [databasePath, `${databasePath}-wal`, `${databasePath}-shm`].some(
+        (path) => normalizedPath(path) === normalizedPath(result.filePath!),
+      )
+    )
+      throw new Error(
+        "Elegí otro archivo: no se puede usar la base en uso como destino de la copia.",
+      );
+    await createValidatedBackup(result.filePath, {
+      backupTo: (path) => localRepository.backupTo(path),
+      validate: (path) => SqliteGastronomyRepository.validateDatabase(path),
+    });
     return { path: result.filePath };
   });
   ipcMain.handle("gastronomy:restoreBackup", async () => {
-    const selection = await dialog.showOpenDialog(mainWindow!, {
-      title: "Restaurar copia de seguridad",
-      properties: ["openFile"],
-      filters: [{ name: "Copia de seguridad", extensions: ["sqlite", "db"] }],
-    });
-    const source = selection.filePaths[0];
-    if (selection.canceled || !source) return { path: null, restored: false };
-    SqliteGastronomyRepository.validateDatabase(source);
-    const emergency = `${databasePath}.before-restore`;
-    const { localRepository } = services();
-    await rm(emergency, { force: true });
-    await localRepository.backupTo(emergency);
-    localRepository.close();
-    repository = null;
-    application = null;
+    if (restoring)
+      throw new Error("Hay una restauración en curso. Esperá a que termine.");
+    if (activeOperations > 0)
+      throw new Error(
+        "Esperá a que termine la operación actual y volvé a restaurar la copia.",
+      );
+    restoring = true;
     try {
-      await rm(`${databasePath}-wal`, { force: true });
-      await rm(`${databasePath}-shm`, { force: true });
-      await copyFile(source, databasePath);
-      repository = new SqliteGastronomyRepository(databasePath, {
-        seedStarterCatalog: !app.isPackaged,
+      const selection = await dialog.showOpenDialog(mainWindow!, {
+        title: "Restaurar copia de seguridad",
+        properties: ["openFile"],
+        filters: [{ name: "Copia de seguridad", extensions: ["sqlite", "db"] }],
       });
-      application = new GastronomyApplication(repository);
-      await rm(emergency, { force: true });
+      const source = selection.filePaths[0];
+      if (selection.canceled || !source) return { path: null, restored: false };
+      const { localRepository, appService } = services();
+      const cashOpen = appService.bootstrap().cashSession?.status === "OPEN";
+      const result = await restoreValidatedCopy({
+        source,
+        databasePath,
+        backupTo: (path) => localRepository.backupTo(path),
+        validate: (path) => SqliteGastronomyRepository.validateDatabase(path),
+        confirm: async ({ fileName, modifiedAt }) => {
+          const choice = await dialog.showMessageBox(mainWindow!, {
+            type: "warning",
+            title: "Restaurar copia de seguridad",
+            message: "¿Restaurar esta copia?",
+            detail: `Archivo: ${fileName}\nÚltima modificación del archivo: ${modifiedAt.toLocaleString("es-AR")}\n\nSe reemplazará la información actual por los datos de esta copia. No se combinarán. Se guardará una copia de los datos actuales para poder recuperarlos.${cashOpen ? "\n\nHay una caja abierta. También se reemplazarán su estado y sus movimientos por los de la copia elegida." : ""}`,
+            buttons: ["Cancelar", "Restaurar copia"],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+          });
+          return choice.response === 1;
+        },
+        close: () => {
+          repository?.close();
+          repository = null;
+          application = null;
+        },
+        open: () => {
+          repository = new SqliteGastronomyRepository(databasePath, {
+            seedStarterCatalog: !app.isPackaged,
+          });
+          application = new GastronomyApplication(repository);
+        },
+      });
+      if (!result.restored) return { path: null, restored: false };
+      // A failed acknowledgement must not report a completed restoration as failed.
+      try {
+        await dialog.showMessageBox(mainWindow!, {
+          type: "info",
+          title: "Copia restaurada",
+          message: "Los datos de la copia ya están restaurados.",
+          detail: `Los datos anteriores quedaron guardados en:\n${result.recoveryPath}\n\nPodés elegir ese archivo desde Restaurar copia si necesitás recuperarlos.`,
+          buttons: ["Aceptar"],
+          noLink: true,
+        });
+      } catch (error) {
+        console.warn(
+          "No se pudo mostrar la ubicación de la copia previa.",
+          result.recoveryPath,
+          error,
+        );
+      }
       return { path: source, restored: true };
-    } catch (error) {
-      await copyFile(emergency, databasePath);
-      repository = new SqliteGastronomyRepository(databasePath, {
-        seedStarterCatalog: !app.isPackaged,
-      });
-      application = new GastronomyApplication(repository);
-      throw error;
+    } finally {
+      restoring = false;
     }
   });
 }
@@ -693,9 +801,12 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      backgroundThrottling: backgroundE2e ? false : undefined,
     },
   });
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
+  mainWindow.once("ready-to-show", () => {
+    if (!backgroundE2e) mainWindow?.show();
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -723,6 +834,12 @@ app.on("before-quit", () => {
 app
   .whenReady()
   .then(async () => {
+    backgroundE2e = isBackgroundTest({
+      flag: process.env.GASTRONOMY_E2E_BACKGROUND,
+      isPackaged: app.isPackaged,
+      userDataPath: app.getPath("userData"),
+      tempRoot: tmpdir(),
+    });
     if (!app.requestSingleInstanceLock()) {
       app.quit();
       return;

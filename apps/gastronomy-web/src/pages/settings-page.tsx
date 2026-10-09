@@ -67,7 +67,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
     >
       <div>
         <h2 className="text-lg font-extrabold">Configuración de Gastronomía</h2>
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-slate-600">
           Adaptá la operación sin perder información histórica
         </p>
       </div>
@@ -92,7 +92,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                   .getElementById(id)
                   ?.scrollIntoView({ behavior: "smooth", block: "start" })
               }
-              className="focus-ring rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-slate-500 hover:bg-brand-50 hover:text-brand-700"
+              className="focus-ring rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-brand-50 hover:text-brand-700"
             >
               {label}
             </button>
@@ -103,7 +103,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             <p
               role="status"
               aria-live="polite"
-              className="w-full max-w-[520px] break-words rounded-lg bg-sky-50 px-3 py-2 text-[11px] font-semibold text-sky-800 sm:w-auto sm:truncate"
+              className="w-full max-w-[520px] break-words rounded-lg bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800 sm:w-auto sm:truncate"
               title={message}
             >
               {message}
@@ -147,7 +147,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                 value={settings.maxConcurrentCashSessions}
                 disabled
               />
-              <p className="text-[11px] leading-5 text-slate-500">
+              <p className="text-xs leading-5 text-slate-600">
                 La operación actual admite una caja abierta a la vez.
               </p>
             </Field>
@@ -193,7 +193,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                   <p className="text-xs font-semibold text-slate-700">
                     {label}
                   </p>
-                  <p className="text-[10px] text-slate-400">
+                  <p className="text-xs text-slate-600">
                     {settings.modules[key]
                       ? "Visible y operativo"
                       : "Oculto; datos preservados"}
@@ -265,7 +265,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             <span className="block">
               El cobro del envío corresponde al repartidor
             </span>
-            <span className="mt-1 block font-normal text-slate-500">
+            <span className="mt-1 block font-normal text-slate-600">
               Desactivado: el negocio conserva el cobro del envío. Activado: se
               registra en la cuenta del repartidor, permite pagarle desde
               Repartidores y los pagos afectan el cierre de caja. Activarlo
@@ -280,7 +280,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             <label className="text-xs font-bold text-slate-800">
               Modalidad de pago a repartidores
             </label>
-            <p className="text-[11px] text-slate-500">
+            <p className="text-xs text-slate-600">
               Elegí si los envíos se abonan en el momento del cobro o se
               acumulan para su rendición en lote:
             </p>
@@ -314,7 +314,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                   <span className="font-bold block">
                     Acumular en Repartidores
                   </span>
-                  <span className="text-[11px] text-slate-500">
+                  <span className="text-xs text-slate-600">
                     Los envíos quedan en la cuenta del repartidor para
                     liquidarse en lote al final del turno.
                   </span>
@@ -347,7 +347,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                   <span className="font-bold block">
                     Pagar al cobrar pedido
                   </span>
-                  <span className="text-[11px] text-slate-500">
+                  <span className="text-xs text-slate-600">
                     Al cobrar o entregar, se preselecciona pagar el envío y se
                     registra el egreso de caja en el momento.
                   </span>
@@ -472,7 +472,7 @@ function PrintingSettingsCard({
             testing={test.isPending}
           />
         </div>
-        <p className="text-[10px] leading-5 text-slate-500">
+        <p className="text-xs leading-5 text-slate-600">
           El corte depende de la impresora y su controlador. El perfil conserva
           las opciones de corte y avance para la integración térmica.
         </p>
@@ -512,7 +512,7 @@ function PrintTextSettingsCard({
           <h4 className="text-xs font-extrabold text-slate-800">
             Comanda de cocina
           </h4>
-          <p className="mt-0.5 text-[10px] text-slate-400">
+          <p className="mt-0.5 text-xs text-slate-600">
             Personalizá el inicio y el cierre que recibe cocina.
           </p>
           <div className="mt-3 grid gap-3">
@@ -546,7 +546,7 @@ function PrintTextSettingsCard({
           <h4 className="text-xs font-extrabold text-slate-800">
             Cuenta del cliente
           </h4>
-          <p className="mt-0.5 text-[10px] text-slate-400">
+          <p className="mt-0.5 text-xs text-slate-600">
             Personalizá el encabezado, subtítulo y pie del comprobante.
           </p>
           <div className="mt-3 grid gap-3">
@@ -607,7 +607,7 @@ function PrintTextSettingsCard({
         ).map(([key, label]) => (
           <label
             key={key}
-            className="flex items-center gap-2 rounded-lg border border-slate-100 bg-white px-3 py-2 text-[11px] font-semibold text-slate-600"
+            className="flex items-center gap-2 rounded-lg border border-slate-100 bg-white px-3 py-2 text-xs font-semibold text-slate-600"
           >
             <input
               type="checkbox"
@@ -621,7 +621,7 @@ function PrintTextSettingsCard({
           </label>
         ))}
       </div>
-      <p className="mt-3 rounded-lg bg-slate-50 p-2 text-[10px] text-slate-500">
+      <p className="mt-3 rounded-lg bg-slate-50 p-2 text-xs text-slate-600">
         La hora operativa se imprime como <strong>Hora de entrega</strong> tanto
         en la comanda como en la cuenta.
       </p>
@@ -658,7 +658,7 @@ function PrinterProfileEditor({
       <div className="flex items-center justify-between gap-2">
         <div>
           <h4 className="text-xs font-extrabold text-slate-800">{title}</h4>
-          <p className="text-[10px] text-slate-400">{profile.profileName}</p>
+          <p className="text-xs text-slate-600">{profile.profileName}</p>
         </div>
         <Button
           variant="secondary"
@@ -755,7 +755,7 @@ function PrinterProfileEditor({
         </Field>
       </div>
       <div className="mt-3 grid items-start gap-2 sm:grid-cols-3">
-        <label className="mt-[1.625rem] flex min-h-10 items-center gap-2 rounded-lg bg-white px-3 py-2 text-[11px] font-semibold text-slate-600">
+        <label className="mt-[1.625rem] flex min-h-10 items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-600">
           <input
             type="checkbox"
             checked={profile.cutter}
@@ -812,7 +812,7 @@ function SectionTitle({
       </div>
       <div>
         <h3 className="text-sm font-bold">{title}</h3>
-        <p className="text-[10px] text-slate-400">{detail}</p>
+        <p className="text-xs text-slate-600">{detail}</p>
       </div>
     </div>
   );

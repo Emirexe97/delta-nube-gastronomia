@@ -12,6 +12,7 @@ import {
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { humanError } from "../lib";
+import { describeUserPermissions } from "./user-permissions";
 
 const roles = [
   ["ADMIN", "Administrador"],
@@ -37,7 +38,7 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-extrabold">Usuarios y permisos</h2>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-slate-600">
             Asigná roles y un número para identificar al personal en salón
           </p>
         </div>
@@ -75,8 +76,8 @@ export function UsersPage({ data }: { data: BootstrapDto }) {
                   </Badge>
                 </td>
                 <td>
-                  <span className="text-xs font-semibold">
-                    {user.permissions.length}
+                  <span className="block max-w-sm whitespace-normal text-xs font-semibold leading-5">
+                    {describeUserPermissions(user.permissions)}
                   </span>
                 </td>
                 <td>

@@ -158,7 +158,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
           <h2 className="text-lg font-extrabold tracking-tight">
             Para retirar y envíos
           </h2>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-slate-600">
             Consultá los pedidos para retirar y los envíos.
           </p>
         </div>
@@ -214,12 +214,13 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
             ).map(([value, label]) => (
               <button
                 key={value}
+                aria-pressed={filter === value}
                 onClick={() => setFilter(value)}
                 className={cn(
-                  "h-9 shrink-0 whitespace-nowrap rounded-lg px-3 text-[11px] font-bold transition",
+                  "h-9 shrink-0 whitespace-nowrap rounded-lg px-3 text-xs font-bold transition",
                   filter === value
-                    ? "bg-brand-600 text-white"
-                    : "bg-slate-100 text-slate-500 hover:bg-slate-200",
+                    ? "bg-brand-700 text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200",
                 )}
               >
                 {label}
@@ -263,7 +264,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
                       <span className="text-sm font-extrabold text-slate-950">
                         #{order.number}
                       </span>
-                      <p className="text-[9px] text-slate-400">
+                      <p className="text-xs text-slate-600">
                         {formatTime(order.createdAt)}
                       </p>
                     </td>
@@ -286,7 +287,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
                           order.customerPhoneSnapshot ||
                           `Pedido #${order.number}`}
                       </p>
-                      <p className="max-w-[260px] truncate text-[10px] text-slate-400">
+                      <p className="max-w-[260px] truncate text-xs text-slate-600">
                         {order.deliveryAddressSnapshot ||
                           order.customerPhoneSnapshot ||
                           "Sin observaciones"}
@@ -349,7 +350,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
             <div className="grid h-64 place-items-center text-center">
               <div>
                 <ShoppingBag size={36} className="mx-auto text-slate-300" />
-                <p className="mt-2 text-sm font-semibold text-slate-500">
+                <p className="mt-2 text-sm font-semibold text-slate-600">
                   No hay pedidos para este filtro
                 </p>
                 <Button
@@ -758,14 +759,13 @@ function NewOrderModal({
             <option value="TAKEAWAY">Para retirar</option>
             <option value="DELIVERY">Envío</option>
           </Select>
-          <p className="mt-1 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-slate-600">
             Cambiar la modalidad conserva los datos ingresados y la fecha/hora.
           </p>
         </Field>
         {!editingOrder ? (
-          <div className="text-xs text-slate-500">
-            Podés comenzar por los productos; cliente y dirección (si es envío)
-            serán obligatorios al confirmar.
+          <div className="text-xs text-slate-600">
+            Podés comenzar por los productos y completar estos datos al confirmar.
           </div>
         ) : null}
         <OrderCustomerSelector
@@ -795,7 +795,7 @@ function NewOrderModal({
               {!feeValid ? (
                 <span
                   role="alert"
-                  className="text-xs font-medium text-rose-600"
+                  className="text-xs font-medium text-rose-700"
                 >
                   Ingresá un costo válido (vacío equivale a 0).
                 </span>
@@ -827,8 +827,8 @@ function NewOrderModal({
               className={cn(
                 "h-9 rounded-lg text-xs font-bold",
                 scheduleMode === "QUICK"
-                  ? "bg-brand-600 text-white"
-                  : "bg-slate-100 text-slate-500",
+                  ? "bg-brand-700 text-white"
+                  : "bg-slate-100 text-slate-600",
               )}
             >
               Demora rápida
@@ -842,8 +842,8 @@ function NewOrderModal({
               className={cn(
                 "h-9 rounded-lg text-xs font-bold",
                 scheduleMode === "SCHEDULED"
-                  ? "bg-brand-600 text-white"
-                  : "bg-slate-100 text-slate-500",
+                  ? "bg-brand-700 text-white"
+                  : "bg-slate-100 text-slate-600",
               )}
             >
               Fecha y hora
@@ -863,8 +863,8 @@ function NewOrderModal({
                     className={cn(
                       "h-9 rounded-lg px-3 text-xs font-bold",
                       Number(delay) === minutes
-                        ? "bg-brand-600 text-white"
-                        : "bg-slate-100 text-slate-500",
+                        ? "bg-brand-700 text-white"
+                        : "bg-slate-100 text-slate-600",
                     )}
                   >
                     {minutes} min
@@ -890,7 +890,7 @@ function NewOrderModal({
                   : "—"}
               </p>
               {!scheduledValid ? (
-                <p role="alert" className="text-xs font-medium text-rose-600">
+                <p role="alert" className="text-xs font-medium text-rose-700">
                   Ingresá una demora entera y positiva válida.
                 </p>
               ) : null}
@@ -910,7 +910,7 @@ function NewOrderModal({
               <p
                 className={cn(
                   "mt-1 text-xs font-bold",
-                  scheduledValid ? "text-brand-700" : "text-rose-600",
+                  scheduledValid ? "text-brand-700" : "text-rose-700",
                 )}
               >
                 {scheduledValid

@@ -17,8 +17,7 @@ const api: DesktopApi = {
   confirmOrder: (input) => invoke("confirmOrder", input),
   discardDraftOrder: (input) => invoke("discardDraftOrder", input),
   addOrderItem: (input) => invoke("addOrderItem", input),
-  updateOrderItemQuantity: (input) =>
-    invoke("updateOrderItemQuantity", input),
+  updateOrderItemQuantity: (input) => invoke("updateOrderItemQuantity", input),
   updateOrderItemNotes: (input) => invoke("updateOrderItemNotes", input),
   addHalfAndHalfItem: (input) => invoke("addHalfAndHalfItem", input),
   removeOrderItem: (input) => invoke("removeOrderItem", input),
@@ -54,9 +53,27 @@ const api: DesktopApi = {
   createModifier: (input) => invoke("createModifier", input),
   listPurchases: () => invoke("listPurchases"),
   createPurchase: (input) => invoke("createPurchase", input),
+  correctPurchaseMetadata: (input) => invoke("correctPurchaseMetadata", input),
+  correctPurchaseItemQuantity: (input) => invoke("correctPurchaseItemQuantity", input),
+  correctPurchaseItemCost: (input) => invoke("correctPurchaseItemCost", input),
   getFinanceReport: (input) => invoke("getFinanceReport", input),
+  getFinanceProductCosts: () => invoke("getFinanceProductCosts"),
   createFinanceExpense: (input) => invoke("createFinanceExpense", input),
   payFinanceExpense: (input) => invoke("payFinanceExpense", input),
+  correctFinanceExpense: (input) => invoke("correctFinanceExpense", input),
+  cancelFinanceExpense: (input) => invoke("cancelFinanceExpense", input),
+  unmarkFinanceExpensePayment: (input) =>
+    invoke("unmarkFinanceExpensePayment", input),
+  correctFinanceMonthlyExpense: (input) =>
+    invoke("correctFinanceMonthlyExpense", input),
+  cancelFinanceMonthlyExpense: (input) =>
+    invoke("cancelFinanceMonthlyExpense", input),
+  correctFinanceExpenseClosedCashPayment: (input) =>
+    invoke("correctFinanceExpenseClosedCashPayment", input),
+  correctFinanceExpenseCashPayment: (input) =>
+    invoke("correctFinanceExpenseCashPayment", input),
+  receiveFinanceExpenseReturn: (input) =>
+    invoke("receiveFinanceExpenseReturn", input),
   createFinanceRecurring: (input) => invoke("createFinanceRecurring", input),
   stopFinanceRecurring: (input) => invoke("stopFinanceRecurring", input),
   setFinanceProductCost: (input) => invoke("setFinanceProductCost", input),

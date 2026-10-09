@@ -73,16 +73,28 @@ export function OrderCustomerSelector(props: Props) {
   );
 
   useEffect(() => {
-    if (!props.open) return;
+    // A modality change resets transient search state, not customer identity.
+    searchRequestRef.current += 1;
+    hydrationRequestRef.current += 1;
     setQuery("");
     setSuggestions([]);
     setActiveIndex(0);
     setListOpen(false);
     setSearching(false);
     setCreateOpen(false);
-    setSelectedCustomer(null);
     setSearchError(null);
+    searchFocusedRef.current =
+      document.activeElement === searchInputRef.current;
   }, [props.open, props.type]);
+
+  useEffect(() => {
+    if (
+      !props.open ||
+      !props.customerId ||
+      (selectedCustomer && selectedCustomer.id !== props.customerId)
+    )
+      setSelectedCustomer(null);
+  }, [props.open, props.customerId, selectedCustomer]);
 
   useEffect(() => {
     if (!props.open || !props.customerId || !props.phone.trim()) return;
@@ -106,11 +118,14 @@ export function OrderCustomerSelector(props: Props) {
         );
       }
       setQuery("");
+    }).catch(() => {
+      if (request === hydrationRequestRef.current)
+        setSearchError("No se pudo recuperar la ficha del cliente. Volvé a buscar al cliente para reintentar.");
     });
     return () => {
       hydrationRequestRef.current += 1;
     };
-  }, [props.open, props.customerId, props.phone]);
+  }, [props.open, props.type, props.customerId, props.phone]);
 
   const searchCustomers = useCallback(
     async (value: string) => {
@@ -196,10 +211,7 @@ export function OrderCustomerSelector(props: Props) {
     <section className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
       <div className="flex flex-wrap items-end gap-2">
         <div className="min-w-[240px] flex-1">
-          <Field
-            label="Buscar cliente"
-            hint="Escribí nombre o teléfono. La búsqueda comienza después de 0,1 segundos."
-          >
+          <Field label="Buscar cliente">
             <div className="relative">
               <MagnifyingGlass
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
@@ -207,6 +219,7 @@ export function OrderCustomerSelector(props: Props) {
               />
               <Input
                 ref={searchInputRef}
+                aria-describedby="order-customer-search-hint"
                 autoFocus
                 value={query}
                 onChange={(event) => {
@@ -317,7 +330,7 @@ export function OrderCustomerSelector(props: Props) {
                       )}
                     >
                       <strong className="block text-xs">{customer.name}</strong>
-                      <span className="text-[10px] text-slate-500">
+                      <span className="text-xs text-slate-600">
                         {customer.phone}
                         {customer.addresses[0]?.address
                           ? ` · ${customer.addresses[0].address}`
@@ -333,7 +346,7 @@ export function OrderCustomerSelector(props: Props) {
               !searching &&
               !selectedCustomer &&
               !suggestions.length ? (
-                <div className="absolute inset-x-0 top-[calc(100%+4px)] z-40 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-500 shadow-lg">
+                <div className="absolute inset-x-0 top-[calc(100%+4px)] z-40 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-lg">
                   No encontramos coincidencias. Podés crear el cliente sin salir
                   del pedido.
                 </div>
@@ -356,13 +369,16 @@ export function OrderCustomerSelector(props: Props) {
           {props.customerId ? "Cliente ya vinculado" : "Crear cliente"}
         </Button>
       </div>
+      <p id="order-customer-search-hint" className="text-xs text-slate-600">
+        Escribí nombre o teléfono para buscar un cliente.
+      </p>
       {waiting || searching ? (
-        <p className="text-[10px] font-semibold text-brand-700">
+        <p className="text-xs font-semibold text-brand-700">
             Buscando clientes…
         </p>
       ) : null}
       {props.customerId ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-[10px] font-bold text-emerald-800">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-xs font-bold text-emerald-800">
           <span className="flex items-center gap-1">
             <AddressBook size={14} />
             {selectedCustomer?.name ?? "Cliente"} seleccionado
@@ -456,10 +472,8 @@ export function OrderCustomerSelector(props: Props) {
           </Select>
         </Field>
       ) : null}
-      <p className="text-[10px] font-semibold text-slate-500">
-        {props.type === "DELIVERY"
-          ? "* Nombre, teléfono y dirección son obligatorios para continuar."
-          : "* Nombre y teléfono son obligatorios. La dirección es opcional para retirar."}
+      <p className="text-xs font-semibold text-slate-600">
+        * Campos obligatorios.
       </p>
       {props.customerId &&
       selectedCustomer &&
@@ -468,7 +482,7 @@ export function OrderCustomerSelector(props: Props) {
         !selectedCustomer.addresses.some(
           (item) => item.address === props.address.trim(),
         )) ? (
-        <p className="rounded-lg border border-sky-200 bg-sky-50 p-2 text-[10px] font-semibold text-sky-800">
+        <p className="rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs font-semibold text-sky-800">
           Los cambios se aplican sólo a este pedido.
         </p>
       ) : null}

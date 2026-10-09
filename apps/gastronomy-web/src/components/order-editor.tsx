@@ -691,10 +691,10 @@ export function OrderEditor({
             <button
               onClick={() => setCategoryId(null)}
               className={cn(
-                "min-h-10 whitespace-nowrap rounded-lg px-3 py-1.5 text-[11px] font-bold",
+                "min-h-10 whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-bold",
                 !categoryId
-                  ? "bg-brand-600 text-white"
-                  : "bg-white text-slate-500",
+                  ? "bg-brand-700 text-white"
+                  : "bg-white text-slate-600",
               )}
             >
               Todos
@@ -706,10 +706,10 @@ export function OrderEditor({
                   key={category.id}
                   onClick={() => setCategoryId(category.id)}
                   className={cn(
-                    "min-h-10 whitespace-nowrap rounded-lg border px-3 py-1.5 text-[11px] font-semibold",
+                    "min-h-10 whitespace-nowrap rounded-lg border px-3 py-1.5 text-xs font-semibold",
                     categoryId === category.id
                       ? "border-brand-600 bg-brand-50 text-brand-700"
-                      : "border-slate-200 bg-white text-slate-500 hover:border-brand-200 hover:text-brand-700",
+                      : "border-slate-200 bg-white text-slate-600 hover:border-brand-200 hover:text-brand-700",
                   )}
                 >
                   {category.name}
@@ -745,16 +745,16 @@ export function OrderEditor({
                         Pizza mitad y mitad
                       </p>
                     </div>
-                    <span className="inline-flex shrink-0 items-center rounded bg-brand-200/80 px-1.5 py-0.5 text-[9px] font-bold text-brand-800">
+                    <span className="inline-flex shrink-0 items-center rounded bg-brand-200/80 px-1.5 py-0.5 text-xs font-bold text-brand-800">
                       F6
                     </span>
                   </div>
-                  <span className="text-[9px] font-semibold uppercase tracking-wide text-brand-600/80">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-brand-700">
                     Pizzas combinadas
                   </span>
                 </div>
                 <div className="mt-2 flex items-center justify-between">
-                  <span className="text-[10px] font-medium text-slate-500">
+                  <span className="text-xs font-medium text-slate-600">
                     Elegir 2 variedades
                   </span>
                   <span className="text-xs font-bold text-brand-700">
@@ -808,12 +808,12 @@ export function OrderEditor({
                         {product.name}
                       </p>
                       {hasVariants ? (
-                        <span className="inline-flex shrink-0 items-center rounded bg-brand-50 px-1.5 py-0.5 text-[9px] font-bold text-brand-700">
+                        <span className="inline-flex shrink-0 items-center rounded bg-brand-50 px-1.5 py-0.5 text-xs font-bold text-brand-700">
                           {variants.length + 1} opciones
                         </span>
                       ) : null}
                     </div>
-                    <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                       {product.categoryName}
                     </span>
                   </div>
@@ -832,7 +832,7 @@ export function OrderEditor({
                             openProduct(product);
                           }}
                           title={`Agregar ${product.name} (Base) - ${formatMoney(price)}`}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800"
+                          className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-xs font-bold text-slate-700 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800"
                         >
                           <span>Base</span>
                           <span className="text-brand-700">
@@ -855,7 +855,7 @@ export function OrderEditor({
                               openProduct(v);
                             }}
                             title={`Agregar ${v.name} - ${vPrice == null ? "Sin precio" : formatMoney(vPrice)}`}
-                            className="inline-flex items-center gap-1 rounded-md border border-brand-200 bg-brand-50/70 px-1.5 py-0.5 text-[10px] font-bold text-brand-800 transition hover:border-brand-400 hover:bg-brand-100"
+                            className="inline-flex items-center gap-1 rounded-md border border-brand-200 bg-brand-50/70 px-1.5 py-0.5 text-xs font-bold text-brand-800 transition hover:border-brand-400 hover:bg-brand-100"
                           >
                             <span>{vLabel}</span>
                             <span className="text-brand-700">
@@ -867,7 +867,7 @@ export function OrderEditor({
                     </div>
                   ) : (
                     <div className="mt-2 flex items-center justify-between">
-                      <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                         {product.code ? `#${product.code}` : ""}
                       </span>
                       <span className="text-xs font-extrabold text-brand-700">
@@ -886,7 +886,7 @@ export function OrderEditor({
             disabled={locked || data.products.length < 2}
           >
             <Pizza size={17} /> Pizza mitad y mitad{" "}
-            <kbd className="text-[9px] opacity-70">F6</kbd>
+            <kbd className="text-xs">F6</kbd>
           </Button>
         </section>
         <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-white">
@@ -906,12 +906,12 @@ export function OrderEditor({
                   {isDraft ? "Borrador" : statusLabels[order.operationalStatus]}
                 </Badge>
               </div>
-              <p className="mt-1 text-[10px] text-slate-400">
+              <p className="mt-1 text-xs text-slate-600">
                 {order.items.length} línea(s) · Guardado
               </p>
             </div>
             <div className="flex flex-col items-end gap-1">
-              <span className="text-xs font-bold text-slate-400">
+              <span className="text-xs font-bold text-slate-600">
                 {paymentStatusLabels[order.paymentStatus]}
               </span>
               {order.type === "DELIVERY" && !locked ? (
@@ -922,7 +922,7 @@ export function OrderEditor({
                     setDriverError(null);
                     setDriverOpen(true);
                   }}
-                  className="inline-flex items-center gap-1 text-[10px] font-bold text-brand-700 hover:underline"
+                  className="inline-flex items-center gap-1 text-xs font-bold text-brand-700 hover:underline"
                 >
                   <Motorcycle size={12} />
                   {order.driverName ?? "Asignar repartidor"}
@@ -1011,7 +1011,7 @@ export function OrderEditor({
                         {item.halves.map((half) => (
                           <p
                             key={half.position}
-                            className="ml-2 mt-0.5 text-[10px] font-semibold text-slate-500"
+                            className="ml-2 mt-0.5 text-xs font-semibold text-slate-600"
                           >
                             ½ {half.nameSnapshot}
                           </p>
@@ -1026,7 +1026,7 @@ export function OrderEditor({
                                 modifierId: modifier.id,
                               })
                             }
-                            className="ml-2 mt-0.5 block text-left text-[10px] font-semibold text-brand-700 hover:text-rose-600"
+                            className="ml-2 mt-0.5 block text-left text-xs font-semibold text-brand-700 hover:text-rose-700"
                           >
                             + {modifier.nameSnapshot} ·{" "}
                             {modifier.scope === "FULL_PIZZA"
@@ -1039,7 +1039,7 @@ export function OrderEditor({
                           </button>
                         ))}
                         {item.notes ? (
-                          <p className="ml-2 mt-0.5 text-[10px] text-amber-700">
+                          <p className="ml-2 mt-0.5 text-xs text-amber-800">
                             {item.notes}
                           </p>
                         ) : null}
@@ -1051,7 +1051,7 @@ export function OrderEditor({
                                 setNotesError(null);
                                 setNotesItemId(item.id);
                               }}
-                              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold text-brand-600 hover:bg-brand-50 hover:text-brand-800 transition"
+                              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-bold text-brand-700 hover:bg-brand-50 hover:text-brand-800 transition"
                               aria-label={`${item.notes ? "Editar" : "Agregar"} observación para ${item.productNameSnapshot}`}
                             >
                               <Plus size={10} weight="bold" />
@@ -1063,7 +1063,7 @@ export function OrderEditor({
                               <button
                                 type="button"
                                 onClick={() => setModifierItemId(item.id)}
-                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold text-brand-600 hover:bg-brand-50 hover:text-brand-800 transition"
+                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-bold text-brand-700 hover:bg-brand-50 hover:text-brand-800 transition"
                               >
                                 <Plus size={10} weight="bold" />
                                 Agregar extra
@@ -1108,10 +1108,10 @@ export function OrderEditor({
               <div className="grid h-full min-h-40 place-items-center text-center">
                 <div>
                   <CookingPot className="mx-auto text-slate-300" size={34} />
-                  <p className="mt-2 text-xs font-semibold text-slate-500">
+                  <p className="mt-2 text-xs font-semibold text-slate-600">
                     Agregá productos al pedido
                   </p>
-                  <p className="text-[10px] text-slate-400">
+                  <p className="text-xs text-slate-600">
                     Escribí para buscar · Enter selecciona
                   </p>
                 </div>
@@ -1119,7 +1119,7 @@ export function OrderEditor({
             )}
           </div>
           {pendingPrint ? (
-            <div className="mx-3 mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
+            <div className="mx-3 mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
               <div className="flex items-start justify-between gap-2">
                 <span>
                   <b>Impresión pendiente:</b>{" "}
@@ -1147,7 +1147,7 @@ export function OrderEditor({
             </div>
           ) : null}
           {error ? (
-            <div className="mx-3 mb-2 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-2 text-[11px] text-rose-700">
+            <div className="mx-3 mb-2 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">
               <X className="mt-0.5 shrink-0" />
               {error}
             </div>
@@ -1156,7 +1156,7 @@ export function OrderEditor({
             <div
               role="status"
               aria-live="polite"
-              className="mx-3 mb-2 rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-[11px] text-emerald-800"
+              className="mx-3 mb-2 rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800"
             >
               {printFeedback}
             </div>
@@ -1164,19 +1164,19 @@ export function OrderEditor({
           <footer className="border-t border-slate-100 p-3">
             <div className="mb-3 flex items-end justify-between">
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                   Total
                 </p>
                 {order.discountMinor > 0 ? (
-                  <p className="text-[10px] font-bold text-emerald-600">
+                  <p className="text-xs font-bold text-emerald-700">
                     Descuento −{formatMoney(order.discountMinor)}
                   </p>
                 ) : null}
                 {order.depositMinor > 0 ? (
-                  <p className="text-[10px] font-bold text-indigo-600">
+                  <p className="text-xs font-bold text-indigo-700">
                     Seña −{formatMoney(order.depositMinor)}
                     {order.depositNotes ? (
-                      <span className="ml-1 font-normal text-slate-500">
+                      <span className="ml-1 font-normal text-slate-600">
                         ({order.depositNotes})
                       </span>
                     ) : null}
@@ -1186,7 +1186,7 @@ export function OrderEditor({
                   {formatMoney(order.totalMinor)}
                 </p>
               </div>
-              <p className="text-right text-[10px] text-slate-400">
+              <p className="text-right text-xs text-slate-600">
                 Pagado {formatMoney(order.paidMinor)}
                 <br />
                 Saldo{" "}
@@ -1196,7 +1196,7 @@ export function OrderEditor({
             {order.payments.length ? (
               <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5">
                 <div className="mb-1.5 flex items-center justify-between">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-600">
                     Pagos registrados
                   </p>
                   {order.payments.some(
@@ -1205,7 +1205,7 @@ export function OrderEditor({
                     <button
                       type="button"
                       onClick={() => setRefundOpen(true)}
-                      className="inline-flex items-center gap-1 text-[10px] font-bold text-brand-700 hover:text-brand-900"
+                      className="inline-flex items-center gap-1 text-xs font-bold text-brand-700 hover:text-brand-900"
                     >
                       <ArrowCounterClockwise size={12} />
                       Devolver pago
@@ -1216,21 +1216,21 @@ export function OrderEditor({
                   {order.payments.map((payment) => (
                     <div
                       key={payment.id}
-                      className="flex items-center justify-between gap-2 text-[11px]"
+                      className="flex items-center justify-between gap-2 text-xs"
                     >
                       <span className="text-slate-600">
                         {payment.methodName}
                         {payment.reference ? (
-                          <span className="ml-1 text-slate-400">
+                          <span className="ml-1 text-slate-600">
                             · Ref. {payment.reference}
                           </span>
                         ) : null}
                         {payment.status === "REFUNDED" ? (
-                          <strong className="ml-1.5 text-rose-600">
+                          <strong className="ml-1.5 text-rose-700">
                             · Devuelto
                           </strong>
                         ) : payment.refundedMinor > 0 ? (
-                          <strong className="ml-1.5 text-amber-600">
+                          <strong className="ml-1.5 text-amber-800">
                             · Devolución parcial
                           </strong>
                         ) : null}
@@ -1239,7 +1239,7 @@ export function OrderEditor({
                         {formatMoney(payment.amountMinor)}
                         {payment.refundedMinor > 0 &&
                         payment.refundableMinor > 0 ? (
-                          <small className="block text-[9px] font-semibold text-amber-600">
+                          <small className="block text-xs font-semibold text-amber-800">
                             Saldo {formatMoney(payment.refundableMinor)}
                           </small>
                         ) : null}
@@ -1269,7 +1269,7 @@ export function OrderEditor({
                       : printedKinds.has("KITCHEN_ORDER")
                         ? "Reimprimir comanda"
                         : "Comanda"}{" "}
-                <kbd className="text-[9px] opacity-70">F7</kbd>
+                <kbd className="text-xs">F7</kbd>
               </Button>
               <Button
                 variant="secondary"
@@ -1303,7 +1303,7 @@ export function OrderEditor({
                 }
               >
                 <CreditCard size={16} /> Cobrar{" "}
-                <kbd className="text-[9px] opacity-70">F8</kbd>
+                <kbd className="text-xs">F8</kbd>
               </Button>
               <Button
                 variant="secondary"
@@ -1383,6 +1383,9 @@ export function OrderEditor({
                   <Trash size={16} />
                   Descartar borrador
                 </Button>
+                {!canConfirm.allowed && canConfirm.reason ? (
+                  <p className="col-span-2 text-xs text-slate-600" role="status">{canConfirm.reason}</p>
+                ) : null}
               </div>
             ) : null}
             {!locked &&
@@ -1434,7 +1437,7 @@ export function OrderEditor({
             {!locked && !isDraft ? (
               <button
                 onClick={() => setCancelOpen(true)}
-                className="mt-2 w-full py-1.5 text-[10px] font-bold text-rose-500 hover:text-rose-700"
+                className="mt-2 w-full py-1.5 text-xs font-bold text-rose-700 hover:text-rose-700"
               >
                 Cancelar pedido
               </button>
@@ -1453,7 +1456,7 @@ export function OrderEditor({
         title={
           addingProduct ? `Agregar · ${addingProduct.name}` : "Agregar producto"
         }
-        description="Confirmá cantidad y precio antes de incorporarlo a la mesa"
+        description="Confirmá cantidad y precio antes de incorporarlo al pedido"
       >
         <form
           className="grid gap-4"
@@ -1889,12 +1892,12 @@ function ItemNotesModal({
           />
         </Field>
         <div className="-mt-1 space-y-1">
-          <p id="item-notes-helper" className="text-[11px] text-slate-500">
+          <p id="item-notes-helper" className="text-xs text-slate-600">
             Sólo se imprime en la comanda; no aparece en la cuenta del cliente.
           </p>
           <p
             id="item-notes-counter"
-            className="text-right text-[10px] text-slate-400"
+            className="text-right text-xs text-slate-600"
           >
             {notes.length}/500
           </p>
@@ -2241,7 +2244,7 @@ function ModifierModal({
           });
         }}
       >
-        <Field label="Extra">
+        <Field label="Modificador">
           <Select
             value={modifierId}
             onChange={(event) => {
@@ -2709,7 +2712,7 @@ export function PizzaHalfSelector({
                 {selectedProduct.name}
               </span>
               {selectedProduct.code ? (
-                <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-600">
+                <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-xs font-bold text-slate-600">
                   {selectedProduct.code}
                 </span>
               ) : null}
@@ -2718,7 +2721,7 @@ export function PizzaHalfSelector({
               <span className="font-bold text-brand-700">
                 {price != null ? formatMoney(price) : "Sin precio"}
               </span>
-              <span className="text-[10px] text-slate-400">
+              <span className="text-xs text-slate-600">
                 {selectedProduct.categoryName}
               </span>
             </div>
@@ -2892,12 +2895,12 @@ export function PizzaHalfSelector({
                       <div className="flex items-center gap-1.5">
                         <span className="truncate">{product.name}</span>
                         {product.code ? (
-                          <span className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[9px] text-slate-500">
+                          <span className="rounded bg-slate-100 px-1 py-0.5 font-mono text-xs text-slate-600">
                             {product.code}
                           </span>
                         ) : null}
                       </div>
-                      <span className="block truncate text-[10px] text-slate-400">
+                      <span className="block truncate text-xs text-slate-600">
                         {product.categoryName}
                       </span>
                     </div>
@@ -2908,7 +2911,7 @@ export function PizzaHalfSelector({
                 );
               })
             ) : (
-              <div className="p-3 text-center text-xs text-slate-500">
+              <div className="p-3 text-center text-xs text-slate-600">
                 No encontramos variedades con &ldquo;{query}&rdquo;
               </div>
             )}
@@ -3069,10 +3072,10 @@ function HalfAndHalfModal({
         {estimatedPrice != null ? (
           <div className="flex items-center justify-between rounded-xl border border-brand-200 bg-brand-50/70 p-3">
             <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700">
+              <span className="text-xs font-bold uppercase tracking-wider text-brand-700">
                 Precio final calculado
               </span>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-xs text-slate-600">
                 {data.settings.halfAndHalfPricingMode === "MOST_EXPENSIVE"
                   ? "Se cobra la variedad más cara"
                   : "Promedio (50% de cada mitad)"}
@@ -3270,7 +3273,16 @@ function PaymentModal({
     deliveryFeeBelongsToDriver &&
     order.deliveryFeeMinor > 0;
 
+  const deliveryCashTotal = payments.filter((payment) => payment.methodCode === "CASH").reduce((sum, payment) => sum + payment.amountMinor, 0);
+  const deliveryPrepaidTotal = payments.filter((payment) => payment.methodCode !== "CASH" && payment.methodCode !== "ACCOUNT").reduce((sum, payment) => sum + payment.amountMinor, 0);
+  const atDoorCash = completeOnPay && order.type === "DELIVERY" && deliveryCashTotal > 0 && accountAmount === 0 && deliveryPrepaidTotal === 0;
+  const mixedDeliveryMethods = completeOnPay && order.type === "DELIVERY" && deliveryCashTotal > 0 && deliveryPrepaidTotal > 0;
+  const collectionDriver = data.users.find((user) => user.id === order.driverUserId)?.fullName;
+  const invalidDriverChange = atDoorCash && changeDue > 0 && changeMethodCode !== "CASH";
+
   const canSubmit =
+    !mixedDeliveryMethods &&
+    !invalidDriverChange &&
     initialized &&
     allocated >= remaining &&
     (!accountAmount || (Boolean(customerId) && allocated === remaining)) &&
@@ -3323,14 +3335,14 @@ function PaymentModal({
       >
         <div className="rounded-xl bg-slate-950 p-4 text-white">
           <div className="flex items-center justify-between">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
               Saldo a cobrar
             </p>
             {onOpenDeposit ? (
               <button
                 type="button"
                 onClick={onOpenDeposit}
-                className="text-[11px] font-semibold text-indigo-300 hover:text-indigo-100 underline inline-flex items-center gap-1"
+                className="text-xs font-semibold text-indigo-300 hover:text-indigo-100 underline inline-flex items-center gap-1"
               >
                 <Receipt size={13} />
                 {order.depositMinor > 0
@@ -3400,6 +3412,21 @@ function PaymentModal({
               </div>
             ))}
         </div>
+
+        {completeOnPay && order.type === "DELIVERY" && remaining > 0 && allocated > 0 ? (
+          <div className="mt-3 space-y-1 text-xs text-slate-600" aria-label="Quién recibe el cobro">
+            {mixedDeliveryMethods ? (
+              <p>Elegí efectivo contra entrega o un medio anticipado, sin combinarlos.</p>
+            ) : atDoorCash ? (
+              <>
+                <p>El efectivo lo recibe el repartidor{collectionDriver ? `: ${collectionDriver}` : " asignado"}. No ingresa efectivo a esta caja.</p>
+                {isDeliveryWithDriver ? <p>El repartidor retiene el importe de su envío; el resto queda pendiente de rendición. No se paga el envío desde caja.</p> : null}
+              </>
+            ) : accountAmount === 0 ? (
+              <p>Cobro recibido por el negocio. Transferencia y tarjeta no aumentan el efectivo de caja.</p>
+            ) : null}
+          </div>
+        ) : null}
 
         {data.paymentMethods.some(
           (method) => method.code === "ACCOUNT" && method.active,
@@ -3546,7 +3573,7 @@ function PaymentModal({
                 <span className="text-xs font-bold uppercase tracking-wider text-emerald-800">
                   Vuelto a entregar
                 </span>
-                <p className="text-[11px] text-emerald-700">
+                <p className="text-xs text-emerald-700">
                   Sobrepago recibido: {formatMoney(changeDue)}
                 </p>
               </div>
@@ -3576,6 +3603,9 @@ function PaymentModal({
                   ))}
               </Select>
             </Field>
+            {invalidDriverChange ? (
+              <p role="alert" className="text-xs font-semibold text-rose-700">Cuando cobra el repartidor, el vuelto debe ser en efectivo. Elegí Efectivo para el vuelto.</p>
+            ) : null}
             {isCashChangeInsufficient ? (
               <p
                 role="alert"
@@ -3589,7 +3619,7 @@ function PaymentModal({
           </div>
         ) : null}
 
-        {isDeliveryWithDriver ? (
+        {isDeliveryWithDriver && !atDoorCash ? (
           <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/70 p-3">
             <label className="flex items-start gap-3 cursor-pointer select-none">
               <input
@@ -3603,7 +3633,7 @@ function PaymentModal({
                   Pagar envío al repartidor ahora (
                   {formatMoney(order.deliveryFeeMinor)})
                 </span>
-                <p className="text-slate-500 mt-0.5">
+                <p className="text-slate-600 mt-0.5">
                   {payDriverNow
                     ? `Se registrará el egreso de caja (${formatMoney(order.deliveryFeeMinor)}) y el reparto quedará liquidado.`
                     : "El envío se acumulará en la cuenta corriente del repartidor para liquidarse luego en la sección Repartidores."}
@@ -3874,7 +3904,7 @@ function ChangeTableModal({
         </Field>
 
         {availableTables.length === 0 ? (
-          <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
+          <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
             No hay otras mesas libres en el salón para realizar el traslado.
           </p>
         ) : null}
@@ -4166,7 +4196,7 @@ function SelectVariantModal({
                     {idx < 9 ? (
                       <kbd
                         className={cn(
-                          "inline-flex h-5 min-w-[20px] items-center justify-center rounded border px-1 font-mono text-[10px] font-bold shadow-sm",
+                          "inline-flex h-5 min-w-[20px] items-center justify-center rounded border px-1 font-mono text-xs font-bold shadow-sm",
                           isSelected
                             ? "border-brand-300 bg-brand-200 text-brand-900"
                             : "border-slate-300 bg-white text-slate-600",
@@ -4179,16 +4209,16 @@ function SelectVariantModal({
                       {shortName}
                     </span>
                     {isBase ? (
-                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">
+                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs font-bold text-slate-700">
                         Padre / Base
                       </span>
                     ) : (
-                      <span className="rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-bold text-brand-800">
+                      <span className="rounded bg-brand-100 px-1.5 py-0.5 text-xs font-bold text-brand-800">
                         Variante
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
+                  <div className="mt-1 flex items-center gap-2 text-xs text-slate-600">
                     {product.code ? <span>Cód: {product.code}</span> : null}
                     {product.stockMinor != null ? (
                       <span>
@@ -4202,7 +4232,7 @@ function SelectVariantModal({
                   <div className="text-sm font-extrabold text-brand-700">
                     {price == null ? "Sin precio" : formatMoney(price)}
                   </div>
-                  <span className="text-[11px] font-bold text-brand-600">
+                  <span className="text-xs font-bold text-brand-700">
                     Elegir →
                   </span>
                 </div>

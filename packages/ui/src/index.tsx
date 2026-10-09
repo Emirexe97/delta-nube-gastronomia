@@ -59,13 +59,13 @@ export const Button = React.forwardRef<
 >(({ variant = "primary", className, ...props }, ref) => {
   const variants = {
     primary:
-      "bg-brand-600 text-white shadow-sm hover:bg-brand-700 disabled:bg-slate-300 disabled:text-white disabled:shadow-none",
+      "bg-brand-700 text-white shadow-sm hover:bg-brand-800 disabled:bg-slate-300 disabled:text-white disabled:shadow-none",
     secondary:
       "border border-slate-200 bg-white text-slate-700 hover:border-brand-200 hover:bg-slate-50 hover:text-brand-700 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400",
     ghost:
-      "bg-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-900 disabled:text-slate-300",
+      "bg-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900 disabled:text-slate-300",
     danger:
-      "border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400",
+      "border border-rose-200 bg-white text-rose-700 hover:bg-rose-50 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400",
   };
   return (
     <button
@@ -158,7 +158,7 @@ export function Field({
     >
       <span>{label}</span>
       {children}
-      {hint ? <span className="font-normal text-slate-400">{hint}</span> : null}
+      {hint ? <span className="font-normal text-slate-600">{hint}</span> : null}
     </label>
   );
 }
@@ -182,7 +182,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center whitespace-nowrap shrink-0 rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-wide",
+        "inline-flex items-center whitespace-nowrap shrink-0 rounded-md px-2 py-1 text-[12px] font-bold uppercase tracking-wide",
         tones[tone],
       )}
     >
@@ -367,7 +367,7 @@ export function Modal({
               type="button"
               onClick={requestClose}
               disabled={closeDisabled}
-              className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-xl leading-none text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 disabled:cursor-wait disabled:opacity-40"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-xl leading-none text-slate-600 transition hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 disabled:cursor-wait disabled:opacity-40"
               aria-label={closeDisabled ? "Operación en curso" : "Cerrar"}
               title={
                 closeDisabled ? "Esperá a que termine la operación" : undefined

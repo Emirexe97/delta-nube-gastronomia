@@ -1142,7 +1142,7 @@ test("finanzas asigna ventas, costos y gastos nocturnos a la jornada de caja", (
     assert.equal(previous.expensesMinor, 50_000);
     assert.equal(previous.expenses[0]?.incurredOn, "2026-09-30");
     assert.equal(previous.purchasesMinor, 450_000);
-    assert.deepEqual(previous.monthly, [{ month: "2026-09", salesMinor, cogsMinor: 600_000, expensesMinor: 50_000 }]);
+    assert.deepEqual(previous.monthly, [{ month: "2026-09", salesMinor, cogsMinor: 600_000, deliveryCostsMinor: 0, expensesMinor: 50_000 }]);
     const next = repository.getFinanceReport({ from: "2026-10-01", to: "2026-10-31" });
     assert.equal(next.salesMinor, 0);
     assert.equal(next.cogsMinor, 0);
@@ -1150,6 +1150,193 @@ test("finanzas asigna ventas, costos y gastos nocturnos a la jornada de caja", (
     assert.equal(next.expensesMinor, 0);
     assert.equal(next.purchasesMinor, 0);
     assert.deepEqual(next.monthly, []);
+  });
+});
+
+test("finanzas reconoce el fee de delivery y excluye la liquidación de gastos", () => {
+  for (const scenario of [
+    { collectedByDriver: true, paymentMethodCode: "CASH", expectedCash: 2_500_000 },
+    { collectedByDriver: false, paymentMethodCode: "TRANSFER", expectedCash: 750_000 },
+  ] as const) withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 1_000_000 });
+    repository.saveSettings({
+      ...repository.bootstrap().settings,
+      deliverySettlementEnabled: true,
+      deliveryFeeBelongsToDriver: true,
+    });
+    repository.setFinanceProductCost({
+      productId: "starter-muzza-grande",
+      unitCostMinor: 300_000,
+    });
+    const driver = repository.createUser({
+      fullName: "Repartidor Finanzas",
+      roleCode: "DELIVERY_DRIVER",
+      pin: "3579",
+      authorizerPin: "2468",
+    });
+    const order = repository.createOrder({
+      type: "DELIVERY",
+      customerName: "Cliente",
+      customerPhone: "11 4000-5555",
+      deliveryAddress: "Calle 55",
+      deliveryFeeMinor: 250_000,
+      driverUserId: driver.id,
+    });
+    repository.addOrderItem({ orderId: order.id, productId: "starter-muzza-grande" });
+    repository.confirmOrder({ orderId: order.id });
+    const date = repository.bootstrap().cashSession!.businessDate;
+    assert.equal(repository.getFinanceReport({ from: date, to: date }).deliveryCostsMinor, 250_000);
+    const paid = repository.payOrder({
+      orderId: order.id,
+      collectedByDriver: scenario.collectedByDriver,
+      payments: [{ methodCode: scenario.paymentMethodCode, amountMinor: 1_750_000 }],
+    });
+    repository.saveSettings({ ...repository.bootstrap().settings, deliveryFeeBelongsToDriver: false });
+    repository.updateOrderStatus(order.id, "DELIVERED");
+    const beforeSettlement = repository.getFinanceReport({ from: date, to: date });
+    assert.equal(beforeSettlement.salesMinor, 1_750_000);
+    assert.equal(beforeSettlement.cogsMinor, 300_000);
+    assert.equal(beforeSettlement.deliveryCostsMinor, 250_000);
+    assert.equal(beforeSettlement.grossProfitMinor, 1_200_000);
+    assert.equal(beforeSettlement.estimatedOperatingProfitMinor, 1_200_000);
+    assert.equal(beforeSettlement.expensesMinor, 0);
+    assert.equal(repository.bootstrap().cashSession?.expectedAmountMinor, 1_000_000);
+
+    const ledger = repository.bootstrap().deliveryLedger.find((row) => row.orderId === order.id)!;
+    repository.settleDelivery({
+      ledgerIds: [ledger.id],
+      reason: "Rendición",
+      authorizerPin: "2468",
+      idempotencyKey: "finance-delivery-settlement",
+      terminalId: "TEST",
+    });
+    const afterSettlement = repository.getFinanceReport({ from: date, to: date });
+    assert.equal(afterSettlement.deliveryCostsMinor, 250_000);
+    assert.equal(afterSettlement.expensesMinor, 0);
+    assert.equal(afterSettlement.estimatedOperatingProfitMinor, 1_200_000);
+    assert.equal(repository.bootstrap().cashSession?.expectedAmountMinor, scenario.expectedCash);
+
+    // An unrelated cash expense remains part of operating expenses.
+    repository.registerCashMovement({
+      type: "EXPENSE",
+      amountMinor: 50_000,
+      paymentMethodCode: "CASH",
+      reason: "Limpieza",
+    });
+    const withManualExpense = repository.getFinanceReport({ from: date, to: date });
+    assert.equal(withManualExpense.expensesMinor, 50_000);
+    assert.equal(withManualExpense.estimatedOperatingProfitMinor, 1_150_000);
+
+    // A delivered order keeps its earned fee cost after a partial food refund.
+    repository.reverseDeliverySettlement({
+      ledgerId: ledger.id,
+      reason: "Preparar devolución parcial",
+      authorizerPin: "2468",
+      idempotencyKey: `reverse-${scenario.paymentMethodCode}`,
+      terminalId: "TEST",
+    });
+    repository.refundPayment({
+      orderId: order.id,
+      paymentId: paid.payments[0]!.id,
+      amountMinor: 100_000,
+      reason: "Devolución parcial de comida",
+      authorizerPin: "2468",
+    });
+    assert.equal(
+      repository.getFinanceReport({ from: date, to: date }).deliveryCostsMinor,
+      250_000,
+    );
+  });
+});
+
+test("finanzas respeta titularidad congelada, fee cero y pedidos no delivery", () => {
+  withRepository((repository) => {
+    const date = businessDateFromOpening(new Date().toISOString());
+    repository.openCashSession({ openingAmountMinor: 0 });
+    repository.setFinanceProductCost({ productId: "starter-muzza-grande", unitCostMinor: 300_000 });
+    repository.saveSettings({ ...repository.bootstrap().settings, deliveryFeeBelongsToDriver: false });
+    const driver = repository.createUser({ fullName: "Driver Fee", roleCode: "DELIVERY_DRIVER", pin: "3579", authorizerPin: "2468" });
+    const delivery = repository.createOrder({ type: "DELIVERY", customerName: "A", customerPhone: "11 4000-5555", deliveryAddress: "Calle", deliveryFeeMinor: 250_000, driverUserId: driver.id });
+    repository.addOrderItem({ orderId: delivery.id, productId: "starter-muzza-grande" });
+    repository.confirmOrder({ orderId: delivery.id });
+    repository.payOrder({ orderId: delivery.id, payments: [{ methodCode: "TRANSFER", amountMinor: 1_750_000 }] });
+    repository.saveSettings({ ...repository.bootstrap().settings, deliveryFeeBelongsToDriver: true });
+    repository.updateOrderStatus(delivery.id, "DELIVERED");
+
+    const zeroFee = repository.createOrder({ type: "DELIVERY", customerName: "B", customerPhone: "11 4000-5555", deliveryAddress: "Calle", deliveryFeeMinor: 0, driverUserId: driver.id });
+    repository.addOrderItem({ orderId: zeroFee.id, productId: "starter-muzza-grande" });
+    repository.confirmOrder({ orderId: zeroFee.id });
+    repository.payOrder({ orderId: zeroFee.id, payments: [{ methodCode: "TRANSFER", amountMinor: 1_500_000 }] });
+    repository.updateOrderStatus(zeroFee.id, "DELIVERED");
+
+    const takeaway = repository.createOrder(takeawayOrder());
+    repository.addOrderItem({ orderId: takeaway.id, productId: "starter-muzza-grande" });
+    repository.confirmOrder({ orderId: takeaway.id });
+    repository.payOrder({ orderId: takeaway.id, payments: [{ methodCode: "TRANSFER", amountMinor: 1_500_000 }] });
+    const report = repository.getFinanceReport({ from: date, to: date });
+    assert.equal(report.deliveryCostsMinor, 0);
+    assert.equal(report.cogsMinor, 900_000);
+  });
+});
+
+test("finanzas asigna envío al período de venta aunque liquidación ocurra el mes siguiente", () => {
+  withRepository((repository) => {
+    const cash = repository.openCashSession({ openingAmountMinor: 1_000_000 });
+    repository.db.prepare("UPDATE cash_sessions SET business_date = '2026-09-30' WHERE id = ?").run(cash.id);
+    repository.saveSettings({ ...repository.bootstrap().settings, deliverySettlementEnabled: true, deliveryFeeBelongsToDriver: true });
+    const driver = repository.createUser({ fullName: "Driver Mes", roleCode: "DELIVERY_DRIVER", pin: "3579", authorizerPin: "2468" });
+    const order = repository.createOrder({ type: "DELIVERY", customerName: "A", customerPhone: "11 4000-5555", deliveryAddress: "Calle", deliveryFeeMinor: 250_000, driverUserId: driver.id });
+    repository.addOrderItem({ orderId: order.id, productId: "starter-muzza-grande" });
+    repository.confirmOrder({ orderId: order.id });
+    repository.payOrder({ orderId: order.id, payments: [{ methodCode: "TRANSFER", amountMinor: 1_750_000 }] });
+    repository.updateOrderStatus(order.id, "DELIVERED");
+    const ledger = repository.bootstrap().deliveryLedger.find((row) => row.orderId === order.id)!;
+    repository.closeCashSession({ countedAmountMinor: 1_000_000, closingFloatAmountMinor: 1_000_000, force: true, reason: "Rendición pendiente para el próximo turno", authorizerPin: "2468" });
+    const nextCash = repository.openCashSession({ openingAmountMinor: 1_000_000 });
+    repository.db.prepare("UPDATE cash_sessions SET business_date = '2026-10-01' WHERE id = ?").run(nextCash.id);
+    repository.settleDelivery({ ledgerIds: [ledger.id], reason: "Liquidación de octubre", authorizerPin: "2468", idempotencyKey: "settle-next-month", terminalId: "TEST" });
+    // Old versions wrote settlement movements without an order link.
+    repository.db.prepare("UPDATE cash_movements SET order_id = NULL WHERE order_id = ? AND type = 'EXPENSE'").run(order.id);
+    assert.equal(repository.getFinanceReport({ from: "2026-09-01", to: "2026-09-30" }).deliveryCostsMinor, 250_000);
+    assert.equal(repository.getFinanceReport({ from: "2026-10-01", to: "2026-10-31" }).deliveryCostsMinor, 0);
+    assert.equal(repository.getFinanceReport({ from: "2026-10-01", to: "2026-10-31" }).expensesMinor, 0);
+  });
+});
+
+test("finanzas no suma costo de envío para pedido delivery cancelado no pagado", () => {
+  withRepository((repository) => {
+    const date = businessDateFromOpening(new Date().toISOString());
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const driver = repository.createUser({ fullName: "Driver Cancel", roleCode: "DELIVERY_DRIVER", pin: "3579", authorizerPin: "2468" });
+    const order = repository.createOrder({ type: "DELIVERY", customerName: "A", customerPhone: "11 4000-5555", deliveryAddress: "Calle", deliveryFeeMinor: 250_000, driverUserId: driver.id });
+    repository.addOrderItem({ orderId: order.id, productId: "starter-muzza-grande" });
+    repository.confirmOrder({ orderId: order.id });
+    repository.cancelOrder({ orderId: order.id, reason: "Cancelado antes de entregar", authorizerPin: "2468" });
+    assert.equal(repository.getFinanceReport({ from: date, to: date }).deliveryCostsMinor, 0);
+  });
+});
+
+test("pago inmediato al repartidor y reversión no cambian el costo del envío ganado", () => {
+  withRepository((repository) => {
+    const date = businessDateFromOpening(new Date().toISOString());
+    repository.openCashSession({ openingAmountMinor: 2_000_000 });
+    repository.saveSettings({ ...repository.bootstrap().settings, deliverySettlementEnabled: true, deliveryFeeBelongsToDriver: true });
+    const driver = repository.createUser({ fullName: "Driver Pago", roleCode: "DELIVERY_DRIVER", pin: "3579", authorizerPin: "2468" });
+    const order = repository.createOrder({ type: "DELIVERY", customerName: "A", customerPhone: "11 4000-5555", deliveryAddress: "Calle", deliveryFeeMinor: 250_000, driverUserId: driver.id });
+    repository.addOrderItem({ orderId: order.id, productId: "starter-muzza-grande" });
+    repository.confirmOrder({ orderId: order.id });
+    repository.payOrder({ orderId: order.id, payDriverNow: true, payments: [{ methodCode: "TRANSFER", amountMinor: 1_750_000 }] });
+    repository.updateOrderStatus(order.id, "DELIVERED");
+    const ledger = repository.bootstrap().deliveryLedger.find((row) => row.orderId === order.id)!;
+    const before = repository.getFinanceReport({ from: date, to: date });
+    assert.equal(before.deliveryCostsMinor, 250_000);
+    assert.equal(before.expensesMinor, 0);
+    assert.equal(repository.bootstrap().cashSession?.expectedAmountMinor, 1_750_000);
+    repository.reverseDeliverySettlement({ ledgerId: ledger.id, reason: "Reversión de prueba", authorizerPin: "2468", idempotencyKey: "reverse-immediate-fee-finance", terminalId: "TEST" });
+    const after = repository.getFinanceReport({ from: date, to: date });
+    assert.equal(after.deliveryCostsMinor, 250_000);
+    assert.equal(after.expensesMinor, 0);
+    assert.equal(repository.bootstrap().cashSession?.expectedAmountMinor, 2_000_000);
   });
 });
 

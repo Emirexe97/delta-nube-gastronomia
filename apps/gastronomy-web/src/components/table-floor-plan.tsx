@@ -3,6 +3,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type {
@@ -1159,6 +1160,28 @@ export function TableFloorPlan({
     if (persist) persistShape(shape, { x: rect.x, y: rect.y }, nextDraft);
   };
 
+  const handleFloorKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (drawKind) {
+      if (event.key === "Escape") cancelDrawing();
+      if (event.key === "Enter") finishDrawing();
+      if (event.key === "Backspace") {
+        event.preventDefault();
+        setDrawingPoints((current) => current.slice(0, -1));
+      }
+      return;
+    }
+    if (event.key === "+" || event.key === "=") {
+      event.preventDefault();
+      adjustZoom(1.15);
+    } else if (event.key === "-" || event.key === "_") {
+      event.preventDefault();
+      adjustZoom(0.87);
+    } else if (event.key === "0") {
+      event.preventDefault();
+      resetZoom();
+    }
+  };
+
   return (
     <div className="space-y-3">
       <Card className="p-3">
@@ -1183,7 +1206,7 @@ export function TableFloorPlan({
                     setSelectedTableId(null);
                     setSelectedShapeId(null);
                   }}
-                  className={`whitespace-nowrap rounded-xl px-3 py-2 text-xs font-extrabold transition ${sector.id === activeSectorId ? "bg-brand-600 text-white shadow-sm" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+                  className={`whitespace-nowrap rounded-xl px-3 py-2 text-xs font-extrabold transition ${sector.id === activeSectorId ? "bg-brand-700 text-white shadow-sm" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
                 >
                   {sector.name} · {count}
                 </button>
@@ -1204,6 +1227,61 @@ export function TableFloorPlan({
             ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <div
+              data-testid="floor-plan-zoom-controls"
+              className="flex shrink-0 items-center gap-1 rounded-xl border border-slate-200 bg-white p-1"
+              onKeyDown={handleFloorKeyDown}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                aria-label="Alejar plano"
+                title="Alejar plano (-)"
+                onClick={() => adjustZoom(0.85)}
+                disabled={zoom <= 0.35}
+                className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 disabled:opacity-30"
+              >
+                <MagnifyingGlassMinus size={17} weight="bold" />
+              </button>
+              <button
+                type="button"
+                aria-label="Restablecer zoom"
+                title="Restablecer a 100%"
+                onClick={resetZoom}
+                className="px-2 py-1 text-xs font-bold text-slate-700 hover:text-brand-600 transition"
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                type="button"
+                aria-label="Acercar plano"
+                title="Acercar plano (+)"
+                onClick={() => adjustZoom(1.18)}
+                disabled={zoom >= 3.0}
+                className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 disabled:opacity-30"
+              >
+                <MagnifyingGlassPlus size={17} weight="bold" />
+              </button>
+              <button
+                type="button"
+                aria-label="Ajustar al área"
+                title="Ajustar al tamaño visible"
+                onClick={fitToView}
+                className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100"
+              >
+                <CornersOut size={16} weight="bold" />
+              </button>
+              <button
+                type="button"
+                aria-label="Centrar y restablecer"
+                title="Centrar vista"
+                onClick={resetZoom}
+                className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-brand-600"
+              >
+                <ArrowCounterClockwise size={15} weight="bold" />
+              </button>
+            </div>
+
             {canManageTables && editing && activeSector ? (
               <>
                 <Button
@@ -1291,14 +1369,14 @@ export function TableFloorPlan({
             ) : null}
           </div>
         </div>
-        <p className="mt-2 text-[11px] text-slate-400">
+        <p className="mt-2 text-xs text-slate-600">
           {editing
             ? "Arrastrá las mesas y figuras para ubicarlas. También podés dibujar áreas y líneas."
             : "Elegí un sector y tocá una mesa para abrirla o continuar su pedido."}
         </p>
         {message ? (
           <p
-            className={`mt-2 rounded-lg px-3 py-2 text-[11px] font-semibold ${updateTable.isError || createSector.isError || renameSector.isError || deleteSector.isError || createTable.isError || createFloorShape.isError || updateFloorShape.isError || deleteFloorShape.isError ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}
+            className={`mt-2 rounded-lg px-3 py-2 text-xs font-semibold ${updateTable.isError || createSector.isError || renameSector.isError || deleteSector.isError || createTable.isError || createFloorShape.isError || updateFloorShape.isError || deleteFloorShape.isError ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}
             role="status"
           >
             {message}
@@ -1319,27 +1397,7 @@ export function TableFloorPlan({
             role="region"
             aria-label="Editor del plano"
             tabIndex={0}
-            onKeyDown={(event) => {
-              if (drawKind) {
-                if (event.key === "Escape") cancelDrawing();
-                if (event.key === "Enter") finishDrawing();
-                if (event.key === "Backspace") {
-                  event.preventDefault();
-                  setDrawingPoints((current) => current.slice(0, -1));
-                }
-                return;
-              }
-              if (event.key === "+" || event.key === "=") {
-                event.preventDefault();
-                adjustZoom(1.15);
-              } else if (event.key === "-" || event.key === "_") {
-                event.preventDefault();
-                adjustZoom(0.87);
-              } else if (event.key === "0") {
-                event.preventDefault();
-                resetZoom();
-              }
-            }}
+            onKeyDown={handleFloorKeyDown}
             onPointerDown={onViewportPointerDown}
             onPointerMove={onViewportPointerMove}
             onPointerUp={onViewportPointerUp}
@@ -1349,60 +1407,6 @@ export function TableFloorPlan({
             <div className="pointer-events-none absolute left-4 top-4 z-20 flex items-center gap-2 rounded-xl bg-white/90 px-3 py-2 text-xs font-extrabold text-slate-600 shadow-sm backdrop-blur">
               <MapTrifold size={17} className="text-brand-600" />
               {activeSector?.name ?? "Sector"}
-            </div>
-
-            <div
-              data-testid="floor-plan-zoom-controls"
-              className="absolute bottom-4 right-4 z-30 flex items-center gap-1 rounded-xl border border-slate-200 bg-white/95 p-1 shadow-lg backdrop-blur"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <button
-                type="button"
-                aria-label="Alejar plano"
-                title="Alejar plano (-)"
-                onClick={() => adjustZoom(0.85)}
-                disabled={zoom <= 0.35}
-                className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 disabled:opacity-30"
-              >
-                <MagnifyingGlassMinus size={17} weight="bold" />
-              </button>
-              <button
-                type="button"
-                aria-label="Restablecer zoom"
-                title="Restablecer a 100%"
-                onClick={resetZoom}
-                className="px-2 py-1 text-xs font-bold text-slate-700 hover:text-brand-600 transition"
-              >
-                {Math.round(zoom * 100)}%
-              </button>
-              <button
-                type="button"
-                aria-label="Acercar plano"
-                title="Acercar plano (+)"
-                onClick={() => adjustZoom(1.18)}
-                disabled={zoom >= 3.0}
-                className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 disabled:opacity-30"
-              >
-                <MagnifyingGlassPlus size={17} weight="bold" />
-              </button>
-              <button
-                type="button"
-                aria-label="Ajustar al área"
-                title="Ajustar al tamaño visible"
-                onClick={fitToView}
-                className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100"
-              >
-                <CornersOut size={16} weight="bold" />
-              </button>
-              <button
-                type="button"
-                aria-label="Centrar y restablecer"
-                title="Centrar vista"
-                onClick={resetZoom}
-                className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-brand-600"
-              >
-                <ArrowCounterClockwise size={15} weight="bold" />
-              </button>
             </div>
 
             <div
@@ -1425,7 +1429,7 @@ export function TableFloorPlan({
                 className="absolute right-4 top-4 z-50 flex flex-wrap items-center justify-end gap-2 rounded-xl border border-brand-100 bg-white/95 p-2 shadow-lg backdrop-blur"
                 onClick={(event) => event.stopPropagation()}
               >
-                <span className="px-1 text-[11px] font-extrabold text-slate-600">
+                <span className="px-1 text-xs font-extrabold text-slate-600">
                   {drawingPoints.length} nodos
                 </span>
                 <Button
@@ -1527,7 +1531,7 @@ export function TableFloorPlan({
                     Este sector todavía no tiene elementos
                   </p>
                   {canManageTables ? (
-                    <p className="mt-0.5 text-xs text-slate-500">
+                    <p className="mt-0.5 text-xs text-slate-600">
                       Activá “Editar plano” para agregar mesas y figuras.
                     </p>
                   ) : null}
@@ -1662,7 +1666,7 @@ export function TableFloorPlan({
                       );
                     }}
                     onPointerCancel={() => setShapeDrag(null)}
-                    className={`absolute inset-0 grid place-items-center px-2 text-center text-[10px] font-bold shadow-sm outline-none transition focus:ring-4 focus:ring-brand-200 ${isVector ? "border-0 bg-transparent text-slate-800" : "border-2 border-black/15"} ${appearance.kind === "ELLIPSE" ? "rounded-full" : "rounded-lg"} ${editing ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${selected ? "ring-4 ring-amber-300" : ""}`}
+                    className={`absolute inset-0 grid place-items-center px-2 text-center text-xs font-bold shadow-sm outline-none transition focus:ring-4 focus:ring-brand-200 ${isVector ? "border-0 bg-transparent text-slate-800" : "border-2 border-black/15"} ${appearance.kind === "ELLIPSE" ? "rounded-full" : "rounded-lg"} ${editing ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${selected ? "ring-4 ring-amber-300" : ""}`}
                     style={
                       isVector
                         ? { color: appearance.strokeColor }
@@ -1877,31 +1881,31 @@ export function TableFloorPlan({
                       }));
                       persistPosition(table, next);
                     }}
-                    className={`absolute inset-0 grid place-items-center border-2 px-2 text-center shadow-md transition focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-2xl" : "rounded-xl"} ${occupied ? "border-brand-500 bg-brand-600 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:-translate-y-0.5 hover:shadow-lg"}`}
+                    className={`absolute inset-0 grid place-items-center border-2 px-2 text-center shadow-md transition focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-2xl" : "rounded-xl"} ${occupied ? "border-brand-500 bg-brand-700 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:-translate-y-0.5 hover:shadow-lg"}`}
                     style={{ touchAction: "none" }}
                   >
-                    <span className="min-w-0">
+                    <span className="min-w-0 max-w-full">
                       {editing ? (
                         <ArrowsOutCardinal
                           className="mx-auto mb-0.5 opacity-60"
                           size={13}
                         />
                       ) : null}
-                      <strong className="block truncate text-sm">
+                      <strong className="block truncate text-sm leading-tight">
                         Mesa {table.number}
                       </strong>
                       {table.name ? (
-                        <span className="block truncate text-[9px] opacity-75">
+                        <span className="block truncate text-xs leading-tight">
                           {table.name}
                         </span>
                       ) : null}
-                      <span className="block truncate text-[10px] font-bold">
+                      <span className="block truncate text-xs font-bold leading-tight">
                         {occupied
                           ? formatMoney(table.currentTotalMinor)
                           : "Libre"}
                       </span>
                       {occupied ? (
-                        <span className="block truncate text-[8px] opacity-75">
+                        <span className="block truncate text-xs leading-tight">
                           {table.waiterName ?? "Sin mesero"} ·{" "}
                           {formatElapsed(table.openedAt)}
                         </span>
@@ -2193,7 +2197,7 @@ export function TableFloorPlan({
                 </div>
                 {shapeDraft.kind === "POLYGON" ||
                 shapeDraft.kind === "POLYLINE" ? (
-                  <div className="rounded-xl border border-brand-100 bg-brand-50/60 px-3 py-2 text-[11px] font-semibold text-brand-800">
+                  <div className="rounded-xl border border-brand-100 bg-brand-50/60 px-3 py-2 text-xs font-semibold text-brand-800">
                     {shapeDraft.points.length} nodos · Arrastrá los puntos
                     blancos del dibujo para ajustar su forma.
                   </div>
@@ -2272,11 +2276,11 @@ export function TableFloorPlan({
                 </Button>
               </div>
             ) : (
-              <div className="mt-4 rounded-xl border border-dashed border-slate-200 p-5 text-center text-xs text-slate-400">
+              <div className="mt-4 rounded-xl border border-dashed border-slate-200 p-5 text-center text-xs text-slate-600">
                 Seleccioná una mesa o figura del plano para editarla.
               </div>
             )}
-            <div className="mt-4 border-t border-slate-100 pt-3 text-[10px] text-slate-400">
+            <div className="mt-4 border-t border-slate-100 pt-3 text-xs text-slate-600">
               <Badge tone="green">Libre</Badge> se puede abrir ·{" "}
               <Badge tone="orange">Ocupada</Badge> conserva su pedido mientras
               la movés.

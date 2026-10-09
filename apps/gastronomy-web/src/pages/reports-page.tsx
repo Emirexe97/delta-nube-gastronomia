@@ -46,8 +46,8 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-extrabold">Informes operativos</h2>
-          <p className="text-xs text-slate-400">
-            Ventas, productos, caja, personal y delivery por día comercial
+          <p className="text-xs text-slate-600">
+            Ventas, productos, caja, personal y envíos por día comercial
           </p>
         </div>
         <Button
@@ -81,7 +81,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
               a la final.
             </p>
           ) : null}
-          <div className="self-end pb-1 text-xs leading-5 text-slate-400 sm:col-span-2 lg:col-span-1">
+          <div className="self-end pb-1 text-xs leading-5 text-slate-600 sm:col-span-2 lg:col-span-1">
             Las ventas se muestran netas en su día original; las devoluciones de
             caja se muestran en el día en que se realizaron.
           </div>
@@ -93,7 +93,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
         </div>
       ) : null}
       {!validPeriod ? null : report.isLoading ? (
-        <Card className="grid h-64 place-items-center text-xs font-semibold text-slate-400">
+        <Card className="grid h-64 place-items-center text-xs font-semibold text-slate-600">
           Calculando informe…
         </Card>
       ) : report.isError || !summary ? (
@@ -125,7 +125,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
             />
             <Metric
               icon={<Motorcycle />}
-              label="Delivery fees"
+              label="Importes de envío"
               value={formatMoney(summary.delivery.feesMinor)}
               detail={`${summary.delivery.orderCount} entregas`}
               tone="text-amber-600"
@@ -241,7 +241,7 @@ export function ReportsPage({ data }: { data: BootstrapDto }) {
               </dl>
             </Card>
             <Card className="p-4">
-              <h3 className="text-sm font-bold">Saldos de delivery</h3>
+              <h3 className="text-sm font-bold">Saldos de reparto</h3>
               <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
                 <Stat
                   label="Repartidores deben"
@@ -285,11 +285,11 @@ function Metric({
   return (
     <Card className="p-4">
       <div className={tone}>{icon}</div>
-      <p className="mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+      <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-600">
         {label}
       </p>
       <p className="text-2xl font-extrabold">{value}</p>
-      {detail ? <p className="text-[10px] text-slate-400">{detail}</p> : null}
+      {detail ? <p className="text-xs text-slate-600">{detail}</p> : null}
     </Card>
   );
 }
@@ -309,7 +309,9 @@ function ReportTable({
       </div>
       {rows.length ? (
         <div className="overflow-x-auto">
-          <table className="dn-table min-w-[640px]">
+          <table
+            className={headers.length > 3 ? "dn-table min-w-[640px]" : "dn-table"}
+          >
             <thead>
               <tr>
                 {headers.map((header, index) => (
@@ -335,7 +337,9 @@ function ReportTable({
                       className={
                         cellIndex
                           ? "whitespace-nowrap text-right font-semibold"
-                          : "font-semibold"
+                          : headers.length > 3
+                            ? "font-semibold"
+                            : "font-semibold [overflow-wrap:anywhere]"
                       }
                     >
                       {cell}
@@ -347,7 +351,7 @@ function ReportTable({
           </table>
         </div>
       ) : (
-        <div className="grid h-32 place-items-center text-xs text-slate-400">
+        <div className="grid h-32 place-items-center text-xs text-slate-600">
           Sin datos para el rango
         </div>
       )}
@@ -357,7 +361,7 @@ function ReportTable({
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg bg-slate-50 p-3">
-      <dt className="text-[10px] font-bold uppercase text-slate-400">
+      <dt className="text-xs font-bold uppercase text-slate-600">
         {label}
       </dt>
       <dd className="mt-1 font-extrabold">{value}</dd>

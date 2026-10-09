@@ -50,7 +50,22 @@ const waiterRoleLabels = {
 export function TablesPage({ data }: { data: BootstrapDto }) {
   const pageRef = useRef<HTMLDivElement>(null);
   const lastScrollTopRef = useRef<number>(0);
-  const [view, setView] = useState<"CLASSIC" | "PLAN">("CLASSIC");
+  const [view, setView] = useState<"CLASSIC" | "PLAN">(() => {
+    try {
+      return localStorage.getItem("gastronomy.salon.view") === "PLAN"
+        ? "PLAN"
+        : "CLASSIC";
+    } catch {
+      return "CLASSIC";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("gastronomy.salon.view", view);
+    } catch {
+      // A blocked/full store must not prevent working with tables.
+    }
+  }, [view]);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [selectedOrderSnapshot, setSelectedOrderSnapshot] =
     useState<OrderDto | null>(null);
@@ -179,7 +194,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-extrabold">Salón</h2>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-slate-600">
             Abrí una mesa y asigná quién la atiende
           </p>
         </div>
@@ -213,7 +228,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
             role="tab"
             aria-selected={view === "CLASSIC"}
             onClick={() => setView("CLASSIC")}
-            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-extrabold transition ${view === "CLASSIC" ? "bg-white text-brand-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-extrabold transition ${view === "CLASSIC" ? "bg-white text-brand-700 shadow-sm" : "text-slate-600 hover:text-slate-700"}`}
           >
             <SquaresFour size={16} /> Vista clásica
           </button>
@@ -222,12 +237,12 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
             role="tab"
             aria-selected={view === "PLAN"}
             onClick={() => setView("PLAN")}
-            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-extrabold transition ${view === "PLAN" ? "bg-white text-brand-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-extrabold transition ${view === "PLAN" ? "bg-white text-brand-700 shadow-sm" : "text-slate-600 hover:text-slate-700"}`}
           >
             <MapTrifold size={16} /> Plano por sectores
           </button>
         </div>
-        <p className="px-2 text-[11px] text-slate-400">
+        <p className="px-2 text-xs text-slate-600">
           {view === "CLASSIC"
             ? "Listado rápido de todas las mesas"
             : "Plano del salón por sectores"}
@@ -274,7 +289,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
                     Mesa {table.number}
                   </p>
                   {table.name ? (
-                    <p className="truncate text-[11px] font-semibold text-slate-500">
+                    <p className="truncate text-xs font-semibold text-slate-600">
                       {table.name}
                     </p>
                   ) : null}
@@ -283,14 +298,14 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
                       <p className="text-sm font-bold text-brand-700">
                         {formatMoney(table.currentTotalMinor)}
                       </p>
-                      <p className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-400">
+                      <p className="mt-0.5 flex items-center gap-1 text-xs text-slate-600">
                         <UserCircle size={12} />{" "}
                         {table.waiterName || "Sin mesero"} ·{" "}
                         {formatElapsed(table.openedAt)}
                       </p>
                     </div>
                   ) : (
-                    <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
+                    <p className="mt-1 flex items-center gap-1 text-xs font-semibold text-emerald-700">
                       <Plus size={13} />
                       Abrir pedido
                     </p>
@@ -531,6 +546,7 @@ function QuickEntry({
   const priceRef = useRef<HTMLInputElement>(null);
   const productBlurTimerRef = useRef<number | null>(null);
   const focusFrameRef = useRef<number | null>(null);
+  const restoringEditorFocusRef = useRef(false);
   const tableAdvanceRef = useRef(false);
   const waiterAdvanceRef = useRef(false);
   const preferredWaiterFocusRef = useRef<"number" | "name">("number");
@@ -625,6 +641,8 @@ function QuickEntry({
   }, [data.orders, order?.id]);
 
   const focus = (ref: React.RefObject<HTMLElement | null>, restoreFlow = false) => {
+    // A stale waiter effect must not cancel the return to table entry.
+    if (restoringEditorFocusRef.current && !restoreFlow) return;
     if (focusFrameRef.current !== null) {
       window.cancelAnimationFrame(focusFrameRef.current);
     }
@@ -641,10 +659,12 @@ function QuickEntry({
       ) {
         target.focus({ preventScroll: true });
       }
+      if (restoreFlow) restoringEditorFocusRef.current = false;
     });
   };
   useEffect(() => {
     return () => {
+      restoringEditorFocusRef.current = false;
       if (focusFrameRef.current !== null) {
         window.cancelAnimationFrame(focusFrameRef.current);
       }
@@ -684,9 +704,17 @@ function QuickEntry({
     focus(tableRef, true);
   };
   useEffect(() => {
+    if (isEditorOpen && restoringEditorFocusRef.current) {
+      restoringEditorFocusRef.current = false;
+      if (focusFrameRef.current !== null) {
+        window.cancelAnimationFrame(focusFrameRef.current);
+        focusFrameRef.current = null;
+      }
+    }
     if (previousEditorOpenRef.current && !isEditorOpen) {
       if (openedByQuickEntryRef.current) {
         openedByQuickEntryRef.current = false;
+        restoringEditorFocusRef.current = true;
         resetFlow();
       }
     }
@@ -824,7 +852,15 @@ function QuickEntry({
     if (step === "TABLE" && tableNumberIsValid) void submitTable();
   };
 
+  const cancelWaiterGuidance = () => {
+    // Editing the waiter supersedes guidance queued for the previous value.
+    if (focusFrameRef.current !== null && !restoringEditorFocusRef.current) {
+      window.cancelAnimationFrame(focusFrameRef.current);
+      focusFrameRef.current = null;
+    }
+  };
   const changeWaiterNumber = (value: string) => {
+    cancelWaiterGuidance();
     const digits = value.replace(/\D/g, "");
     const waiter = eligibleWaiters.find(
       (candidate) => candidate.staffNumber === Number(digits),
@@ -835,6 +871,7 @@ function QuickEntry({
   };
 
   const changeWaiterName = (userId: string) => {
+    cancelWaiterGuidance();
     const waiter = eligibleWaiters.find((candidate) => candidate.id === userId);
     setWaiterUserId(userId);
     setWaiterNumber(waiter ? String(waiter.staffNumber) : "");
@@ -1021,6 +1058,11 @@ function QuickEntry({
     !busy && (step === "WAITER" || (step === "TABLE" && tableNumberIsValid));
   useEffect(() => {
     if (step !== "WAITER" || busy || !table) return;
+    // Async table readiness must not restart a step the user already entered.
+    if (
+      document.activeElement === waiterRef.current ||
+      document.activeElement === waiterNameRef.current
+    ) return;
     focus(
       preferredWaiterFocusRef.current === "name" ? waiterNameRef : waiterRef,
     );
@@ -1039,16 +1081,16 @@ function QuickEntry({
               <h3 className="text-sm font-extrabold text-slate-900">
                 Carga rápida por teclado
               </h3>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-xs text-slate-600">
                 Enter avanza · Shift+Enter retrocede · Tab conserva el flujo
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide">
+          <div className="flex items-center gap-1 text-xs font-bold uppercase tracking-wide">
             {(["TABLE", "WAITER", "ITEM"] as const).map((value, index) => (
               <span
                 key={value}
-                className={`rounded-md px-2 py-1 ${step === value ? "bg-brand-600 text-white" : "bg-white text-slate-400"}`}
+                className={`rounded-md px-2 py-1 ${step === value ? "bg-brand-700 text-white" : "bg-white text-slate-600"}`}
               >
                 {index + 1} ·{" "}
                 {value === "TABLE"
@@ -1080,6 +1122,9 @@ function QuickEntry({
                 value={tableNumber}
                 disabled={busy}
                 onChange={(event) => {
+                  // Typing a new table supersedes the previous editor's return.
+                  restoringEditorFocusRef.current = false;
+                  cancelWaiterGuidance();
                   const next = event.target.value.replace(/\D/g, "");
                   if (next !== tableNumber) {
                     setTable(null);
@@ -1218,7 +1263,7 @@ function QuickEntry({
                   {order.number} · {order.waiterName || "Mozo asignado"}
                 </span>
                 <div className="flex items-center gap-3">
-                  <span className="whitespace-nowrap text-slate-500">
+                  <span className="whitespace-nowrap text-slate-600">
                     {itemCount} unidades ·{" "}
                     <strong className="text-brand-700">
                       {formatMoney(order.totalMinor)}
@@ -1427,7 +1472,7 @@ function QuickEntry({
                                 <strong className="block text-[13px]">
                                   {product.name}
                                 </strong>
-                                <span className="text-[10px] text-slate-400">
+                                <span className="text-xs text-slate-600">
                                   {product.code || product.id} ·{" "}
                                   {product.categoryName}
                                 </span>
@@ -1451,7 +1496,7 @@ function QuickEntry({
                     productName &&
                     !productSearchPending &&
                     !productSuggestions.length ? (
-                      <div className="absolute inset-x-0 top-[calc(100%+4px)] z-40 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500 shadow-lg">
+                      <div className="absolute inset-x-0 top-[calc(100%+4px)] z-40 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-lg">
                         No hay productos que coincidan.
                       </div>
                     ) : null}
@@ -1559,7 +1604,7 @@ function QuickEntry({
                 </p>
                 <div className="mt-2 grid grid-cols-2 gap-3 text-xs">
                   <div>
-                    <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                    <span className="block text-xs font-bold uppercase tracking-wide text-slate-600">
                       Precio de lista
                     </span>
                     <strong>
@@ -1567,7 +1612,7 @@ function QuickEntry({
                     </strong>
                   </div>
                   <div>
-                    <span className="block text-[10px] font-bold uppercase tracking-wide text-amber-700">
+                    <span className="block text-xs font-bold uppercase tracking-wide text-amber-700">
                       Precio manual
                     </span>
                     <strong className="text-amber-800">
@@ -1667,7 +1712,7 @@ function ClosedTablesHistorySection({
           <h3 className="text-sm font-bold text-slate-900">
             Historial de mesas cerradas
           </h3>
-          <p className="text-[10px] text-slate-400">
+          <p className="text-xs text-slate-600">
             Mesas cobradas o canceladas en este turno
             {allClosedOrders.length > 0 ? (
               <>
@@ -1756,7 +1801,7 @@ function ClosedTablesHistorySection({
                       <span className="font-mono text-xs font-extrabold text-slate-950">
                         #{order.number}
                       </span>
-                      <p className="text-[9px] text-slate-400">
+                      <p className="text-xs text-slate-600">
                         {formatTime(order.createdAt)}
                       </p>
                     </td>
@@ -1784,12 +1829,12 @@ function ClosedTablesHistorySection({
                                 </span>{" "}
                                 {item.productNameSnapshot}
                                 {halves ? (
-                                  <span className="text-[10px] text-slate-400">
+                                  <span className="text-xs text-slate-600">
                                     {halves}
                                   </span>
                                 ) : null}
                                 {mods ? (
-                                  <span className="text-[10px] text-slate-400">
+                                  <span className="text-xs text-slate-600">
                                     {mods}
                                   </span>
                                 ) : null}
@@ -1797,7 +1842,7 @@ function ClosedTablesHistorySection({
                             );
                           })
                         ) : (
-                          <span className="text-[10px] italic text-slate-400">
+                          <span className="text-xs italic text-slate-600">
                             Sin productos
                           </span>
                         )}
@@ -1821,7 +1866,7 @@ function ClosedTablesHistorySection({
                       <Button
                         type="button"
                         variant="secondary"
-                        className="h-7 px-2.5 text-[11px] whitespace-nowrap shrink-0"
+                        className="h-7 px-2.5 text-xs whitespace-nowrap shrink-0"
                         onClick={(e) => {
                           e.stopPropagation();
                           onSelectOrder(order.id);
@@ -1839,7 +1884,7 @@ function ClosedTablesHistorySection({
           </table>
         </div>
       ) : (
-        <div className="grid h-32 place-items-center text-xs text-slate-400">
+        <div className="grid h-32 place-items-center text-xs text-slate-600">
           {!cashSessionId
             ? "No hay una caja abierta actualmente."
             : allClosedOrders.length === 0

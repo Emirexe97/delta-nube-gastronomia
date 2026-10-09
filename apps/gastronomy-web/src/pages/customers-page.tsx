@@ -184,7 +184,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-extrabold">Clientes</h2>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-slate-600">
             Datos de contacto, direcciones e historial de cada cliente
           </p>
         </div>
@@ -232,7 +232,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
           <p
             role="status"
             aria-live="polite"
-            className="mt-2 text-[10px] font-semibold text-brand-700"
+            className="mt-2 text-xs font-semibold text-brand-700"
           >
             {waiting
               ? "Esperando para buscar…"
@@ -263,7 +263,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
         className="grid grid-cols-1 gap-2 sm:grid-cols-3"
       >
         <Card className="border-brand-100 bg-brand-50/45 p-3">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-brand-700">
+          <p className="text-xs font-bold uppercase tracking-wider text-brand-700">
             {query.trim()
               ? "Coincidencias"
               : statusFilter === "ACTIVE"
@@ -275,7 +275,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
           </p>
         </Card>
         <Card className="p-3">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-600">
             Con dirección · página
           </p>
           <p className="mt-1 text-xl font-extrabold text-slate-900">
@@ -286,7 +286,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
           </p>
         </Card>
         <Card className="p-3">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-600">
             Pedidos · página
           </p>
           <p className="mt-1 text-xl font-extrabold text-slate-900">
@@ -295,7 +295,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
         </Card>
       </section>
       <div className="flex items-center justify-between gap-3 px-1">
-        <p className="text-[11px] font-bold text-slate-500">
+        <p className="text-xs font-bold text-slate-600">
           {waiting || searching
             ? `Buscando “${query.trim()}”…`
             : query.trim()
@@ -303,7 +303,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
               : "Directorio completo"}
         </p>
         {!waiting && !searching ? (
-          <span className="text-[10px] text-slate-400">
+          <span className="text-xs text-slate-600">
             {total ? `${range.from}–${range.to} de ${total}` : "0 clientes"}
           </span>
         ) : null}
@@ -322,7 +322,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
           >
             <CaretLeft size={14} /> Anterior
           </Button>
-          <span className="text-[11px] font-bold text-slate-600">
+          <span className="text-xs font-bold text-slate-600">
             Página {page} de {pageCount}
           </span>
           <Button
@@ -392,7 +392,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
                         {customer.addresses.map((address, index) => (
                           <p
                             key={address.id}
-                            className="flex items-start gap-1 text-[11px] text-slate-500"
+                            className="flex items-start gap-1 text-xs text-slate-600"
                           >
                             <MapPin className="mt-0.5 shrink-0" />
                             <span>
@@ -408,34 +408,34 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
                         ))}
                       </div>
                     ) : (
-                      <p className="mt-2 text-[10px] text-slate-400">
+                      <p className="mt-2 text-xs text-slate-600">
                         Sin dirección guardada
                       </p>
                     )}
                     {customer.notes ? (
-                      <p className="mt-2 rounded-lg bg-slate-50 px-2 py-1.5 text-[10px] leading-relaxed text-slate-500">
+                      <p className="mt-2 rounded-lg bg-slate-50 px-2 py-1.5 text-xs leading-relaxed text-slate-600">
                         {customer.notes}
                       </p>
                     ) : null}
                   </div>
                 </div>
               </div>
-              <div className="grid grid-cols-2 border-t border-slate-100 bg-slate-50/70 px-4 py-2 text-[10px]">
-                <div className="flex items-start gap-1.5 text-slate-500">
+              <div className="grid grid-cols-2 border-t border-slate-100 bg-slate-50/70 px-4 py-2 text-xs">
+                <div className="flex items-start gap-1.5 text-slate-600">
                   <Receipt size={13} className="mt-0.5 text-brand-600" />
                   <span>
                     <span className="block">
                       <b className="text-slate-700">{orderCount}</b>{" "}
                       {orderCount === 1 ? "pedido" : "pedidos"}
                     </span>
-                    <span className="block text-[9px] text-slate-400">
+                    <span className="block text-xs text-slate-600">
                       {lastOrderAt
                         ? `Último: ${new Date(lastOrderAt).toLocaleDateString("es-AR")}`
                         : "Sin compras registradas"}
                     </span>
                   </span>
                 </div>
-                <div className="text-right text-slate-500">
+                <div className="text-right text-slate-600">
                   <div>
                     Cobrado:{" "}
                     <b className="text-slate-700">
@@ -472,7 +472,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
         })}
       </section>
       {pageCount > 1 && !waiting && !searching ? (
-        <p className="text-center text-[10px] font-semibold text-slate-400">
+        <p className="text-center text-xs font-semibold text-slate-600">
           Mostrando {range.from}–{range.to} de {total} clientes
         </p>
       ) : null}
@@ -480,7 +480,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
         <div className="grid h-52 place-items-center text-center">
           <div>
             <AddressBook className="mx-auto text-slate-300" size={36} />
-            <p className="mt-2 text-sm font-semibold text-slate-500">
+            <p className="mt-2 text-sm font-semibold text-slate-600">
               {debouncedQuery.trim()
                 ? "No encontramos ese cliente"
                 : "Todavía no hay clientes cargados"}
@@ -1122,7 +1122,7 @@ function CustomerModal({
                 </li>
               ))}
             </ul>
-            <p className="mt-1 text-[10px]">
+            <p className="mt-1 text-xs">
               Es sólo una advertencia: podés guardar igualmente, incluso si el
               teléfono es compartido.
             </p>
@@ -1134,7 +1134,7 @@ function CustomerModal({
               <h3 className="text-xs font-extrabold text-slate-700">
                 Direcciones
               </h3>
-              <p className="text-[10px] text-slate-500">
+              <p className="text-xs text-slate-600">
                 La primera se considera principal.
               </p>
             </div>
@@ -1169,7 +1169,7 @@ function CustomerModal({
                   maxLength={60}
                 />
                 {index === 0 ? (
-                  <span className="inline-flex w-fit rounded-md bg-brand-50 px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide text-brand-700">
+                  <span className="inline-flex w-fit rounded-md bg-brand-50 px-2 py-1 text-xs font-extrabold uppercase tracking-wide text-brand-700">
                     Dirección principal
                   </span>
                 ) : null}
@@ -1233,7 +1233,7 @@ function CustomerModal({
                     <p
                       key={issue.message}
                       role="alert"
-                      className="text-[10px] font-semibold text-rose-700"
+                      className="text-xs font-semibold text-rose-700"
                     >
                       {issue.message}
                     </p>
@@ -1513,7 +1513,7 @@ function CustomerProfileModal({
           ) : null}
           <section className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
             <Card className="p-3 sm:col-span-2">
-              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-600">
                 Contacto
               </p>
               <p className="mt-1 text-sm font-extrabold text-slate-900">
@@ -1573,19 +1573,19 @@ function CustomerProfileModal({
             {!cashOpen ? <p className="text-xs text-amber-700">Abrí una caja para registrar cobros.</p> : null}
             {openCharges.length ? <div className="space-y-1 text-xs">
               {openCharges.map((charge) => <div key={charge.orderId} className="flex justify-between gap-2 rounded bg-white p-2"><span>Pedido #{charge.orderNumber} · {new Date(charge.createdAt).toLocaleDateString("es-AR")}</span><b>{formatMoney(charge.outstandingMinor)}</b></div>)}
-            </div> : <p className="text-xs text-slate-500">Sin deuda pendiente.</p>}
+            </div> : <p className="text-xs text-slate-600">Sin deuda pendiente.</p>}
             {profile?.accountReceipts.length ? <div className="border-t border-indigo-200 pt-2">
               <h4 className="text-xs font-bold text-slate-700">Recibos registrados</h4>
               {profile.accountReceipts.map((receipt) => <div key={receipt.id} className="mt-1 rounded bg-white p-2 text-xs">
                 <b>{formatMoney(receipt.amountMinor)}</b> · {receipt.methodName} · {new Date(receipt.createdAt).toLocaleString("es-AR")}
-                <span className="block text-slate-500">Recibo {receipt.id.slice(0, 8)} · Pedidos {receipt.allocations.map((allocation) => `#${allocation.orderNumber} (${formatMoney(allocation.amountMinor)})`).join(", ")}{receipt.reference ? ` · ${receipt.reference}` : ""}</span>
+                <span className="block text-slate-600">Recibo {receipt.id.slice(0, 8)} · Pedidos {receipt.allocations.map((allocation) => `#${allocation.orderNumber} (${formatMoney(allocation.amountMinor)})`).join(", ")}{receipt.reference ? ` · ${receipt.reference}` : ""}</span>
               </div>)}
             </div> : null}
           </section>
 
           {settleOpen ? <section className="rounded-xl border border-slate-200 p-4 space-y-3">
             <h3 className="text-sm font-bold">Registrar cobro de deuda</h3>
-            <p className="text-xs text-slate-500">Sin selección se imputará a los pedidos más antiguos. Podés elegir pedidos concretos.</p>
+            <p className="text-xs text-slate-600">Sin selección se imputará a los pedidos más antiguos. Podés elegir pedidos concretos.</p>
             <div className="space-y-1">{openCharges.map((charge) => <label key={charge.orderId} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={selectedOrders.includes(charge.orderId)} onChange={(event) => setSelectedOrders((current) => event.target.checked ? [...current, charge.orderId] : current.filter((id) => id !== charge.orderId))} /> Pedido #{charge.orderNumber} · {formatMoney(charge.outstandingMinor)}</label>)}</div>
             <p className="text-xs">Disponible para imputar: <b>{formatMoney(selectedBalance)}</b></p>
             <div className="grid gap-2 sm:grid-cols-2">
@@ -1616,19 +1616,19 @@ function CustomerProfileModal({
               </h3>
               <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
                 <div className="rounded-lg bg-slate-50 p-2">
-                  <dt className="font-bold text-slate-500">Pago habitual</dt>
+                  <dt className="font-bold text-slate-600">Pago habitual</dt>
                   <dd className="mt-0.5 text-slate-800">
                     {metrics?.usualPaymentMethodName ?? "Sin datos"}
                   </dd>
                 </div>
                 <div className="rounded-lg bg-slate-50 p-2">
-                  <dt className="font-bold text-slate-500">Pago preferido</dt>
+                  <dt className="font-bold text-slate-600">Pago preferido</dt>
                   <dd className="mt-0.5 text-slate-800">
                     {preferredPayment?.name ?? "Sin preferencia"}
                   </dd>
                 </div>
                 <div className="rounded-lg bg-slate-50 p-2 sm:col-span-2">
-                  <dt className="font-bold text-slate-500">
+                  <dt className="font-bold text-slate-600">
                     Preferencias operativas
                   </dt>
                   <dd className="mt-0.5 whitespace-pre-wrap text-slate-800">
@@ -1653,7 +1653,7 @@ function CustomerProfileModal({
                       <span className="font-semibold text-slate-700">
                         {product.name}
                       </span>
-                      <span className="text-slate-500">
+                      <span className="text-slate-600">
                         {product.quantity} u. ·{" "}
                         {formatMoney(product.totalMinor)}
                       </span>
@@ -1661,7 +1661,7 @@ function CustomerProfileModal({
                   ))}
                 </div>
               ) : (
-                <p className="mt-2 text-xs text-slate-400">
+                <p className="mt-2 text-xs text-slate-600">
                   Todavía no hay productos habituales.
                 </p>
               )}
@@ -1705,13 +1705,13 @@ function CustomerProfileModal({
                 })}
               </div>
             ) : (
-              <p className="mt-2 text-xs text-slate-400">
+              <p className="mt-2 text-xs text-slate-600">
                 No tiene direcciones guardadas.
               </p>
             )}
             {profile?.topAddresses.some((address) => !address.addressId) ? (
               <div className="mt-3 border-t border-slate-100 pt-2">
-                <p className="text-[10px] font-bold uppercase text-slate-400">
+                <p className="text-xs font-bold uppercase text-slate-600">
                   Direcciones históricas no guardadas
                 </p>
                 {profile.topAddresses
@@ -1745,7 +1745,7 @@ function CustomerProfileModal({
               >
                 Historial completo
               </h3>
-              <span className="text-[10px] text-slate-400">
+              <span className="text-xs text-slate-600">
                 {profile?.history.total ?? 0} registros
               </span>
             </div>
@@ -1766,7 +1766,7 @@ function CustomerProfileModal({
                       <tr key={order.id}>
                         <td>
                           <b>#{order.number}</b>
-                          <span className="block text-[9px] text-slate-400">
+                          <span className="block text-xs text-slate-600">
                             {new Date(order.createdAt).toLocaleDateString(
                               "es-AR",
                             )}{" "}
@@ -1789,7 +1789,7 @@ function CustomerProfileModal({
                 </table>
               </div>
             ) : (
-              <div className="mt-2 rounded-xl border border-dashed border-slate-200 p-5 text-center text-xs text-slate-400">
+              <div className="mt-2 rounded-xl border border-dashed border-slate-200 p-5 text-center text-xs text-slate-600">
                 Todavía no hay pedidos vinculados a esta ficha.
               </div>
             )}
@@ -1804,7 +1804,7 @@ function CustomerProfileModal({
                 >
                   <CaretLeft /> Anterior
                 </Button>
-                <span className="text-[10px] font-bold text-slate-500">
+                <span className="text-xs font-bold text-slate-600">
                   Página {profile?.history.page} de {profile?.history.pageCount}
                 </span>
                 <Button
@@ -1889,7 +1889,7 @@ function CustomerProfileModal({
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
     <Card className="p-3">
-      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+      <p className="text-xs font-bold uppercase tracking-wide text-slate-600">
         {label}
       </p>
       <p className="mt-1 text-sm font-extrabold text-slate-900">{value}</p>
@@ -2168,7 +2168,7 @@ function LegacyCustomerProfileModal({
             className="grid gap-2 sm:grid-cols-4"
           >
             <Card className="p-3 sm:col-span-2">
-              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-600">
                 Contacto
               </p>
               <p className="mt-1 text-sm font-extrabold text-slate-900">
@@ -2182,24 +2182,24 @@ function LegacyCustomerProfileModal({
               </a>
             </Card>
             <Card className="p-3">
-              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-600">
                 Pedidos
               </p>
               <p className="mt-1 text-xl font-extrabold">
                 {metricOrders.length}
               </p>
-              <p className="text-[10px] text-slate-500">
+              <p className="text-xs text-slate-600">
                 {pending} pendiente{pending === 1 ? "" : "s"}
               </p>
             </Card>
             <Card className="p-3">
-              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-600">
                 Cobrado
               </p>
               <p className="mt-1 text-sm font-extrabold">
                 {formatMoney(paidMinor)}
               </p>
-              <p className="text-[10px] text-slate-500">
+              <p className="text-xs text-slate-600">
                 sobre {formatMoney(totalMinor)}
               </p>
             </Card>
@@ -2227,7 +2227,7 @@ function LegacyCustomerProfileModal({
                     </p>
                     <p className="mt-1 text-slate-600">{address.address}</p>
                     {address.notes ? (
-                      <p className="mt-1 text-[10px] text-slate-500">
+                      <p className="mt-1 text-xs text-slate-600">
                         {address.notes}
                       </p>
                     ) : null}
@@ -2238,7 +2238,7 @@ function LegacyCustomerProfileModal({
                 ))}
               </div>
             ) : (
-              <p className="mt-2 text-xs text-slate-400">
+              <p className="mt-2 text-xs text-slate-600">
                 No tiene direcciones guardadas.
               </p>
             )}
@@ -2261,7 +2261,7 @@ function LegacyCustomerProfileModal({
               >
                 Historial reciente
               </h3>
-              <span className="text-[10px] text-slate-400">
+              <span className="text-xs text-slate-600">
                 {orders.length} registro{orders.length === 1 ? "" : "s"}
               </span>
             </div>
@@ -2282,7 +2282,7 @@ function LegacyCustomerProfileModal({
                       <tr key={order.id}>
                         <td>
                           <b>#{order.number}</b>
-                          <span className="block text-[9px] text-slate-400">
+                          <span className="block text-xs text-slate-600">
                             {new Date(order.createdAt).toLocaleDateString(
                               "es-AR",
                             )}{" "}
@@ -2305,7 +2305,7 @@ function LegacyCustomerProfileModal({
                 </table>
               </div>
             ) : (
-              <div className="mt-2 rounded-xl border border-dashed border-slate-200 p-5 text-center text-xs text-slate-400">
+              <div className="mt-2 rounded-xl border border-dashed border-slate-200 p-5 text-center text-xs text-slate-600">
                 Todavía no hay pedidos vinculados a esta ficha.
               </div>
             )}

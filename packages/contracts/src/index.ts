@@ -28,6 +28,9 @@ export const AUDIT_FILTER_ACTIONS = [
   "PRODUCT_UPDATED",
   "PRODUCTS_BULK_UPDATED",
   "STOCK_ADJUSTED",
+  "PURCHASE_METADATA_CORRECTED",
+  "PURCHASE_ITEM_QUANTITY_CORRECTED",
+  "PURCHASE_ITEM_COST_CORRECTED",
   "USER_CREATED",
   "DRIVER_CREATED",
   "USER_UPDATED",
@@ -40,6 +43,14 @@ export const AUDIT_FILTER_ACTIONS = [
   "SETTINGS_UPDATED",
   "FINANCE_EXPENSE_CREATED",
   "FINANCE_EXPENSE_PAID",
+  "FINANCE_EXPENSE_PAYMENT_UNMARKED",
+  "FINANCE_EXPENSE_CASH_PAYMENT_CORRECTED",
+  "FINANCE_EXPENSE_CLOSED_PAYMENT_CORRECTED",
+  "FINANCE_MONTHLY_EXPENSE_CORRECTED",
+  "FINANCE_MONTHLY_EXPENSE_CANCELLED",
+  "FINANCE_EXPENSE_RETURN_RECEIVED",
+  "FINANCE_EXPENSE_CORRECTED",
+  "FINANCE_EXPENSE_CANCELLED",
   "FINANCE_RECURRING_CREATED",
   "FINANCE_RECURRING_STOPPED",
   "FINANCE_PRODUCT_COST_SET",
@@ -827,10 +838,14 @@ export interface PurchaseItemDto {
   lineTotalMinor: MoneyMinor;
   stockBeforeMinor: number;
   stockAfterMinor: number;
+  effectiveQuantityMinor?: number;
+  effectiveUnitCostMinor?: MoneyMinor;
+  effectiveLineTotalMinor?: MoneyMinor;
 }
 
 export interface PurchaseDto {
   id: Id;
+  revision?: number;
   supplierName: string;
   invoiceNumber: string | null;
   notes: string | null;
@@ -839,8 +854,36 @@ export interface PurchaseDto {
   createdByUserName: string;
   createdAt: IsoDateTime;
   items: PurchaseItemDto[];
+  effectiveTotalMinor?: MoneyMinor;
 }
 
+export interface CorrectPurchaseItemQuantityInput extends IdempotentRequest {
+  purchaseId: Id;
+  purchaseItemId: Id;
+  expectedRevision: number;
+  quantityMinor: number;
+  reason: string;
+  authorizerPin: string;
+}
+
+export interface CorrectPurchaseItemCostInput extends IdempotentRequest {
+  purchaseId: Id;
+  purchaseItemId: Id;
+  expectedRevision: number;
+  unitCostMinor: MoneyMinor;
+  reason: string;
+  authorizerPin: string;
+}
+
+export interface CorrectPurchaseMetadataInput extends IdempotentRequest {
+  purchaseId: Id;
+  expectedRevision: number;
+  supplierName: string;
+  invoiceNumber?: string | null;
+  notes?: string | null;
+  reason: string;
+  authorizerPin: string;
+}
 export interface CreatePurchaseInput extends IdempotentRequest {
   supplierName: string;
   invoiceNumber?: string | null;
@@ -920,6 +963,21 @@ export interface PayOrderInput extends IdempotentRequest {
 export type FinanceExpenseKind = "GENERAL" | "FIXED" | "PAYROLL";
 
 export interface FinanceExpenseDto {
+  canRecoverMonthlyExpense?: boolean;
+  returnInfo?: FinanceExpenseReturnDto | null;
+  canReceiveReturn?: boolean;
+  closedCashPaymentCorrection?: FinanceExpenseDto["cashPaymentCorrection"];
+  cashPaymentCorrection?: {
+    cashSessionId: Id;
+    cashSessionNumber: number;
+    amountMinor: MoneyMinor;
+    paymentMethodName: string;
+    affectsCash: boolean;
+  } | null;
+  canUnmarkPayment?: boolean;
+  revision?: number;
+  cancelledAt?: IsoDateTime | null;
+  cancellationReason?: string | null;
   id: Id;
   title: string;
   category: string;
@@ -933,6 +991,25 @@ export interface FinanceExpenseDto {
   employeeName: string | null;
   recurringId: Id | null;
   note: string | null;
+}
+
+export interface FinanceExpenseReturnDto {
+  id: Id;
+  expenseId: Id;
+  expenseTitle: string;
+  expenseCategory: string;
+  amountMinor: MoneyMinor;
+  receivedOn: BusinessDate;
+  receivedAt: IsoDateTime;
+  destination: "CASH_SESSION" | "EXTERNAL";
+  paymentMethodCode: string;
+  paymentMethodName: string;
+  affectsCash: boolean;
+  cashSessionId: Id | null;
+  cashSessionNumber: number | null;
+  cashMovementId: Id | null;
+  originalMovementId: Id | null;
+  reason: string;
 }
 
 export interface FinanceRecurringDto {
@@ -949,11 +1026,15 @@ export interface FinanceRecurringDto {
 }
 
 export interface FinanceReportDto {
+  expenseReturns?: FinanceExpenseReturnDto[];
+  expenseReturnsMinor?: MoneyMinor;
+  netExpensesMinor?: MoneyMinor;
   from: string;
   to: string;
   salesMinor: MoneyMinor;
   refundsMinor: MoneyMinor;
   cogsMinor: MoneyMinor;
+  deliveryCostsMinor: MoneyMinor;
   unknownCostItems: number;
   costedItems: number;
   expensesMinor: MoneyMinor;
@@ -972,9 +1053,12 @@ export interface FinanceReportDto {
     source: "MANUAL" | "PURCHASE" | "UNKNOWN";
   }>;
   monthly: Array<{
+    expenseReturnsMinor?: MoneyMinor;
+    netExpensesMinor?: MoneyMinor;
     month: string;
     salesMinor: MoneyMinor;
     cogsMinor: MoneyMinor;
+    deliveryCostsMinor: MoneyMinor;
     expensesMinor: MoneyMinor;
   }>;
 }
@@ -988,6 +1072,62 @@ export interface CreateFinanceExpenseInput extends IdempotentRequest {
   dueOn?: string;
   employeeId?: Id | null;
   note?: string | null;
+}
+
+export interface CorrectFinanceExpenseInput extends CreateFinanceExpenseInput {
+  expenseId: Id;
+  expectedRevision: number;
+  reason: string;
+}
+
+export interface CancelFinanceExpenseInput extends IdempotentRequest {
+  expenseId: Id;
+  expectedRevision: number;
+  reason: string;
+}
+
+export interface UnmarkFinanceExpensePaymentInput extends IdempotentRequest {
+  expenseId: Id;
+  expectedRevision: number;
+  reason: string;
+}
+
+export interface CorrectFinanceExpenseCashPaymentInput extends IdempotentRequest {
+  expenseId: Id;
+  expectedRevision: number;
+  reason: string;
+  authorizerPin: string;
+}
+
+export interface CorrectFinanceMonthlyExpenseInput extends IdempotentRequest {
+  expenseId: Id;
+  expectedRevision: number;
+  reason: string;
+  title: string;
+  category: string;
+  amountMinor: MoneyMinor;
+  dueOn?: string;
+  note?: string | null;
+}
+
+export interface CorrectFinanceExpenseClosedCashPaymentInput extends CorrectFinanceExpenseCashPaymentInput {
+  confirmedUnpaid: boolean;
+}
+
+export interface PayFinanceExpenseInput extends IdempotentRequest {
+  expenseId: Id;
+  paymentMethodCode: string;
+  fromCash: boolean;
+  expectedRevision?: number;
+}
+
+export interface ReceiveFinanceExpenseReturnInput extends IdempotentRequest {
+  expenseId: Id;
+  expectedRevision: number;
+  destination: "CASH_SESSION" | "EXTERNAL";
+  paymentMethodCode: string;
+  reason: string;
+  authorizerPin?: string;
 }
 
 export interface CreateFinanceRecurringInput extends IdempotentRequest {
@@ -1192,6 +1332,14 @@ export interface DesktopApi {
   }): Promise<ModifierDto>;
   listPurchases(): Promise<PurchaseDto[]>;
   createPurchase(input: CreatePurchaseInput): Promise<PurchaseDto>;
+  correctPurchaseMetadata(
+    input: CorrectPurchaseMetadataInput,
+  ): Promise<PurchaseDto>;
+  correctPurchaseItemQuantity(input: CorrectPurchaseItemQuantityInput): Promise<PurchaseDto>;
+  correctPurchaseItemCost(
+    input: CorrectPurchaseItemCostInput,
+  ): Promise<PurchaseDto>;
+  getFinanceProductCosts(): Promise<FinanceReportDto["productCosts"]>;
   getFinanceReport(input: {
     from: string;
     to: string;
@@ -1199,12 +1347,30 @@ export interface DesktopApi {
   createFinanceExpense(
     input: CreateFinanceExpenseInput,
   ): Promise<FinanceExpenseDto>;
-  payFinanceExpense(
-    input: {
-      expenseId: Id;
-      paymentMethodCode: string;
-      fromCash: boolean;
-    } & IdempotentRequest,
+  payFinanceExpense(input: PayFinanceExpenseInput): Promise<FinanceExpenseDto>;
+  unmarkFinanceExpensePayment(
+    input: UnmarkFinanceExpensePaymentInput,
+  ): Promise<FinanceExpenseDto>;
+  correctFinanceExpenseCashPayment(
+    input: CorrectFinanceExpenseCashPaymentInput,
+  ): Promise<FinanceExpenseDto>;
+  correctFinanceMonthlyExpense(
+    input: CorrectFinanceMonthlyExpenseInput,
+  ): Promise<FinanceExpenseDto>;
+  cancelFinanceMonthlyExpense(
+    input: CancelFinanceExpenseInput,
+  ): Promise<FinanceExpenseDto>;
+  correctFinanceExpenseClosedCashPayment(
+    input: CorrectFinanceExpenseClosedCashPaymentInput,
+  ): Promise<FinanceExpenseDto>;
+  receiveFinanceExpenseReturn(
+    input: ReceiveFinanceExpenseReturnInput,
+  ): Promise<FinanceExpenseDto>;
+  correctFinanceExpense(
+    input: CorrectFinanceExpenseInput,
+  ): Promise<FinanceExpenseDto>;
+  cancelFinanceExpense(
+    input: CancelFinanceExpenseInput,
   ): Promise<FinanceExpenseDto>;
   createFinanceRecurring(
     input: CreateFinanceRecurringInput,

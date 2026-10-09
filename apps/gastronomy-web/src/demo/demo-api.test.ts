@@ -20,6 +20,163 @@ class MemoryStorage implements DemoStorage {
 }
 
 describe("API de demostración", () => {
+  it("lectura de costos incluye inactivos y cero sin modificar almacenamiento", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    const data = await api.bootstrap();
+    await api.setFinanceProductCost({
+      productId: data.products[0]!.id,
+      unitCostMinor: 0,
+    });
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    saved.data.products[0].active = false;
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+    const reopened = createDemoApi(storage);
+    const before = storage.getItem(DEMO_STORAGE_KEY);
+    const costs = await reopened.getFinanceProductCosts();
+    expect(costs).toHaveLength(data.products.length);
+    expect(
+      costs.find((item) => item.productId === data.products[0]!.id),
+    ).toMatchObject({ unitCostMinor: 0, source: "MANUAL" });
+    expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(before);
+  });
+
+  it("lectura demo de costos rechaza usuarios sin permiso financiero", async () => {
+    const storage = new MemoryStorage();
+    await createDemoApi(storage).bootstrap();
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    saved.data.currentUser.permissions = [];
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+    await expect(
+      createDemoApi(storage).getFinanceProductCosts(),
+    ).rejects.toThrow(/permiso/i);
+  });
+
+  it("finanzas demo resta el envío a cargo del negocio una vez y excluye pagos/liquidaciones", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    await api.getFinanceReport({ from: "2026-10-03", to: "2026-10-03" });
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    const source = saved.data.orders.find(
+      (order: { lifecycleStatus: string }) =>
+        order.lifecycleStatus === "CONFIRMED",
+    );
+    const cashExpectedBefore = saved.data.cashSession.expectedAmountMinor;
+    saved.data.settings.deliveryFeeBelongsToDriver = false;
+    saved.data.cashSession.businessDate = "2026-10-03";
+    saved.data.orders = [
+      {
+        ...source,
+        type: "DELIVERY",
+        lifecycleStatus: "CONFIRMED",
+        operationalStatus: "READY",
+        deliveryFeeMinor: 250_000,
+        deliveryFeeBelongsToDriver: true,
+        cashSessionCreatedId: saved.data.cashSession.id,
+        createdAt: "2026-10-03T15:00:00.000Z",
+      },
+      {
+        ...source,
+        type: "DELIVERY",
+        cashSessionCreatedId: saved.data.cashSession.id,
+        id: "business-owned-excluded",
+        number: 2,
+        deliveryFeeMinor: 100_000,
+        deliveryFeeBelongsToDriver: false,
+      },
+      {
+        ...source,
+        type: "DELIVERY",
+        cashSessionCreatedId: saved.data.cashSession.id,
+        id: "cancelled-delivery",
+        number: 3,
+        deliveryFeeMinor: 500_000,
+        operationalStatus: "CANCELLED",
+      },
+      {
+        ...source,
+        type: "DELIVERY",
+        cashSessionCreatedId: saved.data.cashSession.id,
+        id: "draft-delivery",
+        number: 4,
+        lifecycleStatus: "DRAFT",
+        deliveryFeeMinor: 600_000,
+      },
+    ];
+    saved.movements = [
+      {
+        id: "payout",
+        sessionId: saved.data.cashSession.id,
+        type: "EXPENSE",
+        amountMinor: 250_000,
+        affectsCash: true,
+        paymentMethodCode: "CASH",
+        orderId: source.id,
+        userId: saved.data.currentUser.id,
+        reason: "Pago de envío a repartidor: Pedido #1",
+        createdAt: "2026-10-03T15:01:00.000Z",
+      },
+      {
+        id: "reversal",
+        sessionId: saved.data.cashSession.id,
+        type: "EXPENSE",
+        amountMinor: 250_000,
+        affectsCash: true,
+        paymentMethodCode: "CASH",
+        orderId: source.id,
+        userId: saved.data.currentUser.id,
+        reason: "Anulación de liquidación: prueba",
+        createdAt: "2026-10-03T15:02:00.000Z",
+      },
+      {
+        id: "ordinary",
+        sessionId: saved.data.cashSession.id,
+        type: "EXPENSE",
+        amountMinor: 100,
+        affectsCash: true,
+        paymentMethodCode: "CASH",
+        orderId: null,
+        userId: saved.data.currentUser.id,
+        reason: "Gasto ordinario",
+        createdAt: "2026-10-03T15:03:00.000Z",
+      },
+      {
+        id: "named-ordinary",
+        sessionId: saved.data.cashSession.id,
+        type: "EXPENSE",
+        amountMinor: 200,
+        affectsCash: true,
+        paymentMethodCode: "CASH",
+        orderId: null,
+        userId: saved.data.currentUser.id,
+        reason: "Liquidación de reparto (gasto manual)",
+        createdAt: "2026-10-03T15:04:00.000Z",
+      },
+    ];
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+    const report = await createDemoApi(storage).getFinanceReport({
+      from: "2026-10-03",
+      to: "2026-10-03",
+    });
+    expect(report.deliveryCostsMinor).toBe(250_000);
+    expect(report.monthly).toEqual([
+      expect.objectContaining({
+        month: "2026-10",
+        deliveryCostsMinor: 250_000,
+      }),
+    ]);
+    expect(report.grossProfitMinor).toBe(
+      report.salesMinor - report.cogsMinor - 250_000,
+    );
+    expect(report.expensesMinor).toBe(300);
+    expect(report.estimatedOperatingProfitMinor).toBe(
+      report.grossProfitMinor - 300,
+    );
+    const after = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    expect(after.movements).toEqual(saved.movements);
+    expect(after.data.cashSession.expectedAmountMinor).toBe(cashExpectedBefore);
+  });
+
   it("finanzas tolera pedidos antiguos de demo sin seña ni devolución", async () => {
     const storage = new MemoryStorage();
     const api = createDemoApi(storage);
@@ -156,14 +313,19 @@ describe("API de demostración", () => {
     expect(report.monthly).toEqual([
       expect.objectContaining({ month: "2026-10", salesMinor: 1_950_000 }),
     ]);
-    expect(report.expenses.find((item) => item.id === "cash-movement-midnight-expense"))
-      .toMatchObject({ incurredOn: "2026-10-03", amountMinor: 4_500 });
+    expect(
+      report.expenses.find(
+        (item) => item.id === "cash-movement-midnight-expense",
+      ),
+    ).toMatchObject({ incurredOn: "2026-10-03", amountMinor: 4_500 });
     expect(report.purchasesMinor).toBe(7_800);
     expect(
-      (await createDemoApi(storage).getFinanceReport({
-        from: "2026-10-04",
-        to: "2026-10-04",
-      })).salesMinor,
+      (
+        await createDemoApi(storage).getFinanceReport({
+          from: "2026-10-04",
+          to: "2026-10-04",
+        })
+      ).salesMinor,
     ).toBe(0);
   });
   it("no regenera un gasto fijo detenido en el mismo mes", async () => {
@@ -1204,28 +1366,110 @@ describe("API de demostración", () => {
 
   it("rechaza una fusión demo que excede etiquetas sin alterar las fichas", async () => {
     const api = createDemoApi(new MemoryStorage());
-    const source = await api.createCustomer({ name: "Origen fusión", phone: "26 2888-1000", tags: Array.from({ length: 7 }, (_, i) => `Origen${i}`) });
-    const target = await api.createCustomer({ name: "Destino fusión", phone: "26 2888-2000", tags: Array.from({ length: 6 }, (_, i) => `Destino${i}`) });
-    await expect(api.mergeCustomers({ sourceCustomerId: source.id, targetCustomerId: target.id, reason: "Prueba", authorizerPin: "1234" })).rejects.toThrow("hasta 12 etiquetas");
-    await expect(api.searchCustomersPage({ query: "Origen fusión", page: 1, pageSize: 10, status: "ACTIVE" })).resolves.toMatchObject({ items: [expect.objectContaining({ active: true })] });
-    await expect(api.searchCustomersPage({ query: "Destino fusión", page: 1, pageSize: 10, status: "ACTIVE" })).resolves.toMatchObject({ items: [expect.objectContaining({ tags: target.tags })] });
+    const source = await api.createCustomer({
+      name: "Origen fusión",
+      phone: "26 2888-1000",
+      tags: Array.from({ length: 7 }, (_, i) => `Origen${i}`),
+    });
+    const target = await api.createCustomer({
+      name: "Destino fusión",
+      phone: "26 2888-2000",
+      tags: Array.from({ length: 6 }, (_, i) => `Destino${i}`),
+    });
+    await expect(
+      api.mergeCustomers({
+        sourceCustomerId: source.id,
+        targetCustomerId: target.id,
+        reason: "Prueba",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("hasta 12 etiquetas");
+    await expect(
+      api.searchCustomersPage({
+        query: "Origen fusión",
+        page: 1,
+        pageSize: 10,
+        status: "ACTIVE",
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ active: true })],
+    });
+    await expect(
+      api.searchCustomersPage({
+        query: "Destino fusión",
+        page: 1,
+        pageSize: 10,
+        status: "ACTIVE",
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ tags: target.tags })],
+    });
   });
 
   it("no muta direcciones duplicadas de origen si la validación de fusión falla", async () => {
     const api = createDemoApi(new MemoryStorage());
     const sourceAddresses = [
-      { label: "Casa A", address: "Calle repetida 1", deliveryFeeMinor: 100, notes: "referencia A" },
-      { label: "Casa B", address: "CALLE REPETIDA 1", deliveryFeeMinor: 200, notes: "referencia B" },
+      {
+        label: "Casa A",
+        address: "Calle repetida 1",
+        deliveryFeeMinor: 100,
+        notes: "referencia A",
+      },
+      {
+        label: "Casa B",
+        address: "CALLE REPETIDA 1",
+        deliveryFeeMinor: 200,
+        notes: "referencia B",
+      },
     ];
-    const source = await api.createCustomer({ name: "Origen con direcciones repetidas", phone: "26 2999-1000", notes: "s".repeat(800), addresses: sourceAddresses });
-    const target = await api.createCustomer({ name: "Destino con notas largas", phone: "26 2999-2000", notes: "t".repeat(250) });
-    await expect(api.mergeCustomers({ sourceCustomerId: source.id, targetCustomerId: target.id, reason: "Validar no mutación", authorizerPin: "1234" })).rejects.toThrow("No se fusionaron las fichas");
-    const unchangedSource = (await api.searchCustomersPage({ query: source.name, page: 1, pageSize: 1, status: "ACTIVE" })).items[0]!;
-    expect(unchangedSource.addresses.map(({ deliveryFeeMinor, notes }) => ({ deliveryFeeMinor, notes }))).toEqual([
+    const source = await api.createCustomer({
+      name: "Origen con direcciones repetidas",
+      phone: "26 2999-1000",
+      notes: "s".repeat(800),
+      addresses: sourceAddresses,
+    });
+    const target = await api.createCustomer({
+      name: "Destino con notas largas",
+      phone: "26 2999-2000",
+      notes: "t".repeat(250),
+    });
+    await expect(
+      api.mergeCustomers({
+        sourceCustomerId: source.id,
+        targetCustomerId: target.id,
+        reason: "Validar no mutación",
+        authorizerPin: "1234",
+      }),
+    ).rejects.toThrow("No se fusionaron las fichas");
+    const unchangedSource = (
+      await api.searchCustomersPage({
+        query: source.name,
+        page: 1,
+        pageSize: 1,
+        status: "ACTIVE",
+      })
+    ).items[0]!;
+    expect(
+      unchangedSource.addresses.map(({ deliveryFeeMinor, notes }) => ({
+        deliveryFeeMinor,
+        notes,
+      })),
+    ).toEqual([
       { deliveryFeeMinor: 100, notes: "referencia A" },
       { deliveryFeeMinor: 200, notes: "referencia B" },
     ]);
-    await expect(api.searchCustomersPage({ query: target.name, page: 1, pageSize: 1, status: "ACTIVE" })).resolves.toMatchObject({ items: [expect.objectContaining({ notes: "t".repeat(250), addresses: [] })] });
+    await expect(
+      api.searchCustomersPage({
+        query: target.name,
+        page: 1,
+        pageSize: 1,
+        status: "ACTIVE",
+      }),
+    ).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({ notes: "t".repeat(250), addresses: [] }),
+      ],
+    });
   });
 
   it("permite cargar productos antes del cliente y exige sus datos al confirmar", async () => {

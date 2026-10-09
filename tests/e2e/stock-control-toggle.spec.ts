@@ -33,7 +33,7 @@ test("crea producto con control de stock deshabilitado y verifica que queda Sin 
 
   await page.getByRole("link", { name: "Productos" }).click();
   await expect(
-    page.getByRole("heading", { name: "Catálogo, extras y stock" }),
+    page.getByRole("heading", { name: "Catálogo, modificadores y stock" }),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Nuevo producto" }).click();

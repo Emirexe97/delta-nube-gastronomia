@@ -14,3 +14,13 @@ test-results/
 playwright-report/
 # Generated desktop renderer bundle
 apps/desktop-shell/renderer/
+# Local/generated QA captures, traces, fixtures and source backups
+# Keep directory placeholders so native tests can write evidence on a fresh clone.
+docs/qa/evidence/**
+!docs/qa/evidence/**/
+!docs/qa/evidence/**/.gitkeep
+!docs/qa/evidence/README.md
+!docs/qa/evidence/**/regression-summary.json
+*.tsbuildinfo
+.env.*
+!.env.example

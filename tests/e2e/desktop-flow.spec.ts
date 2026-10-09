@@ -1,3 +1,4 @@
+import { installInteractionDiagnostics, attachInteractionDiagnostics } from "./interaction-diagnostics";
 import {
   test,
   expect,
@@ -20,6 +21,7 @@ test.beforeEach(async () => {
     cwd: process.cwd(),
   });
   page = await app.firstWindow();
+  await installInteractionDiagnostics(page);
   await expect(page.getByText("Delta Nube", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Caja" }).click();
   await page.getByRole("button", { name: /Abrir caja/ }).click();
@@ -31,7 +33,41 @@ test.beforeEach(async () => {
   await expect(page.getByText("Caja #1")).toBeVisible();
 });
 
-test.afterEach(async () => {
+test.afterEach(async ({}, info) => {
+  try { await attachInteractionDiagnostics(page, app, info, "interaction-state"); } catch (error) { console.warn("Diagnostic capture failed", error); }
+  try {
+    if (info.status !== info.expectedStatus && page && !page.isClosed()) {
+      await info.attach("customer-search-state", {
+        body: JSON.stringify(
+          await page.evaluate(async () => {
+            const input = document.querySelector<HTMLInputElement>(
+              'input[role="combobox"]',
+            );
+            return {
+              value: input?.value,
+              focused: input === document.activeElement,
+              activeElement: document.activeElement?.outerHTML,
+              expanded: input?.getAttribute("aria-expanded"),
+              options: Array.from(
+                document.querySelectorAll('[role="option"]'),
+              ).map((n) => n.textContent),
+              matches: await window.gastronomy.searchCustomers("Cliente E2E"),
+              dialogs: Array.from(
+                document.querySelectorAll('[role="dialog"]'),
+              ).map((n) => n.textContent),
+            };
+          }),
+        ),
+        contentType: "application/json",
+      });
+      await info.attach("failed-ui", {
+        body: await page.screenshot(),
+        contentType: "image/png",
+      });
+    }
+  } catch (error) {
+    console.warn("Could not capture failure diagnostics", error);
+  }
   await app?.evaluate(({ BrowserWindow }) => {
     for (const window of BrowserWindow.getAllWindows()) window.destroy();
   });
@@ -63,9 +99,7 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
   await customerDialog
     .getByRole("button", { name: "Guardar y seleccionar" })
     .click();
-  await expect(
-    page.getByText("Retiro E2E seleccionado"),
-  ).toBeVisible();
+  await expect(page.getByText("Retiro E2E seleccionado")).toBeVisible();
   await expect(
     page.getByLabel("Dirección (opcional)", { exact: true }),
   ).toHaveValue("");
@@ -153,9 +187,7 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   await customerDialog
     .getByRole("button", { name: "Guardar y seleccionar" })
     .click();
-  await expect(
-    page.getByText("Cliente E2E seleccionado"),
-  ).toBeVisible();
+  await expect(page.getByText("Cliente E2E seleccionado")).toBeVisible();
   const customerSearch = page.getByRole("combobox", { name: /Buscar cliente/ });
   await customerSearch.fill("Cliente E2");
   await expect(page.getByRole("option", { name: /Cliente E2E/ })).toBeVisible();
@@ -214,8 +246,17 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   await page.getByRole("link", { name: "Pedidos" }).click();
   await page.getByRole("button", { name: /F4 Envío/ }).click();
   const deliverySearch = page.getByRole("combobox", { name: /Buscar cliente/ });
+  // A real click waits for the opening dialog to be stable before typing.
+  // fill alone only checks editable/visible and can race its initial query reset.
+  await deliverySearch.click();
+  await expect(deliverySearch).toBeFocused();
   await deliverySearch.fill("Cliente E2E");
-  await page.getByRole("option", { name: /Cliente E2E/ }).click();
+  await expect(deliverySearch).toHaveValue("Cliente E2E");
+  const deliveryCustomerOption = page.getByRole("option", {
+    name: /Cliente E2E/,
+  });
+  await expect(deliveryCustomerOption).toBeVisible();
+  await deliveryCustomerOption.click();
   const addressSelector = page.getByLabel("Dirección guardada");
   await expect(addressSelector).toBeVisible();
   await addressSelector.selectOption({ index: 1 });

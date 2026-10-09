@@ -54,7 +54,7 @@ export function AuditPage() {
     <div className="panel-enter mx-auto max-w-[1450px] space-y-4">
       <div>
         <h2 className="text-lg font-extrabold">Auditoría operativa</h2>
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-slate-600">
           Registro de eliminaciones y acciones sensibles con impacto económico o
           de seguridad
         </p>
@@ -115,7 +115,7 @@ export function AuditPage() {
       </Card>
       <Card className="overflow-hidden">
         {query.isLoading ? (
-          <div className="grid h-56 place-items-center text-xs font-semibold text-slate-400">
+          <div className="grid h-56 place-items-center text-xs font-semibold text-slate-600">
             Cargando auditoría…
           </div>
         ) : query.isError ? (
@@ -159,7 +159,7 @@ export function AuditPage() {
                       <p className="font-semibold">
                         {new Date(row.timestamp).toLocaleDateString("es-AR")}
                       </p>
-                      <p className="text-[10px] text-slate-400">
+                      <p className="text-xs text-slate-600">
                         {new Date(row.timestamp).toLocaleTimeString("es-AR")}
                       </p>
                     </td>
@@ -180,7 +180,7 @@ export function AuditPage() {
                       <p className="font-semibold">
                         {auditEntityLabel(row.entityType)}
                       </p>
-                      <p className="max-w-[160px] truncate font-mono text-[9px] text-slate-400">
+                      <p className="max-w-[160px] truncate font-mono text-xs text-slate-600">
                         {row.entityId}
                       </p>
                     </td>
@@ -189,12 +189,12 @@ export function AuditPage() {
                         {row.operatorName ?? "Sistema"}
                       </p>
                       {row.authorizerName ? (
-                        <p className="text-[10px] text-brand-600">
+                        <p className="text-xs text-brand-700">
                           Autorizó: {row.authorizerName}
                         </p>
                       ) : null}
                     </td>
-                    <td className="font-mono text-[10px]">
+                    <td className="font-mono text-xs">
                       {permissionLabel(row.permissionUsed)}
                     </td>
                     <td>

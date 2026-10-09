@@ -1,9 +1,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import type {
   AuditEntryDto,
   BootstrapDto,
   CategoryDto,
   ProductDto,
+  FinanceReportDto,
 } from "@gastronomy/contracts";
 import {
   CaretDown,
@@ -31,11 +33,17 @@ import {
 import { useApiMutation } from "../api";
 import { convertProductImageToWebp } from "../product-image";
 import {
+  auditActionLabel,
   formatMoney,
   humanError,
   parseMoneyInput,
   parseStockInput,
 } from "../lib";
+import {
+  buildFilteredCatalogGroups,
+  type CatalogFilters,
+  type ProductCost,
+} from "./catalog-filters";
 
 const visiblePriceListCodes = ["SALON", "OFF_PREMISE"] as const;
 type VisiblePriceListCode = (typeof visiblePriceListCodes)[number];
@@ -58,7 +66,10 @@ export interface CatalogProductGroup {
   hasMatchingVariant: boolean;
 }
 
-export function matchesProductQuery(product: ProductDto, query: string): boolean {
+export function matchesProductQuery(
+  product: ProductDto,
+  query: string,
+): boolean {
   if (!query.trim()) return true;
   const term = query.trim().toLocaleLowerCase();
   return `${product.code ?? ""} ${product.name} ${product.categoryName}`
@@ -96,7 +107,8 @@ export function buildCatalogProductGroups(
     const hasMatchingVariant = Boolean(q) && matchingVariants.length > 0;
 
     if (!q || parentMatches || hasMatchingVariant) {
-      const variantsToShow = !q || parentMatches ? allVariants : matchingVariants;
+      const variantsToShow =
+        !q || parentMatches ? allVariants : matchingVariants;
       groups.push({
         parent,
         variants: variantsToShow,
@@ -110,10 +122,53 @@ export function buildCatalogProductGroups(
 
 export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [query, setQuery] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [statusFilter, setStatusFilter] =
+    useState<CatalogFilters["status"]>("all");
+  const [stockFilter, setStockFilter] =
+    useState<CatalogFilters["stock"]>("all");
+  const canViewCosts =
+    data.currentUser.permissions.includes("finance.view") ||
+    data.currentUser.permissions.includes("*");
+  const [productCosts, setProductCosts] = useState<
+    FinanceReportDto["productCosts"]
+  >([]);
+  const [costLoading, setCostLoading] = useState(canViewCosts);
+  const [costError, setCostError] = useState<string | null>(null);
+  const [costReload, setCostReload] = useState(0);
+  const costParam = searchParams.get("costo");
+  const costFilterExtended: "all" | "with" | "without" =
+    costParam === "sin" ? "without" : costParam === "con" ? "with" : "all";
+  useEffect(() => {
+    if (!canViewCosts) return;
+    let current = true;
+    setCostLoading(true);
+    window.gastronomy
+      .getFinanceProductCosts()
+      .then((costs) => {
+        if (current) {
+          setProductCosts(costs);
+          setCostError(null);
+        }
+      })
+      .catch((error) => {
+        if (current) setCostError(humanError(error));
+      })
+      .finally(() => {
+        if (current) setCostLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [canViewCosts, costReload, data.products, data.currentUser.id]);
   const [categoryQuery, setCategoryQuery] = useState("");
   const [tab, setTab] = useState<"PRODUCTS" | "CATEGORIES" | "MODIFIERS">(
     "PRODUCTS",
   );
+  useEffect(() => {
+    if (costParam === "sin" || costParam === "con") setTab("PRODUCTS");
+  }, [costParam]);
   const [productOpen, setProductOpen] = useState(false);
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<CategoryDto | null>(
@@ -141,9 +196,45 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     new Set(),
   );
 
+  const costs = useMemo(
+    () =>
+      new Map(
+        productCosts.map((cost) => [cost.productId, cost as ProductCost]),
+      ),
+    [productCosts],
+  );
+  const costUnavailable =
+    canViewCosts &&
+    costFilterExtended !== "all" &&
+    (costLoading || Boolean(costError));
+  const filters: CatalogFilters = {
+    categoryId: categoryFilter,
+    status: statusFilter,
+    cost:
+      canViewCosts && !costLoading && !costError ? costFilterExtended : "all",
+    stock: stockFilter,
+  };
   const productGroups = useMemo(
-    () => buildCatalogProductGroups(data.products, query),
-    [data.products, query],
+    () =>
+      costUnavailable
+        ? []
+        : buildFilteredCatalogGroups(data.products, query, filters, costs),
+    [
+      data.products,
+      query,
+      categoryFilter,
+      statusFilter,
+      costFilterExtended,
+      stockFilter,
+      costs,
+      costUnavailable,
+      canViewCosts,
+      filters.cost,
+    ],
+  );
+  const matchedIds = useMemo(
+    () => new Set(productGroups.flatMap((group) => group.matchingIds)),
+    [productGroups],
   );
 
   const totalVariantsCount = useMemo(
@@ -152,12 +243,13 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   );
 
   const baseProductsWithVariants = useMemo(
-    () => productGroups.filter((g) => g.variants.length > 0).map((g) => g.parent),
+    () =>
+      productGroups.filter((g) => g.variants.length > 0).map((g) => g.parent),
     [productGroups],
   );
 
   const isGroupExpanded = (group: CatalogProductGroup) => {
-    if (query.trim() && group.hasMatchingVariant) return true;
+    if (group.hasMatchingVariant) return true;
     return expandedProductIds.has(group.parent.id);
   };
 
@@ -206,16 +298,37 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       (current) => new Set([...current].filter((id) => available.has(id))),
     );
   }, [data.products]);
+  const selectableVisibleIds = visibleProducts
+    .filter((product) => matchedIds.has(product.id))
+    .map((product) => product.id);
   const allVisibleSelected =
-    visibleProducts.length > 0 &&
-    visibleProducts.every((product) => selectedProductIds.has(product.id));
+    selectableVisibleIds.length > 0 &&
+    selectableVisibleIds.every((id) => selectedProductIds.has(id));
+  const visibleProductIds = new Set(
+    visibleProducts.map((product) => product.id),
+  );
+  const hiddenSelectedCount = selectedProducts.filter(
+    (product) => !visibleProductIds.has(product.id),
+  ).length;
+  const setCostFilter = (value: "all" | "with" | "without") => {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (value === "without") next.set("costo", "sin");
+        else if (value === "with") next.set("costo", "con");
+        else next.delete("costo");
+        return next;
+      },
+      { replace: true },
+    );
+  };
 
   return (
     <div className="panel-enter mx-auto max-w-[1500px] space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-extrabold">Catálogo, extras y stock</h2>
-          <p className="text-xs text-slate-400">
+          <h2 className="text-lg font-extrabold">Catálogo, modificadores y stock</h2>
+          <p className="text-xs text-slate-600">
             Precios por canal y control opcional de existencias
           </p>
         </div>
@@ -232,7 +345,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
               }
             >
               <Plus size={17} />{" "}
-              {tab === "PRODUCTS" ? "Nuevo producto" : "Nuevo extra"}
+              {tab === "PRODUCTS" ? "Nuevo producto" : "Nuevo modificador"}
             </Button>
           ) : null}
         </div>
@@ -276,7 +389,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           </span>
           <div className="flex gap-2">
             <Button
-              className="h-8 px-3 text-[11px]"
+              className="h-8 px-3 text-xs"
               onClick={() => {
                 setTab("PRODUCTS");
                 setBulkOpen(true);
@@ -286,7 +399,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             </Button>
             <Button
               variant="secondary"
-              className="h-8 px-3 text-[11px]"
+              className="h-8 px-3 text-xs"
               onClick={() => setSelectedProductIds(new Set())}
             >
               Descartar selección
@@ -308,6 +421,157 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                 className="pl-9"
               />
             </div>
+            <div className="grid w-full gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <Field label="Categoría">
+                <Select
+                  aria-label="Filtrar por categoría"
+                  value={categoryFilter}
+                  onChange={(event) => setCategoryFilter(event.target.value)}
+                  className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs"
+                >
+                  <option value="">Todas las categorías</option>
+                  {data.categories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Estado">
+                <Select
+                  aria-label="Filtrar por estado"
+                  value={statusFilter}
+                  onChange={(event) =>
+                    setStatusFilter(
+                      event.target.value as CatalogFilters["status"],
+                    )
+                  }
+                  className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs"
+                >
+                  <option value="all">Todos los estados</option>
+                  <option value="active">Activos</option>
+                  <option value="inactive">Inactivos</option>
+                </Select>
+              </Field>
+              <Field label="Costo">
+                <Select
+                  aria-label="Filtrar por costo"
+                  value={
+                    canViewCosts
+                      ? costFilterExtended === "without"
+                        ? "sin"
+                        : costFilterExtended
+                      : "all"
+                  }
+                  disabled={!canViewCosts || costLoading || Boolean(costError)}
+                  onChange={(event) =>
+                    setCostFilter(
+                      event.target.value === "sin"
+                        ? "without"
+                        : (event.target.value as "all" | "with"),
+                    )
+                  }
+                  className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs disabled:opacity-50"
+                >
+                  <option value="all">Todos los costos</option>
+                  <option value="with">Con costo</option>
+                  <option value="sin">Sin costo</option>
+                </Select>
+              </Field>
+              <Field label="Stock">
+                <Select
+                  aria-label="Filtrar por stock"
+                  value={stockFilter}
+                  onChange={(event) =>
+                    setStockFilter(
+                      event.target.value as CatalogFilters["stock"],
+                    )
+                  }
+                  className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs"
+                >
+                  <option value="all">Todo el stock</option>
+                  <option value="out">Sin existencias</option>
+                  <option value="low">Bajo mínimo</option>
+                  <option value="untracked">Sin control</option>
+                </Select>
+              </Field>
+            </div>
+            {!canViewCosts ? (
+              <span className="w-full text-xs text-slate-500">
+                Requiere permiso para consultar costos.
+              </span>
+            ) : null}
+            {categoryFilter ||
+            statusFilter !== "all" ||
+            stockFilter !== "all" ||
+            costFilterExtended !== "all" ||
+            query ? (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setCategoryFilter("");
+                  setStatusFilter("all");
+                  setStockFilter("all");
+                  setCostFilter("all");
+                  setQuery("");
+                }}
+              >
+                Limpiar filtros
+              </Button>
+            ) : null}
+            {!costUnavailable ? (
+              <span
+                className="w-full text-xs text-slate-500"
+                aria-live="polite"
+              >
+                {matchedIds.size} coincidencia{matchedIds.size === 1 ? "" : "s"}
+              </span>
+            ) : (
+              <span
+                className="w-full text-xs text-slate-500"
+                aria-live="polite"
+              >
+                {costLoading
+                  ? "Esperando datos de costo; filtros suspendidos…"
+                  : "Resultados de costo no disponibles."}
+              </span>
+            )}
+            {canViewCosts && costLoading ? (
+              <span className="w-full text-xs text-slate-500">
+                Cargando costos…
+              </span>
+            ) : null}
+            {canViewCosts &&
+            costFilterExtended !== "all" &&
+            !costLoading &&
+            !costError ? (
+              <span className="w-full text-xs text-slate-500">
+                Este filtro usa los costos actuales. No cambia ventas
+                anteriores.
+              </span>
+            ) : null}
+            {canViewCosts && costError ? (
+              <p role="alert" className="w-full text-xs text-rose-700">
+                No se pudieron cargar los costos: {costError}{" "}
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => setCostReload((n) => n + 1)}
+                >
+                  Reintentar
+                </button>
+              </p>
+            ) : null}
+            {hiddenSelectedCount > 0 ? (
+              <p className="w-full text-xs text-amber-700">
+                Hay {hiddenSelectedCount} producto
+                {hiddenSelectedCount === 1
+                  ? " seleccionado"
+                  : "s seleccionados"}{" "}
+                oculto{hiddenSelectedCount === 1 ? "" : "s"} por los filtros
+                actuales; la selección se conserva.
+              </p>
+            ) : null}
             {totalVariantsCount > 0 ? (
               <Button
                 variant="secondary"
@@ -347,7 +611,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
               aria-label="Productos seleccionados"
               className="flex flex-wrap items-center gap-2 border-b border-brand-100 bg-brand-50/50 px-3 py-2.5"
             >
-              <span className="text-[11px] font-extrabold text-brand-800">
+              <span className="text-xs font-extrabold text-brand-800">
                 Seleccionados · {selectedProducts.length}
               </span>
               <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
@@ -364,21 +628,21 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                         return next;
                       })
                     }
-                    className="focus-ring inline-flex items-center gap-1 rounded-full border border-brand-200 bg-white px-2 py-1 text-[11px] font-bold text-brand-800 hover:bg-brand-100"
+                    className="focus-ring inline-flex items-center gap-1 rounded-full border border-brand-200 bg-white px-2 py-1 text-xs font-bold text-brand-800 hover:bg-brand-100"
                   >
                     <span className="max-w-44 truncate">{product.name}</span>
                     <X size={12} aria-hidden="true" />
                   </button>
                 ))}
                 {selectedProducts.length > 12 ? (
-                  <span className="inline-flex items-center rounded-full bg-brand-100 px-2 py-1 text-[11px] font-extrabold text-brand-800">
+                  <span className="inline-flex items-center rounded-full bg-brand-100 px-2 py-1 text-xs font-extrabold text-brand-800">
                     + {selectedProducts.length - 12} adicionales
                   </span>
                 ) : null}
               </div>
               <Button
                 variant="secondary"
-                className="h-8 px-2.5 text-[11px]"
+                className="h-8 px-2.5 text-xs"
                 onClick={() => setSelectedProductIds(new Set())}
               >
                 Limpiar selección
@@ -398,9 +662,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                         onChange={(event) => {
                           setSelectedProductIds((current) => {
                             const next = new Set(current);
-                            for (const product of visibleProducts) {
-                              if (event.target.checked) next.add(product.id);
-                              else next.delete(product.id);
+                            for (const id of selectableVisibleIds) {
+                              if (event.target.checked) next.add(id);
+                              else next.delete(id);
                             }
                             return next;
                           });
@@ -427,13 +691,21 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                       <Fragment key={parent.id}>
                         <tr
                           className={cn(
-                            hasVariants && expanded && "border-b-0 bg-slate-50/40",
+                            hasVariants &&
+                              expanded &&
+                              "border-b-0 bg-slate-50/40",
                           )}
                         >
                           <td>
                             <input
                               type="checkbox"
                               aria-label={`Seleccionar ${parent.name}`}
+                              disabled={!matchedIds.has(parent.id)}
+                              title={
+                                !matchedIds.has(parent.id)
+                                  ? "Producto principal mostrado para agrupar las variantes"
+                                  : undefined
+                              }
                               checked={selectedProductIds.has(parent.id)}
                               onChange={(event) => {
                                 setSelectedProductIds((current) => {
@@ -489,7 +761,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                         ? "Ocultar variantes"
                                         : "Ver variantes"
                                     }
-                                    className="inline-flex items-center gap-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 hover:bg-indigo-100 transition cursor-pointer"
+                                    className="inline-flex items-center gap-1 rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition cursor-pointer"
                                   >
                                     {variants.length} variante
                                     {variants.length > 1 ? "s" : ""}
@@ -499,7 +771,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                             </div>
                           </td>
                           <td>{parent.categoryName}</td>
-                          <td className="font-mono text-[11px]">
+                          <td className="font-mono text-xs">
                             {parent.code || "—"}
                           </td>
                           {visiblePriceListCodes.map((code) => (
@@ -539,7 +811,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                 aria-label={`Ajustar inventario de ${parent.name}`}
                                 title="Registrar un ajuste de inventario"
                                 onClick={() => setStockProduct(parent)}
-                                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
                               >
                                 <SlidersHorizontal size={14} />
                                 Ajustar
@@ -549,7 +821,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                 aria-label={`Editar ${parent.name}`}
                                 title="Editar producto y precios"
                                 onClick={() => setEditingProduct(parent)}
-                                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
                               >
                                 <PencilSimple size={14} />
                                 Editar
@@ -597,15 +869,15 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                     <span className="font-bold text-slate-800 text-xs">
                                       {variant.name}
                                     </span>
-                                    <span className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700">
+                                    <span className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-xs font-semibold text-amber-700">
                                       Variante
                                     </span>
                                   </div>
                                 </td>
-                                <td className="text-xs text-slate-500">
+                                <td className="text-xs text-slate-600">
                                   {variant.categoryName}
                                 </td>
-                                <td className="font-mono text-[11px] text-slate-500">
+                                <td className="font-mono text-xs text-slate-600">
                                   {variant.code || "—"}
                                 </td>
                                 {visiblePriceListCodes.map((code) => (
@@ -637,7 +909,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                   </button>
                                 </td>
                                 <td>
-                                  <Badge tone={variant.active ? "green" : "slate"}>
+                                  <Badge
+                                    tone={variant.active ? "green" : "slate"}
+                                  >
                                     {variant.active ? "Activo" : "Inactivo"}
                                   </Badge>
                                 </td>
@@ -648,7 +922,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                       aria-label={`Ajustar inventario de ${variant.name}`}
                                       title="Registrar un ajuste de inventario"
                                       onClick={() => setStockProduct(variant)}
-                                      className="focus-ring inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                      className="focus-ring inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
                                     >
                                       <SlidersHorizontal size={13} />
                                       Ajustar
@@ -658,7 +932,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                       aria-label={`Editar ${variant.name}`}
                                       title="Editar variante y precios"
                                       onClick={() => setEditingProduct(variant)}
-                                      className="focus-ring inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                      className="focus-ring inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
                                     >
                                       <PencilSimple size={13} />
                                       Editar
@@ -667,7 +941,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                       type="button"
                                       aria-label={`Eliminar ${variant.name}`}
                                       title={`Eliminar variante ${variant.name}`}
-                                      onClick={() => setDeletingProduct(variant)}
+                                      onClick={() =>
+                                        setDeletingProduct(variant)
+                                      }
                                       className="focus-ring inline-flex h-7 w-7 items-center justify-center rounded-lg border border-rose-200 bg-white text-rose-700 transition hover:bg-rose-50"
                                     >
                                       <Trash size={13} />
@@ -683,6 +959,20 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                 </tbody>
               </table>
             </div>
+          ) : costUnavailable ? (
+            <p className="p-6 text-center text-sm text-slate-500">
+              {costLoading
+                ? "Esperando datos de costo…"
+                : "No se pudieron evaluar los filtros de costo."}
+            </p>
+          ) : categoryFilter ||
+            statusFilter !== "all" ||
+            stockFilter !== "all" ||
+            costFilterExtended !== "all" ||
+            query.trim() ? (
+            <p className="p-6 text-center text-sm text-slate-500">
+              No hay productos que coincidan con los filtros actuales.
+            </p>
           ) : (
             <EmptyProducts onCreate={() => openNewProduct()} />
           )}
@@ -739,11 +1029,11 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                   className="mx-auto text-slate-300"
                 />
                 <p className="mt-2 text-sm font-semibold text-slate-500">
-                  Creá extras como queso o salsa
+                  Creá modificadores, como queso extra o sin salsa
                 </p>
                 <Button className="mt-3" onClick={() => setModifierOpen(true)}>
                   <Plus />
-                  Nuevo extra
+                  Nuevo modificador
                 </Button>
               </div>
             </div>
@@ -913,7 +1203,7 @@ function CategoryModal({
             <span className="font-semibold text-slate-800 block">
               Controlar stock en productos de esta categoría
             </span>
-            <span className="text-slate-500 text-[11px] block mt-0.5">
+            <span className="text-slate-500 text-xs block mt-0.5">
               {category
                 ? stockControlEnabled
                   ? "Al activar, los productos sin control de stock de esta categoría pasarán a tener control activo."
@@ -1224,7 +1514,7 @@ function BulkProductsModal({
                 </Field>
               </div>
               <div>
-                <p className="mb-2 text-[11px] font-bold text-slate-600">
+                <p className="mb-2 text-xs font-bold text-slate-600">
                   Listas a modificar
                 </p>
                 <div className="flex flex-wrap gap-3">
@@ -1261,7 +1551,7 @@ function BulkProductsModal({
               <h3 className="text-xs font-extrabold text-slate-800">
                 Vista previa antes de aplicar
               </h3>
-              <p className="text-[10px] text-slate-500">
+              <p className="text-xs text-slate-500">
                 Revisá cada fila; podés quitar productos sin cerrar esta
                 ventana.
               </p>
@@ -1331,7 +1621,7 @@ function BulkProductsModal({
                             aria-label={`Quitar ${product.name} del lote`}
                             title="Quitar del lote"
                             onClick={() => onRemoveProduct(product.id)}
-                            className="focus-ring inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 px-2 text-[11px] font-bold text-slate-600 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                            className="focus-ring inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-bold text-slate-600 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"
                           >
                             <X size={13} aria-hidden="true" />
                             Quitar
@@ -1436,10 +1726,10 @@ function PreviewChange({
   invalid?: boolean;
 }) {
   if (before === after)
-    return <span className="text-[11px] text-slate-500">{before}</span>;
+    return <span className="text-xs text-slate-600">{before}</span>;
   return (
-    <span className="inline-flex flex-col text-[11px] leading-4">
-      <span className="text-slate-400 line-through">{before}</span>
+    <span className="inline-flex flex-col text-xs leading-4">
+      <span className="text-slate-600 line-through">{before}</span>
       <span
         className={
           invalid ? "font-bold text-rose-700" : "font-bold text-brand-700"
@@ -1540,7 +1830,7 @@ function CategoryTable({
                       <div className="flex justify-end gap-2">
                         <Button
                           variant="secondary"
-                          className="h-8 px-2.5 text-[11px]"
+                          className="h-8 px-2.5 text-xs"
                           disabled={!category.active}
                           onClick={() => onCreateProduct(category)}
                         >
@@ -1548,7 +1838,7 @@ function CategoryTable({
                         </Button>
                         <Button
                           variant="secondary"
-                          className="h-8 px-2.5 text-[11px]"
+                          className="h-8 px-2.5 text-xs"
                           onClick={() => onEdit(category)}
                         >
                           <PencilSimple size={14} /> Editar
@@ -1837,6 +2127,7 @@ function ProductModal({
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<AuditEntryDto[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const initializedFormKeyRef = useRef("");
 
   useEffect(() => {
@@ -1855,7 +2146,9 @@ function ProductModal({
       categories.find((item) => item.active)?.id ??
       "";
     setCategoryId(initialCatId);
-    const selectedCategory = categories.find((item) => item.id === initialCatId);
+    const selectedCategory = categories.find(
+      (item) => item.id === initialCatId,
+    );
     const initialTrackStock = product
       ? product.stockMinor != null
       : (selectedCategory?.stockControlEnabled ?? true);
@@ -1926,14 +2219,19 @@ function ProductModal({
   useEffect(() => {
     if (!open || !product) {
       setHistory([]);
+      setHistoryError(null);
       setHistoryLoading(false);
       return;
     }
     let cancelled = false;
     setHistoryLoading(true);
-    window.gastronomy
-      .getAuditLog({ action: "PRODUCT_UPDATED", limit: 200 })
-      .then((entries) => {
+    setHistoryError(null);
+    Promise.all([
+      window.gastronomy.getAuditLog({ action: "PRODUCT_UPDATED", search: product.id, limit: 5 }),
+      window.gastronomy.getAuditLog({ action: "STOCK_ADJUSTED", search: product.id, limit: 5 }),
+    ])
+      .then((groups) => {
+        const entries = groups.flat().sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.id.localeCompare(a.id));
         if (!cancelled)
           setHistory(
             entries
@@ -1942,7 +2240,10 @@ function ProductModal({
           );
       })
       .catch(() => {
-        if (!cancelled) setHistory([]);
+        if (!cancelled) {
+          setHistory([]);
+          setHistoryError("No se pudo cargar el historial. Cerrá y volvé a abrir la ficha para reintentar.");
+        }
       })
       .finally(() => {
         if (!cancelled) setHistoryLoading(false);
@@ -2085,14 +2386,18 @@ function ProductModal({
             <div className="flex items-center gap-2">
               <Copy size={16} className="shrink-0 text-amber-700" />
               <div>
-                <span className="font-extrabold">Este producto es una variante</span>
+                <span className="font-extrabold">
+                  Este producto es una variante
+                </span>
                 {parentProduct ? (
                   <span className="text-amber-800">
-                    {" "}de «{parentProduct.name}».
+                    {" "}
+                    de «{parentProduct.name}».
                   </span>
                 ) : (
                   <span className="text-amber-800">
-                    {" "}derivada de otro producto base.
+                    {" "}
+                    derivada de otro producto base.
                   </span>
                 )}
               </div>
@@ -2102,7 +2407,7 @@ function ProductModal({
                 type="button"
                 variant="secondary"
                 onClick={() => onOpenParent(parentProduct)}
-                className="h-7 border-amber-300 px-2.5 text-[11px] font-bold text-amber-900 hover:bg-amber-100"
+                className="h-7 border-amber-300 px-2.5 text-xs font-bold text-amber-900 hover:bg-amber-100"
               >
                 Ir a producto base
               </Button>
@@ -2211,14 +2516,15 @@ function ProductModal({
                   />
                 </Field>
               ))}
-              <p className="text-[10px] text-slate-400 sm:col-span-2 lg:col-span-4">
-                Admite hasta tres decimales. Los niveles deben respetar Crítico ≤
-                Mínimo ≤ Objetivo.
+              <p className="text-xs text-slate-600 sm:col-span-2 lg:col-span-4">
+                Admite hasta tres decimales. Los niveles deben respetar Crítico
+                ≤ Mínimo ≤ Objetivo.
               </p>
             </div>
           ) : (
             <p className="text-xs text-slate-500 italic py-1">
-              Este producto se venderá sin descontar inventario ni alertar por existencias mínimas.
+              Este producto se venderá sin descontar inventario ni alertar por
+              existencias mínimas.
             </p>
           )}
         </section>
@@ -2284,8 +2590,9 @@ function ProductModal({
                   <h4 className="text-xs font-bold text-slate-800">
                     Variantes de este producto ({variants.length})
                   </h4>
-                  <p className="text-[11px] text-slate-500">
-                    Presentaciones o tamaños derivados (ej. Chica, Mediana, Litro) con precios y existencias propias.
+                  <p className="text-xs text-slate-500">
+                    Presentaciones o tamaños derivados (ej. Chica, Mediana,
+                    Litro) con precios y existencias propias.
                   </p>
                 </div>
               </div>
@@ -2304,7 +2611,7 @@ function ProductModal({
             {variants.length > 0 ? (
               <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
                 <table className="w-full text-left text-xs">
-                  <thead className="border-b border-slate-100 bg-slate-50/80 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  <thead className="border-b border-slate-100 bg-slate-50/80 text-xs font-bold uppercase tracking-wider text-slate-500">
                     <tr>
                       <th className="px-3 py-2">Variante</th>
                       <th className="px-3 py-2">Código</th>
@@ -2331,7 +2638,7 @@ function ProductModal({
                           <td className="px-3 py-2.5 font-bold text-slate-800">
                             {variant.name}
                           </td>
-                          <td className="px-3 py-2.5 font-mono text-[11px] text-slate-500">
+                          <td className="px-3 py-2.5 font-mono text-xs text-slate-500">
                             {variant.code || "—"}
                           </td>
                           <td className="px-3 py-2.5 text-right font-semibold text-slate-700">
@@ -2372,7 +2679,7 @@ function ProductModal({
                                   type="button"
                                   onClick={() => onAdjustStock(variant)}
                                   title="Ajustar stock"
-                                  className="focus-ring inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                  className="focus-ring inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
                                 >
                                   <SlidersHorizontal size={13} />
                                   Stock
@@ -2383,7 +2690,7 @@ function ProductModal({
                                   type="button"
                                   onClick={() => onEditVariant(variant)}
                                   title="Editar variante"
-                                  className="focus-ring inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-[11px] font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
+                                  className="focus-ring inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
                                 >
                                   <PencilSimple size={13} />
                                   Editar
@@ -2407,7 +2714,7 @@ function ProductModal({
                     type="button"
                     variant="secondary"
                     onClick={() => onRequestVariant(product)}
-                    className="mt-2 h-7 px-2.5 text-[11px] font-bold"
+                    className="mt-2 h-7 px-2.5 text-xs font-bold"
                   >
                     <Plus size={13} /> Crear primera variante
                   </Button>
@@ -2456,14 +2763,16 @@ function ProductModal({
             aria-label="Historial reciente de cambios"
             className="rounded-xl border border-slate-200"
           >
-            <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+            <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-500">
               <ClockCounterClockwise size={15} />
               Historial reciente
             </div>
             {historyLoading ? (
-              <p className="px-3 py-3 text-xs text-slate-400">
+              <p className="px-3 py-3 text-xs text-slate-600">
                 Cargando cambios…
               </p>
+            ) : historyError ? (
+              <p role="alert" className="px-3 py-3 text-xs text-rose-700">{historyError}</p>
             ) : history.length ? (
               <ul className="divide-y divide-slate-100">
                 {history.map((entry) => (
@@ -2472,18 +2781,20 @@ function ProductModal({
                     className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs"
                   >
                     <span className="font-semibold text-slate-700">
-                      {entry.reason || "Sin detalle"}
+                      <span className="block">{auditActionLabel(entry.action)}</span>
+                      <span className="font-normal">{entry.reason || "Sin detalle"}</span>
                     </span>
-                    <span className="text-slate-400">
+                    <span className="text-slate-600">
                       {new Date(entry.timestamp).toLocaleString("es-AR")} ·{" "}
-                      {entry.authorizerName || "Sistema"}
+                      {entry.operatorName || entry.authorizerName || "Sistema"}
+                      {entry.authorizerName && entry.authorizerName !== entry.operatorName ? ` · Autorizó ${entry.authorizerName}` : null}
                     </span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="px-3 py-3 text-xs text-slate-400">
-                Todavía no hay cambios registrados.
+              <p className="px-3 py-3 text-xs text-slate-600">
+                No hay ediciones ni ajustes de stock registrados.
               </p>
             )}
           </section>
@@ -2499,7 +2810,10 @@ function ProductModal({
         ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            {editing && product && !product.parentProductId && onRequestVariant ? (
+            {editing &&
+            product &&
+            !product.parentProductId &&
+            onRequestVariant ? (
               <Button
                 type="button"
                 variant="secondary"
@@ -2614,8 +2928,7 @@ function CreateVariantModal({
     if (!baseProduct) return 0;
     return (
       baseProduct.prices.find(
-        (p) =>
-          p.priceListCode === "TAKEAWAY" || p.priceListCode === "DELIVERY",
+        (p) => p.priceListCode === "TAKEAWAY" || p.priceListCode === "DELIVERY",
       )?.amountMinor ?? 0
     );
   }, [baseProduct]);
@@ -2662,7 +2975,13 @@ function CreateVariantModal({
       OFF_PREMISE: moneyInput(baseOffPremisePriceMinor),
     });
     setError(null);
-  }, [baseProduct, open, categories, baseSalonPriceMinor, baseOffPremisePriceMinor]);
+  }, [
+    baseProduct,
+    open,
+    categories,
+    baseSalonPriceMinor,
+    baseOffPremisePriceMinor,
+  ]);
 
   const handleSelectAttribute = (attr: string) => {
     setSelectedAttribute(attr);
@@ -2700,7 +3019,7 @@ function CreateVariantModal({
   };
 
   const activeImageDataUrl = copyImage
-    ? baseProduct?.imageDataUrl ?? null
+    ? (baseProduct?.imageDataUrl ?? null)
     : customImageDataUrl;
 
   const parsedStockMinor = trackStock
@@ -2831,12 +3150,12 @@ function CreateVariantModal({
             )}
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-brand-700">
+                <span className="text-xs font-bold uppercase tracking-wider text-brand-700">
                   Producto base
                 </span>
                 <Badge tone="blue">{baseProduct.categoryName}</Badge>
                 {baseProduct.code ? (
-                  <span className="font-mono text-[11px] text-slate-500">
+                  <span className="font-mono text-xs text-slate-500">
                     {baseProduct.code}
                   </span>
                 ) : null}
@@ -2934,13 +3253,13 @@ function CreateVariantModal({
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
                 Precios propios de la variante
               </h4>
-              <p className="text-[11px] text-slate-500">
-                Definí el precio independiente para cada lista de precios de esta
-                variante.
+              <p className="text-xs text-slate-500">
+                Definí el precio independiente para cada lista de precios de
+                esta variante.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-1">
-              <span className="mr-1 text-[11px] font-semibold text-slate-500">
+              <span className="mr-1 text-xs font-semibold text-slate-500">
                 Ajuste rápido:
               </span>
               {variantPriceShortcuts.map(({ label, multiplier }) => (
@@ -2948,7 +3267,7 @@ function CreateVariantModal({
                   key={label}
                   type="button"
                   onClick={() => applyPriceMultiplier(multiplier)}
-                  className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+                  className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
                 >
                   {label}
                 </button>
@@ -3028,9 +3347,9 @@ function CreateVariantModal({
                   />
                 </Field>
               ))}
-              <p className="text-[10px] text-slate-400 sm:col-span-2 lg:col-span-4">
-                Admite hasta tres decimales. Los niveles deben respetar Crítico ≤
-                Mínimo ≤ Objetivo.
+              <p className="text-xs text-slate-600 sm:col-span-2 lg:col-span-4">
+                Admite hasta tres decimales. Los niveles deben respetar Crítico
+                ≤ Mínimo ≤ Objetivo.
               </p>
             </div>
           ) : (
@@ -3067,8 +3386,8 @@ function CreateVariantModal({
                 className="h-14 w-14 shrink-0 rounded-lg border border-slate-200 object-cover"
               />
               <p className="text-xs text-slate-500">
-                Se utilizará la foto del producto base ({baseProduct.name}).
-                Si querés asignar una foto distinta, desmarcá la casilla arriba.
+                Se utilizará la foto del producto base ({baseProduct.name}). Si
+                querés asignar una foto distinta, desmarcá la casilla arriba.
               </p>
             </div>
           ) : (
@@ -3240,7 +3559,7 @@ function ModifierModal({ open, onClose }: { open: boolean; onClose(): void }) {
               mutation.isPending
             }
           >
-            Crear extra
+            Crear modificador
           </Button>
         </div>
       </form>

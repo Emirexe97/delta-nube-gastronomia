@@ -321,7 +321,7 @@ export function App() {
       <div className="grid h-full place-items-center bg-slate-50">
         <div className="text-center">
           <div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" />
-          <p className="mt-3 text-sm font-semibold text-slate-500">
+          <p className="mt-3 text-sm font-semibold text-slate-600">
             Cargando el programa…
           </p>
         </div>
@@ -334,7 +334,7 @@ export function App() {
         <div className="max-w-md rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-soft">
           <WifiSlash className="mx-auto h-10 w-10 text-rose-500" />
           <h1 className="mt-3 text-lg font-bold">No se pudo iniciar</h1>
-          <p className="mt-2 text-sm text-slate-500">
+          <p className="mt-2 text-sm text-slate-600">
             {bootstrap.error?.message}
           </p>
           <button
@@ -374,7 +374,7 @@ export function App() {
               <p className="truncate text-sm font-extrabold tracking-tight">
                 Delta Nube
               </p>
-              <p className="truncate text-[10px] font-bold uppercase tracking-[.17em] text-brand-600">
+              <p className="truncate text-xs font-bold uppercase tracking-[.17em] text-brand-700">
                 Gastronomía
               </p>
             </div>
@@ -384,7 +384,7 @@ export function App() {
           {groups.map((group) => (
             <div key={group} className="mb-4">
               {!collapsed ? (
-                <p className="mb-1 px-2 text-[9px] font-bold uppercase tracking-[.18em] text-slate-400 max-sm:hidden">
+                <p className="mb-1 px-2 text-xs font-bold uppercase tracking-[.18em] text-slate-600 max-sm:hidden">
                   {group}
                 </p>
               ) : null}
@@ -403,7 +403,7 @@ export function App() {
                           "mb-0.5 flex h-10 items-center gap-3 rounded-lg px-3 text-[12px] font-semibold transition max-sm:justify-center max-sm:px-0",
                           isActive
                             ? "bg-brand-50 text-brand-700"
-                            : "text-slate-500 hover:bg-slate-50 hover:text-slate-900",
+                            : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
                         )
                       }
                     >
@@ -423,7 +423,7 @@ export function App() {
             setCollapsed(next);
             localStorage.setItem("gastronomy.sidebar.collapsed", String(next));
           }}
-          className="m-2 flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-500 hover:bg-slate-50 max-sm:hidden"
+          className="m-2 flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 max-sm:hidden"
         >
           <List size={17} />
           {!collapsed ? "Contraer" : null}
@@ -433,7 +433,7 @@ export function App() {
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 max-sm:px-3">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-[.16em] text-slate-400">
+            <p className="text-xs font-bold uppercase tracking-[.16em] text-slate-600">
               Operación local
             </p>
             <h1
@@ -453,13 +453,13 @@ export function App() {
                   resetDemoData();
                   window.location.reload();
                 }}
-                className="hidden items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[10px] font-extrabold uppercase tracking-[.08em] text-amber-800 transition hover:bg-amber-100 md:flex"
+                className="hidden items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-extrabold uppercase tracking-[.08em] text-amber-800 transition hover:bg-amber-100 md:flex"
               >
                 <ArrowCounterClockwise size={15} weight="bold" />
                 Modo demostración · Restablecer
               </button>
             ) : null}
-            <div className="hidden items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 xl:flex">
+            <div className="hidden items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 xl:flex">
               <Clock size={15} />
               <span>
                 {clock.toLocaleDateString("es-AR", {
@@ -476,7 +476,7 @@ export function App() {
             </div>
             {bootstrap.data.cashSession ? (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5">
-                <p className="text-[9px] font-bold uppercase tracking-wide text-emerald-600">
+                <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">
                   Caja #{bootstrap.data.cashSession.number} abierta
                 </p>
                 <p className="text-xs font-bold text-emerald-800">
@@ -490,7 +490,7 @@ export function App() {
               <p className="text-xs font-bold">
                 {bootstrap.data.currentUser.fullName}
               </p>
-              <p className="text-[10px] text-slate-400">
+              <p className="text-xs text-slate-600">
                 {bootstrap.data.currentUser.roleName}
               </p>
             </div>

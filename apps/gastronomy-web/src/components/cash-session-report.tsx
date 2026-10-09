@@ -26,7 +26,7 @@ export function CashSessionHistory({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
         <div>
           <h2 className="text-sm font-bold">Historial de cajas</h2>
-          <p className="text-[11px] text-slate-400">
+          <p className="text-xs text-slate-600">
             Consultá cierres anteriores y el detalle reciente del turno.
           </p>
         </div>
@@ -35,7 +35,7 @@ export function CashSessionHistory({
         </Button>
       </div>
       {history.isLoading ? (
-        <p className="p-6 text-center text-xs text-slate-400">
+        <p className="p-6 text-center text-xs text-slate-600">
           Cargando historial…
         </p>
       ) : history.isError ? (
@@ -43,7 +43,7 @@ export function CashSessionHistory({
           No se pudo cargar el historial.
         </p>
       ) : !history.data?.length ? (
-        <p className="p-6 text-center text-xs text-slate-500">
+        <p className="p-6 text-center text-xs text-slate-600">
           Todavía no hay cajas cerradas.
         </p>
       ) : (
@@ -264,7 +264,7 @@ export function CashSessionReportModal({
           </div>
         ) : null}
         {report.isLoading ? (
-          <p className="p-5 text-center text-xs text-slate-400">
+          <p className="p-5 text-center text-xs text-slate-600">
             Calculando informe…
           </p>
         ) : report.isError ? (
@@ -281,13 +281,13 @@ export function CashSessionReportModal({
                   <p className="text-sm font-extrabold">
                     Caja #{data.session.number} · {data.session.businessDate}
                   </p>
-                  <p className="mt-1 text-[11px] text-slate-500">
+                  <p className="mt-1 text-xs text-slate-600">
                     {new Date(data.session.openedAt).toLocaleString("es-AR")} →{" "}
                     {data.session.closedAt
                       ? new Date(data.session.closedAt).toLocaleString("es-AR")
                       : "turno en curso"}
                   </p>
-                  <p className="text-[11px] text-slate-400">
+                  <p className="text-xs text-slate-600">
                     Responsable: {data.session.openedByName}
                   </p>
                 </div>
@@ -307,7 +307,7 @@ export function CashSessionReportModal({
                 ["Devoluciones", data.totals.refundsMinor],
               ].map(([l, v]) => (
                 <div key={String(l)} className="rounded-lg bg-slate-50 p-3">
-                  <p className="text-[10px] uppercase text-slate-400">{l}</p>
+                  <p className="text-xs uppercase text-slate-600">{l}</p>
                   <strong>
                     {String(l) === "Pedidos" ? v : formatMoney(v as number)}
                   </strong>
@@ -318,7 +318,7 @@ export function CashSessionReportModal({
               <h3 className="text-sm font-bold">
                 Composición del efectivo esperado
               </h3>
-              <p className="mt-1 text-[11px] text-slate-500">
+              <p className="mt-1 text-xs text-slate-600">
                 El cambio final queda aparte del esperado y contado.
                 Los pagos a repartidores se descuentan como egresos. Las ventas
                 por medio de pago no representan el efectivo disponible.
@@ -334,11 +334,11 @@ export function CashSessionReportModal({
                   </div>
                 ))}
                 <div className="flex justify-between gap-3 border-t border-slate-200 pt-2 font-bold">
-                  <span>Efectivo esperado</span>
+                  <span>Esperado sin cambio</span>
                   <span>{formatMoney(cashClosingTotals(data.session).expectedAmountMinor)}</span>
                 </div>
                 <div className="flex justify-between gap-3">
-                  <span>Efectivo contado</span>
+                  <span>Contado sin cambio</span>
                   <span>
                     {data.session.countedAmountMinor == null
                       ? "—"
@@ -440,7 +440,7 @@ export function CashSessionReportModal({
               </Button>
             </div>
             {printMessage ? (
-              <p className="text-right text-xs text-slate-500">
+              <p className="text-right text-xs text-slate-600">
                 {printMessage}
               </p>
             ) : null}
@@ -492,7 +492,7 @@ function Aggregates({ data }: { data: CashSessionReportDto }) {
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
       {standardGroups.map(([label, values]) => (
         <div key={label} className="rounded-lg border border-slate-100 p-3">
-          <p className="text-[10px] font-bold uppercase text-slate-400">
+          <p className="text-xs font-bold uppercase text-slate-600">
             {label}
           </p>
           {values.length ? (
@@ -502,12 +502,12 @@ function Aggregates({ data }: { data: CashSessionReportDto }) {
               </p>
             ))
           ) : (
-            <p className="mt-1 text-xs text-slate-400">Sin datos</p>
+            <p className="mt-1 text-xs text-slate-600">Sin datos</p>
           )}
         </div>
       ))}
       <div className="rounded-lg border border-slate-100 p-3">
-        <p className="text-[10px] font-bold uppercase text-slate-400">
+        <p className="text-xs font-bold uppercase text-slate-600">
           Por mozo
         </p>
         {data.byWaiter.length ? (
@@ -522,7 +522,7 @@ function Aggregates({ data }: { data: CashSessionReportDto }) {
                   <span>{formatMoney(w.amountMinor)}</span>
                 </div>
                 {w.tables && w.tables.length > 0 ? (
-                  <div className="mt-0.5 space-y-0.5 pl-2 text-[11px] text-slate-500">
+                  <div className="mt-0.5 space-y-0.5 pl-2 text-xs text-slate-600">
                     {w.tables.map((t, idx) => (
                       <div key={idx} className="flex justify-between">
                         <span>{t.name}</span>
@@ -535,7 +535,7 @@ function Aggregates({ data }: { data: CashSessionReportDto }) {
             ))}
           </div>
         ) : (
-          <p className="mt-1 text-xs text-slate-400">Sin datos</p>
+          <p className="mt-1 text-xs text-slate-600">Sin datos</p>
         )}
       </div>
     </div>
@@ -604,7 +604,7 @@ export function PrintCashSessionReportModal({
         {/* Columna Izquierda: Configuración de secciones */}
         <div className="space-y-4 lg:col-span-6">
           <div>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-2">
               Secciones obligatorias (siempre incluidas)
             </h3>
             <div className="grid grid-cols-2 gap-2">
@@ -627,14 +627,14 @@ export function PrintCashSessionReportModal({
 
           <div className="border-t border-slate-200 pt-4">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600">
                 Secciones opcionales
               </h3>
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={selectAll}
-                  className="text-[11px] font-semibold text-brand-600 hover:text-brand-700 underline"
+                  className="text-xs font-semibold text-brand-700 hover:text-brand-700 underline"
                 >
                   Todas
                 </button>
@@ -642,7 +642,7 @@ export function PrintCashSessionReportModal({
                 <button
                   type="button"
                   onClick={selectMandatoryOnly}
-                  className="text-[11px] font-semibold text-slate-500 hover:text-slate-700 underline"
+                  className="text-xs font-semibold text-slate-600 hover:text-slate-700 underline"
                 >
                   Solo obligatorias
                 </button>
@@ -701,11 +701,11 @@ export function PrintCashSessionReportModal({
                       <span className="text-xs font-bold text-slate-800">
                         {label}
                       </span>
-                      <span className="text-[10px] font-medium text-slate-400">
+                      <span className="text-xs font-medium text-slate-600">
                         {count} {count === 1 ? "ítem" : "ítems"}
                       </span>
                     </div>
-                    <p className="text-[11px] text-slate-500 mt-0.5">{desc}</p>
+                    <p className="text-xs text-slate-600 mt-0.5">{desc}</p>
                   </div>
                 </label>
               ))}
@@ -716,11 +716,11 @@ export function PrintCashSessionReportModal({
         {/* Columna Derecha: Vista previa en vivo del ticket */}
         <div className="lg:col-span-6 flex flex-col items-center">
           <div className="w-full flex items-center justify-between mb-2 px-1">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
               <Receipt className="h-4 w-4 text-slate-600" />
               Vista previa del ticket
             </span>
-            <span className="text-[11px] text-slate-400">
+            <span className="text-xs text-slate-600">
               {appliedFilterCount > 0 ? `${appliedFilterCount} filtro(s) activo(s)` : "Sin filtros"}
             </span>
           </div>
@@ -792,11 +792,11 @@ export function PrintCashSessionReportModal({
                 </div>
               ))}
               <div className="flex justify-between font-bold">
-                <span>Efectivo esperado</span>
+                 <span>Esperado sin cambio</span>
                 <span>{formatMoney(cashClosingTotals(data.session).expectedAmountMinor)}</span>
               </div>
               <div className="flex justify-between">
-                <span>Contado</span>
+                 <span>Contado sin cambio</span>
                 <span>
                   {data.session.countedAmountMinor != null
                     ? formatMoney(cashClosingTotals(data.session).countedAmountMinor!)

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   BootstrapDto,
@@ -102,7 +102,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                 <p className="mt-1 text-lg font-extrabold">
                   {session.businessDate}
                 </p>
-                <p className="text-[10px] text-slate-400">
+                <p className="text-xs text-slate-600">
                   Apertura {new Date(session.openedAt).toLocaleString("es-AR")}
                 </p>
               </CashHeader>
@@ -112,10 +112,11 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                 </p>
               </CashHeader>
               <div className="flex min-h-[104px] flex-col justify-center bg-slate-950 p-4 text-white">
-                <SmallLabel>Efectivo disponible en caja</SmallLabel>
+                <SmallLabel dark>Efectivo esperado en caja</SmallLabel>
                 <p className="mt-1 text-2xl font-extrabold">
                   {formatMoney(session.expectedAmountMinor)}
                 </p>
+                <p className="mt-1 text-xs leading-4 text-slate-300">Incluye el cambio inicial</p>
               </div>
             </div>
           </Card>
@@ -148,7 +149,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                 movements={session.movements}
                 allPaymentMethods={data.paymentMethods}
               />
-              <p className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-[11px] text-sky-800">
+              <p className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-xs text-sky-800">
                 Las ventas con tarjeta o transferencia impactan el resumen, pero
                 no aumentan el efectivo esperado de esta caja.
               </p>
@@ -157,7 +158,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
           <Card className="overflow-hidden">
             <div className="border-b border-slate-100 px-4 py-3">
               <h2 className="text-sm font-bold">Ventas cobradas del turno</h2>
-              <p className="text-[11px] text-slate-400">
+              <p className="text-xs text-slate-600">
                 Total cobrado: {formatMoney(session.salesTotalMinor ?? 0)}
               </p>
             </div>
@@ -224,7 +225,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
           <Card className="overflow-hidden">
             <div className="border-b border-slate-100 px-4 py-3">
               <h2 className="text-sm font-bold">Movimientos de caja del turno</h2>
-              <p className="text-[11px] text-slate-400">
+              <p className="text-xs text-slate-600">
                 Total movimientos manuales: {manualMovements.length}
               </p>
             </div>
@@ -272,7 +273,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                           <td className="max-w-[260px] truncate text-slate-600">
                             {movement.reason}
                           </td>
-                          <td className="whitespace-nowrap text-slate-400">
+                          <td className="whitespace-nowrap text-slate-600">
                             {new Date(movement.createdAt).toLocaleTimeString(
                               "es-AR",
                               { hour: "2-digit", minute: "2-digit" },
@@ -280,7 +281,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                           </td>
                           <td
                             className={`whitespace-nowrap text-right font-bold ${
-                              isIncome ? "text-emerald-600" : "text-rose-600"
+                              isIncome ? "text-emerald-700" : "text-rose-600"
                             }`}
                           >
                             {isIncome ? "+" : "-"}
@@ -322,7 +323,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                 <p className="font-bold">
                   Hay {pendingDeliveryLedger.length} rendición(es) sin conciliar
                 </p>
-                <p className="mt-0.5 text-[11px] text-amber-800">
+                <p className="mt-0.5 text-xs text-amber-800">
                   Ingresan {formatMoney(pendingDriverOwesMinor)} · salen{" "}
                   {formatMoney(pendingBusinessOwesMinor)}. Liquidá o usá cierre
                   forzado con motivo y PIN.
@@ -447,7 +448,7 @@ function ActionCard({
           {icon}
         </div>
         <p className="mt-3 text-sm font-bold">{title}</p>
-        <p className="mt-1 text-[11px] text-slate-400">{description}</p>
+        <p className="mt-1 text-xs text-slate-600">{description}</p>
       </Card>
     </button>
   );
@@ -662,7 +663,7 @@ function CloseCashModal({
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     setCounted("");
     setClosingFloat(moneyInputValue(session.openingAmountMinor));
@@ -673,7 +674,9 @@ function CloseCashModal({
     setReviewing(false);
   }, [open, session.id, session.openingAmountMinor]);
 
-  const countedMinor = parseMoneyInput(counted);
+  // An untouched count is pending, not a known zero. Keep this distinction
+  // local to cash close so explicit "0" still participates in shortage checks.
+  const countedMinor = counted.trim() === "" ? null : parseMoneyInput(counted);
   const closingFloatMinor = parseMoneyInput(closingFloat);
   const closingTotals = cashClosingTotals({
     ...session,
@@ -747,10 +750,10 @@ function CloseCashModal({
           </div>
           <div className="grid gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 sm:grid-cols-2">
             <ReviewValue
-              label="Efectivo esperado"
+              label="Esperado sin cambio"
               value={closingTotals.expectedAmountMinor}
             />
-            <ReviewValue label="Efectivo contado" value={closingTotals.countedAmountMinor ?? 0} />
+            <ReviewValue label="Contado sin cambio" value={closingTotals.countedAmountMinor ?? 0} />
             <ReviewValue
               label="Diferencia de arqueo"
               value={differenceMinor ?? 0}
@@ -806,7 +809,7 @@ function CloseCashModal({
               <p className="font-bold">
                 {pendingDeliveryCount} rendición(es) siguen pendientes
               </p>
-              <p className="mt-1 text-[11px] leading-5">
+              <p className="mt-1 text-xs leading-5">
                 Repartidores deben {formatMoney(pendingDriverOwesMinor)} · el
                 negocio debe {formatMoney(pendingBusinessOwesMinor)}. El cierre
                 normal será rechazado hasta conciliarlas.
@@ -952,11 +955,12 @@ function CashBreakdown({ session, closingFloatMinor = session.closingFloatAmount
           </div>
         ))}
         <div className="flex items-center justify-between py-3">
-          <strong>Efectivo esperado</strong>
+          <strong>Esperado sin cambio</strong>
           <strong className="text-xl">
             {formatMoney(session.expectedAmountMinor - closingFloatMinor)}
           </strong>
         </div>
+        <p className="pb-3 text-xs leading-4 text-slate-600">Descontado el cambio a dejar</p>
       </div>
     </div>
   );
@@ -1067,10 +1071,10 @@ function PaymentMethodSummary({
                 </strong>
               </div>
               {hasManual ? (
-                <div className="mt-1 flex flex-wrap gap-x-2 text-[10px] text-slate-400">
+                <div className="mt-1 flex flex-wrap gap-x-2 text-xs text-slate-600">
                   <span>Ventas: {formatMoney(item.salesMinor)}</span>
                   {item.incomeMinor > 0 ? (
-                    <span className="text-emerald-600">
+                    <span className="text-emerald-700">
                       +Ingresos: {formatMoney(item.incomeMinor)}
                     </span>
                   ) : null}
@@ -1250,7 +1254,7 @@ function Metric({
           : "rounded-lg bg-slate-50 p-3"
       }
     >
-      <SmallLabel>{label}</SmallLabel>
+      <SmallLabel dark={dark}>{label}</SmallLabel>
       <p
         className={`mt-1 text-lg font-extrabold ${danger ? "text-rose-600" : ""}`}
       >
@@ -1275,7 +1279,7 @@ function ReviewValue({
     <div
       className={emphasized ? "bg-slate-950 p-4 text-white" : "bg-white p-4"}
     >
-      <SmallLabel>{label}</SmallLabel>
+      <SmallLabel dark={emphasized}>{label}</SmallLabel>
       <p
         className={`mt-1 text-lg font-extrabold ${danger ? "text-rose-600" : ""}`}
       >
@@ -1285,9 +1289,9 @@ function ReviewValue({
   );
 }
 
-function SmallLabel({ children }: { children: ReactNode }) {
+function SmallLabel({ children, dark = false }: { children: ReactNode; dark?: boolean }) {
   return (
-    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+    <p className={`text-xs font-bold uppercase tracking-wide ${dark ? "text-slate-400" : "text-slate-600"}`}>
       {children}
     </p>
   );

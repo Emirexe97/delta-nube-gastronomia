@@ -1,3 +1,4 @@
+import { installInteractionDiagnostics, attachInteractionDiagnostics } from "./interaction-diagnostics";
 import {
   test,
   expect,
@@ -20,6 +21,7 @@ async function launch() {
     cwd: process.cwd(),
   });
   page = await app.firstWindow();
+  await installInteractionDiagnostics(page);
   await app.evaluate(({ BrowserWindow }) => {
     for (const window of BrowserWindow.getAllWindows()) {
       window.webContents.getPrintersAsync = async () => [];
@@ -127,7 +129,7 @@ test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ti
     }),
   ).toBeVisible();
   await expect(
-    report.getByText("Efectivo esperado", { exact: true }),
+    report.getByText("Esperado sin cambio", { exact: true }),
   ).toBeVisible();
   await report.getByRole("button", { name: "Imprimir informe" }).click();
   const printModal = page.getByRole("dialog", {
@@ -146,11 +148,12 @@ test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ti
     }),
   ).toBeVisible();
   await expect(
-    preview.getByText("Efectivo esperado", { exact: true }),
+    preview.getByText("Esperado sin cambio", { exact: true }),
   ).toBeVisible();
 });
 
-test.afterEach(async () => {
+test.afterEach(async ({}, info) => {
+  try { await attachInteractionDiagnostics(page, app, info, "interaction-state"); } catch (error) { console.warn("Diagnostic capture failed", error); }
   await app?.evaluate(({ BrowserWindow }) => {
     for (const window of BrowserWindow.getAllWindows()) window.destroy();
   });
@@ -412,9 +415,9 @@ test("separa el cambio final del efectivo neto en revisión, historial e informe
   const confirmation = page.getByRole("dialog", {
     name: "Confirmar cierre definitivo",
   });
-  await expect(confirmation.getByText("Efectivo esperado", { exact: true }).locator(".."))
+  await expect(confirmation.getByText("Esperado sin cambio", { exact: true }).locator(".."))
     .toContainText("$ 4.500");
-  await expect(confirmation.getByText("Efectivo contado", { exact: true }).locator(".."))
+  await expect(confirmation.getByText("Contado sin cambio", { exact: true }).locator(".."))
     .toContainText("$ 4.400");
   await expect(confirmation.getByText("Diferencia de arqueo", { exact: true }).locator(".."))
     .toContainText(/-\s*\$\s*100/);
@@ -449,7 +452,7 @@ test("separa el cambio final del efectivo neto en revisión, historial e informe
     await expect(report.getByText(value, { exact: true })).toBeVisible();
   }
   await expect(report.getByText(/-\s*\$\s*100/)).toBeVisible();
-  await expect(report.getByText("Efectivo contado", { exact: true }).locator("..")).toContainText("$ 4.400");
+  await expect(report.getByText("Contado sin cambio", { exact: true }).locator("..")).toContainText("$ 4.400");
   await report.getByRole("button", { name: "Imprimir informe" }).click();
   const printModal = page.getByRole("dialog", {
     name: "Imprimir informe de caja",

@@ -10,7 +10,10 @@ import { formatMoney as domainFormatMoney } from "@gastronomy/domain";
 
 export const formatMoney = domainFormatMoney;
 
-export function moneyInputValue(amountMinor: number, fixedDecimals = false): string {
+export function moneyInputValue(
+  amountMinor: number,
+  fixedDecimals = false,
+): string {
   if (!Number.isSafeInteger(amountMinor)) {
     throw new RangeError("El importe debe ser un entero seguro en centavos.");
   }
@@ -87,6 +90,9 @@ const auditLabels: Record<string, string> = {
   DELIVERY_SETTLED: "Rendición liquidada",
   SETTINGS_UPDATED: "Configuración actualizada",
   STOCK_ADJUSTED: "Stock ajustado",
+  PURCHASE_ITEM_QUANTITY_CORRECTED: "Cantidad de compra corregida",
+  PURCHASE_ITEM_COST_CORRECTED: "Costo de compra corregido",
+  PURCHASE_METADATA_CORRECTED: "Datos de compra corregidos",
   PURCHASE_CREATED: "Ingreso de mercadería registrado",
   USER_CREATED: "Usuario creado",
   USER_UPDATED: "Usuario actualizado",
@@ -102,6 +108,46 @@ const auditLabels: Record<string, string> = {
   CASH_OPENED: "Caja abierta",
   CASH_CLOSED: "Caja cerrada",
   CASH_FORCE_CLOSED: "Caja cerrada forzosamente",
+  CASH_INCOME: "Ingreso de caja",
+  CASH_EXPENSE: "Gasto de caja",
+  CASH_WITHDRAWAL: "Retiro de caja",
+  CASH_ADJUSTMENT: "Ajuste de caja",
+  CASH_REVERSED: "Movimiento de caja revertido",
+  ORDER_DEPOSIT_APPLIED: "Seña aplicada",
+  ORDER_TABLE_CHANGED: "Pedido trasladado de mesa",
+  ORDER_FULFILLMENT_TYPE_CHANGED: "Modalidad del pedido cambiada",
+  ORDER_ITEM_NOTES_UPDATED: "Notas del producto actualizadas",
+  ORDER_EMPTY_CANCELLED: "Pedido vacío cancelado",
+  DELIVERY_DRIVER_ASSIGNED: "Repartidor asignado",
+  DELIVERY_DRIVER_UNASSIGNED: "Repartidor quitado",
+  DELIVERY_SETTLED_ON_PAYMENT: "Rendición liquidada al cobrar",
+  DELIVERY_SETTLEMENT_REVERSED: "Rendición revertida",
+  PRINT_SUCCEEDED: "Impresión completada",
+  PRINT_FAILED: "Impresión fallida",
+  CUSTOMER_ACCOUNT_SETTLED: "Cuenta de cliente cobrada",
+  CUSTOMER_ARCHIVED: "Cliente archivado",
+  CUSTOMER_REACTIVATED: "Cliente reactivado",
+  CUSTOMER_MERGED: "Ficha de cliente fusionada",
+  CUSTOMER_MERGE_RECEIVED: "Datos de cliente incorporados",
+  CATEGORY_UPDATED: "Categoría actualizada",
+  CATEGORY_DELETED: "Categoría eliminada",
+  PRODUCT_DELETED: "Producto eliminado",
+  USER_DELETED: "Usuario eliminado",
+  TABLE_DELETED: "Mesa eliminada",
+  FINANCE_EXPENSE_CREATED: "Gasto registrado",
+  FINANCE_EXPENSE_PAID: "Gasto pagado",
+  FINANCE_EXPENSE_PAYMENT_UNMARKED: "Marca de pago deshecha",
+  FINANCE_MONTHLY_EXPENSE_CORRECTED: "Gasto de un mes corregido",
+  FINANCE_MONTHLY_EXPENSE_CANCELLED: "Gasto de un mes anulado",
+  FINANCE_EXPENSE_CLOSED_PAYMENT_CORRECTED:
+    "Pago erróneo de caja cerrada corregido",
+  FINANCE_EXPENSE_CASH_PAYMENT_CORRECTED: "Pago registrado corregido",
+  FINANCE_EXPENSE_RETURN_RECEIVED: "Devolución de gasto recibida",
+  FINANCE_EXPENSE_CORRECTED: "Gasto corregido",
+  FINANCE_EXPENSE_CANCELLED: "Gasto anulado",
+  FINANCE_RECURRING_CREATED: "Gasto recurrente creado",
+  FINANCE_RECURRING_STOPPED: "Gasto recurrente detenido",
+  FINANCE_PRODUCT_COST_SET: "Costo de producto actualizado",
 };
 const entityLabels: Record<string, string> = {
   ORDER: "Pedido",
@@ -117,6 +163,12 @@ const entityLabels: Record<string, string> = {
   PRINT_JOB: "Impresión",
   CUSTOMER: "Cliente",
   TABLE_SECTOR: "Sector",
+  ORDER_ITEM: "Producto del pedido",
+  CATEGORY: "Categoría",
+  MODIFIER: "Modificador",
+  CASH_MOVEMENT: "Movimiento de caja",
+  FINANCE_EXPENSE: "Gasto",
+  FINANCE_RECURRING: "Gasto recurrente",
 };
 const permissionLabels: Record<string, string> = {
   "orders.cancel": "Cancelar pedidos",
@@ -128,11 +180,15 @@ const permissionLabels: Record<string, string> = {
   "prices.bulk_update": "Actualizar productos y precios en lote",
   "cash.close": "Cerrar caja",
   "cash.expense": "Movimientos de caja",
+  "cash.income": "Autorizar devoluciones recibidas en caja",
   "settings.manage": "Administrar configuración",
   "stock.adjust": "Ajustar stock",
   "purchases.manage": "Registrar compras e ingresos",
   "users.manage": "Administrar usuarios",
   "tables.manage": "Administrar mesas y sectores",
+  "orders.edit": "Editar pedidos",
+  "customers.manage": "Administrar clientes",
+  "finance.manage": "Administrar gastos y costos",
 };
 export const auditActionLabel = (value: string) =>
   auditLabels[value] ??

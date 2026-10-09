@@ -1,5 +1,7 @@
 import { join } from "node:path";
-import { BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
+import { tmpdir } from "node:os";
+import { isBackgroundTest } from "./e2e-background.cjs";
 import type { PrinterProfileDto } from "@gastronomy/contracts";
 
 type PrinterInfo = { name: string; isDefault?: boolean };
@@ -13,6 +15,14 @@ export type PrintOutcome = "PRINTED" | "SKIPPED";
 
 const previewWindows = new Set<BrowserWindow>();
 const previewPreload = join(__dirname, "print-preview-preload.js");
+function backgroundE2e() {
+  return isBackgroundTest({
+    flag: process.env.GASTRONOMY_E2E_BACKGROUND,
+    isPackaged: app.isPackaged,
+    userDataPath: app.getPath("userData"),
+    tempRoot: tmpdir(),
+  });
+}
 function printSettings(profile: PrinterProfileDto, height = 297_000) {
   return {
     copies: Math.max(1, profile.copies || 1),
@@ -91,6 +101,7 @@ async function showPreview(
     title: "Vista previa de impresión",
     webPreferences: {
       preload: previewPreload,
+      backgroundThrottling: backgroundE2e() ? false : undefined,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -166,7 +177,7 @@ async function showPreview(
     await window.loadURL(
       `data:text/html;charset=utf-8,${encodeURIComponent(previewDocument(html, profile, initialMessage))}`,
     );
-    if (!window.isDestroyed()) window.show();
+    if (!window.isDestroyed() && !backgroundE2e()) window.show();
   } catch (error) {
     finish(
       "SKIPPED",
@@ -228,6 +239,7 @@ export async function printHtml(
   const window = new BrowserWindow({
     show: false,
     webPreferences: {
+      backgroundThrottling: backgroundE2e() ? false : undefined,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

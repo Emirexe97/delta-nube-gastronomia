@@ -851,4 +851,136 @@ INSERT OR IGNORE INTO role_permissions(role_id, permission_code)
     sql: String.raw`ALTER TABLE orders ADD COLUMN delivery_fee_belongs_to_driver INTEGER;
 UPDATE orders SET delivery_fee_belongs_to_driver = 1 WHERE paid_minor > 0;`,
   },
+  {
+    version: 30,
+    name: "finance_expense_recovery",
+    sql: String.raw`ALTER TABLE finance_expenses ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE finance_expenses ADD COLUMN cancelled_at TEXT;
+ALTER TABLE finance_expenses ADD COLUMN cancellation_reason TEXT;
+ALTER TABLE finance_expenses ADD COLUMN cancelled_by_user_id TEXT REFERENCES users(id);`,
+  },
+  {
+    version: 31,
+    name: "finance_expense_payment_unmark_revision_guard",
+    sql: String.raw`ALTER TABLE finance_expenses ADD COLUMN payment_revision_required INTEGER NOT NULL DEFAULT 0 CHECK (payment_revision_required IN (0, 1));`,
+  },
+  {
+    version: 32,
+    name: "finance_expense_cash_payment_corrections",
+    sql: String.raw`CREATE TABLE finance_expense_payment_corrections (
+  id TEXT PRIMARY KEY,
+  expense_id TEXT NOT NULL REFERENCES finance_expenses(id),
+  original_movement_id TEXT NOT NULL UNIQUE REFERENCES cash_movements(id),
+  compensation_movement_id TEXT NOT NULL UNIQUE REFERENCES cash_movements(id),
+  operator_user_id TEXT NOT NULL REFERENCES users(id),
+  authorizer_user_id TEXT NOT NULL REFERENCES users(id),
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json TEXT NOT NULL
+);
+CREATE INDEX finance_expense_payment_corrections_expense_idx ON finance_expense_payment_corrections(expense_id, created_at);`,
+  },
+  {
+    version: 33,
+    name: "finance_expense_returns",
+    sql: String.raw`CREATE TABLE finance_expense_returns (
+  id TEXT PRIMARY KEY,
+  expense_id TEXT NOT NULL UNIQUE REFERENCES finance_expenses(id),
+  cash_movement_id TEXT UNIQUE REFERENCES cash_movements(id),
+  original_movement_id TEXT REFERENCES cash_movements(id),
+  operator_user_id TEXT NOT NULL REFERENCES users(id),
+  authorizer_user_id TEXT REFERENCES users(id),
+  amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+  title_snapshot TEXT NOT NULL,
+  category_snapshot TEXT NOT NULL,
+  paid_at_snapshot TEXT NOT NULL,
+  original_payment_method_id TEXT REFERENCES payment_methods(id),
+  original_payment_method_code TEXT,
+  original_payment_method_name TEXT,
+  destination TEXT NOT NULL CHECK(destination IN ('CASH_SESSION','EXTERNAL')),
+  payment_method_id TEXT NOT NULL REFERENCES payment_methods(id),
+  payment_method_code TEXT NOT NULL,
+  payment_method_name TEXT NOT NULL,
+  affects_cash INTEGER NOT NULL CHECK(affects_cash IN (0,1)),
+  cash_session_id TEXT REFERENCES cash_sessions(id),
+  cash_session_number INTEGER,
+  reason TEXT NOT NULL,
+  received_on TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json TEXT NOT NULL
+);
+CREATE INDEX finance_expense_returns_received_idx ON finance_expense_returns(received_on, received_at);
+INSERT OR IGNORE INTO permissions(code,description) VALUES ('cash.income','Autorizar ingresos en caja');
+INSERT OR IGNORE INTO role_permissions(role_id,permission_code)
+  SELECT id,'cash.income' FROM roles WHERE code IN ('ADMIN','MANAGER');`,
+  },
+  {
+    version: 34,
+    name: "finance_expense_closed_payment_corrections",
+    sql: String.raw`CREATE TABLE finance_expense_closed_payment_corrections (
+  id TEXT PRIMARY KEY,
+  expense_id TEXT NOT NULL REFERENCES finance_expenses(id),
+  original_movement_id TEXT NOT NULL UNIQUE REFERENCES cash_movements(id),
+  cash_session_id TEXT NOT NULL REFERENCES cash_sessions(id),
+  operator_user_id TEXT NOT NULL REFERENCES users(id),
+  authorizer_user_id TEXT NOT NULL REFERENCES users(id),
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json TEXT NOT NULL
+);
+CREATE INDEX finance_expense_closed_payment_corrections_expense_idx ON finance_expense_closed_payment_corrections(expense_id, created_at);`,
+  },
+  {
+    version: 35,
+    name: "purchase_metadata_revision",
+    sql: String.raw`ALTER TABLE purchases ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;`,
+  },
+  {
+    version: 36,
+    name: "purchase_item_cost_corrections",
+    sql: String.raw`CREATE TABLE purchase_item_cost_corrections (
+  id TEXT PRIMARY KEY,
+  purchase_id TEXT NOT NULL REFERENCES purchases(id),
+  purchase_item_id TEXT NOT NULL REFERENCES purchase_items(id),
+  previous_unit_cost_minor INTEGER NOT NULL CHECK(previous_unit_cost_minor >= 0),
+  corrected_unit_cost_minor INTEGER NOT NULL CHECK(corrected_unit_cost_minor >= 0),
+  previous_line_total_minor INTEGER NOT NULL CHECK(previous_line_total_minor >= 0),
+  corrected_line_total_minor INTEGER NOT NULL CHECK(corrected_line_total_minor >= 0),
+  purchase_revision INTEGER NOT NULL CHECK(purchase_revision > 0),
+  reason TEXT NOT NULL CHECK(length(trim(reason)) BETWEEN 1 AND 500),
+  operator_user_id TEXT NOT NULL REFERENCES users(id),
+  authorizer_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  UNIQUE(purchase_id, purchase_revision)
+);
+CREATE INDEX purchase_item_cost_corrections_item_idx ON purchase_item_cost_corrections(purchase_item_id, purchase_revision);
+CREATE TRIGGER purchase_item_cost_corrections_no_update BEFORE UPDATE ON purchase_item_cost_corrections BEGIN SELECT RAISE(ABORT, 'purchase cost corrections are immutable'); END;
+CREATE TRIGGER purchase_item_cost_corrections_no_delete BEFORE DELETE ON purchase_item_cost_corrections BEGIN SELECT RAISE(ABORT, 'purchase cost corrections are immutable'); END;`,
+  },
+  {
+    version: 37,
+    name: "purchase_item_quantity_corrections",
+    sql: String.raw`CREATE TABLE purchase_item_quantity_corrections (
+  id TEXT PRIMARY KEY,
+  purchase_id TEXT NOT NULL REFERENCES purchases(id),
+  purchase_item_id TEXT NOT NULL REFERENCES purchase_items(id),
+  previous_quantity_minor INTEGER NOT NULL CHECK(previous_quantity_minor > 0),
+  effective_quantity_minor INTEGER NOT NULL CHECK(effective_quantity_minor > 0),
+  effective_unit_cost_minor INTEGER NOT NULL CHECK(effective_unit_cost_minor >= 0),
+  previous_line_total_minor INTEGER NOT NULL CHECK(previous_line_total_minor >= 0),
+  effective_line_total_minor INTEGER NOT NULL CHECK(effective_line_total_minor >= 0),
+  purchase_revision INTEGER NOT NULL CHECK(purchase_revision > 0),
+  reason TEXT NOT NULL CHECK(length(trim(reason)) BETWEEN 1 AND 500),
+  operator_user_id TEXT NOT NULL REFERENCES users(id),
+  authorizer_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  UNIQUE(purchase_id, purchase_revision)
+);
+CREATE INDEX purchase_item_quantity_corrections_item_idx ON purchase_item_quantity_corrections(purchase_item_id, purchase_revision);
+CREATE TRIGGER purchase_item_quantity_corrections_no_update BEFORE UPDATE ON purchase_item_quantity_corrections BEGIN SELECT RAISE(ABORT, 'purchase quantity corrections are immutable'); END;
+CREATE TRIGGER purchase_item_quantity_corrections_no_delete BEFORE DELETE ON purchase_item_quantity_corrections BEGIN SELECT RAISE(ABORT, 'purchase quantity corrections are immutable'); END;`,
+  },
 ];

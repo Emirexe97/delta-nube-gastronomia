@@ -37,18 +37,19 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
   const recentSales = paidOrdersForSession(data.orders, data.cashSession);
   const stats = [
     {
-      label: "Venta del día",
+      label: "Pagos registrados",
       value: formatMoney(summary.salesTotalMinor),
-      detail: `${summary.orderCount} ventas cobradas`,
+      detail: `${summary.orderCount} pedido${summary.orderCount === 1 ? "" : "s"} con pago · día comercial`,
+      note: "Incluye pagos parciales y cuenta corriente",
       icon: TrendUp,
       tone: "text-emerald-600 bg-emerald-50",
     },
     {
-      label: "Pedidos abiertos",
+      label: "Retiros y envíos abiertos",
       value: String(activeOrders.length),
       detail: activeOrders.length
         ? "requieren seguimiento"
-        : "operación al día",
+        : "sin pendientes de entrega",
       icon: Receipt,
       tone: "text-brand-600 bg-brand-50",
     },
@@ -60,13 +61,14 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
       tone: "text-sky-600 bg-sky-50",
     },
     {
-      label: "Caja esperada",
+      label: "Efectivo esperado",
       value: data.cashSession
         ? formatMoney(data.cashSession.expectedAmountMinor)
         : "—",
       detail: data.cashSession
         ? `día ${data.cashSession.businessDate}`
         : "abrí caja para operar",
+      note: data.cashSession ? "Incluye el cambio inicial" : undefined,
       icon: ClockCountdown,
       tone: "text-amber-600 bg-amber-50",
     },
@@ -74,7 +76,7 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
   return (
     <div className="panel-enter mx-auto max-w-[1500px] space-y-4">
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {stats.map(({ label, value, detail, icon: Icon, tone }) => (
+        {stats.map(({ label, value, detail, note, icon: Icon, tone }) => (
           <Card key={label} className="flex items-center gap-3 p-4">
             <div
               className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${tone}`}
@@ -82,22 +84,28 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
               <Icon size={20} weight="duotone" />
             </div>
             <div className="min-w-0">
-              <p className="text-[10px] font-bold uppercase tracking-[.1em] text-slate-400">
+              <p className="text-xs font-bold uppercase tracking-[.1em] text-slate-600">
                 {label}
               </p>
               <p className="truncate text-xl font-extrabold tracking-tight text-slate-950">
                 {value}
               </p>
-              <p className="truncate text-[10px] text-slate-400">{detail}</p>
+              <p className="text-xs leading-4 text-slate-600">{detail}</p>
+              {note ? (
+                <p className="mt-1 text-xs leading-4 text-slate-600">
+                  {note}
+                </p>
+              ) : null}
             </div>
           </Card>
         ))}
       </section>
       <Card className="overflow-hidden">
         <div className="border-b border-slate-100 px-4 py-3">
-          <h2 className="text-sm font-bold">Últimas ventas cobradas</h2>
-          <p className="text-[11px] text-slate-400">
-            Ventas de la caja y día actual
+          <h2 className="text-sm font-bold">Pedidos con pagos registrados</h2>
+          <p className="text-xs text-slate-600">
+            {data.cashSession ? "Caja actual · " : ""}Incluye pagos parciales y
+            cuenta corriente
           </p>
         </div>
         {recentSales.length ? (
@@ -110,7 +118,7 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
                   <th>Mesa / cliente</th>
                   <th>Medios</th>
                   <th>Estado</th>
-                  <th className="text-right">Cobrado</th>
+                  <th className="text-right">Pago registrado</th>
                 </tr>
               </thead>
               <tbody>
@@ -154,29 +162,29 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
           </div>
         ) : (
           <p className="p-8 text-center text-sm text-slate-500">
-            Todavía no hay ventas cobradas en esta caja.
+            Todavía no hay pagos registrados en esta caja.
           </p>
         )}
       </Card>
-      <section className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
+      <section className="grid gap-4 xl:grid-cols-[2fr_1fr]">
         <Card className="overflow-hidden">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
             <div>
-              <h2 className="text-sm font-bold">Pedidos en curso</h2>
-              <p className="text-[11px] text-slate-400">
+              <h2 className="text-sm font-bold">Retiros y envíos en curso</h2>
+              <p className="text-xs text-slate-600">
                 Prioridad por hora de entrega y antigüedad
               </p>
             </div>
             <Link
               to="/pedidos"
-              className="flex items-center gap-1 text-xs font-bold text-brand-600 hover:text-brand-700"
+              className="flex items-center gap-1 text-xs font-bold text-brand-700 hover:text-brand-800"
             >
               Ver todos <ArrowRight size={14} />
             </Link>
           </div>
           <div className="max-h-[420px] overflow-auto">
             {activeOrders.length ? (
-              <table className="dn-table">
+              <table className="dn-table [&>thead>tr>th]:px-2 [&>tbody>tr>td]:px-2">
                 <thead>
                   <tr>
                     <th>Pedido</th>
@@ -227,7 +235,7 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
                             : statusLabels[order.operationalStatus]}
                         </Badge>
                       </td>
-                      <td className="text-right font-bold">
+                      <td className="whitespace-nowrap text-right font-bold">
                         {formatMoney(order.totalMinor)}
                       </td>
                     </tr>
@@ -239,9 +247,9 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
                 <div>
                   <ForkKnife className="mx-auto text-slate-300" size={34} />
                   <p className="mt-2 text-sm font-semibold text-slate-500">
-                    No hay pedidos abiertos
+                    No hay retiros ni envíos abiertos
                   </p>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-slate-600">
                     F3 crea un pedido para retirar · F4 crea un envío
                   </p>
                 </div>
@@ -250,9 +258,9 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
           </div>
         </Card>
         <Card className="p-4">
-          <h2 className="text-sm font-bold">Venta por canal</h2>
-          <p className="mt-1 text-[11px] text-slate-400">
-            Día comercial actual
+          <h2 className="text-sm font-bold">Pagos registrados por canal</h2>
+          <p className="mt-1 text-xs text-slate-600">
+            Día comercial · incluye cuenta corriente
           </p>
           <div className="mt-4 space-y-4">
             {Object.entries(summary.byType).map(([type, amount]) => {
@@ -273,7 +281,7 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
                       style={{ width: `${percent}%` }}
                     />
                   </div>
-                  <p className="mt-1 text-right text-[10px] text-slate-400">
+                  <p className="mt-1 text-right text-xs text-slate-600">
                     {percent}%
                   </p>
                 </div>
@@ -281,10 +289,10 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
             })}
           </div>
           <div className="mt-6 border-t border-slate-100 pt-4">
-            <h3 className="text-[10px] font-bold uppercase tracking-[.12em] text-slate-400">
+            <h3 className="text-xs font-bold uppercase tracking-[.12em] text-slate-600">
               Atajos rápidos
             </h3>
-            <div className="mt-2 grid grid-cols-2 gap-2 text-[10px] font-semibold text-slate-500">
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs font-semibold text-slate-500">
               <span className="rounded-lg bg-slate-50 p-2">
                 <b className="text-slate-900">F2</b> Salón
               </span>

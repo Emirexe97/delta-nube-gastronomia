@@ -11,6 +11,7 @@ export const SYSTEM_PERMISSIONS = [
   "cash.open",
   "cash.close",
   "cash.expense",
+  "cash.income",
   "cash.withdraw",
   "reports.view",
   "reports.export",

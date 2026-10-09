@@ -40,11 +40,22 @@ import type {
   UpdateOrderItemQuantityInput,
   ConfirmOrderInput,
   CreatePurchaseInput,
+  CorrectPurchaseMetadataInput,
+  CorrectPurchaseItemQuantityInput,
+  CorrectPurchaseItemCostInput,
   PurchaseDto,
   FinanceReportDto,
   FinanceExpenseDto,
   FinanceRecurringDto,
   CreateFinanceExpenseInput,
+  CorrectFinanceExpenseInput,
+  CancelFinanceExpenseInput,
+  UnmarkFinanceExpensePaymentInput,
+  CorrectFinanceExpenseCashPaymentInput,
+  CorrectFinanceExpenseClosedCashPaymentInput,
+  CorrectFinanceMonthlyExpenseInput,
+  ReceiveFinanceExpenseReturnInput,
+  PayFinanceExpenseInput,
   CreateFinanceRecurringInput,
   SettleDeliveryInput,
   SettleCustomerAccountInput,
@@ -254,15 +265,33 @@ export interface GastronomyRepository {
   }): import("@gastronomy/contracts").ModifierDto;
   listPurchases(): PurchaseDto[];
   createPurchase(input: CreatePurchaseInput): PurchaseDto;
+  correctPurchaseMetadata(input: CorrectPurchaseMetadataInput): PurchaseDto;
+  correctPurchaseItemQuantity(input: CorrectPurchaseItemQuantityInput): PurchaseDto;
+  correctPurchaseItemCost(input: CorrectPurchaseItemCostInput): PurchaseDto;
   getFinanceReport(input: { from: string; to: string }): FinanceReportDto;
+  getFinanceProductCosts(): FinanceReportDto["productCosts"];
   createFinanceExpense(input: CreateFinanceExpenseInput): FinanceExpenseDto;
-  payFinanceExpense(input: {
-    expenseId: Id;
-    paymentMethodCode: string;
-    fromCash: boolean;
-    idempotencyKey?: string;
-    terminalId?: string;
-  }): FinanceExpenseDto;
+  correctFinanceExpense(input: CorrectFinanceExpenseInput): FinanceExpenseDto;
+  cancelFinanceExpense(input: CancelFinanceExpenseInput): FinanceExpenseDto;
+  payFinanceExpense(input: PayFinanceExpenseInput): FinanceExpenseDto;
+  unmarkFinanceExpensePayment(
+    input: UnmarkFinanceExpensePaymentInput,
+  ): FinanceExpenseDto;
+  correctFinanceExpenseCashPayment(
+    input: CorrectFinanceExpenseCashPaymentInput,
+  ): FinanceExpenseDto;
+  correctFinanceMonthlyExpense(
+    input: CorrectFinanceMonthlyExpenseInput,
+  ): FinanceExpenseDto;
+  cancelFinanceMonthlyExpense(
+    input: CancelFinanceExpenseInput,
+  ): FinanceExpenseDto;
+  correctFinanceExpenseClosedCashPayment(
+    input: CorrectFinanceExpenseClosedCashPaymentInput,
+  ): FinanceExpenseDto;
+  receiveFinanceExpenseReturn(
+    input: ReceiveFinanceExpenseReturnInput,
+  ): FinanceExpenseDto;
   createFinanceRecurring(
     input: CreateFinanceRecurringInput,
   ): FinanceRecurringDto;
@@ -965,6 +994,10 @@ export class GastronomyApplication {
     return this.repository.getFinanceReport(input);
   }
 
+  getFinanceProductCosts() {
+    return this.repository.getFinanceProductCosts();
+  }
+
   createFinanceExpense(input: CreateFinanceExpenseInput) {
     return this.repository.createFinanceExpense(input);
   }
@@ -973,6 +1006,54 @@ export class GastronomyApplication {
     input: Parameters<GastronomyRepository["payFinanceExpense"]>[0],
   ) {
     return this.repository.payFinanceExpense(input);
+  }
+
+  correctFinanceExpense(input: CorrectFinanceExpenseInput) {
+    return this.repository.correctFinanceExpense(input);
+  }
+
+  cancelFinanceExpense(input: CancelFinanceExpenseInput) {
+    return this.repository.cancelFinanceExpense(input);
+  }
+
+  unmarkFinanceExpensePayment(input: UnmarkFinanceExpensePaymentInput) {
+    return this.repository.unmarkFinanceExpensePayment(input);
+  }
+
+  correctFinanceExpenseCashPayment(
+    input: CorrectFinanceExpenseCashPaymentInput,
+  ) {
+    return this.repository.correctFinanceExpenseCashPayment(input);
+  }
+
+  correctPurchaseItemQuantity(input: CorrectPurchaseItemQuantityInput) {
+    return this.repository.correctPurchaseItemQuantity(input);
+  }
+
+  correctPurchaseItemCost(input: CorrectPurchaseItemCostInput) {
+    return this.repository.correctPurchaseItemCost(input);
+  }
+
+  correctPurchaseMetadata(input: CorrectPurchaseMetadataInput) {
+    return this.repository.correctPurchaseMetadata(input);
+  }
+
+  correctFinanceMonthlyExpense(input: CorrectFinanceMonthlyExpenseInput) {
+    return this.repository.correctFinanceMonthlyExpense(input);
+  }
+
+  cancelFinanceMonthlyExpense(input: CancelFinanceExpenseInput) {
+    return this.repository.cancelFinanceMonthlyExpense(input);
+  }
+
+  correctFinanceExpenseClosedCashPayment(
+    input: CorrectFinanceExpenseClosedCashPaymentInput,
+  ) {
+    return this.repository.correctFinanceExpenseClosedCashPayment(input);
+  }
+
+  receiveFinanceExpenseReturn(input: ReceiveFinanceExpenseReturnInput) {
+    return this.repository.receiveFinanceExpenseReturn(input);
   }
 
   createFinanceRecurring(input: CreateFinanceRecurringInput) {

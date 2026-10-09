@@ -18,6 +18,17 @@ import type {
   ProductDto,
   PurchaseDto,
   FinanceExpenseDto,
+  FinanceExpenseReturnDto,
+  ReceiveFinanceExpenseReturnInput,
+  CorrectFinanceExpenseInput,
+  CorrectFinanceMonthlyExpenseInput,
+  CorrectFinanceExpenseCashPaymentInput,
+  CorrectFinanceExpenseClosedCashPaymentInput,
+  CorrectPurchaseItemCostInput,
+  CorrectPurchaseItemQuantityInput,
+  CancelFinanceExpenseInput,
+  UnmarkFinanceExpensePaymentInput,
+  PayFinanceExpenseInput,
   FinanceRecurringDto,
   ReportFilters,
   UserDto,
@@ -59,6 +70,18 @@ const SENSITIVE_DEMO_AUDIT_ACTIONS = new Set([
   "PRODUCTOS_ACTUALIZADOS_EN_LOTE",
   "STOCK_AJUSTADO",
   "PURCHASE_CREATED",
+  "PURCHASE_METADATA_CORRECTED",
+  "PURCHASE_ITEM_COST_CORRECTED",
+  "PURCHASE_ITEM_QUANTITY_CORRECTED",
+  "FINANCE_EXPENSE_CORRECTED",
+  "FINANCE_EXPENSE_CANCELLED",
+  "FINANCE_MONTHLY_EXPENSE_CORRECTED",
+  "FINANCE_MONTHLY_EXPENSE_CANCELLED",
+  "FINANCE_EXPENSE_PAID",
+  "FINANCE_EXPENSE_PAYMENT_UNMARKED",
+  "FINANCE_EXPENSE_CASH_PAYMENT_CORRECTED",
+  "FINANCE_EXPENSE_CLOSED_PAYMENT_CORRECTED",
+  "FINANCE_EXPENSE_RETURN_RECEIVED",
   "USUARIO_CREADO",
   "DRIVER_CREATED",
   "USUARIO_ACTUALIZADO",
@@ -87,6 +110,7 @@ interface DemoState {
     affectsCash: boolean;
     paymentMethodCode: string | null;
     orderId: string | null;
+    referenceId?: string;
     userId: string;
     reason: string | null;
     createdAt: string;
@@ -109,7 +133,23 @@ interface DemoState {
   }>;
   audit: AuditEntryDto[];
   purchases: PurchaseDto[];
-  purchaseReceipts: Record<string, { purchaseId: string; requestJson: string }>;
+  purchaseReceipts: Record<string, { purchaseId: string; requestJson: string; result?: PurchaseDto }>;
+  purchaseMetadataCorrectionReceipts?: Record<string, { fingerprint: string; result: PurchaseDto }>;
+  purchaseItemCostCorrections?: Array<{
+    id: string; purchaseId: string; purchaseItemId: string;
+    previousUnitCostMinor: number; correctedUnitCostMinor: number;
+    previousLineTotalMinor: number; correctedLineTotalMinor: number;
+    purchaseRevision: number; reason: string; operatorUserId: string;
+    authorizerUserId: string; createdAt: string;
+  }>;
+  purchaseItemCostCorrectionReceipts?: Record<string, { fingerprint: string; result: PurchaseDto }>;
+  purchaseItemQuantityCorrections?: Array<{
+    id: string; purchaseId: string; purchaseItemId: string;
+    previousQuantityMinor: number; correctedQuantityMinor: number;
+    unitCostMinor: number; previousLineTotalMinor: number; correctedLineTotalMinor: number; purchaseRevision: number;
+    reason: string; operatorUserId: string; authorizerUserId: string; createdAt: string;
+  }>;
+  purchaseItemQuantityCorrectionReceipts?: Record<string, { fingerprint: string; result: PurchaseDto }>;
   financeExpenses?: FinanceExpenseDto[];
   financeRecurring?: FinanceRecurringDto[];
   financeManualCosts?: Record<string, number>;
@@ -118,6 +158,27 @@ interface DemoState {
     { unitCostMinor: number | null; quantity: number }
   >;
   financeExpenseMovements?: Record<string, string>;
+  financeExpenseRecoveryReceipts?: Record<string, { fingerprint: string; result: FinanceExpenseDto }>;
+  financeExpensePaymentReceipts?: Record<string, { fingerprint: string; result: FinanceExpenseDto }>;
+  financeExpensePaymentRevisionRequired?: Record<string, boolean>;
+  financeExpensePaymentCorrections?: Array<{
+    id: string; expenseId: string; cashSessionId: string; cashSessionNumber: number;
+    originalMovementId: string; compensationMovementId: string; amountMinor: number;
+    paymentMethodCode: string; paymentMethodName: string; affectsCash: boolean;
+    operatorUserId: string; authorizerUserId: string; reason: string; correctedAt: string;
+    before: FinanceExpenseDto; after: FinanceExpenseDto;
+  }>;
+  financeExpenseClosedPaymentCorrections?: Array<{
+    id: string; expenseId: string; cashSessionId: string; cashSessionNumber: number;
+    originalMovementId: string; amountMinor: number; paymentMethodCode: string;
+    paymentMethodName: string; affectsCash: boolean; operatorUserId: string;
+    authorizerUserId: string; reason: string; correctedAt: string;
+    before: FinanceExpenseDto; after: FinanceExpenseDto;
+  }>;
+  financeExpenseReturns?: Array<FinanceExpenseReturnDto & {
+    operatorUserId: string; authorizerUserId: string | null;
+    before: FinanceExpenseDto; after: FinanceExpenseDto;
+  }>;
   sequence: number;
 }
 
@@ -450,6 +511,15 @@ function loadState(storage: DemoStorage): DemoState {
     parsed.movements ??= [];
     parsed.purchases ??= [];
     parsed.purchaseReceipts ??= {};
+    parsed.financeExpenseRecoveryReceipts ??= {};
+    parsed.financeExpensePaymentReceipts ??= {};
+    parsed.financeExpensePaymentRevisionRequired ??= {};
+    parsed.financeExpenseReturns ??= [];
+    for (const expense of parsed.financeExpenses ?? []) {
+      expense.revision ??= 0;
+      expense.cancelledAt ??= null;
+      expense.cancellationReason ??= null;
+    }
     parsed.data.tableSectors ??= [
       { id: "sector-main", name: "Salón", sortOrder: 1 },
     ];
@@ -1022,16 +1092,53 @@ export function createDemoApi(
         quantity: item.quantity,
       };
   }
+  const latestPurchaseCostCorrection = (purchaseId: string, purchaseItemId: string) =>
+    [...(state.purchaseItemCostCorrections ?? [])].reverse().find(
+      (entry) => entry.purchaseId === purchaseId && entry.purchaseItemId === purchaseItemId,
+    );
+  const latestPurchaseQuantityCorrection = (purchaseId: string, purchaseItemId: string) =>
+    [...(state.purchaseItemQuantityCorrections ?? [])].reverse().find(
+      (entry) => entry.purchaseId === purchaseId && entry.purchaseItemId === purchaseItemId,
+    );
+  const effectivePurchaseQuantity = (purchaseId: string, item: PurchaseDto["items"][number]) =>
+    latestPurchaseQuantityCorrection(purchaseId, item.id)?.correctedQuantityMinor ?? item.quantityMinor;
+  const effectivePurchaseItemCost = (purchaseId: string, item: PurchaseDto["items"][number]) =>
+    latestPurchaseCostCorrection(purchaseId, item.id)?.correctedUnitCostMinor ?? item.unitCostMinor;
+  const effectivePurchaseLineTotal = (purchaseId: string, item: PurchaseDto["items"][number]) => {
+    const costCorrection = latestPurchaseCostCorrection(purchaseId, item.id);
+    const quantityCorrection = latestPurchaseQuantityCorrection(purchaseId, item.id);
+    const latestAmountCorrection = !costCorrection ? quantityCorrection : !quantityCorrection ? costCorrection
+      : costCorrection.purchaseRevision > quantityCorrection.purchaseRevision ? costCorrection : quantityCorrection;
+    return latestAmountCorrection?.correctedLineTotalMinor ?? item.lineTotalMinor;
+  };
+  const projectPurchase = (purchase: PurchaseDto): PurchaseDto => {
+    const hasCorrection = (state.purchaseItemCostCorrections ?? []).some((entry) => entry.purchaseId === purchase.id) ||
+      (state.purchaseItemQuantityCorrections ?? []).some((entry) => entry.purchaseId === purchase.id);
+    if (!hasCorrection) return { ...purchase, revision: purchase.revision ?? 0 };
+    const items = purchase.items.map((item) => {
+      const costCorrection = latestPurchaseCostCorrection(purchase.id, item.id);
+      const quantityCorrection = latestPurchaseQuantityCorrection(purchase.id, item.id);
+      if (!costCorrection && !quantityCorrection) return item;
+      return {
+        ...item,
+        ...(costCorrection ? { effectiveUnitCostMinor: costCorrection.correctedUnitCostMinor } : {}),
+        ...(quantityCorrection ? { effectiveQuantityMinor: quantityCorrection.correctedQuantityMinor } : {}),
+        effectiveLineTotalMinor: effectivePurchaseLineTotal(purchase.id, item),
+      };
+    });
+    const effectiveTotalMinor = purchase.items.reduce((sum, item) => sum + effectivePurchaseLineTotal(purchase.id, item), 0);
+    return { ...purchase, revision: purchase.revision ?? 0, items, effectiveTotalMinor };
+  };
   const currentFinanceCost = (productId: string) => {
     const manual = state.financeManualCosts?.[productId];
     if (manual != null)
       return { unitCostMinor: manual, source: "MANUAL" as const };
     const purchase = [...state.purchases]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .flatMap((entry) => entry.items)
-      .find((item) => item.productId === productId);
+      .flatMap((entry) => entry.items.map((item) => ({ purchase: entry, item })))
+      .find(({ item }) => item.productId === productId);
     return purchase
-      ? { unitCostMinor: purchase.unitCostMinor, source: "PURCHASE" as const }
+      ? { unitCostMinor: effectivePurchaseItemCost(purchase.purchase.id, purchase.item), source: "PURCHASE" as const }
       : { unitCostMinor: null, source: "UNKNOWN" as const };
   };
   const save = () => {
@@ -1067,6 +1174,119 @@ export function createDemoApi(
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(state));
   };
   const output = <T>(value: T) => clone(value);
+  const financeExpenseDto = (expense: FinanceExpenseDto): FinanceExpenseDto => {
+    const returned = (state.financeExpenseReturns ?? []).find((item) => item.expenseId === expense.id);
+    return {
+    ...output(expense),
+    returnInfo: returned ? financeExpenseReturnDto(returned) : null,
+    canReceiveReturn: Boolean(
+      state.financeExpenses?.some((item) => item.id === expense.id) &&
+      expense.kind === "GENERAL" && expense.paidAt && !expense.cancelledAt &&
+      !expense.recurringId && expense.amountMinor > 0 &&
+      expense.paymentMethodCode && expense.paymentMethodCode !== "ACCOUNT" && !returned,
+    ),
+    canUnmarkPayment: Boolean(
+      state.financeExpenses?.some((item) => item.id === expense.id) &&
+      expense.paidAt && !expense.cancelledAt && !expense.recurringId &&
+      !(state.financeExpenseMovements ?? {})[expense.id] && !returned,
+    ),
+    canRecoverMonthlyExpense: (() => {
+      const rule = expense.recurringId
+        ? state.financeRecurring?.find((item) => item.id === expense.recurringId)
+        : undefined;
+      return Boolean(
+        state.financeExpenses?.some((item) => item.id === expense.id) &&
+        rule && ["FIXED", "PAYROLL"].includes(expense.kind) && rule.kind === expense.kind &&
+        !expense.paidAt && !expense.cancelledAt &&
+        !(state.financeExpenseMovements ?? {})[expense.id] &&
+        expense.incurredOn <= businessDateFromOpening(now()),
+      );
+    })(),
+    cashPaymentCorrection: (() => {
+      if (returned || !state.financeExpenses?.some((item) => item.id === expense.id) || !expense.paidAt || expense.cancelledAt || expense.recurringId) return null;
+      const movementId = (state.financeExpenseMovements ?? {})[expense.id];
+      const movement = movementId ? state.movements.find((item) => item.id === movementId) : undefined;
+      const session = movement && state.data.cashSession;
+      const method = movement?.paymentMethodCode ? state.data.paymentMethods.find((item) => item.code === movement.paymentMethodCode) : undefined;
+      if (!movement || !session || session.status !== "OPEN" || movement.sessionId !== session.id || movement.type !== "EXPENSE" || movement.amountMinor !== expense.amountMinor || movement.paymentMethodCode !== expense.paymentMethodCode || !method || method.code === "ACCOUNT") return null;
+      if (state.movements.some((item) => item.referenceId === movement.id) ||
+          (state.financeExpensePaymentCorrections ?? []).some((item) => item.originalMovementId === movement.id)) return null;
+      return { cashSessionId: session.id, cashSessionNumber: session.number, amountMinor: movement.amountMinor, paymentMethodName: method.name, affectsCash: movement.affectsCash };
+    })(),
+    closedCashPaymentCorrection: (() => {
+      if (returned || !state.financeExpenses?.some((item) => item.id === expense.id) ||
+          expense.kind !== "GENERAL" || !expense.paidAt || expense.cancelledAt || expense.recurringId) return null;
+      const movementId = (state.financeExpenseMovements ?? {})[expense.id];
+      const movement = movementId ? state.movements.find((item) => item.id === movementId) : undefined;
+      const session = movement
+        ? [state.data.cashSession, ...state.historicalSessions].find((item) => item?.id === movement.sessionId)
+        : undefined;
+      const method = movement?.paymentMethodCode ? state.data.paymentMethods.find((item) => item.code === movement.paymentMethodCode) : undefined;
+      if (!movement || !session || session.status !== "CLOSED" || movement.type !== "EXPENSE" ||
+          movement.amountMinor !== expense.amountMinor || movement.paymentMethodCode !== expense.paymentMethodCode ||
+          !method || method.code === "ACCOUNT" || state.movements.some((item) => item.referenceId === movement.id) ||
+          (state.financeExpensePaymentCorrections ?? []).some((item) => item.originalMovementId === movement.id) ||
+          (state.financeExpenseClosedPaymentCorrections ?? []).some((item) => item.originalMovementId === movement.id)) return null;
+      return { cashSessionId: session.id, cashSessionNumber: session.number, amountMinor: movement.amountMinor, paymentMethodName: method.name, affectsCash: movement.affectsCash };
+    })(),
+    };
+  };
+  const financeExpenseReturnDto = (item: FinanceExpenseReturnDto): FinanceExpenseReturnDto => ({
+    id: item.id, expenseId: item.expenseId, expenseTitle: item.expenseTitle,
+    expenseCategory: item.expenseCategory, amountMinor: item.amountMinor,
+    receivedOn: item.receivedOn, receivedAt: item.receivedAt,
+    destination: item.destination, paymentMethodCode: item.paymentMethodCode,
+    paymentMethodName: item.paymentMethodName, affectsCash: item.affectsCash,
+    cashSessionId: item.cashSessionId, cashSessionNumber: item.cashSessionNumber,
+    cashMovementId: item.cashMovementId, originalMovementId: item.originalMovementId,
+    reason: item.reason,
+  });
+  const requireFinanceManage = () => {
+    if (!state.data.currentUser.permissions.includes("finance.manage") && !state.data.currentUser.permissions.includes("*"))
+      throw new Error("No tenés permiso para modificar gastos.");
+  };
+  const requireCashExpenseAuthorizer = (pin: string) => {
+    requirePin(pin);
+    const authorizer = state.data.users.find((user) => user.active && (user.permissions.includes("cash.expense") || user.permissions.includes("*")));
+    if (!authorizer)
+      throw new Error("El usuario no tiene permiso para autorizar egresos de caja.");
+    return authorizer.id;
+  };
+  const requireCashIncomeAuthorizer = (pin: string) => {
+    requirePin(pin);
+    const authorizer = state.data.users.find((user) => user.active && (user.permissions.includes("cash.income") || user.permissions.includes("*")));
+    if (!authorizer) throw new Error("El usuario no tiene permiso para autorizar ingresos de caja.");
+    return authorizer.id;
+  };
+  const recoverableMonthlyExpense = (expenseId: string, expectedRevision: number) => {
+    const expense = state.financeExpenses?.find((item) => item.id === expenseId);
+    if (!expense) throw new Error("El gasto no existe.");
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || expectedRevision !== (expense.revision ?? 0))
+      throw new Error("El gasto cambió. Actualizá y volvé a intentar.");
+    const rule = expense.recurringId
+      ? state.financeRecurring?.find((item) => item.id === expense.recurringId)
+      : undefined;
+    const businessDate = businessDateFromOpening(now());
+    if (!rule || !["FIXED", "PAYROLL"].includes(expense.kind) || rule.kind !== expense.kind ||
+        expense.paidAt || expense.cancelledAt || (state.financeExpenseMovements ?? {})[expense.id] ||
+        !validFinanceDate(expense.incurredOn) || expense.incurredOn > businessDate)
+      throw new Error("Solo se pueden recuperar ocurrencias mensuales impagas, sin caja vinculada y ya incurridas.");
+    return expense;
+  };
+  const validFinanceDate = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  };
+  const expenseRecoveryFingerprint = (input: CorrectFinanceExpenseInput | CancelFinanceExpenseInput, operation: string) => JSON.stringify({operation,input});
+  const recordFinanceExpenseRecovery = (expense: FinanceExpenseDto, action: string, before: FinanceExpenseDto, reason: string) => {
+    audit(state, "FINANCE_EXPENSE", expense.id, action, reason, "finance.manage");
+    const entry = state.audit[0];
+    if (entry?.entityId === expense.id && entry.action === action) {
+      entry.beforeJson = JSON.stringify(before);
+      entry.afterJson = JSON.stringify(expense);
+    }
+  };
   const orderById = (id: string) => {
     const order = state.data.orders.find((candidate) => candidate.id === id);
     if (!order) throw new Error("No se encontró el pedido.");
@@ -3997,7 +4217,20 @@ export function createDemoApi(
     },
 
     async listPurchases() {
-      return output(state.purchases);
+      return output(state.purchases.map(projectPurchase));
+    },
+
+    async getFinanceProductCosts() {
+      if (
+        !state.data.currentUser.permissions.includes("finance.view") &&
+        !state.data.currentUser.permissions.includes("*")
+      )
+        throw new Error("No tenés permiso para consultar costos.");
+      return state.data.products.map((product) => ({
+        productId: product.id,
+        productName: product.name,
+        ...currentFinanceCost(product.id),
+      }));
     },
 
     async getFinanceReport(input) {
@@ -4066,13 +4299,38 @@ export function createDemoApi(
           orderBusinessDate(order) >= input.from &&
           orderBusinessDate(order) <= input.to,
       );
+      const deliveryCostForOrder = (order: OrderDto) =>
+        order.type === "DELIVERY" &&
+        (order.deliveryFeeBelongsToDriver ??
+          state.data.settings.deliveryFeeBelongsToDriver ??
+          true)
+          ? order.deliveryFeeMinor
+          : 0;
+      const deliveryCostsMinor = periodOrders.reduce(
+        (sum, order) => sum + deliveryCostForOrder(order),
+        0,
+      );
       const paidFinanceMovementIds = new Set(
         Object.values(state.financeExpenseMovements ?? {}),
+      );
+      const correctedClosedFinanceMovementIds = new Set(
+        (state.financeExpenseClosedPaymentCorrections ?? []).map((item) => item.originalMovementId),
       );
       const cashExpenses: FinanceExpenseDto[] = state.movements
         .filter(
           (movement) =>
             movement.type === "EXPENSE" &&
+            !((movement.reason?.startsWith("Pago de envío a repartidor:") ||
+              movement.reason?.startsWith("Liquidación de reparto")) &&
+              movement.orderId != null &&
+              state.data.orders.some(
+                (order) => order.id === movement.orderId && order.type === "DELIVERY",
+              )) &&
+            !(movement.reason?.startsWith("Anulación de liquidación:") &&
+              movement.orderId != null &&
+              state.data.orders.some(
+                (order) => order.id === movement.orderId && order.type === "DELIVERY",
+              )) &&
             (sessionsById.get(movement.sessionId)?.businessDate ??
               businessDateFromOpening(movement.createdAt)) >= input.from &&
             (sessionsById.get(movement.sessionId)?.businessDate ??
@@ -4081,7 +4339,8 @@ export function createDemoApi(
             !state.movements.some(
               (other) => (other as any).referenceId === movement.id,
             ) &&
-            !paidFinanceMovementIds.has(movement.id),
+            !paidFinanceMovementIds.has(movement.id) &&
+            !correctedClosedFinanceMovementIds.has(movement.id),
         )
         .map((movement) => ({
           id: `cash-${movement.id}`,
@@ -4109,6 +4368,8 @@ export function createDemoApi(
         ),
         ...cashExpenses,
       ].sort((a, b) => b.incurredOn.localeCompare(a.incurredOn));
+      const periodExpenseDtos = periodExpenses.map(financeExpenseDto);
+      const activePeriodExpenses = periodExpenses.filter((item) => !item.cancelledAt);
       const costRows = periodOrders.flatMap((order) =>
         order.items.map((item) => ({
           month: orderBusinessDate(order).slice(0, 7),
@@ -4133,23 +4394,30 @@ export function createDemoApi(
           0,
         ) - refundsMinor;
       const cogsMinor = costRows.reduce((sum, row) => sum + (row.cost ?? 0), 0);
-      const expensesMinor = periodExpenses.reduce(
+      const expensesMinor = activePeriodExpenses.reduce(
         (sum, item) => sum + item.amountMinor,
         0,
       );
+      const expenseReturns = (state.financeExpenseReturns ?? [])
+        .filter((item) => item.receivedOn >= input.from && item.receivedOn <= input.to)
+        .map(financeExpenseReturnDto);
+      const expenseReturnsMinor = expenseReturns.reduce((sum, item) => sum + item.amountMinor, 0);
       const monthlyMap = new Map<
         string,
         {
           month: string;
           salesMinor: number;
           cogsMinor: number;
+          deliveryCostsMinor: number;
           expensesMinor: number;
+          expenseReturnsMinor: number;
+          netExpensesMinor: number;
         }
       >();
       const monthly = (month: string) => {
         let row = monthlyMap.get(month);
         if (!row) {
-          row = { month, salesMinor: 0, cogsMinor: 0, expensesMinor: 0 };
+          row = { month, salesMinor: 0, cogsMinor: 0, deliveryCostsMinor: 0, expensesMinor: 0, expenseReturnsMinor: 0, netExpensesMinor: 0 };
           monthlyMap.set(month, row);
         }
         return row;
@@ -4163,8 +4431,23 @@ export function createDemoApi(
             0,
           );
       for (const row of costRows) monthly(row.month).cogsMinor += row.cost ?? 0;
-      for (const item of periodExpenses)
+      for (const order of periodOrders)
+        monthly(orderBusinessDate(order).slice(0, 7)).deliveryCostsMinor +=
+          deliveryCostForOrder(order);
+      for (const item of activePeriodExpenses)
         monthly(item.incurredOn.slice(0, 7)).expensesMinor += item.amountMinor;
+      for (const item of expenseReturns)
+        monthly(item.receivedOn.slice(0, 7)).expenseReturnsMinor += item.amountMinor;
+      for (const row of monthlyMap.values()) row.netExpensesMinor = row.expensesMinor - row.expenseReturnsMinor;
+      let purchasesTotal = 0n;
+      for (const purchase of state.purchases) {
+        const businessDate = businessDateFromOpening(purchase.createdAt);
+        if (businessDate < input.from || businessDate > input.to) continue;
+        const amount = projectPurchase(purchase).effectiveTotalMinor ?? purchase.totalMinor;
+        if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("El total de compras excede el rango permitido.");
+        purchasesTotal += BigInt(amount);
+        if (purchasesTotal > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("El total de compras excede el rango permitido.");
+      }
       save();
       return output({
         from: input.from,
@@ -4172,29 +4455,27 @@ export function createDemoApi(
         salesMinor,
         refundsMinor,
         cogsMinor,
+        deliveryCostsMinor,
         unknownCostItems: costRows.filter((row) => row.cost == null).length,
         costedItems: costRows.filter((row) => row.cost != null).length,
         expensesMinor,
-        payrollMinor: periodExpenses
+        expenseReturnsMinor,
+        netExpensesMinor: expensesMinor - expenseReturnsMinor,
+        payrollMinor: activePeriodExpenses
           .filter((item) => item.kind === "PAYROLL")
           .reduce((sum, item) => sum + item.amountMinor, 0),
-        fixedMinor: periodExpenses
+        fixedMinor: activePeriodExpenses
           .filter((item) => item.kind === "FIXED")
           .reduce((sum, item) => sum + item.amountMinor, 0),
-        unpaidMinor: periodExpenses
+        unpaidMinor: activePeriodExpenses
           .filter((item) => !item.paidAt)
           .reduce((sum, item) => sum + item.amountMinor, 0),
-        purchasesMinor: state.purchases
-          .filter(
-            (purchase) => {
-              const businessDate = businessDateFromOpening(purchase.createdAt);
-              return businessDate >= input.from && businessDate <= input.to;
-            },
-          )
-          .reduce((sum, purchase) => sum + purchase.totalMinor, 0),
-        grossProfitMinor: salesMinor - cogsMinor,
-        estimatedOperatingProfitMinor: salesMinor - cogsMinor - expensesMinor,
-        expenses: periodExpenses,
+        purchasesMinor: Number(purchasesTotal),
+        grossProfitMinor: salesMinor - cogsMinor - deliveryCostsMinor,
+        estimatedOperatingProfitMinor:
+          salesMinor - cogsMinor - deliveryCostsMinor - expensesMinor + expenseReturnsMinor,
+        expenseReturns,
+        expenses: periodExpenseDtos,
         recurring,
         productCosts: state.data.products
           .filter((product) => product.active)
@@ -4205,7 +4486,8 @@ export function createDemoApi(
           })),
         monthly: [...monthlyMap.values()].sort((a, b) =>
           a.month.localeCompare(b.month),
-        ),
+        ).map(({expenseReturnsMinor, netExpensesMinor, ...row}) => expenseReturnsMinor > 0
+          ? {...row, expenseReturnsMinor, netExpensesMinor} : row),
       });
     },
 
@@ -4241,18 +4523,179 @@ export function createDemoApi(
         employeeName: employee?.fullName ?? null,
         recurringId: null,
         note: input.note?.trim() || null,
+        revision: 0,
+        cancelledAt: null,
+        cancellationReason: null,
       };
       (state.financeExpenses ??= []).push(expense);
       save();
-      return output(expense);
+      return financeExpenseDto(expense);
+    },
+
+    async correctFinanceMonthlyExpense(input: CorrectFinanceMonthlyExpenseInput) {
+      requireFinanceManage();
+      const receiptKey = input.idempotencyKey?.trim() || null;
+      const fingerprint = JSON.stringify({
+        operation: "correctFinanceMonthlyExpense",
+        input: { ...input, idempotencyKey: undefined },
+      });
+      const prior = receiptKey ? state.financeExpenseRecoveryReceipts?.[receiptKey] : undefined;
+      if (prior) {
+        if (prior.fingerprint !== fingerprint)
+          throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      const expense = recoverableMonthlyExpense(input.expenseId, input.expectedRevision);
+      const reason = input.reason.trim();
+      const title = input.title.trim();
+      const category = input.category.trim();
+      const dueOn = input.dueOn ?? expense.dueOn;
+      const note = input.note === undefined ? (expense.note ?? null) : input.note?.trim() || null;
+      if (!reason || reason.length > 500 || !title || title.length > 160 || !category || category.length > 160 ||
+          !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 || !validFinanceDate(dueOn) ||
+          (note?.length ?? 0) > 1000)
+        throw new Error("Completá concepto, categoría, importe, vencimiento y motivo válidos para la ocurrencia.");
+
+      const before = output(expense);
+      expense.title = title;
+      expense.category = category;
+      expense.amountMinor = input.amountMinor;
+      expense.dueOn = dueOn;
+      expense.note = note;
+      expense.revision = (expense.revision ?? 0) + 1;
+      (state.financeExpensePaymentRevisionRequired ??= {})[expense.id] = true;
+      recordFinanceExpenseRecovery(expense, "FINANCE_MONTHLY_EXPENSE_CORRECTED", before, reason);
+      const key = receiptKey ?? uid("monthly-expense-recovery", state);
+      (state.financeExpenseRecoveryReceipts ??= {})[key] = {
+        fingerprint,
+        result: financeExpenseDto(expense),
+      };
+      save();
+      return financeExpenseDto(expense);
+    },
+
+    async cancelFinanceMonthlyExpense(input: CancelFinanceExpenseInput) {
+      requireFinanceManage();
+      const receiptKey = input.idempotencyKey?.trim() || null;
+      const fingerprint = JSON.stringify({
+        operation: "cancelFinanceMonthlyExpense",
+        input: { ...input, idempotencyKey: undefined },
+      });
+      const prior = receiptKey ? state.financeExpenseRecoveryReceipts?.[receiptKey] : undefined;
+      if (prior) {
+        if (prior.fingerprint !== fingerprint)
+          throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      const expense = recoverableMonthlyExpense(input.expenseId, input.expectedRevision);
+      const reason = input.reason.trim();
+      if (!reason || reason.length > 500)
+        throw new Error("Ingresá un motivo de anulación válido (máximo 500 caracteres).");
+      const before = output(expense);
+      expense.cancelledAt = now();
+      expense.cancellationReason = reason;
+      expense.revision = (expense.revision ?? 0) + 1;
+      recordFinanceExpenseRecovery(expense, "FINANCE_MONTHLY_EXPENSE_CANCELLED", before, reason);
+      const key = receiptKey ?? uid("monthly-expense-recovery", state);
+      (state.financeExpenseRecoveryReceipts ??= {})[key] = {
+        fingerprint,
+        result: financeExpenseDto(expense),
+      };
+      save();
+      return financeExpenseDto(expense);
+    },
+
+    async correctFinanceExpense(input) {
+      requireFinanceManage();
+      const receiptKey = input.idempotencyKey?.trim() || uid("expense-recovery", state);
+      const fingerprint = expenseRecoveryFingerprint(input,"correctFinanceExpense");
+      const receipts = (state.financeExpenseRecoveryReceipts ??= {});
+      const prior = receipts[receiptKey];
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      const expense = state.financeExpenses?.find((item) => item.id === input.expenseId);
+      if (!expense) throw new Error("El gasto no existe.");
+      if (expense.paidAt || expense.cancelledAt || expense.recurringId || (state.financeExpenseMovements ?? {})[expense.id]) throw new Error("Solo se pueden corregir gastos manuales pendientes.");
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== (expense.revision ?? 0)) throw new Error("El gasto cambió. Actualizá y volvé a intentar.");
+      const title = input.title.trim();
+      const category = input.category.trim();
+      const note = input.note?.trim() || null;
+      if (!title || title.length > 160 || !category || category.length > 160 || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 || !["GENERAL", "FIXED", "PAYROLL"].includes(input.kind) || !validFinanceDate(input.incurredOn) || !validFinanceDate(input.dueOn ?? input.incurredOn) || (note?.length ?? 0) > 1000 || !input.reason.trim() || input.reason.trim().length > 500) throw new Error("Completá datos válidos y un motivo de corrección (máximo 500 caracteres).");
+      if (input.kind === "PAYROLL" && !input.employeeId) throw new Error("Seleccioná un empleado para el sueldo.");
+      const employee = input.employeeId ? state.data.users.find((user) => user.id === input.employeeId) : undefined;
+      if (input.employeeId && !employee) throw new Error("El empleado no existe.");
+      const before = output(expense);
+      expense.title = title;
+      expense.category = category;
+      expense.kind = input.kind;
+      expense.amountMinor = input.amountMinor;
+      expense.incurredOn = input.incurredOn;
+      expense.dueOn = input.dueOn ?? input.incurredOn;
+      expense.employeeId = input.employeeId ?? null;
+      expense.employeeName = employee?.fullName ?? null;
+      expense.note = note;
+      expense.revision = (expense.revision ?? 0) + 1;
+      recordFinanceExpenseRecovery(expense, "FINANCE_EXPENSE_CORRECTED", before, input.reason.trim());
+      receipts[receiptKey] = { fingerprint, result: financeExpenseDto(expense) };
+      save();
+      return financeExpenseDto(expense);
+    },
+
+    async cancelFinanceExpense(input) {
+      requireFinanceManage();
+      const receiptKey = input.idempotencyKey?.trim() || uid("expense-recovery", state);
+      const fingerprint = expenseRecoveryFingerprint(input,"cancelFinanceExpense");
+      const receipts = (state.financeExpenseRecoveryReceipts ??= {});
+      const prior = receipts[receiptKey];
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      const expense = state.financeExpenses?.find((item) => item.id === input.expenseId);
+      if (!expense) throw new Error("El gasto no existe.");
+      if (expense.paidAt || expense.cancelledAt || expense.recurringId || (state.financeExpenseMovements ?? {})[expense.id]) throw new Error("Solo se pueden anular gastos manuales pendientes.");
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== (expense.revision ?? 0)) throw new Error("El gasto cambió. Actualizá y volvé a intentar.");
+      const reason = input.reason.trim();
+      if (!reason || reason.length > 500) throw new Error("Ingresá un motivo de anulación (máximo 500 caracteres).");
+      const before = output(expense);
+      expense.cancelledAt = now();
+      expense.cancellationReason = reason;
+      expense.revision = (expense.revision ?? 0) + 1;
+      recordFinanceExpenseRecovery(expense, "FINANCE_EXPENSE_CANCELLED", before, reason);
+      receipts[receiptKey] = { fingerprint, result: financeExpenseDto(expense) };
+      save();
+      return financeExpenseDto(expense);
     },
 
     async payFinanceExpense(input) {
+      requireFinanceManage();
+      const receiptKey = input.idempotencyKey?.trim()
+        ? input.idempotencyKey.trim()
+        : null;
+      const fingerprint = JSON.stringify({
+        operation: "payFinanceExpense",
+        input: { ...input, idempotencyKey: undefined },
+      });
+      const receipts = state.financeExpensePaymentReceipts;
+      const prior = receiptKey ? receipts?.[receiptKey] : undefined;
+      if (prior) {
+        if (prior.fingerprint !== fingerprint)
+          throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
       const expense = state.financeExpenses?.find(
         (item) => item.id === input.expenseId,
       );
       if (!expense) throw new Error("El gasto no existe.");
+      if (expense.cancelledAt) throw new Error("El gasto está anulado.");
       if (expense.paidAt) throw new Error("El gasto ya está pagado.");
+      if (input.expectedRevision != null &&
+        (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== (expense.revision ?? 0)))
+        throw new Error("El gasto cambió. Actualizá y volvé a intentar.");
+      if (state.financeExpensePaymentRevisionRequired?.[expense.id] && input.expectedRevision == null)
+        throw new Error("El gasto cambió. Actualizá y volvé a intentar.");
       const method = state.data.paymentMethods.find(
         (item) =>
           item.code === input.paymentMethodCode &&
@@ -4260,6 +4703,7 @@ export function createDemoApi(
           item.code !== "ACCOUNT",
       );
       if (!method) throw new Error("El medio de pago no está disponible.");
+      const before = financeExpenseDto(expense);
       if (input.fromCash) {
         const cash = state.data.cashSession;
         if (!cash) throw new Error("Abrí la caja antes de pagar desde caja.");
@@ -4290,8 +4734,293 @@ export function createDemoApi(
       }
       expense.paidAt = now();
       expense.paymentMethodCode = method.code;
+      expense.revision = (expense.revision ?? 0) + 1;
+      audit(state, "FINANCE_EXPENSE", expense.id, "FINANCE_EXPENSE_PAID", null, "finance.manage");
+      const auditEntry = state.audit[0];
+      if (auditEntry?.entityId === expense.id && auditEntry.action === "FINANCE_EXPENSE_PAID") {
+        auditEntry.beforeJson = JSON.stringify(before);
+        auditEntry.afterJson = JSON.stringify({ ...financeExpenseDto(expense), methodCode: input.paymentMethodCode, fromCash: input.fromCash });
+      }
+      if (receiptKey) (state.financeExpensePaymentReceipts ??= {})[receiptKey] = { fingerprint, result: financeExpenseDto(expense) };
       save();
-      return output(expense);
+      return financeExpenseDto(expense);
+    },
+
+    async receiveFinanceExpenseReturn(input: ReceiveFinanceExpenseReturnInput) {
+      requireFinanceManage();
+      if (input.destination !== "CASH_SESSION" && input.destination !== "EXTERNAL") throw new Error("Seleccioná un destino válido para la devolución.");
+      const authorizerUserId = input.destination === "CASH_SESSION"
+        ? requireCashIncomeAuthorizer(input.authorizerPin ?? "")
+        : null;
+      const receiptKey = input.idempotencyKey?.trim();
+      if (!receiptKey) throw new Error("Se requiere una clave de idempotencia.");
+      const fingerprint = JSON.stringify({ operation: "receiveFinanceExpenseReturn", input: { ...input, idempotencyKey: undefined } });
+      const receipts = state.financeExpensePaymentReceipts;
+      const prior = receipts?.[receiptKey];
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      const expense = state.financeExpenses?.find((item) => item.id === input.expenseId);
+      if (!expense) throw new Error("El gasto no existe.");
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== (expense.revision ?? 0))
+        throw new Error("El gasto cambió. Actualizá y volvé a intentar.");
+      const reason = input.reason.trim();
+      if (!reason || reason.length > 500) throw new Error("Ingresá un motivo válido de hasta 500 caracteres.");
+      if (expense.kind !== "GENERAL" || !expense.paidAt || expense.cancelledAt || expense.recurringId)
+        throw new Error("Solo se admiten devoluciones totales de gastos manuales General pagados.");
+      if ((state.financeExpenseReturns ?? []).some((item) => item.expenseId === expense.id))
+        throw new Error("Este gasto ya tiene una devolución registrada.");
+      if (!Number.isSafeInteger(expense.amountMinor) || expense.amountMinor <= 0 || !expense.paymentMethodCode || expense.paymentMethodCode === "ACCOUNT")
+        throw new Error("El pago original del gasto no es coherente.");
+      const originalMovementId = (state.financeExpenseMovements ?? {})[expense.id] ?? null;
+      if (originalMovementId) {
+        const original = state.movements.find((item) => item.id === originalMovementId);
+        const originalSession = original && (state.data.cashSession?.id === original.sessionId
+          ? state.data.cashSession
+          : state.historicalSessions.find((item) => item.id === original.sessionId));
+        const originalMethod = original?.paymentMethodCode ? state.data.paymentMethods.find((item) => item.code === original.paymentMethodCode) : undefined;
+        if (!original || !originalSession || original.type !== "EXPENSE" || original.amountMinor !== expense.amountMinor || original.paymentMethodCode !== expense.paymentMethodCode || originalMethod?.code === "ACCOUNT" || !originalMethod || state.movements.some((item) => item.referenceId === originalMovementId) || (state.financeExpensePaymentCorrections ?? []).some((item) => item.originalMovementId === originalMovementId))
+          throw new Error("El movimiento de pago original no es coherente o ya fue corregido.");
+      }
+      const method = state.data.paymentMethods.find((item) => item.code === input.paymentMethodCode && item.active && item.code !== "ACCOUNT");
+      if (!method) throw new Error("El medio de pago no está disponible.");
+      const cash = input.destination === "CASH_SESSION" ? state.data.cashSession : null;
+      if (input.destination === "CASH_SESSION" && (!cash || cash.status !== "OPEN"))
+        throw new Error("Abrí la caja para registrar la devolución recibida en caja.");
+      const before = financeExpenseDto(expense);
+      const receivedAt = now();
+      const cashMovementId = cash ? uid("movement", state) : null;
+      // Keep reversal references untouched; immutable return provenance belongs to the ledger.
+      if (cash && cashMovementId) {
+        state.movements.push({
+          id: cashMovementId, sessionId: cash.id, type: "INCOME",
+          amountMinor: expense.amountMinor, affectsCash: method.affectsCash,
+          paymentMethodCode: method.code, orderId: null,
+          userId: state.data.currentUser.id, reason: `Devolución gasto Finanzas: ${expense.title}`,
+          createdAt: receivedAt,
+        });
+        if (method.affectsCash) {
+          cash.expectedAmountMinor += expense.amountMinor;
+          cash.cashIncomeMinor = (cash.cashIncomeMinor ?? 0) + expense.amountMinor;
+        }
+      }
+      expense.revision = (expense.revision ?? 0) + 1;
+      const returnRecord = {
+        id: uid("finance-expense-return", state), expenseId: expense.id,
+        expenseTitle: expense.title, expenseCategory: expense.category,
+        amountMinor: expense.amountMinor,
+        receivedOn: businessDateFromOpening(receivedAt),
+        receivedAt,
+        destination: input.destination, paymentMethodCode: method.code,
+        paymentMethodName: method.name, affectsCash: cash ? method.affectsCash : false,
+        cashSessionId: cash?.id ?? null, cashSessionNumber: cash?.number ?? null,
+        cashMovementId, originalMovementId, reason,
+        operatorUserId: state.data.currentUser.id, authorizerUserId,
+        before, after: {} as FinanceExpenseDto,
+      };
+      (state.financeExpenseReturns ??= []).push(returnRecord);
+      const after = financeExpenseDto(expense);
+      returnRecord.after = output(after);
+      audit(state, "FINANCE_EXPENSE", expense.id, "FINANCE_EXPENSE_RETURN_RECEIVED", reason, "finance.manage");
+      const entry = state.audit[0];
+      const provenance = { operatorUserId: state.data.currentUser.id, operatorPermission: "finance.manage", authorizerUserId, authorizerPermission: authorizerUserId ? "cash.income" : null, originalMovementId, returnId: returnRecord.id, reason, returnRecord: output(returnRecord) };
+      if (entry?.entityId === expense.id && entry.action === "FINANCE_EXPENSE_RETURN_RECEIVED") {
+        entry.beforeJson = JSON.stringify({ expense: before, ...provenance });
+        entry.afterJson = JSON.stringify({ expense: after, ...provenance });
+      }
+      const result = financeExpenseDto(expense);
+      (state.financeExpensePaymentReceipts ??= {})[receiptKey] = { fingerprint, result };
+      save();
+      return result;
+    },
+
+    async unmarkFinanceExpensePayment(input: UnmarkFinanceExpensePaymentInput) {
+      requireFinanceManage();
+      const receiptKey = input.idempotencyKey?.trim() ? input.idempotencyKey.trim() : null;
+      const fingerprint = JSON.stringify({ operation: "unmarkFinanceExpensePayment", input: { ...input, idempotencyKey: undefined } });
+      const receipts = state.financeExpensePaymentReceipts;
+      const prior = receiptKey ? receipts?.[receiptKey] : undefined;
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      if ((state.financeExpenseReturns ?? []).some((item) => item.expenseId === input.expenseId))
+        throw new Error("No se puede desmarcar un pago después de registrar una devolución.");
+      const expense = state.financeExpenses?.find((item) => item.id === input.expenseId);
+      if (!expense) throw new Error("El gasto no existe.");
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== (expense.revision ?? 0))
+        throw new Error("El gasto cambió. Actualizá y volvé a intentar.");
+      const reason = input.reason.trim();
+      if (!reason || reason.length > 500) throw new Error("Ingresá un motivo válido de hasta 500 caracteres.");
+      if (!expense.paidAt || expense.cancelledAt || expense.recurringId || (state.financeExpenseMovements ?? {})[expense.id])
+        throw new Error("Solo se pueden desmarcar pagos manuales externos sin movimientos vinculados.");
+      const before = financeExpenseDto(expense);
+      expense.paidAt = null;
+      expense.paymentMethodCode = null;
+      expense.revision = (expense.revision ?? 0) + 1;
+      (state.financeExpensePaymentRevisionRequired ??= {})[expense.id] = true;
+      audit(state, "FINANCE_EXPENSE", expense.id, "FINANCE_EXPENSE_PAYMENT_UNMARKED", reason, "finance.manage");
+      const entry = state.audit[0];
+      if (entry?.entityId === expense.id && entry.action === "FINANCE_EXPENSE_PAYMENT_UNMARKED") {
+        entry.beforeJson = JSON.stringify(before);
+        entry.afterJson = JSON.stringify(financeExpenseDto(expense));
+      }
+      if (receiptKey) (state.financeExpensePaymentReceipts ??= {})[receiptKey] = { fingerprint, result: financeExpenseDto(expense) };
+      save();
+      return financeExpenseDto(expense);
+    },
+
+    async correctFinanceExpenseCashPayment(input: CorrectFinanceExpenseCashPaymentInput) {
+      requireFinanceManage();
+      const authorizerUserId = requireCashExpenseAuthorizer(input.authorizerPin);
+      const receiptKey = input.idempotencyKey?.trim();
+      if (!receiptKey) throw new Error("Se requiere una clave de idempotencia.");
+      const fingerprint = JSON.stringify({ operation: "correctFinanceExpenseCashPayment", input: { ...input, idempotencyKey: undefined } });
+      const receipts = state.financeExpensePaymentReceipts;
+      const prior = receiptKey ? receipts?.[receiptKey] : undefined;
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      if ((state.financeExpenseReturns ?? []).some((item) => item.expenseId === input.expenseId))
+        throw new Error("No se puede corregir un pago después de registrar una devolución.");
+      const expense = state.financeExpenses?.find((item) => item.id === input.expenseId);
+      if (!expense) throw new Error("El gasto no existe.");
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== (expense.revision ?? 0)) throw new Error("El gasto cambió. Actualizá y volvé a intentar.");
+      const reason = input.reason.trim();
+      if (!reason || reason.length > 500) throw new Error("Ingresá un motivo válido de hasta 500 caracteres.");
+      const movementId = (state.financeExpenseMovements ?? {})[expense.id];
+      const movement = movementId ? state.movements.find((item) => item.id === movementId) : undefined;
+      const cash = state.data.cashSession;
+      const method = movement?.paymentMethodCode ? state.data.paymentMethods.find((item) => item.code === movement.paymentMethodCode) : undefined;
+      const consistent = Boolean(
+        expense.paidAt && !expense.cancelledAt && !expense.recurringId && movement && cash?.status === "OPEN" && movement.sessionId === cash.id && movement.type === "EXPENSE" && movement.amountMinor === expense.amountMinor && movement.paymentMethodCode === expense.paymentMethodCode && method && method.code !== "ACCOUNT" && !state.movements.some((item) => item.referenceId === movement.id) &&
+        !(state.financeExpensePaymentCorrections ?? []).some((item) => item.originalMovementId === movement.id),
+      );
+      if (!consistent) throw new Error("Solo se pueden corregir pagos manuales completos vinculados a la caja abierta actual y sin corrección previa.");
+      if (!movement || !cash || !method) throw new Error("El pago vinculado no es coherente.");
+      const before = financeExpenseDto(expense);
+      const compensationId = uid("movement", state);
+      const correctedAt = now();
+      const compensation = {
+        id: compensationId, sessionId: cash.id, type: "INCOME" as const,
+        amountMinor: movement.amountMinor, affectsCash: movement.affectsCash,
+        paymentMethodCode: movement.paymentMethodCode, orderId: null,
+        userId: state.data.currentUser.id, reason: `Corrección pago gasto: ${expense.title}`,
+        createdAt: correctedAt, referenceId: movement.id,
+      };
+      state.movements.push(compensation);
+      if (movement.affectsCash) {
+        cash.expectedAmountMinor += movement.amountMinor;
+        cash.cashIncomeMinor = (cash.cashIncomeMinor ?? 0) + movement.amountMinor;
+      }
+      delete (state.financeExpenseMovements ?? {})[expense.id];
+      expense.paidAt = null;
+      expense.paymentMethodCode = null;
+      expense.revision = (expense.revision ?? 0) + 1;
+      (state.financeExpensePaymentRevisionRequired ??= {})[expense.id] = true;
+      const correction = {
+        id: uid("finance-expense-payment-correction", state), expenseId: expense.id,
+        cashSessionId: cash.id, cashSessionNumber: cash.number,
+        originalMovementId: movement.id, compensationMovementId: compensation.id,
+        amountMinor: movement.amountMinor, paymentMethodCode: method.code,
+        paymentMethodName: method.name, affectsCash: movement.affectsCash,
+        operatorUserId: state.data.currentUser.id, authorizerUserId,
+        reason, correctedAt, before, after: financeExpenseDto(expense),
+      };
+      (state.financeExpensePaymentCorrections ??= []).push(correction);
+      audit(state, "FINANCE_EXPENSE", expense.id, "FINANCE_EXPENSE_CASH_PAYMENT_CORRECTED", reason, "finance.manage");
+      const entry = state.audit[0];
+      if (entry?.entityId === expense.id && entry.action === "FINANCE_EXPENSE_CASH_PAYMENT_CORRECTED") {
+        entry.beforeJson = JSON.stringify({ expense: before, correction, authorizerUserId, authorizerPermission: "cash.expense" });
+        entry.afterJson = JSON.stringify({ expense: financeExpenseDto(expense), correction, authorizerUserId, authorizerPermission: "cash.expense" });
+      }
+      const result = financeExpenseDto(expense);
+      (state.financeExpensePaymentReceipts ??= {})[receiptKey] = { fingerprint, result };
+      save();
+      return result;
+    },
+
+    async correctFinanceExpenseClosedCashPayment(input: CorrectFinanceExpenseClosedCashPaymentInput) {
+      requireFinanceManage();
+      const authorizerUserId = requireCashExpenseAuthorizer(input.authorizerPin);
+      const receiptKey = input.idempotencyKey?.trim();
+      if (!receiptKey) throw new Error("Se requiere una clave de idempotencia.");
+      const fingerprint = JSON.stringify({
+        operation: "correctFinanceExpenseClosedCashPayment",
+        input: { ...input, idempotencyKey: undefined },
+      });
+      const receipts = state.financeExpensePaymentReceipts;
+      const prior = receiptKey ? receipts?.[receiptKey] : undefined;
+      if (prior) {
+        if (prior.fingerprint !== fingerprint)
+          throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      if (input.confirmedUnpaid !== true)
+        throw new Error("Confirmá que el dinero nunca salió y que la obligación sigue pendiente.");
+      if ((state.financeExpenseReturns ?? []).some((item) => item.expenseId === input.expenseId))
+        throw new Error("No se puede corregir un pago después de registrar una devolución.");
+      const expense = state.financeExpenses?.find((item) => item.id === input.expenseId);
+      if (!expense) throw new Error("El gasto no existe.");
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== (expense.revision ?? 0))
+        throw new Error("El gasto cambió. Actualizá y volvé a intentar.");
+      const reason = input.reason.trim();
+      if (!reason || reason.length > 500) throw new Error("Ingresá un motivo válido de hasta 500 caracteres.");
+      const movementId = (state.financeExpenseMovements ?? {})[expense.id];
+      const movement = movementId ? state.movements.find((item) => item.id === movementId) : undefined;
+      const session = movement
+        ? [state.data.cashSession, ...state.historicalSessions].find((item) => item?.id === movement.sessionId)
+        : undefined;
+      const method = movement?.paymentMethodCode ? state.data.paymentMethods.find((item) => item.code === movement.paymentMethodCode) : undefined;
+      const consistent = Boolean(
+        expense.kind === "GENERAL" && expense.paidAt && !expense.cancelledAt && !expense.recurringId &&
+        movement && session?.status === "CLOSED" && movement.type === "EXPENSE" &&
+        movement.amountMinor === expense.amountMinor && movement.paymentMethodCode === expense.paymentMethodCode &&
+        method && method.code !== "ACCOUNT" &&
+        !state.movements.some((item) => item.referenceId === movement.id) &&
+        !(state.financeExpensePaymentCorrections ?? []).some((item) => item.originalMovementId === movement.id) &&
+        !(state.financeExpenseClosedPaymentCorrections ?? []).some((item) => item.originalMovementId === movement.id),
+      );
+      if (!consistent) throw new Error("Solo se pueden corregir pagos completos de gastos manuales Generales vinculados a una caja cerrada, sin devolución ni corrección previa.");
+      if (!movement || !session || !method) throw new Error("El pago vinculado no es coherente.");
+
+      const before = financeExpenseDto(expense);
+      const correctedAt = now();
+      delete (state.financeExpenseMovements ?? {})[expense.id];
+      expense.paidAt = null;
+      expense.paymentMethodCode = null;
+      expense.revision = (expense.revision ?? 0) + 1;
+      (state.financeExpensePaymentRevisionRequired ??= {})[expense.id] = true;
+      const correction = {
+        id: uid("finance-expense-closed-payment-correction", state),
+        expenseId: expense.id,
+        cashSessionId: session.id,
+        cashSessionNumber: session.number,
+        originalMovementId: movement.id,
+        amountMinor: movement.amountMinor,
+        paymentMethodCode: method.code,
+        paymentMethodName: method.name,
+        affectsCash: movement.affectsCash,
+        operatorUserId: state.data.currentUser.id,
+        authorizerUserId,
+        reason,
+        correctedAt,
+        before,
+        after: financeExpenseDto(expense),
+      };
+      (state.financeExpenseClosedPaymentCorrections ??= []).push(correction);
+      audit(state, "FINANCE_EXPENSE", expense.id, "FINANCE_EXPENSE_CLOSED_PAYMENT_CORRECTED", reason, "finance.manage");
+      const entry = state.audit[0];
+      if (entry?.entityId === expense.id && entry.action === "FINANCE_EXPENSE_CLOSED_PAYMENT_CORRECTED") {
+        entry.beforeJson = JSON.stringify({ expense: before, correction, authorizerUserId, authorizerPermission: "cash.expense" });
+        entry.afterJson = JSON.stringify({ expense: financeExpenseDto(expense), correction, authorizerUserId, authorizerPermission: "cash.expense" });
+      }
+      const result = financeExpenseDto(expense);
+      (state.financeExpensePaymentReceipts ??= {})[receiptKey] = { fingerprint, result };
+      save();
+      return result;
     },
 
     async createFinanceRecurring(input) {
@@ -4379,7 +5108,7 @@ export function createDemoApi(
           throw new Error(
             "La clave de idempotencia fue reutilizada con datos diferentes.",
           );
-        const previous = state.purchases.find(
+        const previous = receipt.result ?? state.purchases.find(
           (purchase) => purchase.id === receipt.purchaseId,
         );
         if (previous) return output(previous);
@@ -4450,6 +5179,7 @@ export function createDemoApi(
           state.purchaseReceipts[input.idempotencyKey] = {
             purchaseId: purchase.id,
             requestJson,
+            result: output(purchase),
           };
         audit(
           state,
@@ -4465,6 +5195,213 @@ export function createDemoApi(
         restore(before);
         throw error;
       }
+    },
+
+    async correctPurchaseItemCost(input: CorrectPurchaseItemCostInput) {
+      const canManage = state.data.currentUser.permissions.includes("purchases.manage") || state.data.currentUser.permissions.includes("*");
+      if (!canManage) throw new Error("No tenés permiso para modificar compras.");
+      requirePin(input.authorizerPin);
+      const authorized = state.data.users.find((user) => user.active && (user.permissions.includes("purchases.manage") || user.permissions.includes("*")));
+      if (!authorized) throw new Error("No hay un usuario con permiso para autorizar compras.");
+      const receiptKey = input.idempotencyKey?.trim() || globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const fingerprint = JSON.stringify({ operation: "correctPurchaseItemCost", input: { ...input, idempotencyKey: undefined } });
+      const previousReceipt = state.purchaseItemCostCorrectionReceipts?.[receiptKey];
+      if (previousReceipt) {
+        if (previousReceipt.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(previousReceipt.result);
+      }
+      const purchase = state.purchases.find((row) => row.id === input.purchaseId);
+      if (!purchase) throw new Error("La compra no existe.");
+      const revision = purchase.revision ?? 0;
+      if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== revision)
+        throw new Error("La compra cambió. Actualizá y volvé a intentar.");
+      if (!Number.isSafeInteger(input.unitCostMinor) || input.unitCostMinor < 0)
+        throw new Error("El costo unitario no es válido.");
+      const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+      if (!reason || reason.length > 500) throw new Error("Indicá un motivo de hasta 500 caracteres.");
+      const item = purchase.items.find((row) => row.id === input.purchaseItemId);
+      if (!item) throw new Error("El producto no pertenece a esta compra.");
+      if (purchase.items.some((row) => !Number.isSafeInteger(effectivePurchaseQuantity(purchase.id, row)) || effectivePurchaseQuantity(purchase.id, row) <= 0))
+        throw new Error("La cantidad efectiva de la compra no es válida.");
+      const previousUnitCostMinor = effectivePurchaseItemCost(purchase.id, item);
+      if (previousUnitCostMinor === input.unitCostMinor) throw new Error("El costo unitario no cambia.");
+      const quantityMinor = effectivePurchaseQuantity(purchase.id, item);
+      const previousLineTotalMinor = effectivePurchaseLineTotal(purchase.id, item);
+      const rounded = (BigInt(quantityMinor) * BigInt(input.unitCostMinor) + 500n) / 1000n;
+      if (rounded > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("La compra excede el rango permitido.");
+      const correctedLineTotalMinor = Number(rounded);
+      const correctedTotal = purchase.items.reduce((sum, row) => {
+        const line = row.id === item.id ? correctedLineTotalMinor : effectivePurchaseLineTotal(purchase.id, row);
+        return sum + BigInt(line);
+      }, 0n);
+      if (correctedTotal > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("La compra excede el rango permitido.");
+      const snapshot = clone(state);
+      try {
+        const beforeCorrection = projectPurchase(purchase);
+        // Keep old creation replays pinned to the immutable original purchase.
+        for (const receipt of Object.values(state.purchaseReceipts))
+          if (receipt.purchaseId === purchase.id && !receipt.result) receipt.result = output(purchase);
+        const nextRevision = revision + 1;
+        (state.purchaseItemCostCorrections ??= []).push({
+          id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          purchaseId: purchase.id, purchaseItemId: item.id,
+          previousUnitCostMinor, correctedUnitCostMinor: input.unitCostMinor,
+          previousLineTotalMinor,
+          correctedLineTotalMinor, purchaseRevision: nextRevision,
+          reason, operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id, createdAt: now(),
+        });
+        purchase.revision = nextRevision;
+        const result = projectPurchase(purchase);
+        (state.purchaseItemCostCorrectionReceipts ??= {})[receiptKey] = { fingerprint, result };
+        audit(state, "PURCHASE", purchase.id, "PURCHASE_ITEM_COST_CORRECTED", reason, "purchases.manage");
+        const entry = state.audit[0];
+        if (entry?.entityId === purchase.id && entry.action === "PURCHASE_ITEM_COST_CORRECTED") {
+          entry.authorizerName = authorized.fullName;
+          entry.beforeJson = JSON.stringify({ ...beforeCorrection, operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id });
+          entry.afterJson = JSON.stringify({ ...result, operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id });
+        }
+        save();
+        return output(result);
+      } catch (error) {
+        restore(snapshot);
+        throw error;
+      }
+    },
+
+    async correctPurchaseItemQuantity(input: CorrectPurchaseItemQuantityInput) {
+      const canManage = state.data.currentUser.permissions.includes("purchases.manage") || state.data.currentUser.permissions.includes("*");
+      if (!canManage) throw new Error("No tenés permiso para modificar compras.");
+      requirePin(input.authorizerPin);
+      const authorized = state.data.users.find((user) => user.active && (user.permissions.includes("purchases.manage") || user.permissions.includes("*")));
+      if (!authorized) throw new Error("No hay un usuario con permiso para autorizar compras.");
+      const receiptKey = input.idempotencyKey?.trim() || globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const fingerprint = JSON.stringify({ operation: "correctPurchaseItemQuantity", input: { ...input, idempotencyKey: undefined } });
+      const previousReceipt = state.purchaseItemQuantityCorrectionReceipts?.[receiptKey];
+      if (previousReceipt) {
+        if (previousReceipt.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(previousReceipt.result);
+      }
+      const purchase = state.purchases.find((row) => row.id === input.purchaseId);
+      if (!purchase) throw new Error("La compra no existe.");
+      const revision = purchase.revision ?? 0;
+      if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== revision)
+        throw new Error("La compra cambió. Actualizá y volvé a intentar.");
+      if (!Number.isSafeInteger(input.quantityMinor) || input.quantityMinor <= 0)
+        throw new Error("La cantidad debe ser un entero positivo dentro del rango permitido.");
+      const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+      if (!reason || reason.length > 500) throw new Error("Indicá un motivo de hasta 500 caracteres.");
+      const item = purchase.items.find((row) => row.id === input.purchaseItemId);
+      if (!item) throw new Error("El producto no pertenece a esta compra.");
+      const previousQuantityMinor = effectivePurchaseQuantity(purchase.id, item);
+      if (!Number.isSafeInteger(previousQuantityMinor) || previousQuantityMinor <= 0)
+        throw new Error("La cantidad efectiva original no es válida.");
+      if (previousQuantityMinor === input.quantityMinor) throw new Error("La cantidad no cambia.");
+      if (purchase.items.some((row) => !Number.isSafeInteger(effectivePurchaseQuantity(purchase.id, row)) || effectivePurchaseQuantity(purchase.id, row) <= 0))
+        throw new Error("La cantidad efectiva de la compra no es válida.");
+      const unitCostMinor = effectivePurchaseItemCost(purchase.id, item);
+      if (!Number.isSafeInteger(unitCostMinor) || unitCostMinor < 0)
+        throw new Error("El costo efectivo original no es válido.");
+      const previousLineTotalMinor = effectivePurchaseLineTotal(purchase.id, item);
+      const rounded = (BigInt(input.quantityMinor) * BigInt(unitCostMinor) + 500n) / 1000n;
+      if (rounded > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("La compra excede el rango permitido.");
+      const correctedLineTotalMinor = Number(rounded);
+      let correctedTotal = 0n;
+      for (const row of purchase.items) {
+        const line = row.id === item.id ? correctedLineTotalMinor : effectivePurchaseLineTotal(purchase.id, row);
+        if (!Number.isSafeInteger(line) || line < 0) throw new Error("La compra excede el rango permitido.");
+        correctedTotal += BigInt(line);
+        if (correctedTotal > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("La compra excede el rango permitido.");
+      }
+      const snapshot = clone(state);
+      try {
+        const beforeCorrection = projectPurchase(purchase);
+        // Keep creation replays at the immutable received-quantity snapshot.
+        for (const receipt of Object.values(state.purchaseReceipts))
+          if (receipt.purchaseId === purchase.id && !receipt.result) receipt.result = output(purchase);
+        const nextRevision = revision + 1;
+        (state.purchaseItemQuantityCorrections ??= []).push({
+          id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          purchaseId: purchase.id, purchaseItemId: item.id,
+          previousQuantityMinor, correctedQuantityMinor: input.quantityMinor,
+          unitCostMinor, previousLineTotalMinor, correctedLineTotalMinor,
+          purchaseRevision: nextRevision, reason,
+          operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id, createdAt: now(),
+        });
+        purchase.revision = nextRevision;
+        const result = projectPurchase(purchase);
+        (state.purchaseItemQuantityCorrectionReceipts ??= {})[receiptKey] = { fingerprint, result };
+        audit(state, "PURCHASE", purchase.id, "PURCHASE_ITEM_QUANTITY_CORRECTED", reason, "purchases.manage");
+        const entry = state.audit[0];
+        if (entry?.entityId === purchase.id && entry.action === "PURCHASE_ITEM_QUANTITY_CORRECTED") {
+          entry.authorizerName = authorized.fullName;
+          entry.beforeJson = JSON.stringify({ ...beforeCorrection, operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id });
+          entry.afterJson = JSON.stringify({ ...result, operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id });
+        }
+        save();
+        return output(result);
+      } catch (error) {
+        restore(snapshot);
+        throw error;
+      }
+    },
+
+    async correctPurchaseMetadata(input) {
+      const requirePurchaseManager = () => {
+        if (!state.data.currentUser.permissions.includes("purchases.manage") && !state.data.currentUser.permissions.includes("*"))
+          throw new Error("No tenés permiso para modificar compras.");
+      };
+      const authorized = state.data.users.find((user) => user.active && (user.permissions.includes("purchases.manage") || user.permissions.includes("*")));
+      requirePurchaseManager();
+      requirePin(input.authorizerPin);
+      if (!authorized) throw new Error("No hay un usuario con permiso para autorizar compras.");
+      const receiptKey = input.idempotencyKey?.trim() || crypto.randomUUID();
+      const fingerprint = JSON.stringify({ operation: "correctPurchaseMetadata", input: { ...input, idempotencyKey: undefined } });
+      const receipts = state.purchaseMetadataCorrectionReceipts ?? {};
+      const prior = receipts[receiptKey];
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      const purchase = state.purchases.find((row) => row.id === input.purchaseId);
+      if (!purchase) throw new Error("La compra no existe.");
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== (purchase.revision ?? 0))
+        throw new Error("La compra cambió. Actualizá y volvé a intentar.");
+      if (typeof input.supplierName !== "string" || typeof input.reason !== "string" ||
+          (input.invoiceNumber !== undefined && input.invoiceNumber !== null && typeof input.invoiceNumber !== "string") ||
+          (input.notes !== undefined && input.notes !== null && typeof input.notes !== "string"))
+        throw new Error("Completá proveedor, motivo y datos válidos para corregir la compra.");
+      const supplierName = input.supplierName.trim();
+      const reason = input.reason.trim();
+      const invoiceNumber = input.invoiceNumber === undefined ? purchase.invoiceNumber : input.invoiceNumber?.trim() || null;
+      const notes = input.notes === undefined ? purchase.notes : input.notes?.trim() || null;
+      if (!supplierName || supplierName.length > 160 || (input.invoiceNumber?.length ?? 0) > 160 || (input.notes?.length ?? 0) > 1000 || !reason || reason.length > 500)
+        throw new Error("Completá proveedor, motivo y datos válidos para corregir la compra.");
+      const snapshot = clone(state);
+      const purchaseIndex = state.purchases.indexOf(purchase);
+      const before = output(projectPurchase(purchase));
+      const after = { ...purchase, supplierName, invoiceNumber, notes, revision: (purchase.revision ?? 0) + 1 };
+      try {
+        // Preserve legacy creation receipts before replacing this purchase: older
+        // receipts only point at purchaseId and otherwise would replay corrected data.
+        for (const receipt of Object.values(state.purchaseReceipts)) {
+          if (receipt.purchaseId === purchase.id && !receipt.result) receipt.result = output(purchase);
+        }
+        state.purchases[purchaseIndex] = after;
+        const projectedAfter = projectPurchase(after);
+        (state.purchaseMetadataCorrectionReceipts ??= {})[receiptKey] = { fingerprint, result: projectedAfter };
+        audit(state, "PURCHASE", purchase.id, "PURCHASE_METADATA_CORRECTED", reason, "purchases.manage");
+        const entry = state.audit[0];
+        if (entry?.entityId === purchase.id && entry.action === "PURCHASE_METADATA_CORRECTED") {
+          entry.authorizerName = authorized.fullName;
+          entry.beforeJson = JSON.stringify({ ...before, operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id });
+          entry.afterJson = JSON.stringify({ ...projectedAfter, operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id });
+        }
+        save();
+      } catch (error) {
+        restore(snapshot);
+        throw error;
+      }
+      return output(projectPurchase(after));
     },
 
     async adjustStock(input) {
@@ -5178,11 +6115,23 @@ export function createDemoApi(
         throw new Error(
           "Este ingreso corresponde a un cobro de cuenta corriente y no puede anularse como movimiento suelto.",
         );
+      if ((state.financeExpensePaymentCorrections ?? []).some((item) => item.originalMovementId === original.id || item.compensationMovementId === original.id))
+        throw new Error("Este movimiento forma parte de una corrección de pago de Finanzas y no puede revertirse como movimiento suelto.");
+      if ((state.financeExpenseClosedPaymentCorrections ?? []).some((item) => item.originalMovementId === original.id))
+        throw new Error("Este movimiento forma parte de una corrección de pago de Finanzas con caja cerrada y no puede revertirse como movimiento suelto.");
+      if ((state.financeExpenseReturns ?? []).some((item) => item.originalMovementId === original.id || item.cashMovementId === original.id))
+        throw new Error("Este movimiento forma parte de una devolución de gasto de Finanzas y no puede revertirse como movimiento suelto.");
       if (
         state.movements.some((m) => (m as any).referenceId === input.movementId)
       ) {
         throw new Error("Este movimiento ya fue anulado.");
       }
+      if (
+        Object.values(state.financeExpenseMovements ?? {}).includes(original.id)
+      )
+        throw new Error(
+          "Este egreso corresponde a un gasto de Finanzas y no puede anularse como movimiento suelto.",
+        );
       if (["OPENING", "CLOSING", "SALE", "REFUND"].includes(original.type)) {
         throw new Error(
           "No podés anular este tipo de movimiento directamente.",

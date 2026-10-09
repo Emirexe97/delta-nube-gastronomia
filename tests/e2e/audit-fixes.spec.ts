@@ -189,7 +189,7 @@ test("Finanzas rechaza abc y exporta gastos filtrados con fórmula neutralizada"
       });
     });
   }, exportPath);
-  await page.getByRole("button", { name: "CSV", exact: true }).click();
+  await page.getByRole("button", { name: "Exportar gastos (CSV)", exact: true }).click();
   await expect
     .poll(
       () =>
