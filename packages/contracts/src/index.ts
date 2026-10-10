@@ -1190,6 +1190,7 @@ export interface SettleDeliveryInput extends IdempotentRequest {
 
 export interface DesktopApi {
   bootstrap(): Promise<BootstrapDto>;
+  getOrder(input: { orderId: Id }): Promise<OrderDto>;
   ensureTable(input: { number: number }): Promise<RestaurantTableDto>;
   openCashSession(input: OpenCashSessionInput): Promise<CashSessionDto>;
   registerCashMovement(input: CashMovementInput): Promise<CashSessionDto>;

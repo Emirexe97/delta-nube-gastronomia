@@ -6,6 +6,7 @@ const invoke = <T>(method: keyof DesktopApi, payload?: unknown) =>
 
 const api: DesktopApi = {
   bootstrap: () => invoke("bootstrap"),
+  getOrder: (input) => invoke("getOrder", input),
   ensureTable: (input) => invoke("ensureTable", input),
   openCashSession: (input) => invoke("openCashSession", input),
   registerCashMovement: (input) => invoke("registerCashMovement", input),

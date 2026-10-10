@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import type {
   BootstrapDto,
   CustomerDto,
@@ -43,7 +44,7 @@ import {
   Textarea,
   cn,
 } from "@gastronomy/ui";
-import { useApiMutation } from "../api";
+import { bootstrapKey, useApiMutation } from "../api";
 import { isDemoMode } from "../demo/install-demo";
 import { calculateHalfAndHalfBase, guardOrderAction } from "@gastronomy/domain";
 import {
@@ -73,8 +74,14 @@ export function OrderEditor({
   onEditDraft?(orderId: string): void;
 }) {
   const navigate = useNavigate();
+  const bootstrapOrder = data.orders.find((candidate) => candidate.id === orderId);
+  const historicalOrder = useQuery({
+    queryKey: [...bootstrapKey, "order", orderId],
+    queryFn: () => window.gastronomy.getOrder({ orderId: orderId! }),
+    enabled: Boolean(orderId) && !bootstrapOrder,
+  });
   const order =
-    data.orders.find((candidate) => candidate.id === orderId) ??
+    bootstrapOrder ?? historicalOrder.data ??
     (fallbackOrder?.id === orderId ? fallbackOrder : undefined);
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
@@ -556,7 +563,16 @@ export function OrderEditor({
     variantPickerProduct,
   ]);
 
-  if (!order) return null;
+  if (!order) return orderId ? (
+    <Modal open onClose={onClose} title="Abrir pedido" width="max-w-lg">
+      {historicalOrder.isError ? (
+        <div className="space-y-3">
+          <p role="alert">{humanError(historicalOrder.error)}</p>
+          <Button type="button" onClick={() => void historicalOrder.refetch()}>Reintentar</Button>
+        </div>
+      ) : <p role="status">Cargando pedido…</p>}
+    </Modal>
+  ) : null;
   const locked = ["DELIVERED", "CANCELLED"].includes(order.operationalStatus);
   const isDraft = order.lifecycleStatus === "DRAFT";
 
@@ -628,6 +644,11 @@ export function OrderEditor({
       }
       width="max-w-[1180px]"
     >
+      {data.cashSession?.id !== order.cashSessionCreatedId && !locked ? (
+        <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          Este pedido pertenece a un turno anterior. Podés revisarlo y finalizarlo conservando su historial.
+        </p>
+      ) : null}
       <div className="order-editor-layout grid min-h-0 gap-3 min-[900px]:grid-cols-[1.1fr_.9fr] lg:gap-4 lg:grid-cols-[1.35fr_.9fr]">
         <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-slate-50/70 p-3">
           <div className="relative">

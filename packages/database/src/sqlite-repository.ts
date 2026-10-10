@@ -1165,9 +1165,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const pending = this.db
             .prepare(
               `SELECT id, number FROM orders
-           WHERE operational_status NOT IN ('DELIVERED','CANCELLED')`,
+           WHERE operational_status NOT IN ('DELIVERED','CANCELLED')
+             AND (cash_session_created_id = ? OR cash_session_paid_id = ?)
+           ORDER BY number`,
             )
-            .all() as Row[];
+            .all(session.id, session.id) as Row[];
           const pendingDeliveryLedger = this.db
             .prepare(
               `SELECT COUNT(*) AS count,
@@ -1200,8 +1202,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             !settings.allowCloseWithPendingOrders &&
             !input.force
           ) {
+            const pendingNumbers = pending.slice(0, 10)
+              .map((order) => `#${order.number}`).join(", ");
             throw new Error(
-              `No se puede cerrar la caja: hay ${pending.length} pedido(s) pendiente(s).`,
+              `No se puede cerrar la caja: hay ${pending.length} pedido(s) pendiente(s) del turno actual. Revisá ${pendingNumbers}${pending.length > 10 ? "…" : ""}.`,
             );
           }
           if (Number(pendingDeliveryLedger.count) > 0 && !input.force) {

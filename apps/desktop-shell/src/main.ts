@@ -458,6 +458,7 @@ function registerIpcHandlers() {
   ) => methods;
   const methods = completeMethodList([
     "bootstrap",
+    "getOrder",
     "ensureTable",
     "openCashSession",
     "registerCashMovement",

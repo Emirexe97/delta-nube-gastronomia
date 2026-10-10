@@ -440,6 +440,10 @@ export class GastronomyApplication {
     return this.repository.bootstrap();
   }
 
+  getOrder(input: { orderId: Id }) {
+    return this.repository.getOrder(input.orderId);
+  }
+
   ensureTable(input: { number: number }) {
     if (
       !Number.isInteger(input.number) ||

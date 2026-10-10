@@ -2615,10 +2615,11 @@ test("cierre forzado exige PIN con permiso y audita al autorizante", () => {
       { id: pendingOrder.id, number: pendingOrder.number },
     ]);
     repository.openCashSession({ openingAmountMinor: 0 });
-    assert.throws(
-      () => repository.closeCashSession({ countedAmountMinor: 0 }),
-      /pedido\(s\) pendiente/i,
+    assert.equal(
+      repository.closeCashSession({ countedAmountMinor: 0 }).status,
+      "CLOSED",
     );
+    assert.equal(repository.getOrder(pendingOrder.id).operationalStatus, pendingOrder.operationalStatus);
   });
 });
 

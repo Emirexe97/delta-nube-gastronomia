@@ -1489,11 +1489,14 @@ export function createDemoApi(
       const data = output(state.data);
       data.orders = data.cashSession
         ? data.orders.filter(
-            (order) => order.cashSessionCreatedId === data.cashSession?.id,
+            (order) => order.cashSessionCreatedId === data.cashSession?.id || order.cashSessionPaidId === data.cashSession?.id,
           )
         : [];
-      refreshTables(data);
       return data;
+    },
+
+    async getOrder({ orderId }) {
+      return output(orderById(orderId));
     },
 
     async ensureTable({ number }) {
@@ -1635,6 +1638,7 @@ export function createDemoApi(
         throw new Error("No hay una caja abierta.");
       const pending = state.data.orders.some(
         (order) =>
+          (order.cashSessionCreatedId === cash.id || order.cashSessionPaidId === cash.id) &&
           !["DELIVERED", "CANCELLED"].includes(order.operationalStatus),
       );
       if (
