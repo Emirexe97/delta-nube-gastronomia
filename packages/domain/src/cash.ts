@@ -41,9 +41,30 @@ export function cashReportBreakdown(
     | "cashExpenseMinor"
     | "cashWithdrawalMinor"
     | "cashRefundMinor"
+    | "movements"
   >,
   retainedFloatMinor = 0,
 ) {
+  const expenseMinor = session.cashExpenseMinor ?? 0;
+  // Order-linked cash EXPENSE entries are delivery payments or remittance
+  // reversals. Manual and Finance expenses have no order link. Never infer
+  // this classification from a freely editable reason or a payment name.
+  const shippingExpenseMinor = (session.movements ?? [])
+    .filter(
+      (movement) =>
+        movement.type === "EXPENSE" &&
+        movement.affectsCash !== false &&
+        movement.orderId != null,
+    )
+    .reduce((sum, movement) => sum + movement.amountMinor, 0);
+  // Summary-only legacy closes (or inconsistent details) cannot support a
+  // reliable split; preserve the saved aggregate rather than invent amounts.
+  const canSeparateShipping =
+    session.movements != null &&
+    (session.movements.length > 0 || expenseMinor === 0) &&
+    shippingExpenseMinor >= 0 &&
+    shippingExpenseMinor <= expenseMinor;
+  const otherExpenseMinor = expenseMinor - shippingExpenseMinor;
   const rows = [
     { label: "Cambio inicial", amountMinor: session.openingAmountMinor },
     { label: "Ventas en efectivo", amountMinor: session.cashSalesMinor ?? 0 },
@@ -51,10 +72,23 @@ export function cashReportBreakdown(
       label: "Otros ingresos en efectivo",
       amountMinor: session.cashIncomeMinor ?? 0,
     },
-    {
-      label: "Egresos en efectivo (incluye repartidores)",
-      amountMinor: -(session.cashExpenseMinor ?? 0),
-    },
+    ...(canSeparateShipping
+      ? [
+          {
+            label: "Gastos y otros egresos en efectivo",
+            amountMinor: otherExpenseMinor > 0 ? -otherExpenseMinor : 0,
+          },
+          {
+            label: "Envíos y rendiciones en efectivo",
+            amountMinor: shippingExpenseMinor > 0 ? -shippingExpenseMinor : 0,
+          },
+        ]
+      : [
+          {
+            label: "Egresos en efectivo (incluye repartidores)",
+            amountMinor: -expenseMinor,
+          },
+        ]),
     {
       label: "Retiros de efectivo",
       amountMinor: -(session.cashWithdrawalMinor ?? 0),

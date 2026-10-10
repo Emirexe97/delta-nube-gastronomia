@@ -19,6 +19,7 @@ export const AUDIT_FILTER_ACTIONS = [
   "ORDER_DEPOSIT_APPLIED",
   "PAYMENT_REFUNDED",
   "ORDER_CANCELLED",
+  "ORDER_SERVED",
   "ORDER_TABLE_CHANGED",
   "CUSTOMER_ARCHIVED",
   "CUSTOMER_MERGED",
@@ -392,6 +393,10 @@ export interface PaymentDto {
 }
 
 export interface OrderDto {
+  /** Service tracking is independent from payment and closing the table. */
+  servicePendingSince?: string | null;
+  servedAt?: string | null;
+  serviceRevision?: number;
   id: Id;
   number: number;
   type: OrderType;
@@ -761,6 +766,11 @@ export interface CloseCashSessionInput extends IdempotentRequest {
   force?: boolean;
   reason?: string;
   authorizerPin?: string;
+}
+
+export interface MarkOrderServedInput extends IdempotentRequest {
+  orderId: Id;
+  expectedServiceRevision: number;
 }
 
 export interface CreateOrderInput extends IdempotentRequest {
@@ -1194,6 +1204,7 @@ export interface DesktopApi {
   getCashSessionReport(
     filters: CashSessionReportFilters,
   ): Promise<CashSessionReportDto>;
+  markOrderServed(input: MarkOrderServedInput): Promise<OrderDto>;
   createOrder(input: CreateOrderInput): Promise<OrderDto>;
   updateDraftOrder(input: UpdateDraftOrderInput): Promise<OrderDto>;
   confirmOrder(input: ConfirmOrderInput): Promise<OrderDto>;

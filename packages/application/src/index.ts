@@ -13,6 +13,7 @@ import type {
   CategoryDto,
   CloseCashSessionInput,
   CreateOrderInput,
+  MarkOrderServedInput,
   CustomerSearchPageDto,
   CustomerDto,
   CustomerProfileDto,
@@ -136,6 +137,7 @@ export interface GastronomyRepository {
   closeCashSession(input: CloseCashSessionInput): CashSessionDto;
   listCashSessionHistory(): CashSessionHistoryItemDto[];
   getCashSessionReport(filters: CashSessionReportFilters): CashSessionReportDto;
+  markOrderServed(input: MarkOrderServedInput): OrderDto;
   createOrder(input: CreateOrderInput): OrderDto;
   updateDraftOrder(input: UpdateDraftOrderInput): OrderDto;
   confirmOrder(input: ConfirmOrderInput): OrderDto;
@@ -480,6 +482,10 @@ export class GastronomyApplication {
     if (input.force && (!input.authorizerPin || input.authorizerPin.length < 4))
       throw new Error("El cierre forzado requiere un PIN de autorización.");
     return this.repository.closeCashSession(input);
+  }
+
+  markOrderServed(input: MarkOrderServedInput) {
+    return this.repository.markOrderServed(input);
   }
 
   createOrder(input: CreateOrderInput) {

@@ -43,6 +43,7 @@ import type {
   PaymentMethodDto,
   PrintJobDto,
   ModifierDto,
+  MarkOrderServedInput,
   ProductDto,
   RefundPaymentInput,
   CreatePurchaseInput,
@@ -1826,9 +1827,62 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       printAttemptCount: Number(row.print_attempt_count ?? 0),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
+      servicePendingSince:
+        row.service_pending_since == null ? null : String(row.service_pending_since),
+      servedAt: row.served_at == null ? null : String(row.served_at),
+      serviceRevision: Number(row.service_revision ?? 0),
       items,
       payments,
     };
+  }
+
+  markOrderServed(input: MarkOrderServedInput): OrderDto {
+    assertPermission(this.currentUser().permissions, "orders.edit");
+    return this.idempotentTransaction(
+      input.idempotencyKey,
+      input.terminalId,
+      "markOrderServed",
+      undefined,
+      input,
+      () => {
+        const order = requireRow(
+          this.db.prepare("SELECT * FROM orders WHERE id = ?").get(input.orderId) as Row | undefined,
+          "El pedido no existe.",
+        );
+        if (!Number.isSafeInteger(input.expectedServiceRevision) || input.expectedServiceRevision < 0)
+          throw new Error("La revisión de servicio no es válida.");
+        const revision = Number(order.service_revision ?? 0);
+        if (revision !== input.expectedServiceRevision)
+          throw new Error("El pedido cambió desde que se cargó. Actualizá la lista de salón.");
+        if (String(order.type) !== "DINE_IN" || String(order.lifecycle_status) !== "CONFIRMED" ||
+            ["DELIVERED", "CANCELLED"].includes(String(order.operational_status)) ||
+            Number((this.db.prepare("SELECT COUNT(*) AS count FROM order_items WHERE order_id = ?").get(input.orderId) as Row).count) === 0)
+          throw new Error("Sólo se puede marcar servido un pedido de salón activo con productos.");
+        if (order.served_at != null && order.service_pending_since == null)
+          return this.getOrder(input.orderId);
+        const before = {
+          servicePendingSince: order.service_pending_since == null ? null : String(order.service_pending_since),
+          servedAt: order.served_at == null ? null : String(order.served_at),
+          serviceRevision: revision,
+        };
+        const servedAt = nowIso();
+        const result = this.db.prepare(
+          `UPDATE orders SET service_pending_since = NULL, served_at = ?, service_revision = service_revision + 1
+           WHERE id = ? AND service_revision = ? AND service_pending_since IS NOT NULL`,
+        ).run(servedAt, input.orderId, revision);
+        if (result.changes !== 1)
+          throw new Error("El estado de servicio cambió. Actualizá la lista de salón.");
+        const updated = this.getOrder(input.orderId);
+        this.audit({ entityType: "ORDER", entityId: input.orderId, action: "ORDER_SERVED", permission: "orders.edit", before, after: {
+          servicePendingSince: updated.servicePendingSince, servedAt: updated.servedAt, serviceRevision: updated.serviceRevision,
+        } });
+        this.event("Order", input.orderId, "OrderServed", {
+          serviceRevision: updated.serviceRevision,
+          servedAt: updated.servedAt,
+        });
+        return updated;
+      },
+    );
   }
 
   private priceListCodeForOrder(type: OrderDto["type"]) {

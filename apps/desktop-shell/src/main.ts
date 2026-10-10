@@ -288,7 +288,7 @@ function cashSessionReportHtml(
     )
     .join(
       "",
-    )}<div class="row total"><span>Esperado sin cambio</span><strong>${money(cashClosingTotals(session).expectedAmountMinor)}</strong></div><div class="row"><span>Contado sin cambio</span><strong>${session.countedAmountMinor == null ? "—" : money(cashClosingTotals(session).countedAmountMinor)}</strong></div><div class="row"><span>Cambio final</span><strong>${money(cashClosingTotals(session).closingFloatAmountMinor)}</strong></div><div class="row"><span>Diferencia</span><strong>${money(session.differenceMinor)}</strong></div><p class="notice">Arqueo del turno completo. Los pagos a repartidores ya están incluidos en los egresos; las ventas no representan el efectivo disponible.</p>${alwaysSections}${optionalSections}<div class="divider"></div><p class="center printed-footer"><strong>Impreso:</strong> ${escapeHtml(new Date().toLocaleString("es-AR"))}</p><div aria-hidden="true" style="height:${Math.max(0, profile.feedLinesBeforeCut) * 3.5}mm"></div></body></html>`;
+    )}<div class="row total"><span>Esperado sin cambio</span><strong>${money(cashClosingTotals(session).expectedAmountMinor)}</strong></div><div class="row"><span>Contado sin cambio</span><strong>${session.countedAmountMinor == null ? "—" : money(cashClosingTotals(session).countedAmountMinor)}</strong></div><div class="row"><span>Cambio final</span><strong>${money(cashClosingTotals(session).closingFloatAmountMinor)}</strong></div><div class="row"><span>Diferencia</span><strong>${money(session.differenceMinor)}</strong></div><p class="notice">Arqueo del turno completo. Los envíos y rendiciones que salen de caja se descuentan una sola vez; las ventas no representan el efectivo disponible.</p>${alwaysSections}${optionalSections}<div class="divider"></div><p class="center printed-footer"><strong>Impreso:</strong> ${escapeHtml(new Date().toLocaleString("es-AR"))}</p><div aria-hidden="true" style="height:${Math.max(0, profile.feedLinesBeforeCut) * 3.5}mm"></div></body></html>`;
 }
 
 async function printOrder(
@@ -464,6 +464,7 @@ function registerIpcHandlers() {
     "closeCashSession",
     "listCashSessionHistory",
     "getCashSessionReport",
+    "markOrderServed",
     "createOrder",
     "updateDraftOrder",
     "confirmOrder",
@@ -548,7 +549,8 @@ function registerIpcHandlers() {
       const target = appService[method] as (input?: any) => unknown;
       const idempotentMethods = [
         "payOrder",
-        "createOrder",
+        "markOrderServed",
+    "createOrder",
         "registerCashMovement",
         "refundPayment",
         "closeCashSession",

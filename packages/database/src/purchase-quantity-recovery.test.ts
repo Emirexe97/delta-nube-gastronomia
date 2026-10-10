@@ -202,9 +202,12 @@ test("quantity ledger is immutable and migration 37 upgrades schema 36 without c
     const purchaseBefore = db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id);
     const itemsBefore = db.prepare("SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY rowid").all(purchase.id);
     // Return the fixture to schema 36 while retaining all real historical business rows.
+    db.exec("DROP TRIGGER IF EXISTS orders_service_confirmed_items; DROP TRIGGER IF EXISTS order_items_service_insert; DROP TRIGGER IF EXISTS order_items_service_quantity_increase; DROP TRIGGER IF EXISTS order_items_service_delete_last");
+    db.exec("ALTER TABLE orders DROP COLUMN service_pending_since; ALTER TABLE orders DROP COLUMN served_at; ALTER TABLE orders DROP COLUMN service_revision");
+    db.prepare("DELETE FROM schema_migrations WHERE version=38").run();
     db.exec("DROP TABLE IF EXISTS purchase_item_quantity_corrections"); db.prepare("DELETE FROM schema_migrations WHERE version=37").run();
     db.close(); repo.close(); repo = new SqliteGastronomyRepository(path, { adminPin: "2468" }); db = new Database(path);
-    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 37);
+    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 38);
     assert.deepEqual(db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id), purchaseBefore);
     assert.deepEqual(db.prepare("SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY rowid").all(purchase.id), itemsBefore);
     correctQuantity(repo, input);

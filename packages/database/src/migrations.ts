@@ -983,4 +983,55 @@ CREATE INDEX purchase_item_quantity_corrections_item_idx ON purchase_item_quanti
 CREATE TRIGGER purchase_item_quantity_corrections_no_update BEFORE UPDATE ON purchase_item_quantity_corrections BEGIN SELECT RAISE(ABORT, 'purchase quantity corrections are immutable'); END;
 CREATE TRIGGER purchase_item_quantity_corrections_no_delete BEFORE DELETE ON purchase_item_quantity_corrections BEGIN SELECT RAISE(ABORT, 'purchase quantity corrections are immutable'); END;`,
   },
+  {
+    version: 38,
+    name: "dining_room_service_tracking",
+    sql: String.raw`ALTER TABLE orders ADD COLUMN service_pending_since TEXT;
+ALTER TABLE orders ADD COLUMN served_at TEXT;
+ALTER TABLE orders ADD COLUMN service_revision INTEGER NOT NULL DEFAULT 0;
+
+UPDATE orders
+SET service_pending_since = created_at, service_revision = 1
+WHERE type = 'DINE_IN' AND lifecycle_status = 'CONFIRMED'
+  AND operational_status NOT IN ('DELIVERED','CANCELLED')
+  AND EXISTS (SELECT 1 FROM order_items WHERE order_items.order_id = orders.id);
+
+CREATE TRIGGER orders_service_confirmed_items
+AFTER UPDATE OF lifecycle_status ON orders
+WHEN NEW.type = 'DINE_IN' AND NEW.lifecycle_status = 'CONFIRMED'
+  AND NEW.operational_status NOT IN ('DELIVERED','CANCELLED')
+  AND OLD.lifecycle_status <> 'CONFIRMED'
+  AND EXISTS (SELECT 1 FROM order_items WHERE order_items.order_id = NEW.id)
+BEGIN
+  UPDATE orders SET service_pending_since = COALESCE(service_pending_since, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    served_at = NULL, service_revision = service_revision + 1 WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER order_items_service_insert
+AFTER INSERT ON order_items
+WHEN EXISTS (SELECT 1 FROM orders WHERE id = NEW.order_id AND type = 'DINE_IN'
+  AND lifecycle_status = 'CONFIRMED' AND operational_status NOT IN ('DELIVERED','CANCELLED'))
+BEGIN
+  UPDATE orders SET service_pending_since = COALESCE(service_pending_since, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    served_at = NULL, service_revision = service_revision + 1 WHERE id = NEW.order_id;
+END;
+
+CREATE TRIGGER order_items_service_quantity_increase
+AFTER UPDATE OF quantity ON order_items
+WHEN NEW.quantity > OLD.quantity AND EXISTS (SELECT 1 FROM orders WHERE id = NEW.order_id AND type = 'DINE_IN'
+  AND lifecycle_status = 'CONFIRMED' AND operational_status NOT IN ('DELIVERED','CANCELLED'))
+BEGIN
+  UPDATE orders SET service_pending_since = COALESCE(service_pending_since, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    served_at = NULL, service_revision = service_revision + 1 WHERE id = NEW.order_id;
+END;
+
+CREATE TRIGGER order_items_service_delete_last
+AFTER DELETE ON order_items
+WHEN NOT EXISTS (SELECT 1 FROM order_items WHERE order_id = OLD.order_id)
+  AND EXISTS (SELECT 1 FROM orders WHERE id = OLD.order_id AND type = 'DINE_IN')
+BEGIN
+  UPDATE orders SET service_pending_since = NULL, served_at = NULL,
+    service_revision = service_revision + 1 WHERE id = OLD.order_id;
+END;`,
+  },
 ];

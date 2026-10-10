@@ -69,6 +69,7 @@ const auditLabels: Record<string, string> = {
   ORDER_PAID: "Pedido cobrado",
   PAYMENT_REFUNDED: "Pago devuelto",
   PAGO_DEVUELTO: "Pago devuelto",
+  ORDER_SERVED: "Pedido servido en mesa",
   ORDER_CANCELLED: "Pedido cancelado",
   ORDER_STATUS_CHANGED: "Estado actualizado",
   ORDER_PRINT_QUEUED: "Impresión solicitada",

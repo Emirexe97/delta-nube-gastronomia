@@ -28,9 +28,11 @@ Que cada sección tenga una función reconocible, que el sistema sea sencillo si
 - Usar datos aislados para revisar la interfaz. Impresión, backups y operaciones reales requieren una pasada específica.
 - No hacer commit, push, cambio de versión ni instalador.
 
-**Última actualización §74 cerrada y validada:** Salón conserva elección Clásica/Plano localmente. Focal12/12, ocultos17/17, web265/265, tipo-build7/7 y guard2/2; datos operativos/flujos intactos.
+**Última actualización §77 cerrada y validada (2026-10-10):** nueva Lista de servicio en Salón, orden de carga, amarillo desde 15 minutos y rojo desde 35; marcar servido no cobra ni cierra la mesa. Nuevo consumo vuelve pendiente. Integral 338/338 en 75 archivos (321 visibles + 17 contratos ocultos), SQLite 219, web 277, dominio 28, shell 27 y typecheck/build 7/7. Sin publicación. US18 continúa parcial.
 
-**Pasada actual §75: decisiones documentadas, no implementación.** US15 cerrado en §74; US18 parcial tiene criterios y orden decididos por delegación. Próximo corte: anulación documental de compra errónea sin movimiento automático de stock/caja; ver límites §75. No añadir funciones ajenas al alcance delegado.
+**Antecedente §76 cerrado y validado (2026-10-10):** filtro Sólo ocupadas en Clásica/Plano y envíos/rendiciones diferenciados de gastos en informe/ticket, sin cambios de saldo. Integral334/334,74 archivos (317 visibles+17 ocultos), domain28/web265/shell27, tipo-build7/guard74.
+
+**Antecedente §76 cerrado:** mejoras solicitadas implementadas y probadas. US18 sigue parcial con criterios decididos en §75; anulación documental es próximo corte, no implementada aquí. Estado original24/25 cerrado sin ampliar alcances implícitamente.
 
 **Pasada actual §64 cerrada:** alcance consultado en §63 aprobado e implementado. El «NO implementado» de §63 y las notas de integración en curso son antecedentes históricos; ver cierre §64.3. No amplía otros errores, devoluciones parciales ni corrección de arqueos.
 
@@ -2917,3 +2919,72 @@ Evidencia revalidada en fuente actual: createPurchase incrementa stock y registr
 Ejecución por cortes pequeños y validación antes de avanzar, respetando la bitácora. Estado se mantiene **24/25 originales cerrados, US18 parcial**, ahora con decisiones generales resueltas por delegación. Hardware/accesibilidad completa fuera de esta certificación. Esta pasada sólo cambia documentación: no nuevas pruebas de runtime ni cambios del producto; validaciones §74 siguen antecedentes, no resultados reejecutados.
 
 | 2026-10-09 | US18 restantes: decisiones delegadas y orden fijado (§75) | Documento/stock/dinero separados; prioridad anulación documental, producto equivocado, regla futura y mes pagado. Sin delta automático, originales y COGS/cierres intactos. Devoluciones/pagos proveedor etapas distintas; sin implementación todavía, US18 parcial. |
+
+## 76. Salón: sólo ocupadas; ticket de caja: envíos diferenciados (corregido y validado)
+
+Usuario solicita filtro de mesas ocupadas en Salón y que el informe/ticket final identifique envíos aparte de gastos. Alcance: checkbox Sólo ocupadas en ambas vistas operativas, todas por defecto, no persistir filtro; plano conserva posiciones/sectores y edición muestra todas las mesas. Carga rápida, historial, totales globales y operación intactos. En caja separar egresos de efectivo vinculados a pedidos de reparto como Envíos y rendiciones en efectivo, sin sumar un nuevo gasto ni cambiar esperado/contado. No inferir cobros ni pagos retenidos como efectivo que entró/salió de caja. Legacy sin detalle no inventar distribución. RED, validación focal/UI nativa, tipos/build y documentación antes de cerrar. Sin nuevo commit/push/versión/instalador por esta solicitud.
+
+### 76.1 Integración y primeras validaciones
+
+- Salón: checkbox Sólo ocupadas con área clicable40px, ambas vistas; por defecto todas, no persiste filtro. Ocupada significa pedido abierto (incluye mesa recién abierta sin consumo). QuickEntry y totales globales intactos; historial no se filtra. El plano recibe todas las mesas y sólo filtra render operativo, no geometría/fit/colisiones/sectores; en edición se muestran todas con ayuda breve. Vacío clásico y por sector explícitos.
+- Informe y ticket comparten cashReportBreakdown: distinguir Gastos y otros egresos en efectivo de Envíos y rendiciones en efectivo, sin sumar un nuevo egreso. Clasificación por EXPENSE+afecta caja+orderId, no texto ni nombre de medio. Tres rutas verificadas: pago envío directo, liquidación saldo del repartidor y reversión de rendición. Mediosnull pueden afectar caja; fee retenido por repartidor y movimientos no efectivos no son salida de esta caja. No implica calcular costos económicos de reparto ni cobrar nuevamente un envío.
+- Legacy sin movimientos o detalle incompatible con total guardado conserva egreso agregado amplio: no inventar reparto, clamp o gastos negativos. Nuevas filas cero muestran0 y no−0. Arqueo completo y filtro de ventas independientes. Backend/DTO/demo/migraciones/transacciones sin cambios, sin datos reales ni impresora física accionada.
+
+RED:2 Salón por filtro ausente,2 domain por filas ausentes,4 HTMLpreview por filas ausentes después de corregir fixtures. Primerfixture3 casos fallaba en guarda de rendiciones pendientes: direct ahora transferencia+pagarenvío; escenariosdriver pendientes usan cierre forzado existente con motivo/PIN para conservar el hecho probado. Fallo unit−0 detectado y normalizado en nuevas filas, no se relajaron montos. Fallos/logs conservados localmente.
+
+GREEN focal **22/22,43,0s**, incluidos6 casos nuevos (2filtro+4ticket) más informe/plano/preferencia/carga rápida/foco. Domain **28/28** (24previos+4nuevos); web **265/265,23 archivos**; shell **27/27**. Typecheck/build **7/7**, guard **74/74** protege callbacks operativos/geometría, cálculos caja originales y main sólo aviso. Antigua prueba de informe cambia únicamente3 etiquetas de fila; cuentas/esperado/stock/snapshots comprobados. Revisión readonly independiente Salón sin bugs concretos; runtime prevalece.
+
+Capturas nativas fuentes/animaciones finitas/dos frames inspeccionadas: Sólo ocupadas en ambas vistas y ticket80mm con gastos200/envíos250 separados, esperado9550 idéntico; fee retenido muestraenvíos0/esperado9800, no−0. No recorte de importes; labels largos envuelven dos líneas naturalmente. No certificación de impresión física/hardware. Integral canónica334/74 (317visible+17contratosocultos) en curso; no cerrar con focal solamente.
+
+
+### 76.2 Cierre y validación final
+
+**Ambos pedidos implementados y validados.** Integral **334/334,74 archivos**, sin retries ni omisiones:317 primer plano(570.5s)+17 contratos ocultos reales(358.7s). Incluye tres casos de preferencia§74 y seis nuevos de esta pasada; no sumar otra vez focales ni repeticiones al inventario. Focal22/22,43,0s; dominio28/28,web265/265,23 archivos,shell27/27; typecheck/build7/7,guard74/74posintegral ydiff-check sin errores. SQLite212 de§73 es antecedente, no se reejecutó: repo/migraciones/DTO/demo/cálculos de efectivo protegido intacto en este corte.
+
+Cuatro fuentes de producto: TablesPage/FloorPlan(renderfiltro),domaincashReportBreakdown(desglose),main(sólo aviso del ticket). Dos nuevos E2E/6casos,cuatro nuevosunit; adaptación exacta3etiquetas informe previo. Guard conserva callbacks de carga rápida, plano/colisiones/guardar, expectedCash/difference/cashClosingTotals y resto de fuentes del lote. Revisión readonly independiente sin bugs concretos complementada con ejecución nativa.
+
+Capturas nativas inspeccionadas y pruebas comparan datos reales: activar filtro, alternar vistas y entrar edición no modifica mesas/pedidos/productos/caja. Carga rápida funciona con filtro y mesa nueva aparece como ocupada; estados vacíos explícitos. Printpreview real cancelado no imprime ni muta ledger/cierre/stock/ventas; gastosmanuales con texto similar a envío no se reclasifican. Envío directo, liquidación acumulada, fee retenido y reversión de rendición cubiertos; montos se descuentan una sola vez. No prometer identificar pagos sin vínculo en resúmenes históricos ni prueba de impresora física.
+
+Evidencia `docs/qa/evidence/system-usability-salon-shipping-2026-10-10/`:backsupfuentes,RED/GREEN/fixtures conservados,capturas,guard74,regression-summary334/74 ylogs. Sólo .gitkeep/resumen son versionables según políticaQA; capturas/traces/backups/logslocales. Rollback acotado de esta presentación/tests, no reset global ni cambios de datos. Versión0.1.19 intacta; **sin nuevo commit/push/instalador**.
+
+US18 parcial y24/25 originales cerrados: estos dos pedidos son mejoras adicionales, no implementan anulación de compras de§75. Servidor demo127.0.0.1:5173 permanece disponible para probar filtro tras recargar; ticketthermal comprobado en Electron con vista previa real.
+
+| 2026-10-10 | Filtro mesas ocupadas y envíos diferenciados en caja validados (§76) | Checkbox ambas vistas, ediciónplano completa; egresos reparto separados de gastos sin cambiar saldo. Integral334/74(317+17),domain28/web265/shell27/tipo-build7/guard74. US18partial, sin publicación. |
+
+## 77. Salón: vista Lista y control de pedidos servidos (implementada y validada)
+
+Usuario solicita tercera vista de tabla similar a Pedidos, mesas coloreadas por demora, orden de carga y botón para indicar entrega. No reemplazar Clásica/Plano ni sus flujos, conservar filtro Sólo ocupadas y preferencia de vista cuando se amplíe.
+
+Hallazgo actual: DELIVERED en pedido DINE_IN es el cierre de mesa, no servicio de comida; el editor lo etiqueta Cerrar mesa. No reutilizar esa transición para marcar comida entregada, ni simularlo sólo en localStorage. Se propone marca operativa independiente «Servido», sin cobrar/cerrar/liberar mesa ni movimientos de stock/dinero. Cuando se agrega consumo nuevo después de servido, proponer pendiente nuevamente para no ocultar pedidos nuevos; correcciones/notas no deberían inventar nueva entrega. Definir exactamente qué cambio de consumo inicia pendiente y su reloj antes de implementar.
+
+Propuesta para concretar: vista Lista con Mesa/Mozo/Pedido/Tiempo/Importe/Servicio/Acciones, orden más antiguo primero por carga del pedido y desempate estable (no por número de mesa ni prioridad que cambie orden). Tiempo de espera desde carga pendiente, no desde cobro ni actualización de nota; servido deja de escalar demora. Indicadores texto+color, no sólo color. Proponer normal<15min, advertencia15–29, demorado≥30; confirmar umbrales y semántica de servicio con usuario antes de nuevo flujo persistente. Marca de servicio no equivale a preparar/listo/reparto ni estado de pago.
+
+Esta pasada sólo lectura/definición; no cambios de producto ni nuevas pruebas. Cambios§76 siguen locales validados334/334. US18 parcial permanece distinto de esta nueva solicitud. Sin commit/push/versión/instalador.
+
+### 77.1 Definición aprobada e implementación
+
+Usuario confirma amarillo desde15min y rojo desde35min, y nuevo consumo después de servido vuelve pendiente. Tercera vista Lista de servicio, orden de carga del pedido más antiguo primero, filtro Sólo ocupadas y preferencia local extendidos sin reemplazar Clásica/Plano. Estado Servido independiente: no cerrar/liberar mesa, cobrar, modificar pagos/caja/stock/COGS ni estados operativos. Reloj desde primer consumo confirmado (no mesa vacía); nuevo producto/mitad-mitad o aumento de cantidad crea/reabre pendiente, conserva reloj si ya pendiente. Notas/precios/descuentos/disminuciones no simulan nueva entrega; retirar último producto limpia reloj. Servido detiene demora.
+
+Migración38 agrega reloj/marca/revisión propios y triggers transaccionales, incluyendo confirmación (consumo inicialmente DRAFT). Legacy activo con productos queda pendiente desde creación; nunca se adivina una entrega histórica. MarkOrderServed valida permiso orders.edit, revisión esperada e idempotencia; auditoría legible. Persistencia demo y SQLite, no bandera sólo visual. UI con texto+color de fila, umbrales15/35, servido neutro; cronómetro aislado de carga rápida.
+
+Validación en curso: RED demo4/4 por campos/método ausentes; repositorio recibido ya implementado, no declarar RED previo de SQLite. Primeras pruebas encontraron fixtures demo mesa ocupada, componente Lista omitido y test tipados incorrectamente; corregidos, sin relajar invariantes. Backup local start.diff/source-snapshot incluye implementación DB ya recibida: no es snapshot anterior completo a§77. Migración histórica se verifica reabriendo una SQLite37 real, no sólo texto SQL. Pruebas focales/integrales pendientes de cierre; no publicación/versión/instalador.
+
+### 77.2 Cierre y validación final
+
+**Mejora implementada y validada localmente.** Lista de servicio conserva Clásica, Plano, carga rápida, historial y filtro Sólo ocupadas. Recuerda la última vista al navegar/reabrir. Ocupadas por creación del pedido (no por número de mesa ni por demora), libres al final. Cada fila muestra mesa, mozo/pedido/hora, productos, tiempo/servicio, importe y acciones. Amarillo desde 15 minutos; rojo desde 35. Texto acompaña color; Servido detiene reloj y vuelve neutro. La mesa continúa abierta: no cobra, cierra ni libera la mesa.
+
+Consumo confirmado nuevo (producto común, mitad y mitad o aumento de cantidad) deja pendiente otra vez; si ya estaba pendiente, conserva la espera más antigua. Notas, precios, descuentos y disminuciones no reinician el servicio. Retirar último producto limpia las marcas; el flujo normal sigue prohibiendo dejar vacío un confirmado. Los campos nuevos persisten en SQLite y demo, con permisos, revisión de servicio e idempotencia para no ocultar consumos posteriores ante una acción/reintento obsoleto.
+
+Validación:
+- Integral canónica **338/338, 75 archivos**, sin retries ni omisiones: **321 visibles en 555,2 s + 17 contratos ocultos reales en 362,9 s**. Incluye cuatro E2E nuevos; no sumar repeticiones focales a ese inventario.
+- Focal final **6/6, 8,7 s**, después del build final: cuatro casos de Lista y dos del filtro anterior. Reinicio real con el mismo perfil confirma persistencia; pagos, estado operativo, stock, caja y vínculo de mesa comparados antes/después.
+- SQLite completo **219/219, 75,9 s**, siete casos nuevos de servicio; migración real de esquema37, rollback transaccional, permisos, servicio parcialmente/completamente pagado, mitad y mitad, cantidades y replays incluidos. Los fixtures históricos de pagos parciales/mesa vacía no cambian reglas de operación actuales.
+- Web **277/277, 25 archivos**; dominio **28/28**; shell **27/27**; typecheck/build finales **7/7** cada uno. Revisión detectó y corrigió un guard de edición económica reutilizado indebidamente en demo: servir también se permite tras pagar, sin modificar el pago. Legacy no elegible conserva revisión0 igual a SQLite.
+- Prueba visual nativa adicional **1/1, 3,0 s**, fuera del inventario canónico: reloj sólo del renderer en los límites exactos15/35, servido y consumo nuevo. Capturas inspeccionadas: fila roja y marca Demorada35, servido neutral, tabla al200% con desplazamiento interno y acciones alcanzables, sin desbordamiento horizontal de página. No afirmar que todas las columnas caben a la vez al200%.
+- Guardia de fuente: migraciones1–37 y métodos originales del repositorio sin cambios; sólo nuevos campos/método/migración38. Diff-check sin errores. Integral usa SQLite; las últimas correcciones demo están cubiertas por web277 y build/focal/visual finales.
+
+Evidencia local en `docs/qa/evidence/system-usability-salon-list-service-2026-10-10/`: logs, capturas, fixtures aislados, source-guard y resumen338/75. Sólo .gitkeep y regression-summary son versionables por políticaQA. El respaldo inicial ya incluía la implementación DB recibida; no atribuirle un RED/snapshot anterior inexistente. Primeros fallos de tests por fixtures o componente omitido fueron resueltos sin relajar invariantes.
+
+Rollback acotado: retirar presentación/contrato/IPC/implementación de servicio y sus pruebas; no reset global ni borrar datos de una base instalada. Cualquier reversión de triggers/esquema persistido requiere una migración específica, no un downgrade manual en datos reales. Cambios§76 conservados. Servidor demo127.0.0.1:5173 responde200 para prueba del usuario tras recargar. **Sin commit, push, cambio de versión ni instalador**. US18 parcial y24/25 originales cerrados siguen separados de esta mejora.
+
+| 2026-10-10 | Lista de servicio de Salón validada (§77) | Amarillo15/rojo35; servido independiente y consumo nuevo pendiente. Integral338/75 (321+17), SQLite219/web277/dominio28/shell27, tipo-build7/7. Sin publicación. |

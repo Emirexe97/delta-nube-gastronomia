@@ -14,6 +14,7 @@ import type {
   CashSessionHistoryItemDto,
   CashMovementType,
   OrderDto,
+  MarkOrderServedInput,
   OrderItemDto,
   ProductDto,
   PurchaseDto,
@@ -61,6 +62,7 @@ const SENSITIVE_DEMO_AUDIT_ACTIONS = new Set([
   "DESCUENTO_APLICADO",
   "PAGO_DEVUELTO",
   "PEDIDO_CANCELADO",
+  "ORDER_SERVED",
   "CUSTOMER_ARCHIVED",
   "CUSTOMER_MERGED",
   "CUSTOMER_MERGE_RECEIVED",
@@ -161,6 +163,7 @@ interface DemoState {
   financeExpenseRecoveryReceipts?: Record<string, { fingerprint: string; result: FinanceExpenseDto }>;
   financeExpensePaymentReceipts?: Record<string, { fingerprint: string; result: FinanceExpenseDto }>;
   financeExpensePaymentRevisionRequired?: Record<string, boolean>;
+  serviceReceipts?: Record<string, { fingerprint: string; result: OrderDto }>;
   financeExpensePaymentCorrections?: Array<{
     id: string; expenseId: string; cashSessionId: string; cashSessionNumber: number;
     originalMovementId: string; compensationMovementId: string; amountMinor: number;
@@ -572,6 +575,19 @@ function loadState(storage: DemoStorage): DemoState {
     for (const order of parsed.data.orders) {
       // Old paid orders followed the legacy rule that the driver owned the fee.
       if (order.paidMinor > 0) order.deliveryFeeBelongsToDriver ??= true;
+      if (order.serviceRevision == null) {
+        const serviceActive = order.type === "DINE_IN" &&
+          order.lifecycleStatus === "CONFIRMED" &&
+          !["DELIVERED", "CANCELLED"].includes(order.operationalStatus);
+        order.servicePendingSince = serviceActive && order.items.length > 0
+          ? order.createdAt
+          : null;
+        order.servedAt = null;
+        order.serviceRevision = serviceActive && order.items.length > 0 ? 1 : 0;
+      } else {
+        order.servicePendingSince ??= null;
+        order.servedAt ??= null;
+      }
     }
     parsed.version = 12;
     return parsed as DemoState;
@@ -764,7 +780,22 @@ function normalize(state: DemoState) {
       affectsCash: false,
       active: true,
     });
-  for (const order of state.data.orders) refreshOrder(order);
+  for (const order of state.data.orders) {
+    if (order.serviceRevision == null) {
+      const serviceActive = order.type === "DINE_IN" &&
+        order.lifecycleStatus === "CONFIRMED" &&
+        !["DELIVERED", "CANCELLED"].includes(order.operationalStatus);
+      order.servicePendingSince = serviceActive && order.items.length > 0
+        ? order.createdAt
+        : null;
+      order.servedAt = null;
+      order.serviceRevision = serviceActive && order.items.length > 0 ? 1 : 0;
+    } else {
+      order.servicePendingSince ??= null;
+      order.servedAt ??= null;
+    }
+    refreshOrder(order);
+  }
   state.data.tables.sort((left, right) => left.number - right.number);
   if (state.data.cashSession) {
     const paid = state.data.orders.filter(
@@ -1292,6 +1323,16 @@ export function createDemoApi(
     if (!order) throw new Error("No se encontró el pedido.");
     return order;
   };
+  const isServiceTrackable = (order: OrderDto) =>
+    order.type === "DINE_IN" &&
+    order.lifecycleStatus === "CONFIRMED" &&
+    !["DELIVERED", "CANCELLED"].includes(order.operationalStatus);
+  const registerServiceConsumption = (order: OrderDto) => {
+    if (!isServiceTrackable(order)) return;
+    order.servicePendingSince ??= now();
+    order.servedAt = null;
+    order.serviceRevision = (order.serviceRevision ?? 0) + 1;
+  };
   const productById = (id: string) => {
     const product = state.data.products.find(
       (candidate) => candidate.id === id,
@@ -1748,6 +1789,9 @@ export function createDemoApi(
         depositNotes: null,
         totalMinor: input.deliveryFeeMinor ?? 0,
         paidMinor: 0,
+        servicePendingSince: null,
+        servedAt: null,
+        serviceRevision: 0,
         printedAt: null,
         printCount: 0,
         createdAt: now(),
@@ -2120,9 +2164,59 @@ export function createDemoApi(
           state.data.settings.deliveryFeeBelongsToDriver ?? true;
       order.lifecycleStatus = "CONFIRMED";
       order.operationalStatus = "IN_PREPARATION";
+      if (order.type === "DINE_IN" && order.items.length > 0) {
+        order.servicePendingSince ??= now();
+        order.servedAt = null;
+        order.serviceRevision = Math.max(1, order.serviceRevision ?? 0);
+      }
       audit(state, "ORDER", order.id, "PEDIDO_CONFIRMADO");
       save();
       return output(order);
+    },
+
+    async markOrderServed(input: MarkOrderServedInput) {
+      if (!state.data.currentUser.permissions.includes("orders.edit") &&
+          !state.data.currentUser.permissions.includes("*"))
+        throw new Error("No tenés permiso para editar pedidos.");
+      const receiptKey = input.idempotencyKey?.trim() || null;
+      const fingerprint = JSON.stringify({
+        operation: "markOrderServed",
+        input: { ...input, idempotencyKey: undefined },
+      });
+      const prior = receiptKey ? state.serviceReceipts?.[receiptKey] : undefined;
+      if (prior) {
+        if (prior.fingerprint !== fingerprint)
+          throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+
+      const order = orderById(input.orderId);
+      if (!isServiceTrackable(order) || order.items.length === 0)
+        throw new Error("Solo se puede marcar servido un pedido de salón confirmado con productos.");
+      if (!Number.isSafeInteger(input.expectedServiceRevision) || input.expectedServiceRevision < 0 ||
+          input.expectedServiceRevision !== (order.serviceRevision ?? 0))
+        throw new Error("El servicio cambió. Actualizá la mesa e intentá nuevamente.");
+
+      const before = clone(order);
+      if (order.servicePendingSince) {
+        order.servicePendingSince = null;
+        order.servedAt = now();
+        order.serviceRevision = (order.serviceRevision ?? 0) + 1;
+        audit(state, "ORDER", order.id, "ORDER_SERVED", undefined, "orders.edit");
+        const entry = state.audit[0];
+        if (entry?.entityId === order.id && entry.action === "ORDER_SERVED") {
+          entry.beforeJson = JSON.stringify(before);
+          entry.afterJson = JSON.stringify(order);
+        }
+      } else if (!order.servedAt) {
+        throw new Error("El pedido no tiene un servicio pendiente para marcar.");
+      }
+
+      const result = output(order);
+      if (receiptKey)
+        (state.serviceReceipts ??= {})[receiptKey] = { fingerprint, result };
+      save();
+      return result;
     },
 
     async discardDraftOrder({ orderId }) {
@@ -2189,6 +2283,7 @@ export function createDemoApi(
         order.items.push(item);
         refreshOrder(order);
       }
+      registerServiceConsumption(order);
       if (priceWasOverridden) {
         audit(
           state,
@@ -2243,6 +2338,7 @@ export function createDemoApi(
       }
       item.quantity = newQty;
       refreshOrder(order);
+      if (delta > 0) registerServiceConsumption(order);
       audit(
         state,
         "ORDER_ITEM",
@@ -2342,6 +2438,7 @@ export function createDemoApi(
         modifiers: [],
         lineTotalMinor: unit * quantity,
       });
+      registerServiceConsumption(order);
       audit(state, "ORDER", order.id, "MITAD_Y_MITAD_AGREGADA");
       save();
       return output(order);
@@ -2350,10 +2447,6 @@ export function createDemoApi(
     async removeOrderItem(input) {
       const order = orderById(input.orderId);
       assertOrderAction(order, "EDIT");
-      if (order.lifecycleStatus === "CONFIRMED" && order.items.length <= 1)
-        throw new Error(
-          "Un pedido confirmado no puede quedar vacío. Cancelalo si ya no corresponde.",
-        );
       const removed = order.items.find((item) => item.id === input.itemId);
       if (!removed) throw new Error("No se encontró el producto del pedido.");
       if (
@@ -2364,6 +2457,12 @@ export function createDemoApi(
         releaseOrderStock(removedOrder);
       }
       order.items = order.items.filter((item) => item.id !== input.itemId);
+      refreshOrder(order);
+      if (isServiceTrackable(order) && order.items.length === 0) {
+        order.servicePendingSince = null;
+        order.servedAt = null;
+        order.serviceRevision = (order.serviceRevision ?? 0) + 1;
+      }
       audit(state, "ORDER", order.id, "PRODUCTO_QUITADO");
       save();
       return output(order);

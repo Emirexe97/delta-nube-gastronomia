@@ -128,6 +128,9 @@ test("migration adds zero revision to existing purchases without changing any hi
   try {
     const { purchase } = setup(repo);
     // Reproduce an actual persisted v34 database, then let constructor migrate it.
+    db.exec("DROP TRIGGER IF EXISTS orders_service_confirmed_items; DROP TRIGGER IF EXISTS order_items_service_insert; DROP TRIGGER IF EXISTS order_items_service_quantity_increase; DROP TRIGGER IF EXISTS order_items_service_delete_last");
+    db.exec("ALTER TABLE orders DROP COLUMN service_pending_since; ALTER TABLE orders DROP COLUMN served_at; ALTER TABLE orders DROP COLUMN service_revision");
+    db.prepare("DELETE FROM schema_migrations WHERE version=38").run();
     db.exec("DROP TABLE purchase_item_quantity_corrections");
     db.exec("DROP TABLE purchase_item_cost_corrections");
     if ((db.prepare("PRAGMA table_info(purchases)").all() as any[]).some((column) => column.name === "revision"))
@@ -144,8 +147,8 @@ test("migration adds zero revision to existing purchases without changing any hi
     assert.equal(repo.listPurchases().find((p) => p.id === purchase.id)?.revision, 0);
     assert.deepEqual(protectedState(db), businessBefore);
     assert.deepEqual(db.prepare("SELECT * FROM command_receipts ORDER BY rowid").all(), receiptsBefore);
-    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 37);
-    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), [{ version: 35 }, { version: 36 }, { version: 37 }]);
+    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 38);
+    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), [{ version: 35 }, { version: 36 }, { version: 37 }, { version: 38 }]);
     assert.equal((db.prepare("SELECT COUNT(*) count FROM purchase_item_cost_corrections").get() as any).count, 0);
     assert.equal((db.prepare("SELECT COUNT(*) count FROM purchase_item_quantity_corrections").get() as any).count, 0);
   } finally {

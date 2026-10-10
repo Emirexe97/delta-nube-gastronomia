@@ -6,6 +6,7 @@ import type {
 } from "@gastronomy/contracts";
 import {
   CheckCircle,
+  Clock,
   ClockCounterClockwise,
   Eye,
   Keyboard,
@@ -39,6 +40,7 @@ import {
   parseMoneyInput,
 } from "../lib";
 import { filterClosedTableOrders } from "../closed-tables-history";
+import { formatServiceAge, getServiceAge, sortByOldestService } from "../salon-service";
 
 type OpenTableInput = { tableId: string; waiterUserId: string };
 const waiterRoleLabels = {
@@ -50,11 +52,11 @@ const waiterRoleLabels = {
 export function TablesPage({ data }: { data: BootstrapDto }) {
   const pageRef = useRef<HTMLDivElement>(null);
   const lastScrollTopRef = useRef<number>(0);
-  const [view, setView] = useState<"CLASSIC" | "PLAN">(() => {
+  const [onlyOccupied, setOnlyOccupied] = useState(false);
+  const [view, setView] = useState<"CLASSIC" | "PLAN" | "LIST">(() => {
     try {
-      return localStorage.getItem("gastronomy.salon.view") === "PLAN"
-        ? "PLAN"
-        : "CLASSIC";
+      const stored = localStorage.getItem("gastronomy.salon.view");
+      return stored === "PLAN" || stored === "LIST" ? stored : "CLASSIC";
     } catch {
       return "CLASSIC";
     }
@@ -159,10 +161,18 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
       onError: (value) => setTableMessage(humanError(value)),
     },
   );
+  const markServed = useApiMutation(
+    (input: { orderId: string; expectedServiceRevision: number }) =>
+      window.gastronomy.markOrderServed(input),
+    { onError: (value) => setError(humanError(value)) },
+  );
   const tables = data.tables
     .filter((table) => table.active)
     .sort((left, right) => left.number - right.number);
   const occupiedCount = tables.filter((table) => table.currentOrderId).length;
+  const visibleTables = onlyOccupied
+    ? tables.filter((table) => table.currentOrderId)
+    : tables;
 
   const requestOpen = (table: RestaurantTableDto) => {
     setError(null);
@@ -241,11 +251,29 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
           >
             <MapTrifold size={16} /> Plano por sectores
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "LIST"}
+            onClick={() => setView("LIST")}
+            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-extrabold transition ${view === "LIST" ? "bg-white text-brand-700 shadow-sm" : "text-slate-600 hover:text-slate-700"}`}
+          >
+            <Clock size={16} /> Lista de servicio
+          </button>
         </div>
+        <label className="flex min-h-10 cursor-pointer items-center gap-2 px-2 text-sm font-semibold text-slate-700">
+          <input
+            type="checkbox"
+            checked={onlyOccupied}
+            onChange={(event) => setOnlyOccupied(event.target.checked)}
+            className="h-4 w-4 accent-brand-600"
+          />
+          Sólo ocupadas
+        </label>
         <p className="px-2 text-xs text-slate-600">
           {view === "CLASSIC"
-            ? "Listado rápido de todas las mesas"
-            : "Plano del salón por sectores"}
+            ? onlyOccupied ? "Listado de mesas ocupadas" : "Listado rápido de todas las mesas"
+            : view === "PLAN" ? "Plano del salón por sectores" : "Pedidos por orden de carga"}
         </p>
       </Card>
 
@@ -265,7 +293,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
             aria-label="Mesas del salón"
             className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
           >
-            {tables.map((table) => {
+            {visibleTables.map((table) => {
               const occupied = Boolean(table.currentOrderId);
               return (
                 <Card
@@ -339,14 +367,30 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
               );
             })}
           </section>
+          {onlyOccupied && !visibleTables.length ? (
+            <p role="status" className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
+              No hay mesas ocupadas.
+            </p>
+          ) : null}
         </>
-      ) : (
+      ) : view === "PLAN" ? (
         <TableFloorPlan
           data={data}
           tables={tables}
+          onlyOccupied={onlyOccupied}
           canManageTables={canManageTables}
           onActivateTable={activateTable}
           onRequestDeleteTable={requestDeleteTable}
+        />
+      ) : (
+        <SalonServiceList
+          tables={visibleTables}
+          orders={data.orders}
+          canEditOrders={data.currentUser.permissions.includes("orders.edit") || data.currentUser.permissions.includes("*")}
+          canOpenTables={Boolean(data.cashSession)}
+          pending={markServed.isPending}
+          onOpenTable={activateTable}
+          onMarkServed={(orderId, expectedServiceRevision) => markServed.mutate({ orderId, expectedServiceRevision })}
         />
       )}
 
@@ -499,6 +543,115 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         </form>
       </Modal>
     </div>
+  );
+}
+
+type ServiceTrackedOrder = OrderDto & {
+  servicePendingSince?: string | null;
+  servedAt?: string | null;
+  serviceRevision?: number;
+};
+
+function SalonServiceList({
+  tables,
+  orders,
+  canEditOrders,
+  canOpenTables,
+  pending,
+  onOpenTable,
+  onMarkServed,
+}: {
+  tables: RestaurantTableDto[];
+  orders: OrderDto[];
+  canEditOrders: boolean;
+  canOpenTables: boolean;
+  pending: boolean;
+  onOpenTable(table: RestaurantTableDto): void;
+  onMarkServed(orderId: string, expectedServiceRevision: number): void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const rows = useMemo(() => {
+    const occupied = tables.flatMap((table) => {
+      if (!table.currentOrderId) return [];
+      const order = orders.find((candidate) => candidate.id === table.currentOrderId);
+      return order ? [{ table, order: order as ServiceTrackedOrder }] : [];
+    });
+    const sorted = sortByOldestService(occupied.map(({ order }) => order));
+    const byOrderId = new Map(occupied.map((row) => [row.order.id, row]));
+    return [
+      ...sorted.flatMap((order) => {
+        const row = byOrderId.get(order.id);
+        return row ? [row] : [];
+      }),
+      ...tables
+        .filter((table) => !table.currentOrderId)
+        .sort((a, b) => a.number - b.number)
+        .map((table) => ({ table, order: null as ServiceTrackedOrder | null })),
+    ];
+  }, [tables, orders]);
+
+  if (!rows.length) {
+    return <p role="status" className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600">No hay mesas para mostrar.</p>;
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="max-h-[620px] overflow-auto">
+        <table aria-label="Mesas en lista" className="dn-table min-w-[850px]">
+          <thead>
+            <tr><th>Mesa</th><th>Pedido / mozo</th><th>Productos</th><th>Tiempo de servicio</th><th className="text-right">Total</th><th className="text-right">Acciones</th></tr>
+          </thead>
+          <tbody>
+            {rows.map(({ table, order }) => {
+              const occupied = Boolean(order);
+              const age = order ? getServiceAge(order, now) : "neutral";
+              const hasItems = Boolean(order?.items?.length);
+              const canMark = Boolean(
+                order && order.type === "DINE_IN" && order.lifecycleStatus === "CONFIRMED" &&
+                order.operationalStatus !== "DELIVERED" &&
+                order.operationalStatus !== "CANCELLED" &&
+                hasItems && order.servicePendingSince && !order.servedAt &&
+                canEditOrders && order.serviceRevision != null && !pending,
+              );
+              const color = age === "late"
+                ? "bg-rose-50 text-rose-800"
+                : age === "pending"
+                  ? "bg-amber-50 text-amber-800"
+                  : "bg-slate-50 text-slate-700";
+              return (
+                <tr key={table.id} className={age === "late" ? "bg-rose-50/70" : age === "pending" ? "bg-amber-50/70" : undefined}>
+                  <td className="whitespace-nowrap font-extrabold">Mesa {table.number}{table.name ? <p className="text-xs font-medium text-slate-600">{table.name}</p> : null}</td>
+                  <td className="whitespace-nowrap">{order ? <><strong>#{order.number}</strong><p className="text-xs text-slate-600">{table.waiterName || "Sin mozo"} · {formatTime(order.createdAt)}</p></> : <Badge tone="green">Libre</Badge>}</td>
+                  <td className="max-w-[300px]">{hasItems ? <div className="space-y-0.5 text-xs">{order!.items!.map((item) => <p key={item.id} className="truncate">{item.quantity}× {item.productNameSnapshot}</p>)}</div> : <span className="text-xs italic text-slate-600">{occupied ? "Sin productos" : "—"}</span>}</td>
+                  <td>
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold ${color}`}>
+                      {order?.servedAt ? <CheckCircle size={13} weight="fill" /> : <Clock size={13} />}
+                      {order?.servedAt
+                        ? "Servido"
+                        : order?.servicePendingSince
+                          ? `${age === "late" ? "Demorada" : age === "pending" ? "En espera" : "En curso"} · ${formatServiceAge(order, now)}`
+                          : "Sin consumo"}
+                    </span>
+                  </td>
+                  <td className="whitespace-nowrap text-right font-mono font-bold">{occupied ? formatMoney(table.currentTotalMinor) : "—"}</td>
+                  <td className="whitespace-nowrap text-right">
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="secondary" disabled={!occupied && !canOpenTables} aria-label={occupied ? `Abrir pedido de mesa ${table.number}` : `Abrir mesa ${table.number}`} onClick={() => onOpenTable(table)}>{occupied ? "Abrir pedido" : "Abrir mesa"}</Button>
+                      {order ? <Button type="button" aria-label={`Marcar servido pedido ${order.number}`} disabled={!canMark} title={!canEditOrders ? "No tenés permiso para editar pedidos" : undefined} onClick={() => onMarkServed(order.id, order.serviceRevision!)}>{pending ? "Guardando…" : "Marcar servido"}</Button> : null}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }
 

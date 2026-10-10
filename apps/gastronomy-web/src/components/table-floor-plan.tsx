@@ -221,12 +221,14 @@ function ResizeHandles({
 export function TableFloorPlan({
   data,
   tables,
+  onlyOccupied = false,
   canManageTables,
   onActivateTable,
   onRequestDeleteTable,
 }: {
   data: BootstrapDto;
   tables: RestaurantTableDto[];
+  onlyOccupied?: boolean;
   canManageTables: boolean;
   onActivateTable(table: RestaurantTableDto): void;
   onRequestDeleteTable(table: RestaurantTableDto): void;
@@ -614,6 +616,10 @@ export function TableFloorPlan({
   const sectorTables = tables
     .filter((table) => table.sectorId === activeSectorId)
     .sort((left, right) => left.number - right.number);
+  // Filtering the rendered tables keeps geometry, fit and editing data intact.
+  const visibleSectorTables = onlyOccupied && !editing
+    ? sectorTables.filter((table) => table.currentOrderId)
+    : sectorTables;
   const sectorShapes = data.floorPlanShapes.filter(
     (shape) => shape.sectorId === activeSectorId,
   );
@@ -1372,7 +1378,9 @@ export function TableFloorPlan({
         </div>
         <p className="mt-2 text-xs text-slate-600">
           {editing
-            ? "Arrastrá las mesas y figuras para ubicarlas. También podés dibujar áreas y líneas."
+            ? onlyOccupied
+              ? "Al editar se muestran todas las mesas. Arrastrá las mesas y figuras para ubicarlas."
+              : "Arrastrá las mesas y figuras para ubicarlas. También podés dibujar áreas y líneas."
             : "Elegí un sector y tocá una mesa para abrirla o continuar su pedido."}
         </p>
         {message ? (
@@ -1520,7 +1528,7 @@ export function TableFloorPlan({
                 ))}
               </svg>
             ) : null}
-            {!sectorTables.length && !sectorShapes.length ? (
+            {!visibleSectorTables.length && (!sectorShapes.length || (onlyOccupied && !editing)) ? (
               <div className="pointer-events-none absolute left-10 top-16 z-20 flex items-center gap-4 rounded-2xl border border-dashed border-slate-300 bg-white/90 p-6 shadow-sm backdrop-blur">
                 <MapTrifold
                   className="shrink-0 text-slate-400"
@@ -1529,9 +1537,11 @@ export function TableFloorPlan({
                 />
                 <div>
                   <p className="text-sm font-bold text-slate-700">
-                    Este sector todavía no tiene elementos
+                    {onlyOccupied && !editing
+                      ? "No hay mesas ocupadas en este sector."
+                      : "Este sector todavía no tiene elementos"}
                   </p>
-                  {canManageTables ? (
+                  {canManageTables && !(onlyOccupied && !editing) ? (
                     <p className="mt-0.5 text-xs text-slate-600">
                       Activá “Editar plano” para agregar mesas y figuras.
                     </p>
@@ -1758,7 +1768,7 @@ export function TableFloorPlan({
                 </div>
               );
             })}
-            {sectorTables.map((table) => {
+            {visibleSectorTables.map((table) => {
               const occupied = Boolean(table.currentOrderId);
               const position = positions[table.id] ?? {
                 x: table.layoutX,

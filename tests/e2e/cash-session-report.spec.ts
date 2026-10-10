@@ -124,7 +124,7 @@ test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ti
   await page.getByRole("button", { name: "Ver informe", exact: true }).click();
   const report = page.getByRole("dialog", { name: "Informe de caja" });
   await expect(
-    report.getByText("Egresos en efectivo (incluye repartidores)", {
+    report.getByText("Gastos y otros egresos en efectivo", {
       exact: true,
     }),
   ).toBeVisible();
@@ -136,14 +136,14 @@ test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ti
     name: "Imprimir informe de caja",
   });
   await expect(
-    printModal.getByText("Egresos en efectivo (incluye repartidores)", {
+    printModal.getByText("Gastos y otros egresos en efectivo", {
       exact: true,
     }),
   ).toBeVisible();
   await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
   const preview = await previewWindow();
   await expect(
-    preview.getByText("Egresos en efectivo (incluye repartidores)", {
+    preview.getByText("Gastos y otros egresos en efectivo", {
       exact: true,
     }),
   ).toBeVisible();

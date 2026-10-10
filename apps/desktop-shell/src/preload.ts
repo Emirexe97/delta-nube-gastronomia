@@ -12,6 +12,7 @@ const api: DesktopApi = {
   closeCashSession: (input) => invoke("closeCashSession", input),
   listCashSessionHistory: () => invoke("listCashSessionHistory"),
   getCashSessionReport: (filters) => invoke("getCashSessionReport", filters),
+  markOrderServed: (input) => invoke("markOrderServed", input),
   createOrder: (input) => invoke("createOrder", input),
   updateDraftOrder: (input) => invoke("updateDraftOrder", input),
   confirmOrder: (input) => invoke("confirmOrder", input),

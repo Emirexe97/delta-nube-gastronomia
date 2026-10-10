@@ -168,10 +168,13 @@ test("migration from schema 35 creates empty append-only correction ledger witho
   let repo = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true }); let db = new Database(path);
   try {
     const { purchase } = setup(repo); const before = db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id);
+    db.exec("DROP TRIGGER IF EXISTS orders_service_confirmed_items; DROP TRIGGER IF EXISTS order_items_service_insert; DROP TRIGGER IF EXISTS order_items_service_quantity_increase; DROP TRIGGER IF EXISTS order_items_service_delete_last");
+    db.exec("ALTER TABLE orders DROP COLUMN service_pending_since; ALTER TABLE orders DROP COLUMN served_at; ALTER TABLE orders DROP COLUMN service_revision");
+    db.prepare("DELETE FROM schema_migrations WHERE version=38").run();
     db.exec("DROP TABLE purchase_item_quantity_corrections"); db.exec("DROP TABLE purchase_item_cost_corrections"); db.prepare("DELETE FROM schema_migrations WHERE version>=36").run();
     db.close(); repo.close(); repo = new SqliteGastronomyRepository(path, { adminPin: "2468" }); db = new Database(path);
     assert.deepEqual(db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id), before);
-    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 37);
+    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 38);
     assert.equal((db.prepare("SELECT COUNT(*) n FROM purchase_item_cost_corrections").get() as any).n, 0);
   } finally { db.close(); repo.close(); assert.equal(dirname(resolve(dir)), resolve(tmpdir())); assert.ok(basename(dir).startsWith("gastronomy-purchase-cost-")); rmSync(dir, { recursive: true, force: true }); }
 });
