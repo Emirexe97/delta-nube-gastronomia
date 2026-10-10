@@ -35,16 +35,19 @@ import {
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import {
-  DEFAULT_RECT_TABLE_HEIGHT,
-  DEFAULT_RECT_TABLE_WIDTH,
-  DEFAULT_TABLE_HEIGHT,
-  DEFAULT_TABLE_WIDTH,
+  DEFAULT_RECT_TABLE_HEIGHT_PX,
+  DEFAULT_RECT_TABLE_WIDTH_PX,
+  DEFAULT_TABLE_HEIGHT_PX,
+  DEFAULT_TABLE_WIDTH_PX,
   FLOOR_CANVAS_HEIGHT,
   FLOOR_CANVAS_WIDTH,
   findAvailableTablePosition,
   globalPointsToLocalGeometry,
+  layoutSizeToPixels,
+  pixelsToLayoutSize,
   resizeNormalizedRect,
   svgPoints,
+  zoomPanToPoint,
   type NormalizedPoint,
   type NormalizedRect,
   type ResizeHandle,
@@ -271,8 +274,11 @@ export function TableFloorPlan({
   const [newTableNumber, setNewTableNumber] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState<Position>({ x: 0, y: 0 });
+  const [view, setView] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
+  const zoom = view.zoom;
+  const pan = view.pan;
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const [panDrag, setPanDrag] = useState<{
     startX: number;
     startY: number;
@@ -313,37 +319,34 @@ export function TableFloorPlan({
     const centerX = bounds ? bounds.width / 2 : 0;
     const centerY = bounds ? bounds.height / 2 : 0;
 
-    setZoom((prevZoom) => {
+    setView((current) => {
       const nextZoom = clamp(
-        Math.round(prevZoom * factor * 100) / 100,
+        Math.round(current.zoom * factor * 100) / 100,
         0.35,
         3.0,
       );
-      if (nextZoom === prevZoom) return prevZoom;
-
-      setPan((prevPan) => {
-        if (!bounds) return prevPan;
-        if (nextZoom === 1 && prevZoom === 1) return { x: 0, y: 0 };
-        const nextPanX =
-          centerX - (centerX - prevPan.x) * (nextZoom / prevZoom);
-        const nextPanY =
-          centerY - (centerY - prevPan.y) * (nextZoom / prevZoom);
-        return clampPan(
-          nextPanX,
-          nextPanY,
+      if (nextZoom === current.zoom) return current;
+      if (!bounds) return { ...current, zoom: nextZoom };
+      const anchoredPan = zoomPanToPoint(
+        current.pan,
+        { x: centerX, y: centerY },
+        nextZoom / current.zoom,
+      );
+      return {
+        zoom: nextZoom,
+        pan: clampPan(
+          anchoredPan.x,
+          anchoredPan.y,
           nextZoom,
           bounds.width,
           bounds.height,
-        );
-      });
-
-      return nextZoom;
+        ),
+      };
     });
   };
 
   const resetZoom = () => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
+    setView({ zoom: 1, pan: { x: 0, y: 0 } });
   };
 
   const fitToView = () => {
@@ -365,16 +368,17 @@ export function TableFloorPlan({
     );
     const boardW = FLOOR_CANVAS_WIDTH * fitZoom;
     const boardH = FLOOR_CANVAS_HEIGHT * fitZoom;
-    setZoom(fitZoom);
-    setPan({
-      x: Math.round((bounds.width - boardW) / 2),
-      y: Math.round((bounds.height - boardH) / 2),
+    setView({
+      zoom: fitZoom,
+      pan: {
+        x: Math.round((bounds.width - boardW) / 2),
+        y: Math.round((bounds.height - boardH) / 2),
+      },
     });
   };
 
   useEffect(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
+    setView({ zoom: 1, pan: { x: 0, y: 0 } });
   }, [activeSectorId]);
 
   useEffect(() => {
@@ -390,31 +394,24 @@ export function TableFloorPlan({
       const cursorX = event.clientX - bounds.left;
       const cursorY = event.clientY - bounds.top;
 
-      setZoom((prevZoom) => {
+      setView((current) => {
         const factor = event.deltaY < 0 ? 1.15 : 0.87;
         const nextZoom = clamp(
-          Math.round(prevZoom * factor * 100) / 100,
+          Math.round(current.zoom * factor * 100) / 100,
           0.35,
           3.0,
         );
-        if (nextZoom === prevZoom) return prevZoom;
-
-        setPan((prevPan) => {
-          if (nextZoom === 1 && prevZoom === 1) return { x: 0, y: 0 };
-          const nextPanX =
-            cursorX - (cursorX - prevPan.x) * (nextZoom / prevZoom);
-          const nextPanY =
-            cursorY - (cursorY - prevPan.y) * (nextZoom / prevZoom);
-          return clampPan(
-            nextPanX,
-            nextPanY,
-            nextZoom,
-            bounds.width,
-            bounds.height,
-          );
-        });
-
-        return nextZoom;
+        if (nextZoom === current.zoom) return current;
+        // Keep the same canvas point under the wheel cursor. This update is
+        // atomic so React StrictMode cannot apply pan twice from a nested setter.
+        return {
+          zoom: nextZoom,
+          pan: zoomPanToPoint(
+            current.pan,
+            { x: cursorX, y: cursorY },
+            nextZoom / current.zoom,
+          ),
+        };
       });
     };
 
@@ -434,18 +431,13 @@ export function TableFloorPlan({
           x: (t1.clientX + t2.clientX) / 2 - bounds.left,
           y: (t1.clientY + t2.clientY) / 2 - bounds.top,
         };
-        setZoom((currentZoom) => {
-          setPan((currentPan) => {
-            pinchRef.current = {
-              distance,
-              zoom: currentZoom,
-              pan: currentPan,
-              center,
-            };
-            return currentPan;
-          });
-          return currentZoom;
-        });
+        const currentView = viewRef.current;
+        pinchRef.current = {
+          distance,
+          zoom: currentView.zoom,
+          pan: currentView.pan,
+          center,
+        };
       }
     };
 
@@ -479,16 +471,16 @@ export function TableFloorPlan({
           currentCenter.y -
           (initial.center.y - initial.pan.y) * (nextZoom / initial.zoom);
 
-        setZoom(nextZoom);
-        setPan(
-          clampPan(
+        setView({
+          zoom: nextZoom,
+          pan: clampPan(
             nextPanX,
             nextPanY,
             nextZoom,
             bounds.width,
             bounds.height,
           ),
-        );
+        });
       }
     };
 
@@ -543,15 +535,16 @@ export function TableFloorPlan({
     if (!bounds) return;
     const dx = event.clientX - panDrag.startX;
     const dy = event.clientY - panDrag.startY;
-    setPan(
-      clampPan(
+    setView((current) => ({
+      ...current,
+      pan: clampPan(
         panDrag.initialPanX + dx,
         panDrag.initialPanY + dy,
-        zoom,
+        current.zoom,
         bounds.width,
         bounds.height,
       ),
-    );
+    }));
   };
 
   const onViewportPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -701,10 +694,18 @@ export function TableFloorPlan({
           height: s.layoutHeight,
         })),
       ];
+      const defaultWidth = pixelsToLayoutSize(
+        DEFAULT_TABLE_WIDTH_PX,
+        FLOOR_CANVAS_WIDTH,
+      );
+      const defaultHeight = pixelsToLayoutSize(
+        DEFAULT_TABLE_HEIGHT_PX,
+        FLOOR_CANVAS_HEIGHT,
+      );
       const targetPos = findAvailableTablePosition(
         existingElements,
-        DEFAULT_TABLE_WIDTH,
-        DEFAULT_TABLE_HEIGHT,
+        defaultWidth,
+        defaultHeight,
       );
 
       return window.gastronomy.updateTable({
@@ -716,8 +717,8 @@ export function TableFloorPlan({
         sectorId: input.sectorId,
         layoutX: targetPos.x,
         layoutY: targetPos.y,
-        layoutWidth: DEFAULT_TABLE_WIDTH,
-        layoutHeight: DEFAULT_TABLE_HEIGHT,
+        layoutWidth: defaultWidth,
+        layoutHeight: defaultHeight,
         shape: "SQUARE",
       });
     },
@@ -1774,8 +1775,8 @@ export function TableFloorPlan({
                   style={{
                     left: `${position.x}%`,
                     top: `${position.y}%`,
-                    width: `${width}%`,
-                    height: `${height}%`,
+                    width: `${layoutSizeToPixels(width, FLOOR_CANVAS_WIDTH)}px`,
+                    height: `${layoutSizeToPixels(height, FLOOR_CANVAS_HEIGHT)}px`,
                   }}
                   className="absolute z-10"
                 >
@@ -1993,12 +1994,12 @@ export function TableFloorPlan({
                         shape,
                         layoutWidth:
                           shape === "RECTANGLE"
-                            ? DEFAULT_RECT_TABLE_WIDTH
-                            : DEFAULT_TABLE_WIDTH,
+                            ? pixelsToLayoutSize(DEFAULT_RECT_TABLE_WIDTH_PX, FLOOR_CANVAS_WIDTH)
+                            : pixelsToLayoutSize(DEFAULT_TABLE_WIDTH_PX, FLOOR_CANVAS_WIDTH),
                         layoutHeight:
                           shape === "RECTANGLE"
-                            ? DEFAULT_RECT_TABLE_HEIGHT
-                            : DEFAULT_TABLE_HEIGHT,
+                            ? pixelsToLayoutSize(DEFAULT_RECT_TABLE_HEIGHT_PX, FLOOR_CANVAS_HEIGHT)
+                            : pixelsToLayoutSize(DEFAULT_TABLE_HEIGHT_PX, FLOOR_CANVAS_HEIGHT),
                       });
                     }}
                   >
@@ -2010,30 +2011,30 @@ export function TableFloorPlan({
                   </Select>
                 </Field>
                 <div className="grid grid-cols-2 gap-2">
-                  <Field label="Ancho %">
+                  <Field label="Ancho (px)">
                     <Input
                       type="number"
-                      min={6}
-                      max={40}
-                      value={draft.layoutWidth}
+                      min={108}
+                      max={720}
+                      value={Math.round(layoutSizeToPixels(draft.layoutWidth, FLOOR_CANVAS_WIDTH))}
                       onChange={(event) =>
                         setDraft({
                           ...draft,
-                          layoutWidth: Number(event.target.value),
+                          layoutWidth: pixelsToLayoutSize(Number(event.target.value), FLOOR_CANVAS_WIDTH),
                         })
                       }
                     />
                   </Field>
-                  <Field label="Alto %">
+                  <Field label="Alto (px)">
                     <Input
                       type="number"
-                      min={7}
-                      max={40}
-                      value={draft.layoutHeight}
+                      min={84}
+                      max={480}
+                      value={Math.round(layoutSizeToPixels(draft.layoutHeight, FLOOR_CANVAS_HEIGHT))}
                       onChange={(event) =>
                         setDraft({
                           ...draft,
-                          layoutHeight: Number(event.target.value),
+                          layoutHeight: pixelsToLayoutSize(Number(event.target.value), FLOOR_CANVAS_HEIGHT),
                         })
                       }
                     />

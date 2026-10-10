@@ -166,6 +166,32 @@ export const DEFAULT_TABLE_HEIGHT = 7;
 export const DEFAULT_RECT_TABLE_WIDTH = 10;
 export const DEFAULT_RECT_TABLE_HEIGHT = 7;
 
+/** Table dimensions are edited in fixed canvas pixels; positions stay normalized. */
+export const DEFAULT_TABLE_WIDTH_PX = 126;
+export const DEFAULT_TABLE_HEIGHT_PX = 126;
+export const DEFAULT_RECT_TABLE_WIDTH_PX = 180;
+export const DEFAULT_RECT_TABLE_HEIGHT_PX = 126;
+
+export function layoutSizeToPixels(value: number, canvasDimension: number) {
+  return (value * canvasDimension) / 100;
+}
+
+export function pixelsToLayoutSize(value: number, canvasDimension: number) {
+  return (value / canvasDimension) * 100;
+}
+
+/** Pan update that keeps a canvas point directly beneath the pointer as zoom changes. */
+export function zoomPanToPoint(
+  pan: { x: number; y: number },
+  pointer: { x: number; y: number },
+  zoomRatio: number,
+): { x: number; y: number } {
+  return {
+    x: pointer.x - (pointer.x - pan.x) * zoomRatio,
+    y: pointer.y - (pointer.y - pan.y) * zoomRatio,
+  };
+}
+
 /** Check if two normalized rectangles overlap, with an optional safety margin. */
 export function rectsOverlap(
   a: NormalizedRect,

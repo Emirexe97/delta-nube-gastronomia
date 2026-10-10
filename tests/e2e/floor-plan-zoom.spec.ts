@@ -142,3 +142,55 @@ test("permite hacer zoom y alejar con controles y con la rueda del mouse en el p
   ).toHaveText("100%");
   await expect(canvas).toHaveCSS("transform", /matrix\(1,\s*0,\s*0,\s*1/);
 });
+
+test("mantiene el punto bajo el cursor al hacer zoom con la rueda", async () => {
+  await page.getByRole("link", { name: "Salón" }).click();
+  await page.getByRole("tab", { name: "Plano por sectores" }).click();
+
+  const viewport = page.getByRole("region", { name: "Editor del plano" });
+  const canvas = page.locator("[data-floor-canvas]");
+  await page.getByRole("button", { name: "Ajustar al área" }).click();
+
+  const target = page.getByRole("button", { name: /Abrir mesa 3\b/ });
+  await expect(target).toBeVisible();
+  const targetBounds = await target.boundingBox();
+  const viewportBounds = await viewport.boundingBox();
+  expect(targetBounds).not.toBeNull();
+  expect(viewportBounds).not.toBeNull();
+  if (!targetBounds || !viewportBounds) return;
+
+  const cursor = {
+    x: targetBounds.x + targetBounds.width / 2,
+    y: targetBounds.y + targetBounds.height / 2,
+  };
+  const readAnchor = () =>
+    canvas.evaluate((element, point) => {
+      const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+      const viewport = element.closest('[aria-label="Editor del plano"]');
+      if (!viewport) throw new Error("No se encontró el viewport del plano.");
+      const bounds = viewport.getBoundingClientRect();
+      return {
+        x: (point.x - bounds.left - matrix.e) / matrix.a,
+        y: (point.y - bounds.top - matrix.f) / matrix.d,
+        scaleX: matrix.a,
+        scaleY: matrix.d,
+      };
+    }, cursor);
+
+  const before = await readAnchor();
+  await page.mouse.move(cursor.x, cursor.y);
+  await page.mouse.wheel(0, -120);
+  await expect(
+    page.getByRole("button", { name: "Restablecer zoom" }),
+  ).not.toHaveText("100%");
+  const after = await readAnchor();
+
+  expect(
+    Math.abs(after.x - before.x) * after.scaleX,
+    JSON.stringify({ before, after, cursor }),
+  ).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(after.y - before.y) * after.scaleY,
+    JSON.stringify({ before, after, cursor }),
+  ).toBeLessThanOrEqual(1);
+});

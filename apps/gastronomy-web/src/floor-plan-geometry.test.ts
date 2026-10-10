@@ -3,10 +3,13 @@ import {
   clampNormalizedRect,
   findAvailableTablePosition,
   globalPointsToLocalGeometry,
+  layoutSizeToPixels,
   moveLocalNode,
+  pixelsToLayoutSize,
   rectsOverlap,
   resizeNormalizedRect,
   svgPoints,
+  zoomPanToPoint,
 } from "./floor-plan-geometry";
 
 describe("clampNormalizedRect", () => {
@@ -30,6 +33,32 @@ describe("clampNormalizedRect", () => {
       width: 8,
       height: 9,
     });
+  });
+});
+
+describe("fixed table size units", () => {
+  it("converts dimensions between normalized persistence and canvas pixels", () => {
+    expect(layoutSizeToPixels(10, 1800)).toBe(180);
+    expect(layoutSizeToPixels(10, 1200)).toBe(120);
+    expect(pixelsToLayoutSize(180, 1800)).toBe(10);
+    expect(pixelsToLayoutSize(120, 1200)).toBe(10);
+  });
+});
+
+describe("zoomPanToPoint", () => {
+  it("keeps the same canvas point under the cursor after zooming", () => {
+    const oldPan = { x: 120, y: 210 };
+    const cursor = { x: 460, y: 390 };
+    const oldZoom = 0.43;
+    const newZoom = 0.52;
+    const nextPan = zoomPanToPoint(oldPan, cursor, newZoom / oldZoom);
+
+    expect((cursor.x - oldPan.x) / oldZoom).toBeCloseTo(
+      (cursor.x - nextPan.x) / newZoom,
+    );
+    expect((cursor.y - oldPan.y) / oldZoom).toBeCloseTo(
+      (cursor.y - nextPan.y) / newZoom,
+    );
   });
 });
 
