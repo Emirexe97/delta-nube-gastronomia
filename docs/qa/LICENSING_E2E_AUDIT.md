@@ -1,6 +1,6 @@
 # Licenciamiento manual: auditoría focal — 2026-10-13
 
-**MVP y pruebas focales aprobados; DNS/HTTPS, piloto público positivo y respaldo externo cifrado con simulacro de recuperación aprobados el 2026-10-13.** Siguen pendientes requisitos de distribución/custodia independiente. No se ejecutó la integral canónica338 ni se generó un instalador comercial con estos cambios.
+**MVP y pruebas focales aprobados; DNS/HTTPS, piloto público positivo y respaldo externo cifrado con simulacro de recuperación aprobados el 2026-10-13. Fuente0.1.22 publicada y DMG licenciados de prueba completados.** Siguen pendientes requisitos comerciales/custodia independiente. No se ejecutó la integral canónica338 ni se validó un instalador comercial en Mac física.
 
 ## Evidencia y alcance
 
@@ -62,3 +62,9 @@ Backup `C:\Users\Emir\AppData\Local\DeltaNube\LicensingBackups\authority-2026101
 Autorización independiente del usuario permitió declarar únicamente red del proxy en el compose actual POS, con comparación profunda sin resolver envfiles. Recibo/backup `/home/deploy/gastronomy-licensing/operations/edge-network-20261013T232712Z/`. No se recreó producción para simular una actualización; su próximo despliegue debe conservar esta declaración en fuente. Monitoreo, segunda copia/custodia portátil, carga detrás del proxy y soporte de cambio de equipo pendientes. DPAPI liga recuperación al perfilWindows; no equivale a recuperar tras perder la PC. Rate-limit detrás del proxy compartido. Procedimiento/rollback en `docs/LICENSING.md`.
 
 Sin prueba física Mac ni impresión real; los DMG0.1.21 CI son anteriores al MVP. UI no deshabilita todos los controles de edición: el rechazo efectivo ocurre en main. No cobro automático, suspensión/transferencia/panel admin ni protección absoluta frente al dueño del equipo. Las pruebas focales no sustituyen una validación integral ni habilitan venta.
+
+## Publicación0.1.22 y evidencia Mac posterior
+
+Autorización explícita commit/push/versión0.1.22. Repetidos tipo/build9/9, shell37/37 (incluye tres pruebas nuevas de guard ASAR correcto/ausente/sustituido), protocolo5/5, servicio6/6, web286/286 y backupPS5grupos; E2Elicencia final4/4 en48,7s (dev3+packaged1, no aumenta inventario13 por repetición). Auditoría sólo lectura de archivos/configuración no encontró bloqueadores ni secretos incluidos. Árbol de fuente publicado enmain, commits42f1df7/c43cbcf/5498656.
+
+Mac CIrun38486157882 desde5498656854bf3937436315b9f7dbfa086c07a1e6 success arm64+x64. Verificación de DMG/arquitecturaSQLite y **ASAR real con configuración pública/handlers de licencia** success en ambos. Artefactos descargados ignorados, hashes `docs/MACOS_BUILD.md`. Estos DMG0.1.22 **sí incluyen** licencias y requieren código de activación. No nueva NSISWindows ni firma/notarización/smoke físico Mac; no atribuir esa validación a CI.

@@ -84,4 +84,19 @@ El usuario autorizó commit/push y versión0.1.22 para producir los nuevos DMG I
 
 Antes de subir artefactos, el workflow verifica también el `Contents/Resources/app.asar` real: `licensing-config.json` debe coincidir con el aprobado, usar HTTPS y clave pública Ed25519, y main/preload deben incluir estado/activación/verificación. Helper `apps/desktop-shell/scripts/verify-macos-license.mjs`; tres tests de archivo cubren configuración correcta, ausente y endpoint sustituido. Esto no demuestra ejecución física en Mac, pero evita aprobar un paquete sin configuración de licencia.
 
-Validación previa de fuente0.1.22: typecheck/build9/9, shell37/37, protocolo5/5, autoridad6/6, web286/286, backupPS5grupos y E2Elicencia4/4 (48,7s), incluido Electron verdaderamente empaquetado Windows. Piloto público y recuperación de autoridad ya aprobados; no se repiten en cada build porque el piloto crea un registro técnico real. Estado del nuevo CI y hashes se registrarán tras completar el run.
+Validación previa de fuente0.1.22: typecheck/build9/9, shell37/37, protocolo5/5, autoridad6/6, web286/286, backupPS5grupos y E2Elicencia4/4 (48,7s), incluido Electron verdaderamente empaquetado Windows. Piloto público y recuperación de autoridad ya aprobados; no se repiten en cada build porque el piloto crea un registro técnico real.
+
+### DMG licenciados 0.1.22: completados y descargados
+
+[Run38486157882](https://github.com/Emirexe97/delta-nube-gastronomia/actions/runs/38486157882) **success** en ambos jobs desde commit `5498656854bf3937436315b9f7dbfa086c07a1e6`. Pasos **Verify DMG and SQLite architecture** y **Verify packaged licensing configuration** success para ambas arquitecturas. Publicación de fuente en main: feature42f1df7, preparación c43cbcf y handoff5498656. Cualquier commit posterior sólo de evidencia no cambia el snapshot compilado.
+
+Descargados en `apps/desktop-shell/release/mac-build/run-38486157882/` (ignorado, no binaries en Git):
+
+| Archivo                                         |     Bytes | SHA256                                                             |
+| ----------------------------------------------- | --------: | ------------------------------------------------------------------ |
+| `arm64/Delta-Nube-Gastronomia-0.1.22-arm64.dmg` | 115931881 | `D193ECA97ADFE6E73C23E701A572D8C780EA7E9692341EA342EBC544C8473224` |
+| `x64/Delta-Nube-Gastronomia-0.1.22-x64.dmg`     | 137831782 | `0879D0C5AFA8953966B1AAA0B603698BDE908AF37ACB3D25AE6A03FA69C7ADF3` |
+
+**Sí incluyen licenciamiento**, URL pública y clave pública de autoridad; no incluyen claves privadas ni administración. Al instalar requieren código de activación para operar. Los permisos offline abonados y la recuperación al vencer funcionan según `docs/LICENSING.md`; no instalar sobre un negocio operativo sin preparar previamente su licencia, respaldo y prueba de actualización.
+
+Mantienen modalidad unsigned interna. La compilación/ASAR no reemplaza smoke físico Mac, impresión, firma/notarización ni validación de actualización de un negocio. No se generó un nuevo instalador Windows NSIS en esta solicitud.

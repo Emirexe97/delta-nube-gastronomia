@@ -1,6 +1,6 @@
 # Licencias manuales: operación y límites del MVP
 
-Implementado el permiso firmado y su control en Electron, con autoridad separada en el VPS. **DNS/HTTPS, piloto público positivo y respaldo cifrado fuera del VPS con simulacro de recuperación aprobados el 2026-10-13. Todavía no habilitado para venta:** faltan custodia portátil/segunda copia, monitoreo y validación del instalador comercial. Los DMG de prueba 0.1.21 generados antes del MVP no incluyen el licenciamiento.
+Implementado el permiso firmado y su control en Electron, con autoridad separada en el VPS. **DNS/HTTPS, piloto público positivo y respaldo cifrado fuera del VPS con simulacro de recuperación aprobados el 2026-10-13. Fuente0.1.22 publicada y DMG de prueba Intel/Apple Silicon con licencias compilados/descargados. Todavía no habilitado para venta:** faltan custodia portátil/segunda copia, monitoreo y validación física/firma del instalador comercial. Los DMG0.1.21 anteriores no incluyen licenciamiento; evidencia y hashes0.1.22 en `docs/MACOS_BUILD.md`.
 
 ## Regla de acceso acordada
 
@@ -123,7 +123,8 @@ Procedimiento para una futura restauración en vivo (no ejecutado; requiere apro
 - [x] Piloto positivo de activación/renovación pública y red del proxy declarada en despliegue actual.
 - [x] Primer respaldo cifrado fuera del VPS y recuperación ensayada en aislamiento.
 - [ ] Segunda copia/custodia portátil independiente y monitoreo definidos; conservar declaración de red al actualizar fuente POS.
-- [ ] Nueva versión/instalador con esta implementación, actualización compatible y prueba en equipo limpio.
+- [x] Fuente0.1.22 publicada y DMG de prueba con esta implementación para Intel/Apple Silicon; guard de configuración ASAR y SQLite/DMG aprobados.
+- [ ] Actualización compatible y prueba en equipo Mac limpio/negocio, con código de activación preparado antes de actualizar; no se ha generado Windows NSIS0.1.22.
 - [ ] En Mac: smoke físico, persistencia, impresión, firma Developer ID y notarización para distribución confiable.
 - [ ] Flujo de soporte para reinstalación/cambio de equipo y condiciones comerciales aprobadas.
 
