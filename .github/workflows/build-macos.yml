@@ -74,6 +74,15 @@ jobs:
           file "$addon"
           file "$addon" | grep -q "${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}"
 
+      # Check the actual ASAR, not just the source configuration: missing config
+      # would make a packaged installation fail closed before activation.
+      - name: Verify packaged licensing configuration
+        run: |
+          archive=$(find apps/desktop-shell/release -path '*/Contents/Resources/app.asar' -print -quit)
+          test -n "$archive"
+          archive=$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")
+          pnpm --filter @gastronomy/desktop-shell exec node scripts/verify-macos-license.mjs "$archive"
+
       - name: Upload DMG artifacts
         uses: actions/upload-artifact@v4
         with:

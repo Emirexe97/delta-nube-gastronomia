@@ -64,3 +64,24 @@ Firma/notarización son requisitos de distribución confiable; un `.dmg` sin fir
 ## Límites de Windows
 
 Windows puede editar la configuración y ejecutar los chequeos comunes, pero **no es el entorno de validación final de macOS**. Electron Builder puede permitir ciertos cruces para macOS, pero Xcode, firma/notarización, compatibilidad de addons nativos, Gatekeeper y la impresión no quedan demostrados por compilar desde Windows. El `.exe` NSIS existente tampoco se convierte en instalador Mac. Para release, ejecutar el comando en macOS y probar el artefacto en macOS; una VM/CI puede ayudar con build automatizado, pero no reemplaza la prueba de impresión con dispositivos reales.
+
+## DMG de prueba actual — 2026-10-13
+
+[GitHub Actions run38450802008](https://github.com/Emirexe97/delta-nube-gastronomia/actions/runs/38450802008): jobs arm64 y x64 exitosos, versión **0.1.21**, commit `eec8a92294151fb86f9ae2966cd65d8aaed1d7af`. Incluye mejoras publicadas de cierre/impresión, cliente y plano; **no incluye el MVP de licencias implementado posteriormente en el árbol local**. Son artefactos sin firma para prueba interna, no un release comercial.
+
+Descargados en `apps/desktop-shell/release/mac-build/run-38450802008/` (ignorado):
+
+| Archivo                                         |     Bytes | SHA256                                                             |
+| ----------------------------------------------- | --------: | ------------------------------------------------------------------ |
+| `arm64/Delta-Nube-Gastronomia-0.1.21-arm64.dmg` | 115885719 | `5C2DED683C591E30E712F5D221AB133CE225B468B29E43EA0904F073F876CD38` |
+| `x64/Delta-Nube-Gastronomia-0.1.21-x64.dmg`     | 137810084 | `A450E8939F5F310BF344596908E144C1834A92505FDF49F93942432642CF9007` |
+
+CI valida imagen DMG y arquitectura de SQLite. Sigue pendiente ejecución en Mac física, impresión, actualización sin pérdida de datos, firma y notarización. No equiparar éxito de build con aprobación funcional de Mac.
+
+## Preparación 0.1.22 con licencias — 2026-10-13
+
+El usuario autorizó commit/push y versión0.1.22 para producir los nuevos DMG Intel/Apple Silicon. Esta versión incorpora el MVP manual, URL HTTPS pública y **sólo** la clave pública de verificación. No reemplaza las condiciones comerciales ni añade cobro automático.
+
+Antes de subir artefactos, el workflow verifica también el `Contents/Resources/app.asar` real: `licensing-config.json` debe coincidir con el aprobado, usar HTTPS y clave pública Ed25519, y main/preload deben incluir estado/activación/verificación. Helper `apps/desktop-shell/scripts/verify-macos-license.mjs`; tres tests de archivo cubren configuración correcta, ausente y endpoint sustituido. Esto no demuestra ejecución física en Mac, pero evita aprobar un paquete sin configuración de licencia.
+
+Validación previa de fuente0.1.22: typecheck/build9/9, shell37/37, protocolo5/5, autoridad6/6, web286/286, backupPS5grupos y E2Elicencia4/4 (48,7s), incluido Electron verdaderamente empaquetado Windows. Piloto público y recuperación de autoridad ya aprobados; no se repiten en cada build porque el piloto crea un registro técnico real. Estado del nuevo CI y hashes se registrarán tras completar el run.
