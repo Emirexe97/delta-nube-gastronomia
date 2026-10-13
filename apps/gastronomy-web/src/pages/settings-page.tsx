@@ -24,6 +24,7 @@ import {
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { humanError } from "../lib";
+import { LicensePanel } from "../components/license-panel";
 
 export function SettingsPage({ data }: { data: BootstrapDto }) {
   const [settings, setSettings] = useState<AppSettingsDto>(data.settings);
@@ -82,6 +83,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
               ["settings-printing", "Impresión"],
               ["settings-print-texts", "Textos"],
               ["settings-backup", "Copias de seguridad"],
+              ["settings-license", "Licencia"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -363,6 +365,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
         onMessage={setMessage}
       />
       <PrintTextSettingsCard settings={settings} onChange={setSettings} />
+      <LicensePanel />
       <Card id="settings-backup" className="scroll-mt-20 p-4">
         <SectionTitle
           icon={Database}

@@ -1,0 +1,10 @@
+# Optional merge fragment for the authorized existing POS edge deployment.
+# Does not replace its existing default/deltanube_edge network declarations.
+services:
+  caddy:
+    networks:
+      gastronomy_licensing_private: {}
+networks:
+  gastronomy_licensing_private:
+    external: true
+    name: gastronomy_licensing_private

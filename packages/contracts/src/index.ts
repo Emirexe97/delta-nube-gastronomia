@@ -3,6 +3,28 @@ export type IsoDateTime = string;
 export type BusinessDate = string;
 export type MoneyMinor = number;
 
+export type LicenseState =
+  | "DEVELOPMENT"
+  | "NOT_CONFIGURED"
+  | "UNACTIVATED"
+  | "ACTIVE"
+  | "GRACE"
+  | "EXPIRED"
+  | "SUSPENDED"
+  | "INVALID"
+  | "CLOCK_ROLLBACK";
+export interface LicenseStatusDto {
+  state: LicenseState;
+  canOperate: boolean;
+  installationId: string;
+  businessName: string | null;
+  paidThrough: IsoDateTime | null;
+  graceUntil: IsoDateTime | null;
+  lastVerifiedAt: IsoDateTime | null;
+  verificationOverdue: boolean;
+  message: string;
+}
+
 export const AUDIT_FILTER_ACTIONS = [
   "CASH_OPENED",
   "CASH_INCOME",
@@ -1189,6 +1211,9 @@ export interface SettleDeliveryInput extends IdempotentRequest {
 }
 
 export interface DesktopApi {
+  getLicenseStatus(): Promise<LicenseStatusDto>;
+  activateLicense(input: { code: string }): Promise<LicenseStatusDto>;
+  refreshLicense(): Promise<LicenseStatusDto>;
   bootstrap(): Promise<BootstrapDto>;
   getOrder(input: { orderId: Id }): Promise<OrderDto>;
   ensureTable(input: { number: number }): Promise<RestaurantTableDto>;
@@ -1347,7 +1372,9 @@ export interface DesktopApi {
   correctPurchaseMetadata(
     input: CorrectPurchaseMetadataInput,
   ): Promise<PurchaseDto>;
-  correctPurchaseItemQuantity(input: CorrectPurchaseItemQuantityInput): Promise<PurchaseDto>;
+  correctPurchaseItemQuantity(
+    input: CorrectPurchaseItemQuantityInput,
+  ): Promise<PurchaseDto>;
   correctPurchaseItemCost(
     input: CorrectPurchaseItemCostInput,
   ): Promise<PurchaseDto>;

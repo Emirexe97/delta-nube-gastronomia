@@ -18,12 +18,16 @@ import { scheduledOrderBadge } from "./scheduled-order-ticket.cjs";
 import { createValidatedBackup } from "./safe-backup.cjs";
 import { restoreValidatedCopy } from "./safe-restore.cjs";
 import { isBackgroundTest } from "./e2e-background.cjs";
+import { DesktopLicensing } from "./licensing";
+import { licenseAllowsMethod } from "@gastronomy/licensing";
 
 let mainWindow: BrowserWindow | null = null;
 let repository: SqliteGastronomyRepository | null = null;
 let application: GastronomyApplication | null = null;
 let databasePath = "";
 let backgroundE2e = false;
+let licensing: DesktopLicensing | null = null;
+let licensingTimer: ReturnType<typeof setInterval> | null = null;
 
 function services() {
   if (!application || !repository)
@@ -268,6 +272,10 @@ function registerIpcHandlers() {
   let activeOperations = 0;
   const handleData: typeof ipcMain.handle = (channel, listener) => {
     ipcMain.handle(channel, async (...args) => {
+      const method = String(channel).slice("gastronomy:".length);
+      const status = await licensing!.getStatus();
+      if (!licenseAllowsMethod(method, status.canOperate))
+        throw new Error(status.message);
       if (restoring)
         throw new Error("Hay una restauración en curso. Esperá a que termine.");
       activeOperations += 1;
@@ -288,6 +296,9 @@ function registerIpcHandlers() {
     | "restoreBackup"
     | "listPrinters"
     | "testPrinter"
+    | "getLicenseStatus"
+    | "activateLicense"
+    | "refreshLicense"
   >;
   const completeMethodList = <T extends readonly ForwardedDesktopMethod[]>(
     methods: T &
@@ -383,6 +394,20 @@ function registerIpcHandlers() {
     "getDetailedReport",
     "getAuditLog",
   ] as const);
+  ipcMain.handle("gastronomy:getLicenseStatus", () => licensing!.getStatus());
+  ipcMain.handle(
+    "gastronomy:activateLicense",
+    (_event, input: { code?: unknown }) => {
+      if (
+        typeof input?.code !== "string" ||
+        input.code.length < 1 ||
+        input.code.length > 256
+      )
+        throw new Error("Ingresá un código de licencia válido.");
+      return licensing!.activate(input.code.trim());
+    },
+  );
+  ipcMain.handle("gastronomy:refreshLicense", () => licensing!.refresh());
   for (const method of methods) {
     handleData(`gastronomy:${method}`, async (_event, payload) => {
       const { appService } = services();
@@ -390,7 +415,7 @@ function registerIpcHandlers() {
       const idempotentMethods = [
         "payOrder",
         "markOrderServed",
-    "createOrder",
+        "createOrder",
         "registerCashMovement",
         "refundPayment",
         "closeCashSession",
@@ -402,7 +427,7 @@ function registerIpcHandlers() {
         "createPurchase",
         "correctPurchaseMetadata",
         "correctPurchaseItemQuantity",
-    "correctPurchaseItemCost",
+        "correctPurchaseItemCost",
         "correctFinanceExpense",
         "cancelFinanceExpense",
         "unmarkFinanceExpensePayment",
@@ -669,6 +694,8 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", () => {
+  if (licensingTimer) clearInterval(licensingTimer);
+  licensingTimer = null;
   repository?.close();
   repository = null;
 });
@@ -701,7 +728,27 @@ app
       seedStarterCatalog: !app.isPackaged,
     });
     application = new GastronomyApplication(repository);
+    licensing = new DesktopLicensing({
+      userDataPath: app.getPath("userData"),
+      isPackaged: app.isPackaged,
+      configPath: resolve(__dirname, "../licensing-config.json"),
+    });
+    await licensing.initialize();
     registerIpcHandlers();
+    if (app.isPackaged) {
+      void licensing.refresh();
+      licensingTimer = setInterval(
+        () => {
+          void licensing!
+            .getStatus()
+            .then((status) =>
+              status.verificationOverdue ? licensing!.refresh() : status,
+            )
+            .catch(() => undefined);
+        },
+        60 * 60 * 1000,
+      );
+    }
     await createWindow();
   })
   .catch((error) => {

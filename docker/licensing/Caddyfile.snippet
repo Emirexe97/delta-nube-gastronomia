@@ -1,0 +1,6 @@
+# Isolated route for licensing only. Validate before any edge reload.
+gastronomia.deltanubeweb.com {
+  @admin path /admin /admin/*
+  respond @admin "Not found" 404
+  reverse_proxy gastronomy-license-api:8097
+}

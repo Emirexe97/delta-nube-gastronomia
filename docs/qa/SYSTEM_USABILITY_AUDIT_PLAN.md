@@ -3015,3 +3015,51 @@ Capturas nativas 1100/1366 inspeccionadas: 60 mesas separadas, números/estados 
 Cambios anteriores de cliente/ticket conservados. Servidor demo127.0.0.1:5173 disponible para recargar. **Sin commit, push, cambio de versión ni instalador**.
 
 | 2026-10-13 | Plano por sectores compacto validado (§79) | Compactación voluntaria, capacidad explícita y recuperación parcial. Focal21, web286, tipo/build7/7; visual1100/1366. Sin publicación. |
+
+## 80. Mac de prueba actual y licencia manual aislada (MVP validado; habilitación pública pendiente)
+
+El usuario aprobó primero generar DMG actuales y luego licencia manual: servicio/DB separados en VPS existente; tiempo abonado prevalece sobre conexión, tres días de gracia y, al vencer, consulta/exportación/backups/restauración/renovación. Dominio confirmado **gastronomia.deltanubeweb.com**, sin tilde. Cobro automático después.
+
+Mac CI run38450802008 exitoso x64/arm64 desde commit publicado eec8a92, v0.1.21. DMG descargados y SHA256 documentados en `docs/MACOS_BUILD.md`; sin firma, para prueba interna, sin licenciamiento nuevo. Faltan Mac física, impresión, firma y notarización comercial.
+
+MVP nuevo: paquete común Ed25519 con instalación/revisión/vigencia; autoridad HTTP Node22/SQLite aislada y CLI privado para altas/renovación absoluta idempotente; cliente Electron valida offline, reloj monotónico y gate IPC en main que bloquea escrituras sin permiso válido. Configuración → Licencia y banner claros sin impedir navegación. Al agotarse pago + 3 días permanece recuperación, y restaurar POS no reemplaza estado firmado. Desarrollo/demo conservan DEVELOPMENT. Revisión detectó y corrigió reinicio del ancla monotónica que podía perder segundos tras refresh; nueva regresión de límite exacto incluida.
+
+VPS `/home/deploy/gastronomy-licensing`, compose `gastronomy_licensing`, red privada internal propia, sin puerto publicado, 128 MiB/0,25 CPU. Imagen Node22.23.3 por digest, non-root/read-only/secrets0600. Health200 y listado administrativo vacío; tests11/11 dentro de imagen y POS/staging saludables. Claves creadas sólo en VPS; cliente incluye únicamente pública. **DNS aún NXDOMAIN; Caddy productivo sin modificar**. No se atribuye activación pública a health privado. Backup externo cifrado DB + claves, restauración de autoridad y monitoreo pendientes; criterios de no habilitar venta todavía.
+
+Validación: protocolo5/5, autoridad6/6, shell34/34 (27 previas + 7 licencia), web286/286 en26 archivos, typecheck/build9/9. E2E focal:13 escenarios distintos entre pasadas (9 desktop,3 desarrollo,1 Electron verdaderamente empaquetado Windows con HTTPS confiable y permiso/IPC/SQLite reales). Vencimiento real rechaza ingreso y no muta estado; consulta/export/backup/restauración conservadas, renovación permite ingreso. Sin NSIS ni release del fixture temporal. Fallos iniciales por binario Electron faltante, modal de precio aún abierto y spawn pnpm Windows resueltos sin relajar gate; focal precio1/1 y empaquetado final reforzado1/1 (36,9s). No se repitió integral338. Detalle `docs/qa/LICENSING_E2E_AUDIT.md`; operación y pendientes `docs/LICENSING.md`.
+
+Fuente MVP sin commit/push/cambio de versión ni instalador comercial nuevo. Producción POS no modificada; despliegue privado de licencia autorizado y aislado. Próximo: DNS A hacia145.223.121.144, edge HTTPS controlado/admin404, respaldo externo y piloto con instalador que incluya licencia.
+
+| 2026-10-13 | Mac y MVP de licencias (§80) | DMG0.1.21 previos a licencia listos; gate y renovación probados, VPS privado saludable. Focal13, shell34/web286, tipo/build9/9. DNS/HTTPS, backup de autoridad y distribución pendientes. |
+
+### 80.1. DNS y HTTPS de licencias habilitados (seguimiento 2026-10-13)
+
+Usuario confirmó registro agregado. Resolvers1.1.1.1/8.8.8.8 y VPS confirman A `gastronomia.deltanubeweb.com` →145.223.121.144. Preflight: edge Caddy2.11.3 válido, archivo propiedad deploy, POS/staging302 y contenedores saludables. Respaldo antes del cambio en `/home/deploy/gastronomy-licensing/operations/https-20261013T231109Z/`. Sólo se añadió el bloque del host de licencias y se conectó el edge a su red privada propia; validate/reload sin reiniciar POS ni alterar bases/APIs/secretos.
+
+HTTPS con certificado confiable health200 desde VPS y Windows; GET/admin y /admin/licenses y POST/admin/licenses/test-license/renew404. API pública rechaza activate/verify inválidos401. POS/staging conservan302 y health; autoridad conserva listado vacío. No se crearon licencias ni se afirma activación/renovación positiva pública. Primer candidate por DockerCP fue rechazado por rootFSreadonly sinmutación; transferencia por stdin a/tmp tmpfs permitió validar. Inode de Caddyfile preservado por bind mount individual.
+
+Pendientes restantes: piloto positivo público, respaldo externo cifrado/restauración de autoridad, monitoreo y distribución con instalador licenciado. Conexión runtime del edge persiste reinicio pero requiere reaplicación o configuración declarativa al recrearlo; compose de POS no modificado. Runbook/rollback y QA actualizados. **Sin commit, push, cambio de versión ni nuevo instalador.**
+
+| 2026-10-13 | DNS/HTTPS de licencias (§80.1) | TLS health200, admin404, inválidos401; POS/staging saludables. Sin licencias de prueba en autoridad. Piloto/backup/distribución pendientes. |
+
+### 80.2. Piloto público positivo y recuperación cifrada (2026-10-13)
+
+Nuevo Adelante: piloto público con Electron verdaderamente empaquetado Windows, clave/URL originales, UI real y TLS confiable. Activación en GRACE, instalación distinta401, firma verificable; vencimiento45s bloquea ingreso sin mutar caja, renovación absoluta idempotente20d y UI ACTIVE permiten ingreso. No clientes/pagos POS reales. Autoridad contiene una licencia técnica etiquetada `PILOTO TECNICO — NO CLIENTE`, IDjbgL9sLMbCERSd_GobsftA y una renovación; fixture/perfil temporal eliminados. Recibo `.licensing-local/public-pilot-receipt.json`; comando opt-in crea registro técnico y nunca debe incorporarse a tests normales.
+
+Usuario eligió carpeta privada de esta PC para respaldo externo cifrado. Backup SQLite+claves/admin capturado por SSH a RAM tras pausar sóloapi de licencias bajo lock; trap garantiza reinicio/health. Sin detener POS/staging. Cifrado DPAPI CurrentUser, DACL sólo usuario/SYSTEM, escritura atómica y archivos sin plaintext en Windows: `C:\Users\Emir\AppData\Local\DeltaNube\LicensingBackups\authority-20261013T232615Z.dnbak`,41190bytes,+receiptSHA. Recuperación descifra en RAM y valida en Docker tmpfs aislado/sinred/sinmontajes productivos: integrityok, pareja claves correcta, licencia1/renovación1 recuperadas y API de copia funcional. Resultado `production_changed:false`, clave pública coincide con cliente. No restauración sobre autoridad activa.
+
+Script PowerShell y helpers remotos en `scripts/licensing/`; harness permanente5grupos PASS sinSSH (DPAPI/hashes/tamper, proceso correcto, cap, timeout, nozero). Revisión corrigió encryptedhash antesProtect y aplicación de ACL que pedía privilegioowner/SACL; falloACL antesSSH no afectó VPS. Piloto y simulacro operativos son adicionales a focal13 y no aumentan integral338. Typecheck/build9/9 repetidos, source-checkNode y diff-check.
+
+Usuario autorizó agregar sólo la red del proxy al desplieguePOS para conservar conexión al recrearlo. Modificado únicamente caddy.networks y redexterna en composecentral, comparaciónprofundaJSON sinleer envfiles demuestra cero cambios ajenos; sinrestartPOS. Backup/recibo `operations/edge-network-20261013T232712Z/`, fragmento equivalente `docker/licensing/edge-network.override.yml`. No se ensayó recreación real de producción; futurosdeploysPOS debenconservar declaración en fuente.
+
+Pendientes: custodia portátil/segunda copia y monitoreo (DPAPI no asegura recuperación si se pierde también el perfilWindows), distribución/instalador licenciado y validación física Mac/firma/notarización. Commit/push/versión0.1.22/DMG solicitados como aclaración antes de realizarlos; fuente aúnsinpublicar en esta pasada.
+
+| 2026-10-13 | Piloto y recuperación (§80.2) | UI pública empaquetada y backup/restore aislado aprobados; red proxy declarada sin reiniciar POS. Custodia portátil/monitor/distribución pendientes. |
+
+### 80.3. Publicación autorizada 0.1.22 y DMG licenciados (2026-10-13)
+
+Usuario confirmó publicar con commit/push y preparar0.1.22. Sólo repo `Emirexe97/delta-nube-gastronomia`; no se publica el compose del otro proyecto POS desde este chat. Manifiestos raíz/shell0.1.22, secreto de autoridad fueraGit y cliente sólo clave pública/HTTPS. Auditoría de publicación sólo lectura sin bloqueadores; handoff del skillcommit adaptado a este repo antes de commit.
+
+Checks previos: tipo/build9/9, shell37/37 (tres pruebas ASAR nuevas), protocolo5/5, servicio6/6, web286/286, backupPS5grupos PASS, E2Elicencia4/4 en48,7s (dev3+packaged1; no duplicar inventario13 original). Fuente sin cambios operativos ajenos; no integral338 repetida. CI Mac agrega verificación del ASAR real para detectar configuración faltante o sustituida; no equivalente a smoke físico. HelpersBash conLF fijo para que checkoutWindows no altere ejecuciónVPS.
+
+Publicación y CI/hashes pendientes de confirmar al finalizar esta pasada. DMG sin firma de prueba interna: continuarMac física/impresión/Gatekeeper/firma/notarización, custodia portátil/segunda copia y monitoreo antes de venta.

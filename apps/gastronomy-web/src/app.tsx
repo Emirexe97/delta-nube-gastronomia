@@ -45,6 +45,7 @@ import { AuditPage } from "./pages/audit-page";
 import { resetDemoData } from "./demo/demo-api";
 import { isDemoMode } from "./demo/install-demo";
 import { useEnterNavigation } from "./hooks/use-enter-navigation";
+import { useLicenseStatus } from "./components/license-panel";
 
 const navigation = [
   { to: "/resumen", label: "Resumen", icon: ChartPieSlice, group: "General" },
@@ -74,7 +75,13 @@ const navigation = [
   },
   { to: "/usuarios", label: "Usuarios", icon: UsersThree, group: "Gestión" },
   { to: "/caja", label: "Caja", icon: CashRegister, group: "Control" },
-  { to: "/finanzas", label: "Finanzas", icon: ChartPieSlice, group: "Control", permission: "finance.view" },
+  {
+    to: "/finanzas",
+    label: "Finanzas",
+    icon: ChartPieSlice,
+    group: "Control",
+    permission: "finance.view",
+  },
   {
     to: "/informes",
     label: "Informes",
@@ -93,6 +100,7 @@ const navigation = [
 export function App() {
   useEnterNavigation();
   const bootstrap = useBootstrap();
+  const license = useLicenseStatus();
   const location = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(
@@ -315,6 +323,12 @@ export function App() {
   const current = navigation.find((item) =>
     location.pathname.startsWith(item.to),
   );
+  const licenseNotice =
+    license.data &&
+    license.data.state !== "DEVELOPMENT" &&
+    (license.data.state !== "ACTIVE" || license.data.verificationOverdue)
+      ? license.data
+      : null;
 
   if (bootstrap.isLoading) {
     return (
@@ -496,6 +510,34 @@ export function App() {
             </div>
           </div>
         </header>
+        {licenseNotice ? (
+          <div
+            className={`flex shrink-0 items-center justify-between gap-3 border-b px-5 py-2.5 text-xs ${licenseNotice.canOperate ? "border-amber-200 bg-amber-50 text-amber-950" : "border-rose-200 bg-rose-50 text-rose-950"}`}
+            role="status"
+          >
+            <p className="min-w-0">
+              <strong>
+                {licenseNotice.state === "GRACE"
+                  ? "Período de gracia."
+                  : licenseNotice.state === "EXPIRED"
+                    ? "Licencia vencida."
+                    : "Revisá la licencia."}
+              </strong>{" "}
+              {licenseNotice.verificationOverdue && licenseNotice.canOperate
+                ? "La verificación está demorada. El período abonado se conserva; verificá cuando vuelva la conexión."
+                : licenseNotice.message}
+              {!licenseNotice.canOperate
+                ? " Podés consultar informes, exportar datos, hacer copias, restaurar y renovar. Las nuevas operaciones están deshabilitadas."
+                : ""}
+            </p>
+            <NavLink
+              to="/configuracion#settings-license"
+              className="shrink-0 rounded-lg border border-current/20 bg-white/70 px-3 py-1.5 font-bold hover:bg-white"
+            >
+              Ver licencia
+            </NavLink>
+          </div>
+        ) : null}
         <div
           ref={contentRef}
           className="min-h-0 flex-1 overflow-auto p-4 lg:p-5"
@@ -543,7 +585,18 @@ export function App() {
               element={<UsersPage data={bootstrap.data} />}
             />
             <Route path="/caja" element={<CashPage data={bootstrap.data} />} />
-            <Route path="/finanzas" element={bootstrap.data.currentUser.permissions.includes("finance.view") || bootstrap.data.currentUser.permissions.includes("*") ? <FinancePage data={bootstrap.data} /> : <Navigate to="/resumen" replace />} />
+            <Route
+              path="/finanzas"
+              element={
+                bootstrap.data.currentUser.permissions.includes(
+                  "finance.view",
+                ) || bootstrap.data.currentUser.permissions.includes("*") ? (
+                  <FinancePage data={bootstrap.data} />
+                ) : (
+                  <Navigate to="/resumen" replace />
+                )
+              }
+            />
             <Route
               path="/informes"
               element={<ReportsPage data={bootstrap.data} />}

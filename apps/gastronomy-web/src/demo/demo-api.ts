@@ -6337,5 +6337,14 @@ export function createDemoApi(
       save();
       return output(state.data.dashboard);
     },
+    async getLicenseStatus() {
+      return { state: "DEVELOPMENT" as const, canOperate: true, installationId: "demo-local", businessName: null, paidThrough: null, graceUntil: null, lastVerifiedAt: null, verificationOverdue: false, message: "Modo demostración: no requiere licencia." };
+    },
+    async activateLicense() {
+      return this.getLicenseStatus();
+    },
+    async refreshLicense() {
+      return this.getLicenseStatus();
+    },
   };
 }

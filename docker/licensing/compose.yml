@@ -1,0 +1,33 @@
+name: gastronomy_licensing
+services:
+  api:
+    image: gastronomy-licensing:manual-v1
+    build:
+      context: ../..
+      dockerfile: docker/licensing/Dockerfile.runtime
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DB_PATH: /data/licenses.sqlite
+      ADMIN_TOKEN_FILE: /run/credentials/admin-token
+      LEASE_PRIVATE_KEY_FILE: /run/credentials/private-key.pem
+      PORT: "8097"
+    volumes:
+      - ../../licensing-data:/data
+      - ../../licensing-secrets:/run/credentials:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.25
+    stop_grace_period: 15s
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    networks:
+      private:
+        aliases: [gastronomy-license-api]
+networks:
+  private:
+    name: gastronomy_licensing_private
+    internal: true

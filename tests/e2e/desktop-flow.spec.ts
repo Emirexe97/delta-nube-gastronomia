@@ -447,6 +447,7 @@ test("edita precios de producto con autorización e historial", async () => {
   await bulkDialog
     .getByRole("button", { name: "Aplicar a seleccionados" })
     .click();
+  await expect(bulkDialog).toBeHidden();
   await expect(
     page.getByRole("row").filter({ hasText: "Muzzarella E2E" }),
   ).toContainText("$ 16.500");

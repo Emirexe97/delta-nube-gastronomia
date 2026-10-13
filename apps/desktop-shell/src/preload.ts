@@ -5,6 +5,9 @@ const invoke = <T>(method: keyof DesktopApi, payload?: unknown) =>
   ipcRenderer.invoke(`gastronomy:${method}`, payload) as Promise<T>;
 
 const api: DesktopApi = {
+  getLicenseStatus: () => invoke("getLicenseStatus"),
+  activateLicense: (input) => invoke("activateLicense", input),
+  refreshLicense: () => invoke("refreshLicense"),
   bootstrap: () => invoke("bootstrap"),
   getOrder: (input) => invoke("getOrder", input),
   ensureTable: (input) => invoke("ensureTable", input),
@@ -56,7 +59,8 @@ const api: DesktopApi = {
   listPurchases: () => invoke("listPurchases"),
   createPurchase: (input) => invoke("createPurchase", input),
   correctPurchaseMetadata: (input) => invoke("correctPurchaseMetadata", input),
-  correctPurchaseItemQuantity: (input) => invoke("correctPurchaseItemQuantity", input),
+  correctPurchaseItemQuantity: (input) =>
+    invoke("correctPurchaseItemQuantity", input),
   correctPurchaseItemCost: (input) => invoke("correctPurchaseItemCost", input),
   getFinanceReport: (input) => invoke("getFinanceReport", input),
   getFinanceProductCosts: () => invoke("getFinanceProductCosts"),

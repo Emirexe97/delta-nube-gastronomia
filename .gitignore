@@ -22,5 +22,9 @@ docs/qa/evidence/**
 !docs/qa/evidence/README.md
 !docs/qa/evidence/**/regression-summary.json
 *.tsbuildinfo
+licensing-data/
+licensing-secrets/
+.licensing-local/
+*.dnbak
 .env.*
 !.env.example

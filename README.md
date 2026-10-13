@@ -36,6 +36,9 @@ Candidato funcional local:
 - usuarios por rol/capacidad, cambios protegidos y auditoría consultable limitada a eliminaciones y acciones sensibles;
 - informes por rango, producto, categoría, hora, mozo, caja y envíos;
 - backup SQLite consistente y restauración con rollback de emergencia;
+- licencias manuales con permiso firmado, prioridad del período abonado offline,
+  tres días de gracia y modo consulta/recuperación al vencer; activación y
+  verificación desde Configuración → Licencia (operación: `docs/LICENSING.md`);
 - navegación, atajos y búsqueda clasificada por código/prefijo/palabras;
 - carga rápida con búsqueda por nombre, código o ID, espera de 0,1 segundos y lista navegable con flechas, Tab o clic;
 - operaciones masivas transaccionales para categoría, estado y variación de precios por canal;
