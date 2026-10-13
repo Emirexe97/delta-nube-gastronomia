@@ -5,26 +5,44 @@ import {
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { formatMoney } from "../../packages/domain/src/money";
 
-const out = join(
-  process.cwd(),
-  "docs/qa/evidence/system-usability-us04-fix-2026-10-06",
-);
 let app: ElectronApplication;
 let page: Page;
 let profile = "";
 test.beforeEach(async () => {
-  await mkdir(out, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-us04-float-labels-"));
   app = await electron.launch({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
   page = await app.firstWindow();
+  await app.evaluate(({ app, BrowserWindow }) => {
+    (app as any).__capturedPrintHtml = "";
+    (app as any).__capturedPrintCount = 0;
+    const install = (window: any) => {
+      window.webContents.getPrintersAsync = async () => [];
+      window.webContents.print = (
+        _options: unknown,
+        callback?: (success: boolean) => void,
+      ) => {
+        (app as any).__capturedPrintCount += 1;
+        void window.webContents
+          .executeJavaScript("document.documentElement.outerHTML")
+          .then((html: string) => {
+            (app as any).__capturedPrintHtml = html;
+            callback?.(true);
+          });
+      };
+    };
+    for (const window of BrowserWindow.getAllWindows()) install(window);
+    app.on("browser-window-created", (_event: unknown, window: any) =>
+      install(window),
+    );
+  });
   await expect(page.getByText("Delta Nube", { exact: true })).toBeVisible();
   expect(
     resolve(await app.evaluate(({ app }) => app.getPath("userData"))),
@@ -47,7 +65,7 @@ test.afterEach(async () => {
 
 for (const width of [1280, 1100, 1366]) {
   for (const state of ["with-float", "zero-float", "negative-net"] as const) {
-    test(`cash labels ${state} at ${width}px`, async () => {
+    test(`cash labels ${state} at ${width}px`, async ({}, testInfo) => {
       await app.evaluate(
         ({ BrowserWindow }, width) =>
           BrowserWindow.getAllWindows()[0]!.setSize(width, 820),
@@ -91,7 +109,7 @@ for (const width of [1280, 1100, 1366]) {
       await expect(summary).toContainText(formatMoney(gross));
       await expect(summary).toContainText("Incluye el cambio inicial");
       await summary.screenshot({
-        path: join(out, `${state}-${width}-summary.png`),
+        path: testInfo.outputPath(`${state}-${width}-summary.png`),
       });
       expect(
         await summary
@@ -115,7 +133,7 @@ for (const width of [1280, 1100, 1366]) {
         page.getByText("Descontado el cambio a dejar", { exact: true }),
       ).toBeVisible();
       await page.screenshot({
-        path: join(out, `${state}-${width}-cash.png`),
+        path: testInfo.outputPath(`${state}-${width}-cash.png`),
         fullPage: true,
       });
       const after = await page.evaluate(
@@ -130,7 +148,7 @@ for (const width of [1280, 1100, 1366]) {
       expect(after.report).toEqual(fixture.report);
       expect(after.dashboard).toEqual(fixture.dashboard);
       await writeFile(
-        join(out, `${state}-${width}.json`),
+        testInfo.outputPath(`${state}-${width}.json`),
         JSON.stringify(
           { gross, net, unchanged: true, realSqliteAndIpc: true },
           null,
@@ -139,6 +157,26 @@ for (const width of [1280, 1100, 1366]) {
       );
     });
   }
+}
+
+async function openTicketInspector(html: string): Promise<Page> {
+  const inspectorPromise = app.waitForEvent("window");
+  await app.evaluate(({ BrowserWindow }, ticketHtml) => {
+    const inspector = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    void inspector.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(ticketHtml)}`,
+    );
+  }, html);
+  const inspector = await inspectorPromise;
+  await inspector.waitForLoadState("domcontentloaded");
+  return inspector;
 }
 
 test("sin caja abierta no muestra aclaración de fondo ni inventa importes", async () => {
@@ -214,11 +252,7 @@ test("la revisión resta el cambio final elegido, no siempre el inicial", async 
 });
 
 for (const paperWidth of ["58mm", "80mm"] as const) {
-  test(`etiquetas de informe y ticket sin cambio en ${paperWidth}`, async () => {
-    await app.evaluate(({ BrowserWindow }) => {
-      for (const window of BrowserWindow.getAllWindows())
-        window.webContents.getPrintersAsync = async () => [];
-    });
+  test(`etiquetas de informe y ticket sin cambio en ${paperWidth}`, async ({}, testInfo) => {
     const fixture = await page.evaluate(async (paperWidth) => {
       const api = window.gastronomy;
       const data = await api.bootstrap();
@@ -271,7 +305,7 @@ for (const paperWidth of ["58mm", "80mm"] as const) {
       report.getByText("Contado sin cambio", { exact: true }).locator(".."),
     ).toContainText(formatMoney(440_000));
     await report
-      .getByRole("button", { name: "Imprimir informe", exact: true })
+      .getByRole("button", { name: "Personalizar ticket", exact: true })
       .click();
     const print = page.getByRole("dialog", {
       name: "Imprimir informe de caja",
@@ -284,17 +318,16 @@ for (const paperWidth of ["58mm", "80mm"] as const) {
       .getByRole("button", { name: "Imprimir ticket", exact: true })
       .click();
     await expect
-      .poll(
-        () =>
-          app
-            .windows()
-            .filter((window) => window.url().includes("print-preview-controls"))
-            .length,
+      .poll(() =>
+        app.evaluate(({ app }) =>
+          Boolean((app as any).__capturedPrintHtml?.length),
+        ),
       )
-      .toBe(1);
-    const preview = app
-      .windows()
-      .find((window) => window.url().includes("print-preview-controls"))!;
+      .toBe(true);
+    const printedTicket = await app.evaluate(
+      ({ app }) => (app as any).__capturedPrintHtml as string,
+    );
+    const preview = await openTicketInspector(printedTicket);
     for (const [label, amount] of [
       ["Esperado sin cambio", 450_000],
       ["Contado sin cambio", 440_000],
@@ -311,23 +344,43 @@ for (const paperWidth of ["58mm", "80mm"] as const) {
       ).toBe(1);
       expect(
         await row.evaluate((element) => {
-          const row = element.getBoundingClientRect();
+          const bounds = element.getBoundingClientRect();
           return Array.from(element.children).every((child) => {
             const range = document.createRange();
             range.selectNodeContents(child);
             const ink = range.getBoundingClientRect();
-            return ink.left >= row.left - 1 && ink.right <= row.right + 1;
+            return ink.left >= bounds.left - 1 && ink.right <= bounds.right + 1;
           });
         }),
       ).toBe(true);
     }
-    await preview.screenshot({
-      path: join(out, `ticket-${paperWidth}.png`),
-      fullPage: true,
+    const printablePageWidthMm = paperWidth === "58mm" ? 58 : 72;
+    expect(printedTicket).toContain(
+      `@page{size:${printablePageWidthMm}mm auto`,
+    );
+    const typography = await preview.evaluate(() => {
+      const body = getComputedStyle(document.body);
+      const total = document.querySelector(".total, .key-total, .row strong");
+      return {
+        fontFamily: body.fontFamily,
+        bodyWeight: body.fontWeight,
+        totalWeight: total ? getComputedStyle(total).fontWeight : "0",
+        fontSize: parseFloat(body.fontSize),
+      };
     });
+    expect(typography.fontFamily.toLowerCase()).toMatch(/verdana|arial/);
+    expect(Number(typography.bodyWeight)).toBe(400);
+    expect(Number(typography.totalWeight)).toBeGreaterThanOrEqual(700);
+    expect(typography.fontSize).toBeGreaterThanOrEqual(12);
+    expect(
+      app
+        .windows()
+        .filter((window) => window.url().includes("print-preview-controls")),
+    ).toHaveLength(0);
     await preview
-      .getByRole("button", { name: "Cancelar", exact: true })
-      .click();
+      .locator("body")
+      .screenshot({ path: testInfo.outputPath(`ticket-${paperWidth}.png`) });
+    await preview.close();
     expect(
       await page.evaluate(
         (sessionId) =>

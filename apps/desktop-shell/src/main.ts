@@ -5,20 +5,15 @@ import { tmpdir } from "node:os";
 import { GastronomyApplication } from "@gastronomy/application";
 import type {
   AppSettingsDto,
-  CashSessionReportDto,
   CashSessionReportFilters,
   CashSessionReportPrintSections,
-  CashSessionReportWaiterDto,
   DesktopApi,
   OrderDto,
 } from "@gastronomy/contracts";
-import {
-  cashClosingTotals,
-  cashReportBreakdown,
-  formatMoney,
-} from "@gastronomy/domain";
+import { formatMoney } from "@gastronomy/domain";
 import { SqliteGastronomyRepository } from "@gastronomy/database";
 import { printHtml } from "./printer";
+import { cashSessionReportHtml } from "./cash-session-ticket";
 import { scheduledOrderBadge } from "./scheduled-order-ticket.cjs";
 import { createValidatedBackup } from "./safe-backup.cjs";
 import { restoreValidatedCopy } from "./safe-restore.cjs";
@@ -133,162 +128,6 @@ function orderTicketHtml(
       : ""
   }
   ${(isKitchen && template.kitchenFooter) || (!isKitchen && (template.footer || template.nonFiscalLegend)) ? `<footer class="footer">${isKitchen && template.kitchenFooter ? lineBreaks(template.kitchenFooter) : ""}${!isKitchen && template.footer ? `<strong>${lineBreaks(template.footer)}</strong>` : ""}${!isKitchen && template.nonFiscalLegend ? `<br>${lineBreaks(template.nonFiscalLegend)}` : ""}</footer>` : ""}<div aria-hidden="true" style="height:${feedHeightMm}mm"></div></body></html>`;
-}
-
-function cashSessionReportHtml(
-  report: CashSessionReportDto,
-  settings: AppSettingsDto,
-  sections?: CashSessionReportPrintSections,
-) {
-  const session = report.session;
-  const profile = settings.printing.bill;
-  const paperMm = profile.paperWidth === "58mm" ? 58 : 72;
-  const marginMm = profile.paperWidth === "58mm" ? 2 : 1.5;
-  const contentMm = paperMm - marginMm * 2;
-  const fontSizePx = profile.paperWidth === "58mm" ? 12.8 : 14.1;
-  const money = (value: unknown) => escapeHtml(formatMoney(Number(value) || 0));
-  const date = (value: unknown) =>
-    value ? escapeHtml(new Date(String(value)).toLocaleString("es-AR")) : "—";
-  const filterLabels: Record<string, string> = {
-    tableId: "Mesa",
-    waiterUserId: "Mozo",
-    productId: "Producto",
-    categoryName: "Categoría",
-    orderType: "Tipo de pedido",
-    paymentMethodCode: "Medio de pago",
-    operationalStatus: "Estado",
-  };
-  const filterValue = (key: string, value: unknown) => {
-    if (key === "tableId")
-      return report.byTable.find((row) => row.tableId === value)?.name ?? value;
-    if (key === "waiterUserId")
-      return (
-        report.byWaiter.find((row) => row.waiterUserId === value)?.name ?? value
-      );
-    if (key === "productId")
-      return (
-        report.byProduct.find((row) => row.productId === value)?.name ?? value
-      );
-    if (key === "paymentMethodCode")
-      return (
-        report.byPaymentMethod.find((row) => row.code === value)?.name ?? value
-      );
-    if (key === "orderType")
-      return (
-        { DINE_IN: "Salón", TAKEAWAY: "Para retirar", DELIVERY: "Delivery" }[
-          String(value)
-        ] ?? value
-      );
-    if (key === "operationalStatus")
-      return (
-        {
-          OPEN: "Abierto",
-          IN_PREPARATION: "En preparación",
-          READY: "Listo",
-          DELIVERED: "Entregado",
-          CANCELLED: "Cancelado",
-        }[String(value)] ?? value
-      );
-    return value;
-  };
-  const filters = Object.entries(report.filters ?? {})
-    .filter(([key, value]) => key !== "cashSessionId" && value)
-    .map(
-      ([key, value]) =>
-        `<p class="meta-line"><strong>${escapeHtml(filterLabels[key] ?? key)}:</strong> ${escapeHtml(filterValue(key, value))}</p>`,
-    )
-    .join("");
-  const aggregate = (
-    title: string,
-    rows: Array<{ name: string; amountMinor: number; quantity?: number }>,
-  ) =>
-    rows.length
-      ? `<div class="divider"></div><h3 class="section-title">${escapeHtml(title)}</h3>${rows
-          .map(
-            (row) =>
-              `<div class="row"><span>${escapeHtml(row.name)}${
-                row.quantity == null ? "" : ` ×${row.quantity}`
-              }</span><strong>${money(row.amountMinor)}</strong></div>`,
-          )
-          .join("")}`
-      : "";
-
-  const waiterSection = (waiters: CashSessionReportWaiterDto[]) => {
-    if (!waiters.length) return "";
-    return `<div class="divider"></div><h3 class="section-title">Por mozo</h3>${waiters
-      .map((w) => {
-        const tablesHtml = (w.tables ?? [])
-          .map(
-            (t) =>
-              `<div class="row waiter-table-row"><span>${escapeHtml(t.name)}</span><span>${money(t.amountMinor)}</span></div>`,
-          )
-          .join("");
-        return `<div class="waiter-group"><div class="row waiter-name-row"><strong>${escapeHtml(w.name)}</strong></div>${tablesHtml}<div class="row waiter-total-row"><span>Total ${escapeHtml(w.name)}:</span><strong>${money(w.amountMinor)}</strong></div></div>`;
-      })
-      .join("")}`;
-  };
-
-  const typeLabels: Record<string, string> = {
-    DINE_IN: "Salón",
-    TAKEAWAY: "Para retirar",
-    DELIVERY: "Delivery",
-  };
-
-  // Secciones obligatorias que se imprimen SIEMPRE:
-  // 1. Resumen
-  // 2. Arqueo
-  // 3. Por tipo (canales de venta)
-  // 4. Por medio de pago
-  const alwaysSections = `${aggregate(
-    "Por tipo",
-    report.byType.map((row) => ({
-      ...row,
-      name: typeLabels[row.type] ?? row.type,
-    })),
-  )}${aggregate("Por medio de pago", report.byPaymentMethod)}`;
-
-  // Secciones opcionales seleccionables:
-  const includeProduct = sections ? Boolean(sections.byProduct) : true;
-  const includeCategory = sections ? Boolean(sections.byCategory) : true;
-  const includeTable = sections ? Boolean(sections.byTable) : true;
-  const includeWaiter = sections ? Boolean(sections.byWaiter) : true;
-  const includeOrderDetails = sections ? Boolean(sections.orderDetails) : true;
-
-  const optionalSections = report.detailAvailable
-    ? `${includeProduct ? aggregate("Por producto", report.byProduct) : ""}${
-        includeCategory ? aggregate("Por categoría", report.byCategory) : ""
-      }${includeTable ? aggregate("Por mesa", report.byTable) : ""}${
-        includeWaiter ? waiterSection(report.byWaiter) : ""
-      }${
-        includeOrderDetails && report.orders.length
-          ? `<div class="divider"></div><h3 class="section-title">Detalle de pedidos</h3>${report.orders
-              .map(
-                (order) =>
-                  `<div class="row"><span>#${escapeHtml(
-                    order.number,
-                  )} · ${escapeHtml(
-                    order.items[0]?.productNameSnapshot ?? order.type,
-                  )}</span><strong>${money(order.totalMinor)}</strong></div>`,
-              )
-              .join("")}`
-          : ""
-      }`
-    : `<div class="divider"></div><p class="notice">El detalle de este turno ya no está disponible; se muestra el resumen conservado.</p>`;
-
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
-    @page{size:${paperMm}mm auto;margin:${marginMm}mm}*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;font-weight:700;line-height:1.25;overflow-wrap:anywhere;-webkit-font-smoothing:antialiased}h1,h2,h3,p{margin:0}.center{text-align:center}.title{font-size:calc(${fontSizePx}px + 4pt);font-weight:900;line-height:1.1;text-transform:uppercase}.subtitle{font-size:calc(${fontSizePx}px + 1.5pt);font-weight:900;margin:3px 0 1px}.terminal{font-size:calc(${fontSizePx}px - 1pt);font-weight:700;text-transform:uppercase}.divider{border-top:1.5px dashed #000;margin:6px 0}.meta-line{margin:2px 0;font-size:${fontSizePx}px;font-weight:700}.meta-line strong{font-weight:900}.section-title{font-size:calc(${fontSizePx}px + 1pt);font-weight:900;text-transform:uppercase;margin:6px 0 3px;letter-spacing:0.3px}.row{display:flex;justify-content:space-between;gap:8px;margin:3px 0;font-weight:700;line-height:1.2}.row strong{font-weight:900;white-space:nowrap;flex-shrink:0}.total{border-top:2px solid #000;border-bottom:2px solid #000;padding:3px 0;margin:5px 0;font-size:calc(${fontSizePx}px + 3pt);font-weight:900}.notice{border:1.5px solid #000;padding:6px;font-weight:700;margin:4px 0}.printed-footer{font-size:calc(${fontSizePx}px - 1.5pt);font-weight:700;margin-top:6px}.waiter-group{margin:5px 0 6px}.waiter-name-row{font-size:calc(${fontSizePx}px + 0.5pt);margin-bottom:2px}.waiter-table-row{padding-left:8px;font-weight:600}.waiter-total-row{border-top:1px dashed #000;padding-top:2px;margin-top:2px;font-weight:800}
-  </style></head><body><div class="center"><h1 class="title">${escapeHtml(settings.businessName)}</h1><h2 class="subtitle">INFORME DE CAJA #${escapeHtml(session.number)}</h2><p class="terminal">${escapeHtml(settings.printing.terminalLabel)}</p></div><div class="divider"></div>
-  <p class="meta-line"><strong>Día comercial:</strong> ${escapeHtml(session.businessDate)}</p><p class="meta-line"><strong>Apertura:</strong> ${date(session.openedAt)}</p><p class="meta-line"><strong>Cierre:</strong> ${date(session.closedAt)}</p><p class="meta-line"><strong>Responsable:</strong> ${escapeHtml(session.openedByName)}</p>${filters ? `<div class="divider"></div><h3 class="section-title">Filtros</h3>${filters}` : ""}<div class="divider"></div><h3 class="section-title">Resumen</h3><div class="row total"><span>Ventas</span><strong>${money(report.totals.salesMinor)}</strong></div><div class="row"><span>Pedidos</span><strong>${escapeHtml(report.totals.orderCount)}</strong></div><div class="row"><span>Ticket promedio</span><strong>${money(report.totals.averageTicketMinor)}</strong></div><div class="row"><span>Descuentos</span><strong>${money(report.totals.discountsMinor)}</strong></div><div class="row"><span>Devoluciones</span><strong>${money(report.totals.refundsMinor)}</strong></div><div class="divider"></div><h3 class="section-title">Arqueo</h3>${cashReportBreakdown(
-    session,
-    cashClosingTotals(session).closingFloatAmountMinor,
-  )
-    .map(
-      (row) =>
-        `<div class="row"><span>${escapeHtml(row.label)}</span><strong>${money(row.amountMinor)}</strong></div>`,
-    )
-    .join(
-      "",
-    )}<div class="row total"><span>Esperado sin cambio</span><strong>${money(cashClosingTotals(session).expectedAmountMinor)}</strong></div><div class="row"><span>Contado sin cambio</span><strong>${session.countedAmountMinor == null ? "—" : money(cashClosingTotals(session).countedAmountMinor)}</strong></div><div class="row"><span>Cambio final</span><strong>${money(cashClosingTotals(session).closingFloatAmountMinor)}</strong></div><div class="row"><span>Diferencia</span><strong>${money(session.differenceMinor)}</strong></div><p class="notice">Arqueo del turno completo. Los envíos y rendiciones que salen de caja se descuentan una sola vez; las ventas no representan el efectivo disponible.</p>${alwaysSections}${optionalSections}<div class="divider"></div><p class="center printed-footer"><strong>Impreso:</strong> ${escapeHtml(new Date().toLocaleString("es-AR"))}</p><div aria-hidden="true" style="height:${Math.max(0, profile.feedLinesBeforeCut) * 3.5}mm"></div></body></html>`;
 }
 
 async function printOrder(
@@ -612,7 +451,7 @@ function registerIpcHandlers() {
           payload.sections,
         ),
         appService.bootstrap().settings.printing.bill,
-        { parent: mainWindow, forcePreview: true },
+        { parent: mainWindow, skipPreview: true },
       );
       return {
         printed: outcome === "PRINTED",

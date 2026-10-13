@@ -352,7 +352,7 @@ async function openPrintReport() {
     .click();
   const report = page.getByRole("dialog", { name: "Informe de caja" });
   await report
-    .getByRole("button", { name: "Imprimir informe", exact: true })
+    .getByRole("button", { name: "Personalizar ticket", exact: true })
     .click();
   return page.getByRole("dialog", {
     name: "Imprimir informe de caja",
@@ -498,12 +498,15 @@ test("Imprimir informe de caja: controles de secciones y filtros claros; cancela
         selectedOptionsWereResetOnReopen: await (async () => {
           await page
             .getByRole("dialog", { name: "Informe de caja" })
-            .getByRole("button", { name: "Imprimir informe", exact: true })
+            .getByRole("button", { name: "Personalizar ticket", exact: true })
             .click();
           const reopened = page.getByRole("dialog", {
             name: "Imprimir informe de caja",
             exact: true,
           });
+          await expect(
+            reopened.locator("input[type=checkbox]:checked"),
+          ).toHaveCount(0);
           const count = await reopened
             .locator("input[type=checkbox]:checked")
             .count();

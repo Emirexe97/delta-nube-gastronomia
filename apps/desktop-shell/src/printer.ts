@@ -9,6 +9,7 @@ type PrintOptions = {
   getPrinters?: () => Promise<PrinterInfo[]>;
   parent?: BrowserWindow | null;
   forcePreview?: boolean;
+  skipPreview?: boolean;
 };
 
 export type PrintOutcome = "PRINTED" | "SKIPPED";
@@ -199,6 +200,48 @@ async function showPreview(
   }
 }
 
+/** Dispatch a report without the app's preview. `silent: false` opens Electron's
+ * native print dialog; only Electron's documented cancel reason is non-fatal. */
+async function dispatchWithoutPreview(
+  html: string,
+  profile: PrinterProfileDto,
+  deviceName?: string,
+): Promise<PrintOutcome> {
+  const window = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      backgroundThrottling: backgroundE2e() ? false : undefined,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  try {
+    await window.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+    );
+    const height = await contentHeightMicrons(window.webContents);
+    return await new Promise<PrintOutcome>((resolve, reject) => {
+      window.webContents.print(
+        {
+          ...printSettings(profile, height),
+          silent: false,
+          ...(deviceName ? { deviceName } : {}),
+        },
+        (success, reason) => {
+          if (success) resolve("PRINTED");
+          else if (reason === "Print job canceled") resolve("SKIPPED");
+          else reject(new Error(reason || "Falló la impresión."));
+        },
+      );
+    });
+  } catch (error) {
+    throw error instanceof Error ? error : new Error("Falló la impresión.");
+  } finally {
+    if (!window.isDestroyed()) window.destroy();
+  }
+}
+
 export async function printHtml(
   html: string,
   profile: PrinterProfileDto,
@@ -213,8 +256,13 @@ export async function printHtml(
       if (!owner) return [];
       return (await owner.webContents.getPrintersAsync()) as PrinterInfo[];
     });
-  if (options.forcePreview || profile.mode === "SYSTEM_DIALOG") {
+  if (options.forcePreview) {
     return showPreview(html, profile, options.parent);
+  }
+  if (profile.mode === "SYSTEM_DIALOG") {
+    return options.skipPreview
+      ? dispatchWithoutPreview(html, profile)
+      : showPreview(html, profile, options.parent);
   }
   let target: string | null = null;
   try {
@@ -228,12 +276,14 @@ export async function printHtml(
         `No se encontró la impresora configurada: ${profile.deviceName}.`,
       );
     }
-    return showPreview(
-      html,
-      profile,
-      options.parent,
-      "No se encontró una impresora disponible.",
-    );
+    return options.skipPreview
+      ? dispatchWithoutPreview(html, profile)
+      : showPreview(
+          html,
+          profile,
+          options.parent,
+          "No se encontró una impresora disponible.",
+        );
   }
 
   const window = new BrowserWindow({

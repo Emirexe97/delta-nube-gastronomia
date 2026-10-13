@@ -1,4 +1,7 @@
-import { installInteractionDiagnostics, attachInteractionDiagnostics } from "./interaction-diagnostics";
+import {
+  installInteractionDiagnostics,
+  attachInteractionDiagnostics,
+} from "./interaction-diagnostics";
 import {
   test,
   expect,
@@ -22,27 +25,43 @@ async function launch() {
   });
   page = await app.firstWindow();
   await installInteractionDiagnostics(page);
-  await app.evaluate(({ BrowserWindow }) => {
-    for (const window of BrowserWindow.getAllWindows()) {
+  await app.evaluate(({ app, BrowserWindow }) => {
+    (app as any).__capturedPrintHtml = "";
+    (app as any).__capturedPrintCount = 0;
+    const installPrintCapture = (window: any) => {
+      window.webContents.print = (
+        _options: unknown,
+        callback?: (success: boolean) => void,
+      ) => {
+        (app as any).__capturedPrintCount += 1;
+        void window.webContents
+          .executeJavaScript("document.documentElement.outerHTML")
+          .then((html: string) => {
+            (app as any).__capturedPrintHtml = html;
+            callback?.(true);
+          });
+      };
       window.webContents.getPrintersAsync = async () => [];
-    }
+    };
+    for (const window of BrowserWindow.getAllWindows())
+      installPrintCapture(window);
+    app.on("browser-window-created", (_event: unknown, window: any) =>
+      installPrintCapture(window),
+    );
   });
 }
 
-async function previewWindow() {
+async function capturedPrintHtml() {
   await expect
-    .poll(
-      () =>
-        app
-          .windows()
-          .filter((candidate) =>
-            candidate.url().includes("print-preview-controls"),
-          ).length,
+    .poll(() =>
+      app.evaluate(({ app }) =>
+        Boolean((app as any).__capturedPrintHtml?.length),
+      ),
     )
-    .toBe(1);
-  return app
-    .windows()
-    .find((candidate) => candidate.url().includes("print-preview-controls"))!;
+    .toBe(true);
+  return app.evaluate(({ app }) =>
+    ((app as any).__capturedPrintHtml as string).replaceAll("&nbsp;", " "),
+  );
 }
 
 test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ticket", async () => {
@@ -132,28 +151,30 @@ test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ti
     report.getByText("Esperado sin cambio", { exact: true }),
   ).toBeVisible();
   await report.getByRole("button", { name: "Imprimir informe" }).click();
-  const printModal = page.getByRole("dialog", {
-    name: "Imprimir informe de caja",
-  });
+  const directTicket = await capturedPrintHtml();
+  expect(directTicket).toContain("Movimientos de efectivo");
+  expect(directTicket).toContain("Esperado sin cambio");
+  expect(
+    await app.evaluate(({ app }) => (app as any).__capturedPrintCount),
+  ).toBe(1);
+  expect(
+    app
+      .windows()
+      .filter((candidate) =>
+        candidate.url().includes("print-preview-controls"),
+      ),
+  ).toHaveLength(0);
   await expect(
-    printModal.getByText("Gastos y otros egresos en efectivo", {
-      exact: true,
-    }),
-  ).toBeVisible();
-  await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
-  const preview = await previewWindow();
-  await expect(
-    preview.getByText("Gastos y otros egresos en efectivo", {
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(
-    preview.getByText("Esperado sin cambio", { exact: true }),
-  ).toBeVisible();
+    page.getByRole("dialog", { name: "Imprimir informe de caja" }),
+  ).toHaveCount(0);
 });
 
 test.afterEach(async ({}, info) => {
-  try { await attachInteractionDiagnostics(page, app, info, "interaction-state"); } catch (error) { console.warn("Diagnostic capture failed", error); }
+  try {
+    await attachInteractionDiagnostics(page, app, info, "interaction-state");
+  } catch (error) {
+    console.warn("Diagnostic capture failed", error);
+  }
   await app?.evaluate(({ BrowserWindow }) => {
     for (const window of BrowserWindow.getAllWindows()) window.destroy();
   });
@@ -210,9 +231,9 @@ test("previsualiza el informe sin cerrar y lo conserva en el historial al cerrar
     .click();
   const report = page.getByRole("dialog", { name: "Informe de caja" });
   await expect(
-    report.getByRole("button", { name: "Imprimir informe" }),
+    report.getByRole("button", { name: "Personalizar ticket" }),
   ).toBeVisible();
-  await report.getByRole("button", { name: "Imprimir informe" }).click();
+  await report.getByRole("button", { name: "Personalizar ticket" }).click();
 
   const printModal = page.getByRole("dialog", {
     name: "Imprimir informe de caja",
@@ -220,28 +241,23 @@ test("previsualiza el informe sin cerrar y lo conserva en el historial al cerrar
   await expect(printModal).toBeVisible();
   await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
 
-  const preview = await previewWindow();
-  await expect(
-    preview.getByText(`INFORME DE CAJA #${setup.sessionNumber}`),
-  ).toBeVisible();
-  await expect(preview.getByText("Ventas", { exact: true })).toBeVisible();
-  await expect(preview.getByText("Pedidos", { exact: true })).toBeVisible();
-  await expect(preview.getByText(/\$\s*[\d.]+/).first()).toBeVisible();
-
-  const typography = await preview.evaluate(() => {
-    const body = document.body;
-    const style = window.getComputedStyle(body);
-    return {
-      fontFamily: style.fontFamily,
-      fontWeight: style.fontWeight,
-      fontSize: parseFloat(style.fontSize),
-    };
-  });
-  expect(typography.fontFamily.toLowerCase()).toContain("arial");
-  expect(Number(typography.fontWeight)).toBeGreaterThanOrEqual(700);
-  expect(typography.fontSize).toBeGreaterThanOrEqual(12);
-
-  await preview.getByRole("button", { name: "Cancelar" }).click();
+  const printedTicket = await capturedPrintHtml();
+  expect(printedTicket).toContain(`INFORME DE CAJA #${setup.sessionNumber}`);
+  expect(printedTicket).toContain("Resumen");
+  expect(printedTicket).toContain("Pedidos");
+  expect(printedTicket).toMatch(/font-family\s*:\s*[^;]*(Verdana|Arial)/i);
+  expect(printedTicket).toMatch(/body\{[^}]*font-weight:400/i);
+  expect(printedTicket).toMatch(
+    /\.total[^}]*font-weight:9?00|\.row strong[^}]*font-weight:700/i,
+  );
+  expect(printedTicket).toMatch(/font-size\s*:\s*(1[2-9]|[2-9]\d)px/i);
+  expect(
+    app
+      .windows()
+      .filter((candidate) =>
+        candidate.url().includes("print-preview-controls"),
+      ),
+  ).toHaveLength(0);
 
   await expect(report).toBeVisible();
   const state = await page.evaluate(async () => {
@@ -332,14 +348,16 @@ test("permite seleccionar secciones del informe y desglosa mesas por mozo con vi
   await expect(report).toBeVisible();
   await expect(report.locator("span", { hasText: "Mesa 15" })).toBeVisible();
 
-  await report.getByRole("button", { name: "Imprimir informe" }).click();
+  await report.getByRole("button", { name: "Personalizar ticket" }).click();
 
   const printModal = page.getByRole("dialog", {
     name: "Imprimir informe de caja",
   });
   await expect(printModal).toBeVisible();
 
-  await expect(printModal.getByText("Resumen de ventas")).toBeVisible();
+  await expect(
+    printModal.getByText("Resumen de ventas", { exact: true }),
+  ).toBeVisible();
   await expect(printModal.getByText("Arqueo de caja")).toBeVisible();
   await expect(printModal.getByText("Por tipo (canales)")).toBeVisible();
   await expect(
@@ -347,32 +365,42 @@ test("permite seleccionar secciones del informe y desglosa mesas por mozo con vi
   ).toBeVisible();
 
   await expect(printModal.getByRole("checkbox")).toHaveCount(5);
-  await expect(printModal.locator("input[type='checkbox']:checked")).toHaveCount(0);
+  await expect(
+    printModal.locator("input[type='checkbox']:checked"),
+  ).toHaveCount(0);
   await expect(printModal.getByText(/Total Administrador:/)).toHaveCount(0);
 
   await printModal.getByRole("button", { name: "Todas", exact: true }).click();
-  await expect(printModal.locator("input[type='checkbox']:checked")).toHaveCount(5);
-  await printModal.getByRole("button", { name: "Cancelar", exact: true }).click();
-  await report.getByRole("button", { name: "Imprimir informe" }).click();
-  await expect(printModal.locator("input[type='checkbox']:checked")).toHaveCount(0);
+  await expect(
+    printModal.locator("input[type='checkbox']:checked"),
+  ).toHaveCount(5);
+  await printModal
+    .getByRole("button", { name: "Cancelar", exact: true })
+    .click();
+  await report.getByRole("button", { name: "Personalizar ticket" }).click();
+  await expect(
+    printModal.locator("input[type='checkbox']:checked"),
+  ).toHaveCount(0);
 
-  await printModal.locator("label", { hasText: "Por mozo" }).locator("input[type='checkbox']").check();
+  await printModal
+    .locator("label", { hasText: "Por mozo" })
+    .locator("input[type='checkbox']")
+    .check();
 
   await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
 
-  const preview = await previewWindow();
-  await expect(
-    preview.getByText(`INFORME DE CAJA #${setup.sessionNumber}`),
-  ).toBeVisible();
-  await expect(
-    preview.getByRole("heading", { name: "Por mozo" }),
-  ).toBeVisible();
-  await expect(
-    preview.locator("span", { hasText: "Mesa 15" }).first(),
-  ).toBeVisible();
-  await expect(preview.getByText(/Total Administrador:/)).toBeVisible();
-
-  await preview.getByRole("button", { name: "Cancelar" }).click();
+  const printedTicket = await capturedPrintHtml();
+  expect(printedTicket).toContain(`INFORME DE CAJA #${setup.sessionNumber}`);
+  expect(printedTicket).toContain("Por mozo");
+  expect(printedTicket).toContain("Mesa 15");
+  expect(printedTicket).toContain("Total Administrador:");
+  expect(
+    app
+      .windows()
+      .filter((candidate) =>
+        candidate.url().includes("print-preview-controls"),
+      ),
+  ).toHaveLength(0);
 });
 
 test("separa el cambio final del efectivo neto en revisión, historial e informe imprimible", async () => {
@@ -415,16 +443,28 @@ test("separa el cambio final del efectivo neto en revisión, historial e informe
   const confirmation = page.getByRole("dialog", {
     name: "Confirmar cierre definitivo",
   });
-  await expect(confirmation.getByText("Esperado sin cambio", { exact: true }).locator(".."))
-    .toContainText("$ 4.500");
-  await expect(confirmation.getByText("Contado sin cambio", { exact: true }).locator(".."))
-    .toContainText("$ 4.400");
-  await expect(confirmation.getByText("Diferencia de arqueo", { exact: true }).locator(".."))
-    .toContainText(/-\s*\$\s*100/);
-  await expect(confirmation.getByText("Cambio final", { exact: true }).locator(".."))
-    .toContainText("$ 1.500");
-  await expect(confirmation.getByText("$ 6.000", { exact: true })).toHaveCount(0);
-  await expect(confirmation.getByText("$ 5.900", { exact: true })).toHaveCount(0);
+  await expect(
+    confirmation
+      .getByText("Esperado sin cambio", { exact: true })
+      .locator(".."),
+  ).toContainText("$ 4.500");
+  await expect(
+    confirmation.getByText("Contado sin cambio", { exact: true }).locator(".."),
+  ).toContainText("$ 4.400");
+  await expect(
+    confirmation
+      .getByText("Diferencia de arqueo", { exact: true })
+      .locator(".."),
+  ).toContainText(/-\s*\$\s*100/);
+  await expect(
+    confirmation.getByText("Cambio final", { exact: true }).locator(".."),
+  ).toContainText("$ 1.500");
+  await expect(confirmation.getByText("$ 6.000", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(confirmation.getByText("$ 5.900", { exact: true })).toHaveCount(
+    0,
+  );
 
   const beforeClose = await page.evaluate(async (cashSessionId) => {
     const api = (window as any).gastronomy;
@@ -435,7 +475,9 @@ test("separa el cambio final del efectivo neto en revisión, historial e informe
   await confirmation
     .getByRole("button", { name: "Confirmar cierre definitivo" })
     .click();
-  await expect(page.getByRole("dialog", { name: "Informe de caja" })).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: "Informe de caja" }),
+  ).toBeVisible();
 
   const state = await page.evaluate(async (cashSessionId) => {
     const api = (window as any).gastronomy;
@@ -452,8 +494,10 @@ test("separa el cambio final del efectivo neto en revisión, historial e informe
     await expect(report.getByText(value, { exact: true })).toBeVisible();
   }
   await expect(report.getByText(/-\s*\$\s*100/)).toBeVisible();
-  await expect(report.getByText("Contado sin cambio", { exact: true }).locator("..")).toContainText("$ 4.400");
-  await report.getByRole("button", { name: "Imprimir informe" }).click();
+  await expect(
+    report.getByText("Contado sin cambio", { exact: true }).locator(".."),
+  ).toContainText("$ 4.400");
+  await report.getByRole("button", { name: "Personalizar ticket" }).click();
   const printModal = page.getByRole("dialog", {
     name: "Imprimir informe de caja",
   });
@@ -462,16 +506,24 @@ test("separa el cambio final del efectivo neto en revisión, historial e informe
   }
   await expect(printModal.getByText(/-\s*\$\s*100/)).toBeVisible();
   await printModal.getByRole("button", { name: "Imprimir ticket" }).click();
-  const preview = await previewWindow();
+  const printedTicket = await capturedPrintHtml();
   for (const value of ["$ 4.500", "$ 4.400", "$ 1.500"]) {
-    await expect(preview.getByText(value, { exact: true })).toBeVisible();
+    expect(printedTicket).toContain(value);
   }
-  await expect(preview.getByText(/-\s*\$\s*100/)).toBeVisible();
-  await preview.getByRole("button", { name: "Cancelar" }).click();
+  expect(printedTicket).toMatch(/-\s*\$\s*100/);
+  expect(
+    app
+      .windows()
+      .filter((candidate) =>
+        candidate.url().includes("print-preview-controls"),
+      ),
+  ).toHaveLength(0);
   await expect(printModal).toBeHidden();
   await report.getByRole("button", { name: "Cerrar", exact: true }).click();
   await expect(report).toBeHidden();
-  await expect(page.getByText(`#${session.number}`, { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(`#${session.number}`, { exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Ver informe", exact: true }).click();
   const historyReport = page.getByRole("dialog", { name: "Informe de caja" });
   for (const value of ["$ 4.500", "$ 4.400", "$ 1.500"]) {
@@ -479,4 +531,3 @@ test("separa el cambio final del efectivo neto en revisión, historial e informe
   }
   await expect(historyReport.getByText(/-\s*\$\s*100/)).toBeVisible();
 });
-

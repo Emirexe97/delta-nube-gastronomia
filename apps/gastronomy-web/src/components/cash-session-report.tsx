@@ -10,7 +10,7 @@ import type {
 import { Printer, Eye, Funnel, X, Check, Receipt } from "@phosphor-icons/react";
 import { Badge, Button, Card, Field, Modal, Select } from "@gastronomy/ui";
 import { formatMoney, statusLabels, typeLabels } from "../lib";
-import { useApiMutation } from "../api";
+import { useApiMutation, useBootstrap } from "../api";
 
 export function CashSessionHistory({
   onReport,
@@ -65,14 +65,22 @@ export function CashSessionHistory({
                   <td className="font-bold">#{row.session.number}</td>
                   <td>{row.session.businessDate}</td>
                   <td>
-                    {new Date(row.session.openedAt).toLocaleString("es-AR")}
+                    {new Date(row.session.openedAt).toLocaleString("es-AR", {
+                      timeZone: "America/Buenos_Aires",
+                      hourCycle: "h23",
+                    })}
                   </td>
                   <td>
                     {row.session.closedAt
-                      ? new Date(row.session.closedAt).toLocaleString("es-AR")
+                      ? new Date(row.session.closedAt).toLocaleString("es-AR", {
+                          timeZone: "America/Buenos_Aires",
+                          hourCycle: "h23",
+                        })
                       : "—"}
                   </td>
-                  <td className="whitespace-nowrap">{formatMoney(row.session.salesTotalMinor ?? 0)}</td>
+                  <td className="whitespace-nowrap">
+                    {formatMoney(row.session.salesTotalMinor ?? 0)}
+                  </td>
                   <td className="text-right whitespace-nowrap">
                     <Button
                       variant="secondary"
@@ -122,11 +130,13 @@ export function CashSessionReportModal({
   const [filters, setFilters] = useState<FilterState>(empty);
   const [applied, setApplied] = useState<FilterState>(empty);
   const [printMessage, setPrintMessage] = useState<string | null>(null);
+  const [printModalOpen, setPrintModalOpen] = useState(false);
   useEffect(() => {
     setFilters(empty);
     setApplied(empty);
     setPrintMessage(null);
-  }, [sessionId]);
+    setPrintModalOpen(false);
+  }, [sessionId, open]);
   const report = useQuery({
     queryKey: ["cash-session-report", sessionId, applied],
     enabled: open && Boolean(sessionId),
@@ -136,7 +146,6 @@ export function CashSessionReportModal({
         ...Object.fromEntries(Object.entries(applied).filter(([, v]) => v)),
       } as CashSessionReportFilters),
   });
-  const [printModalOpen, setPrintModalOpen] = useState(false);
   const print = useApiMutation(
     (sections?: CashSessionReportPrintSections) =>
       window.gastronomy.printCashSessionReport({
@@ -147,6 +156,7 @@ export function CashSessionReportModal({
         sections,
       }),
     {
+      onMutate: () => setPrintMessage(null),
       onSuccess: (result) => {
         setPrintMessage(
           result.printed
@@ -159,6 +169,12 @@ export function CashSessionReportModal({
     },
   );
   const data = report.data as CashSessionReportDto | undefined;
+  const closingTotals = data ? cashClosingTotals(data.session) : null;
+  const closingReason = data?.detailAvailable
+    ? data.session.movements
+        ?.find((movement) => movement.type === "CLOSING")
+        ?.reason?.trim()
+    : undefined;
   const change = (key: keyof FilterState, value: string) =>
     setFilters((prev) => ({ ...prev, [key]: value }));
   const options = (key: keyof FilterState) =>
@@ -198,6 +214,7 @@ export function CashSessionReportModal({
       width="max-w-6xl"
       title="Informe de caja"
       description="Ventas y movimientos asociados al turno"
+      closeDisabled={print.isPending}
     >
       <div className="grid max-h-[75vh] gap-4 overflow-y-auto">
         {data?.detailAvailable ? (
@@ -282,9 +299,19 @@ export function CashSessionReportModal({
                     Caja #{data.session.number} · {data.session.businessDate}
                   </p>
                   <p className="mt-1 text-xs text-slate-600">
-                    {new Date(data.session.openedAt).toLocaleString("es-AR")} →{" "}
+                    {new Date(data.session.openedAt).toLocaleString("es-AR", {
+                      timeZone: "America/Buenos_Aires",
+                      hourCycle: "h23",
+                    })}{" "}
+                    →{" "}
                     {data.session.closedAt
-                      ? new Date(data.session.closedAt).toLocaleString("es-AR")
+                      ? new Date(data.session.closedAt).toLocaleString(
+                          "es-AR",
+                          {
+                            timeZone: "America/Buenos_Aires",
+                            hourCycle: "h23",
+                          },
+                        )
                       : "turno en curso"}
                   </p>
                   <p className="text-xs text-slate-600">
@@ -315,19 +342,23 @@ export function CashSessionReportModal({
               ))}
             </div>
             <Card className="p-3">
-              <h3 className="text-sm font-bold">
-                Composición del efectivo esperado
-              </h3>
+              <h3 className="text-sm font-bold">Resultado del cierre</h3>
               <p className="mt-1 text-xs text-slate-600">
-                El cambio final queda aparte del esperado y contado.
-                Los pagos a repartidores se descuentan como egresos. Las ventas
-                por medio de pago no representan el efectivo disponible.
+                El cambio final queda aparte del esperado y contado. Los pagos a
+                repartidores se descuentan como egresos. Las ventas por medio de
+                pago no representan el efectivo disponible.
                 {Object.values(applied).some(Boolean)
                   ? " El arqueo corresponde al turno completo, sin aplicar filtros de ventas."
                   : ""}
               </p>
               <div className="mt-3 space-y-1 text-xs">
-                {cashReportBreakdown(data.session, cashClosingTotals(data.session).closingFloatAmountMinor).map((row) => (
+                <p className="font-bold uppercase tracking-wide">
+                  Movimientos de efectivo
+                </p>
+                {cashReportBreakdown(
+                  data.session,
+                  closingTotals!.closingFloatAmountMinor,
+                ).map((row) => (
                   <div key={row.label} className="flex justify-between gap-3">
                     <span>{row.label}</span>
                     <strong>{formatMoney(row.amountMinor)}</strong>
@@ -335,28 +366,55 @@ export function CashSessionReportModal({
                 ))}
                 <div className="flex justify-between gap-3 border-t border-slate-200 pt-2 font-bold">
                   <span>Esperado sin cambio</span>
-                  <span>{formatMoney(cashClosingTotals(data.session).expectedAmountMinor)}</span>
+                  <span>{formatMoney(closingTotals!.expectedAmountMinor)}</span>
                 </div>
-                <div className="flex justify-between gap-3">
-                  <span>Contado sin cambio</span>
-                  <span>
-                    {data.session.countedAmountMinor == null
-                      ? "—"
-                      : formatMoney(cashClosingTotals(data.session).countedAmountMinor!)}
-                  </span>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <span>Cambio final</span>
-                  <span>{formatMoney(cashClosingTotals(data.session).closingFloatAmountMinor)}</span>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <span>Diferencia</span>
-                  <span>
-                    {data.session.differenceMinor == null
-                      ? "—"
-                      : formatMoney(data.session.differenceMinor)}
-                  </span>
-                </div>
+                {data.session.status === "CLOSED" ? (
+                  <>
+                    <div className="flex justify-between gap-3">
+                      <span>Contado sin cambio</span>
+                      <span>
+                        {data.session.countedAmountMinor == null
+                          ? "—"
+                          : formatMoney(closingTotals!.countedAmountMinor!)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span>Cambio final</span>
+                      <span>
+                        {formatMoney(closingTotals!.closingFloatAmountMinor)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span>Diferencia</span>
+                      <span>
+                        {data.session.differenceMinor == null
+                          ? "—"
+                          : formatMoney(data.session.differenceMinor)}
+                      </span>
+                    </div>
+                    {data.session.differenceMinor != null ? (
+                      <p className="text-xs font-semibold">
+                        {data.session.differenceMinor === 0
+                          ? "Cuadra"
+                          : data.session.differenceMinor < 0
+                            ? "Faltante"
+                            : "Sobrante"}
+                      </p>
+                    ) : null}
+                    {closingReason ? (
+                      <p className="text-xs">
+                        <strong>Motivo del cierre:</strong> {closingReason}
+                      </p>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="pt-1 text-xs text-slate-600">
+                    Turno en curso: esperado sin cambio; los movimientos
+                    reflejan el turno actual. El cambio inicial queda excluido;
+                    contado, cambio final y diferencia estarán disponibles al
+                    cerrar.
+                  </p>
+                )}
               </div>
             </Card>
             {data.detailAvailable ? (
@@ -371,7 +429,9 @@ export function CashSessionReportModal({
                         <th>Mozo</th>
                         <th>Tipo</th>
                         <th>Estado</th>
-                        <th className="text-right whitespace-nowrap">Importe</th>
+                        <th className="text-right whitespace-nowrap">
+                          Importe
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -417,7 +477,10 @@ export function CashSessionReportModal({
                                 : (m.paymentMethodCode ?? "—"))}
                           </td>
                           <td>
-                            {new Date(m.createdAt).toLocaleString("es-AR")}
+                            {new Date(m.createdAt).toLocaleString("es-AR", {
+                              timeZone: "America/Buenos_Aires",
+                              hourCycle: "h23",
+                            })}
                           </td>
                           <td className="text-right font-bold">
                             {formatMoney(m.amountMinor)}
@@ -434,20 +497,33 @@ export function CashSessionReportModal({
                 el resumen.
               </p>
             )}
-            <div className="flex justify-end">
-              <Button onClick={() => setPrintModalOpen(true)}>
-                <Printer /> Imprimir informe
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                disabled={print.isPending}
+                onClick={() => print.mutate({ ...mandatoryOnlyPrintSections })}
+              >
+                <Printer />{" "}
+                {print.isPending ? "Enviando a imprimir…" : "Imprimir informe"}
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={print.isPending}
+                onClick={() => setPrintModalOpen(true)}
+              >
+                <Receipt /> Personalizar ticket
               </Button>
             </div>
             {printMessage ? (
-              <p className="text-right text-xs text-slate-600">
+              <p role="status" className="text-right text-xs text-slate-600">
                 {printMessage}
               </p>
             ) : null}
-            {data ? (
+            {printModalOpen ? (
               <PrintCashSessionReportModal
                 open={printModalOpen}
-                onClose={() => setPrintModalOpen(false)}
+                onClose={() => {
+                  if (!print.isPending) setPrintModalOpen(false);
+                }}
                 data={data}
                 appliedFilters={applied}
                 isPrinting={print.isPending}
@@ -492,9 +568,7 @@ function Aggregates({ data }: { data: CashSessionReportDto }) {
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
       {standardGroups.map(([label, values]) => (
         <div key={label} className="rounded-lg border border-slate-100 p-3">
-          <p className="text-xs font-bold uppercase text-slate-600">
-            {label}
-          </p>
+          <p className="text-xs font-bold uppercase text-slate-600">{label}</p>
           {values.length ? (
             values.map((v) => (
               <p key={v} className="mt-1 text-xs">
@@ -507,9 +581,7 @@ function Aggregates({ data }: { data: CashSessionReportDto }) {
         </div>
       ))}
       <div className="rounded-lg border border-slate-100 p-3">
-        <p className="text-xs font-bold uppercase text-slate-600">
-          Por mozo
-        </p>
+        <p className="text-xs font-bold uppercase text-slate-600">Por mozo</p>
         {data.byWaiter.length ? (
           <div className="mt-1 space-y-2">
             {data.byWaiter.map((w) => (
@@ -565,6 +637,16 @@ export function PrintCashSessionReportModal({
   onPrint: (sections: CashSessionReportPrintSections) => void;
   isPrinting: boolean;
 }) {
+  const bootstrap = useBootstrap();
+  const closingTotals = cashClosingTotals(data.session);
+  const closingReason = data.detailAvailable
+    ? data.session.movements
+        ?.find((movement) => movement.type === "CLOSING")
+        ?.reason?.trim()
+    : undefined;
+  const businessName =
+    bootstrap.data?.settings.businessName?.trim() || "Informe de caja";
+  const terminalLabel = bootstrap.data?.settings.printing.terminalLabel?.trim();
   const [sections, setSections] = useState<CashSessionReportPrintSections>(
     () => ({ ...mandatoryOnlyPrintSections }),
   );
@@ -590,7 +672,8 @@ export function PrintCashSessionReportModal({
     setSections({ ...mandatoryOnlyPrintSections });
   };
 
-  const appliedFilterCount = Object.values(appliedFilters).filter(Boolean).length;
+  const appliedFilterCount =
+    Object.values(appliedFilters).filter(Boolean).length;
 
   return (
     <Modal
@@ -599,6 +682,7 @@ export function PrintCashSessionReportModal({
       width="max-w-4xl"
       title="Imprimir informe de caja"
       description="Seleccioná qué secciones incluir y revisá la vista previa del ticket antes de imprimir"
+      closeDisabled={isPrinting}
     >
       <div className="grid gap-6 lg:grid-cols-12 max-h-[75vh] overflow-y-auto pr-1">
         {/* Columna Izquierda: Configuración de secciones */}
@@ -618,7 +702,10 @@ export function PrintCashSessionReportModal({
                   key={name}
                   className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-xs font-medium text-emerald-900"
                 >
-                  <Check className="h-4 w-4 text-emerald-600 shrink-0" weight="bold" />
+                  <Check
+                    className="h-4 w-4 text-emerald-600 shrink-0"
+                    weight="bold"
+                  />
                   <span>{name}</span>
                 </div>
               ))}
@@ -634,6 +721,7 @@ export function PrintCashSessionReportModal({
                 <button
                   type="button"
                   onClick={selectAll}
+                  disabled={!data.detailAvailable || isPrinting}
                   className="text-xs font-semibold text-brand-700 hover:text-brand-700 underline"
                 >
                   Todas
@@ -642,6 +730,7 @@ export function PrintCashSessionReportModal({
                 <button
                   type="button"
                   onClick={selectMandatoryOnly}
+                  disabled={isPrinting}
                   className="text-xs font-semibold text-slate-600 hover:text-slate-700 underline"
                 >
                   Solo obligatorias
@@ -694,6 +783,7 @@ export function PrintCashSessionReportModal({
                     type="checkbox"
                     checked={Boolean(sections[key])}
                     onChange={() => toggle(key)}
+                    disabled={!data.detailAvailable || isPrinting}
                     className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
                   />
                   <div className="flex-1 min-w-0">
@@ -721,24 +811,35 @@ export function PrintCashSessionReportModal({
               Vista previa del ticket
             </span>
             <span className="text-xs text-slate-600">
-              {appliedFilterCount > 0 ? `${appliedFilterCount} filtro(s) activo(s)` : "Sin filtros"}
+              {appliedFilterCount > 0
+                ? `${appliedFilterCount} filtro(s) activo(s)`
+                : "Sin filtros"}
             </span>
           </div>
 
-          <div className="w-full max-w-[340px] rounded-lg border border-slate-300 bg-white p-4 shadow-sm text-black font-mono text-[11px] leading-tight select-none overflow-y-auto max-h-[50vh]">
+          <div className="w-full max-w-[340px] rounded-lg border border-slate-300 bg-white p-4 shadow-sm text-black font-mono text-xs leading-tight select-none overflow-y-auto max-h-[50vh]">
             <div className="text-center font-bold">
-              <p className="text-xs uppercase tracking-wider">DELTA GASTRONOMÍA</p>
-              <p className="text-sm font-black">INFORME DE CAJA #{data.session.number}</p>
-              <p className="text-[10px] font-normal text-slate-600">CAJA PRINCIPAL</p>
+              <p className="text-xs uppercase tracking-wider">{businessName}</p>
+              <p className="text-sm font-black">
+                INFORME DE CAJA #{data.session.number}
+              </p>
+              <p className="text-xs font-normal text-slate-600">
+                {terminalLabel ||
+                  (data.session.status === "OPEN"
+                    ? "TURNO EN CURSO"
+                    : "CIERRE DE CAJA")}
+              </p>
             </div>
             <div className="my-2 border-t border-dashed border-slate-400" />
-            <div className="space-y-0.5 text-[10px]">
+            <div className="space-y-0.5 text-xs">
               <div>
                 <strong>Día comercial:</strong> {data.session.businessDate}
               </div>
               <div>
                 <strong>Apertura:</strong>{" "}
-                {new Date(data.session.openedAt).toLocaleTimeString("es-AR", {
+                {new Date(data.session.openedAt).toLocaleString("es-AR", {
+                  timeZone: "America/Buenos_Aires",
+                  hourCycle: "h23",
                   hour: "2-digit",
                   minute: "2-digit",
                 })}
@@ -746,10 +847,12 @@ export function PrintCashSessionReportModal({
               <div>
                 <strong>Cierre:</strong>{" "}
                 {data.session.closedAt
-                  ? new Date(data.session.closedAt).toLocaleTimeString(
-                      "es-AR",
-                      { hour: "2-digit", minute: "2-digit" },
-                    )
+                  ? new Date(data.session.closedAt).toLocaleString("es-AR", {
+                      timeZone: "America/Buenos_Aires",
+                      hourCycle: "h23",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
                   : "En curso"}
               </div>
               <div>
@@ -758,7 +861,85 @@ export function PrintCashSessionReportModal({
             </div>
 
             <div className="my-2 border-t border-dashed border-slate-400" />
-            <div className="font-bold uppercase text-[10px] tracking-wide mb-1">RESUMEN</div>
+            <div className="font-bold uppercase text-xs tracking-wide mb-1">
+              RESULTADO DEL CIERRE
+            </div>
+            {data.session.status === "CLOSED" ? (
+              <>
+                <div className="space-y-0.5">
+                  <div className="flex justify-between gap-2 font-bold">
+                    <span>Esperado sin cambio</span>
+                    <span className="whitespace-nowrap">
+                      {formatMoney(closingTotals.expectedAmountMinor)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span>Contado sin cambio</span>
+                    <span className="whitespace-nowrap">
+                      {closingTotals.countedAmountMinor != null
+                        ? formatMoney(closingTotals.countedAmountMinor)
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span>Cambio final</span>
+                    <span className="whitespace-nowrap">
+                      {formatMoney(closingTotals.closingFloatAmountMinor)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2 font-bold">
+                    <span>Diferencia</span>
+                    <span className="whitespace-nowrap">
+                      {data.session.differenceMinor != null
+                        ? formatMoney(data.session.differenceMinor)
+                        : "—"}
+                    </span>
+                  </div>
+                </div>
+                {data.session.differenceMinor != null ? (
+                  <p className="text-xs font-bold">
+                    {data.session.differenceMinor === 0
+                      ? "Cuadra"
+                      : data.session.differenceMinor < 0
+                        ? "Faltante"
+                        : "Sobrante"}
+                  </p>
+                ) : null}
+                {closingReason ? (
+                  <p className="text-xs">
+                    <strong>Motivo del cierre:</strong> {closingReason}
+                  </p>
+                ) : null}
+                <p className="mt-1 text-xs">
+                  Esperado y contado excluyen el cambio final que queda en caja.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="flex justify-between gap-2 font-bold">
+                  <span>Esperado sin cambio</span>
+                  <span className="whitespace-nowrap">
+                    {formatMoney(closingTotals.expectedAmountMinor)}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600">
+                  Turno en curso: esperado sin cambio; los movimientos reflejan
+                  el turno actual. El cambio inicial queda excluido; contado,
+                  cambio final y diferencia estarán disponibles al cerrar.
+                </p>
+              </>
+            )}
+
+            {appliedFilterCount > 0 ? (
+              <p className="my-2 border border-black p-2 text-xs">
+                <strong>Ventas filtradas.</strong> El arqueo corresponde al
+                turno completo, sin filtros.
+              </p>
+            ) : null}
+            <div className="my-2 border-t border-dashed border-slate-400" />
+            <div className="font-bold uppercase text-xs tracking-wide mb-1">
+              RESUMEN DE VENTAS
+            </div>
             <div className="space-y-0.5">
               <div className="flex justify-between font-black text-xs border-y border-black py-0.5">
                 <span>Ventas</span>
@@ -783,160 +964,206 @@ export function PrintCashSessionReportModal({
             </div>
 
             <div className="my-2 border-t border-dashed border-slate-400" />
-            <div className="font-bold uppercase text-[10px] tracking-wide mb-1">ARQUEO</div>
-            <div className="space-y-0.5">
-              {cashReportBreakdown(data.session, cashClosingTotals(data.session).closingFloatAmountMinor).map((row) => (
-                <div key={row.label} className="flex justify-between gap-2">
-                  <span>{row.label}</span>
-                  <span>{formatMoney(row.amountMinor)}</span>
-                </div>
-              ))}
-              <div className="flex justify-between font-bold">
-                 <span>Esperado sin cambio</span>
-                <span>{formatMoney(cashClosingTotals(data.session).expectedAmountMinor)}</span>
-              </div>
-              <div className="flex justify-between">
-                 <span>Contado sin cambio</span>
-                <span>
-                  {data.session.countedAmountMinor != null
-                    ? formatMoney(cashClosingTotals(data.session).countedAmountMinor!)
-                    : "—"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Cambio final</span>
-                <span>{formatMoney(cashClosingTotals(data.session).closingFloatAmountMinor)}</span>
-              </div>
-              <div className="flex justify-between font-bold">
-                <span>Diferencia</span>
-                <span>
-                  {data.session.differenceMinor != null
-                    ? formatMoney(data.session.differenceMinor)
-                    : "—"}
-                </span>
-              </div>
+            <div className="font-bold uppercase text-xs tracking-wide mb-1">
+              POR MEDIO DE PAGO
             </div>
-
-            <p className="mt-1 text-[10px] text-slate-600">
-              Los pagos a repartidores ya están incluidos en los egresos.
-            </p>
-
-            <div className="my-2 border-t border-dashed border-slate-400" />
-            <div className="font-bold uppercase text-[10px] tracking-wide mb-1">POR TIPO</div>
-            <div className="space-y-0.5">
-              {data.byType.map((row) => (
-                <div key={row.type} className="flex justify-between">
-                  <span>{typeLabels[row.type] ?? row.type}</span>
-                  <strong>{formatMoney(row.amountMinor)}</strong>
-                </div>
-              ))}
-            </div>
-
-            <div className="my-2 border-t border-dashed border-slate-400" />
-            <div className="font-bold uppercase text-[10px] tracking-wide mb-1">POR MEDIO DE PAGO</div>
             <div className="space-y-0.5">
               {data.byPaymentMethod.map((row) => (
-                <div key={row.code} className="flex justify-between">
+                <div key={row.code} className="flex justify-between gap-2">
                   <span>{row.name}</span>
-                  <strong>{formatMoney(row.amountMinor)}</strong>
+                  <strong className="whitespace-nowrap">
+                    {formatMoney(row.amountMinor)}
+                  </strong>
                 </div>
               ))}
             </div>
 
-            {sections.byProduct && data.byProduct.length > 0 && (
-              <>
-                <div className="my-2 border-t border-dashed border-slate-400" />
-                <div className="font-bold uppercase text-[10px] tracking-wide mb-1">POR PRODUCTO</div>
-                <div className="space-y-0.5">
-                  {data.byProduct.map((row) => (
-                    <div key={row.productId ?? row.name} className="flex justify-between">
-                      <span className="truncate pr-2">{row.name} ×{row.quantity}</span>
-                      <strong>{formatMoney(row.amountMinor)}</strong>
-                    </div>
-                  ))}
+            <div className="my-2 border-t border-dashed border-slate-400" />
+            <div className="font-bold uppercase text-xs tracking-wide mb-1">
+              POR TIPO
+            </div>
+            <div className="space-y-0.5">
+              {data.byType.map((row) => (
+                <div key={row.type} className="flex justify-between gap-2">
+                  <span className="break-words">
+                    {typeLabels[row.type] ?? row.type}
+                  </span>
+                  <strong className="whitespace-nowrap">
+                    {formatMoney(row.amountMinor)}
+                  </strong>
                 </div>
-              </>
-            )}
+              ))}
+            </div>
 
-            {sections.byCategory && data.byCategory.length > 0 && (
-              <>
-                <div className="my-2 border-t border-dashed border-slate-400" />
-                <div className="font-bold uppercase text-[10px] tracking-wide mb-1">POR CATEGORÍA</div>
-                <div className="space-y-0.5">
-                  {data.byCategory.map((row) => (
-                    <div key={row.name} className="flex justify-between">
-                      <span className="truncate pr-2">{row.name} ×{row.quantity}</span>
-                      <strong>{formatMoney(row.amountMinor)}</strong>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+            <>
+              <div className="my-2 border-t border-dashed border-slate-400" />
+              <div className="font-bold uppercase text-xs tracking-wide mb-1">
+                MOVIMIENTOS DE EFECTIVO
+              </div>
+              <div className="space-y-0.5">
+                {cashReportBreakdown(
+                  data.session,
+                  closingTotals.closingFloatAmountMinor,
+                ).map((row) => (
+                  <div key={row.label} className="flex justify-between gap-2">
+                    <span className="break-words">{row.label}</span>
+                    <span className="whitespace-nowrap">
+                      {formatMoney(row.amountMinor)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-1 text-xs text-slate-600">
+                Los pagos a repartidores ya están incluidos en los egresos.
+              </p>
+            </>
 
-            {sections.byTable && data.byTable.length > 0 && (
-              <>
-                <div className="my-2 border-t border-dashed border-slate-400" />
-                <div className="font-bold uppercase text-[10px] tracking-wide mb-1">POR MESA</div>
-                <div className="space-y-0.5">
-                  {data.byTable.map((row) => (
-                    <div key={row.tableId ?? row.name} className="flex justify-between">
-                      <span>{row.name}</span>
-                      <strong>{formatMoney(row.amountMinor)}</strong>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {sections.byWaiter && data.byWaiter.length > 0 && (
-              <>
-                <div className="my-2 border-t border-dashed border-slate-400" />
-                <div className="font-bold uppercase text-[10px] tracking-wide mb-1">POR MOZO</div>
-                <div className="space-y-2">
-                  {data.byWaiter.map((w) => (
-                    <div key={w.waiterUserId ?? w.name} className="border-b border-dotted border-slate-300 pb-1.5 last:border-b-0 last:pb-0">
-                      <div className="font-bold text-slate-900">{w.name}</div>
-                      {w.tables && w.tables.length > 0 ? (
-                        <div className="pl-2 space-y-0.5 text-[10px] text-slate-700">
-                          {w.tables.map((t, i) => (
-                            <div key={i} className="flex justify-between">
-                              <span>{t.name}</span>
-                              <span>{formatMoney(t.amountMinor)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                      <div className="flex justify-between font-bold text-[10px] pt-0.5 mt-0.5 border-t border-dashed border-slate-200">
-                        <span>Total {w.name}:</span>
-                        <span>{formatMoney(w.amountMinor)}</span>
+            {data.detailAvailable &&
+              sections.byProduct &&
+              data.byProduct.length > 0 && (
+                <>
+                  <div className="my-2 border-t border-dashed border-slate-400" />
+                  <div className="font-bold uppercase text-xs tracking-wide mb-1">
+                    POR PRODUCTO
+                  </div>
+                  <div className="space-y-0.5">
+                    {data.byProduct.map((row) => (
+                      <div
+                        key={row.productId ?? row.name}
+                        className="flex justify-between"
+                      >
+                        <span className="break-words pr-2">
+                          {row.name} ×{row.quantity}
+                        </span>
+                        <strong className="whitespace-nowrap">
+                          {formatMoney(row.amountMinor)}
+                        </strong>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+                    ))}
+                  </div>
+                </>
+              )}
 
-            {sections.orderDetails && data.orders.length > 0 && (
-              <>
-                <div className="my-2 border-t border-dashed border-slate-400" />
-                <div className="font-bold uppercase text-[10px] tracking-wide mb-1">DETALLE DE PEDIDOS</div>
-                <div className="space-y-0.5 text-[10px]">
-                  {data.orders.map((o) => (
-                    <div key={o.id} className="flex justify-between">
-                      <span className="truncate pr-2">
-                        #{o.number} ·{" "}
-                        {o.items[0]?.productNameSnapshot ?? o.type}
-                      </span>
-                      <strong>{formatMoney(o.totalMinor)}</strong>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+            {data.detailAvailable &&
+              sections.byCategory &&
+              data.byCategory.length > 0 && (
+                <>
+                  <div className="my-2 border-t border-dashed border-slate-400" />
+                  <div className="font-bold uppercase text-xs tracking-wide mb-1">
+                    POR CATEGORÍA
+                  </div>
+                  <div className="space-y-0.5">
+                    {data.byCategory.map((row) => (
+                      <div key={row.name} className="flex justify-between">
+                        <span className="break-words pr-2">
+                          {row.name} ×{row.quantity}
+                        </span>
+                        <strong className="whitespace-nowrap">
+                          {formatMoney(row.amountMinor)}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+            {data.detailAvailable &&
+              sections.byTable &&
+              data.byTable.length > 0 && (
+                <>
+                  <div className="my-2 border-t border-dashed border-slate-400" />
+                  <div className="font-bold uppercase text-xs tracking-wide mb-1">
+                    POR MESA
+                  </div>
+                  <div className="space-y-0.5">
+                    {data.byTable.map((row) => (
+                      <div
+                        key={row.tableId ?? row.name}
+                        className="flex justify-between gap-2"
+                      >
+                        <span className="break-words">{row.name}</span>
+                        <strong className="whitespace-nowrap">
+                          {formatMoney(row.amountMinor)}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+            {data.detailAvailable &&
+              sections.byWaiter &&
+              data.byWaiter.length > 0 && (
+                <>
+                  <div className="my-2 border-t border-dashed border-slate-400" />
+                  <div className="font-bold uppercase text-xs tracking-wide mb-1">
+                    POR MOZO
+                  </div>
+                  <div className="space-y-2">
+                    {data.byWaiter.map((w) => (
+                      <div
+                        key={w.waiterUserId ?? w.name}
+                        className="border-b border-dotted border-slate-300 pb-1.5 last:border-b-0 last:pb-0"
+                      >
+                        <div className="font-bold text-slate-900">{w.name}</div>
+                        {w.tables && w.tables.length > 0 ? (
+                          <div className="pl-2 space-y-0.5 text-xs text-slate-700">
+                            {w.tables.map((t, i) => (
+                              <div
+                                key={i}
+                                className="flex justify-between gap-2"
+                              >
+                                <span className="break-words">{t.name}</span>
+                                <span className="whitespace-nowrap">
+                                  {formatMoney(t.amountMinor)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div className="flex justify-between gap-2 font-bold text-xs pt-0.5 mt-0.5 border-t border-dashed border-slate-200">
+                          <span className="break-words">Total {w.name}:</span>
+                          <span className="whitespace-nowrap">
+                            {formatMoney(w.amountMinor)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+            {data.detailAvailable &&
+              sections.orderDetails &&
+              data.orders.length > 0 && (
+                <>
+                  <div className="my-2 border-t border-dashed border-slate-400" />
+                  <div className="font-bold uppercase text-xs tracking-wide mb-1">
+                    DETALLE DE PEDIDOS
+                  </div>
+                  <div className="space-y-0.5 text-xs">
+                    {data.orders.map((o) => (
+                      <div key={o.id} className="flex justify-between gap-2">
+                        <span className="break-words pr-2">
+                          #{o.number} ·{" "}
+                          {o.items[0]?.productNameSnapshot ?? o.type}
+                        </span>
+                        <strong className="whitespace-nowrap">
+                          {formatMoney(o.totalMinor)}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
 
             <div className="my-2 border-t border-dashed border-slate-400" />
-            <p className="text-center text-[9px] text-slate-500">
-              Impreso: {new Date().toLocaleString("es-AR")}
+            <p className="text-center text-xs text-slate-500">
+              Impreso:{" "}
+              {new Date().toLocaleString("es-AR", {
+                timeZone: "America/Buenos_Aires",
+                hourCycle: "h23",
+              })}
             </p>
           </div>
         </div>
@@ -946,10 +1173,7 @@ export function PrintCashSessionReportModal({
         <Button variant="secondary" onClick={onClose} disabled={isPrinting}>
           Cancelar
         </Button>
-        <Button
-          onClick={() => onPrint(sections)}
-          disabled={isPrinting}
-        >
+        <Button onClick={() => onPrint(sections)} disabled={isPrinting}>
           <Printer /> Imprimir ticket
         </Button>
       </div>
