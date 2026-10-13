@@ -39,9 +39,13 @@ test("permite hacer zoom y alejar con controles y con la rueda del mouse en el p
   await page.getByRole("link", { name: "Salón" }).click();
   await page.getByRole("tab", { name: "Plano por sectores" }).click();
 
-  // 1. Controles flotantes de zoom presentes y en 100%
+  // The initial overview fits the canvas; reset explicitly to test 100% controls.
   const zoomControls = page.getByTestId("floor-plan-zoom-controls");
   await expect(zoomControls).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Restablecer zoom" }),
+  ).not.toHaveText("100%");
+  await page.getByRole("button", { name: "Restablecer zoom" }).click();
   await expect(
     page.getByRole("button", { name: "Restablecer zoom" }),
   ).toHaveText("100%");
@@ -130,7 +134,7 @@ test("permite hacer zoom y alejar con controles y con la rueda del mouse en el p
   await expect(page.getByLabel("Número", { exact: true })).toHaveValue("3");
   await page.getByRole("button", { name: "Terminar edición" }).click();
 
-  // 9. Crear nuevo sector y verificar restablecimiento automático a 100%
+  // 9. Crear un sector abre nuevamente una vista general ajustada al área.
   await page.getByRole("button", { name: "Editar plano" }).click();
   await page.getByRole("button", { name: "Crear sector" }).click();
   const sectorDialog = page.getByRole("dialog");
@@ -139,8 +143,7 @@ test("permite hacer zoom y alejar con controles y con la rueda del mouse en el p
   await expect(page.getByRole("tab", { name: "Patio · 0" })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Restablecer zoom" }),
-  ).toHaveText("100%");
-  await expect(canvas).toHaveCSS("transform", /matrix\(1,\s*0,\s*0,\s*1/);
+  ).not.toHaveText("100%");
 });
 
 test("mantiene el punto bajo el cursor al hacer zoom con la rueda", async () => {

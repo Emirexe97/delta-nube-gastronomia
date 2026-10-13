@@ -192,6 +192,7 @@ test("dibuja y personaliza figuras persistentes dentro de un sector", async () =
   const figure = page.getByRole("button", {
     name: "Editar figura Macetero central",
   });
+  await figure.scrollIntoViewIfNeeded();
   const bounds = await figure.boundingBox();
   expect(bounds).not.toBeNull();
   if (bounds) {
@@ -204,6 +205,16 @@ test("dibuja y personaliza figuras persistentes dentro de un sector", async () =
     await page.mouse.up();
   }
 
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const data = await window.gastronomy.bootstrap();
+        return data.floorPlanShapes.find(
+          (shape) => shape.label === "Macetero central",
+        )?.layoutX;
+      }),
+    )
+    .toBeGreaterThan(12);
   const saved = await page.evaluate(async () => {
     const data = await window.gastronomy.bootstrap();
     return data.floorPlanShapes.find(

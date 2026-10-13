@@ -263,6 +263,7 @@ test("preserva zoom, accesos rápidos y dibujo cancelado sin escribir cambios de
   const region = page.getByRole("region", { name: "Editor del plano" });
   const group = await controls();
   await assertControlsReachable(group, "zoom-before-drawing");
+  await group.getByRole("button", { name: "Restablecer zoom" }).click();
   await group.getByRole("button", { name: "Acercar plano" }).click();
   await expect(
     group.getByRole("button", { name: "Restablecer zoom" }),
@@ -390,6 +391,7 @@ test("al 200% los controles siguen alcanzables y la carga rápida abre la mesa s
   await page.getByTestId("floor-plan-zoom-controls").scrollIntoViewIfNeeded();
   const group = await controls();
   await assertControlsReachable(group, "browser-zoom-200");
+  await group.getByRole("button", { name: "Restablecer zoom" }).click();
   await group.getByRole("button", { name: "Acercar plano" }).click();
   await expect(
     group.getByRole("button", { name: "Restablecer zoom" }),

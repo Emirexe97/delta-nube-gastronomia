@@ -161,16 +161,28 @@ export const toSvgPoints = svgPoints;
 
 export const FLOOR_CANVAS_WIDTH = 1800;
 export const FLOOR_CANVAS_HEIGHT = 1200;
-export const DEFAULT_TABLE_WIDTH = 7;
-export const DEFAULT_TABLE_HEIGHT = 7;
-export const DEFAULT_RECT_TABLE_WIDTH = 10;
-export const DEFAULT_RECT_TABLE_HEIGHT = 7;
+export const DEFAULT_TABLE_WIDTH_PX = 108;
+export const DEFAULT_TABLE_HEIGHT_PX = 108;
+export const DEFAULT_RECT_TABLE_WIDTH_PX = 144;
+export const DEFAULT_RECT_TABLE_HEIGHT_PX = 108;
+export const DEFAULT_TABLE_WIDTH = pixelsToLayoutSize(
+  DEFAULT_TABLE_WIDTH_PX,
+  FLOOR_CANVAS_WIDTH,
+);
+export const DEFAULT_TABLE_HEIGHT = pixelsToLayoutSize(
+  DEFAULT_TABLE_HEIGHT_PX,
+  FLOOR_CANVAS_HEIGHT,
+);
+export const DEFAULT_RECT_TABLE_WIDTH = pixelsToLayoutSize(
+  DEFAULT_RECT_TABLE_WIDTH_PX,
+  FLOOR_CANVAS_WIDTH,
+);
+export const DEFAULT_RECT_TABLE_HEIGHT = pixelsToLayoutSize(
+  DEFAULT_RECT_TABLE_HEIGHT_PX,
+  FLOOR_CANVAS_HEIGHT,
+);
 
 /** Table dimensions are edited in fixed canvas pixels; positions stay normalized. */
-export const DEFAULT_TABLE_WIDTH_PX = 126;
-export const DEFAULT_TABLE_HEIGHT_PX = 126;
-export const DEFAULT_RECT_TABLE_WIDTH_PX = 180;
-export const DEFAULT_RECT_TABLE_HEIGHT_PX = 126;
 
 export function layoutSizeToPixels(value: number, canvasDimension: number) {
   return (value * canvasDimension) / 100;
@@ -217,29 +229,55 @@ export type GridPlacementOptions = {
 
 /**
  * Find the next available non-overlapping position for a table.
- * Primary scan: 10x10 grid (allowing 100 non-overlapping tables with comfortable margins).
- * Secondary scan: fine-grained canvas scan in 2% steps.
- * Fallback: staggered position within bounds so it is never hidden or lost.
+ * Scan a dimension-aware grid first, then a 2% secondary grid. Return null
+ * rather than silently stacking a table when the canvas has no free position.
  */
 export function findAvailableTablePosition(
   existingElements: readonly NormalizedRect[],
   tableWidth = DEFAULT_TABLE_WIDTH,
   tableHeight = DEFAULT_TABLE_HEIGHT,
   options?: GridPlacementOptions,
-): NormalizedPoint {
-  const cols = options?.cols ?? 10;
-  const rows = options?.rows ?? 10;
+): NormalizedPoint | null {
+  if (
+    !Number.isFinite(tableWidth) ||
+    !Number.isFinite(tableHeight) ||
+    tableWidth <= 0 ||
+    tableHeight <= 0 ||
+    tableWidth > 100 ||
+    tableHeight > 100
+  )
+    return null;
   const startX = options?.startX ?? 5;
   const startY = options?.startY ?? 5;
-  const stepX = options?.gapX ?? 9.2;
-  const stepY = options?.gapY ?? 9.2;
+  const gapX = options?.gapX ?? pixelsToLayoutSize(18, FLOOR_CANVAS_WIDTH);
+  const gapY = options?.gapY ?? pixelsToLayoutSize(18, FLOOR_CANVAS_HEIGHT);
+  if (
+    ![startX, startY, gapX, gapY].every(Number.isFinite) ||
+    gapX < 0 ||
+    gapY < 0
+  )
+    return null;
+  const cols =
+    options?.cols ??
+    Math.max(
+      0,
+      Math.floor((99 - startX - tableWidth) / (tableWidth + gapX)) + 1,
+    );
+  const rows =
+    options?.rows ??
+    Math.max(
+      0,
+      Math.floor((99 - startY - tableHeight) / (tableHeight + gapY)) + 1,
+    );
 
-  // 1. Primary scan: 10x10 grid
+  if (![cols, rows].every(Number.isFinite) || cols < 0 || rows < 0) return null;
+
+  // 1. Primary scan: cells sized for the actual table and walking gap.
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const candidate: NormalizedRect = {
-        x: Math.round((startX + c * stepX) * 10) / 10,
-        y: Math.round((startY + r * stepY) * 10) / 10,
+        x: Math.round((startX + c * (tableWidth + gapX)) * 10) / 10,
+        y: Math.round((startY + r * (tableHeight + gapY)) * 10) / 10,
         width: tableWidth,
         height: tableHeight,
       };
@@ -276,12 +314,36 @@ export function findAvailableTablePosition(
     }
   }
 
-  // 3. Fallback: staggered offset so tables never stack directly on each other
-  const count = existingElements.length;
-  const fallbackX = clamp(5 + (count % 10) * 2, 0, 100 - tableWidth);
-  const fallbackY = clamp(5 + (count % 8) * 2, 0, 100 - tableHeight);
-  return {
-    x: Math.round(fallbackX * 10) / 10,
-    y: Math.round(fallbackY * 10) / 10,
-  };
+  return null;
+}
+
+export type CompactTable = {
+  id: string;
+  number: number;
+  shape: "ROUND" | "SQUARE" | "RECTANGLE";
+};
+
+/** Create a stable, all-or-nothing compact layout without mutating inputs. */
+export function planCompactTableLayout(
+  tables: readonly CompactTable[],
+  obstacles: readonly NormalizedRect[],
+): Array<{ tableId: string; rect: NormalizedRect }> | null {
+  const ordered = [...tables].sort(
+    (a, b) => a.number - b.number || a.id.localeCompare(b.id),
+  );
+  const occupied = [...obstacles];
+  const result: Array<{ tableId: string; rect: NormalizedRect }> = [];
+  for (const table of ordered) {
+    const rectangular = table.shape === "RECTANGLE";
+    const width = rectangular ? DEFAULT_RECT_TABLE_WIDTH : DEFAULT_TABLE_WIDTH;
+    const height = rectangular
+      ? DEFAULT_RECT_TABLE_HEIGHT
+      : DEFAULT_TABLE_HEIGHT;
+    const point = findAvailableTablePosition(occupied, width, height);
+    if (!point) return null;
+    const rect = { ...point, width, height };
+    result.push({ tableId: table.id, rect });
+    occupied.push(rect);
+  }
+  return result;
 }

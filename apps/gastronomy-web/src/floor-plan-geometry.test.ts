@@ -5,6 +5,11 @@ import {
   globalPointsToLocalGeometry,
   layoutSizeToPixels,
   moveLocalNode,
+  DEFAULT_TABLE_WIDTH,
+  DEFAULT_TABLE_HEIGHT,
+  DEFAULT_RECT_TABLE_WIDTH,
+  DEFAULT_RECT_TABLE_HEIGHT,
+  planCompactTableLayout,
   pixelsToLayoutSize,
   rectsOverlap,
   resizeNormalizedRect,
@@ -221,6 +226,8 @@ describe("findAvailableTablePosition", () => {
   it("places the second table in the adjacent slot without overlapping", () => {
     const first = { x: 5, y: 5, width: 7, height: 7 };
     const pos = findAvailableTablePosition([first]);
+    expect(pos).not.toBeNull();
+    if (!pos) throw new Error("Expected a free slot");
     expect(pos.x).toBeGreaterThan(5);
     expect(
       rectsOverlap(first, { x: pos.x, y: pos.y, width: 7, height: 7 }),
@@ -228,11 +235,26 @@ describe("findAvailableTablePosition", () => {
   });
 
   it("supports placing 100 consecutive tables without any pair overlapping", () => {
-    const placed: Array<{ x: number; y: number; width: number; height: number }> =
-      [];
+    const placed: Array<{
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }> = [];
     for (let i = 0; i < 100; i++) {
-      const pos = findAvailableTablePosition(placed, 7, 7);
-      const newRect = { x: pos.x, y: pos.y, width: 7, height: 7 };
+      const pos = findAvailableTablePosition(
+        placed,
+        DEFAULT_TABLE_WIDTH,
+        DEFAULT_TABLE_HEIGHT,
+      );
+      expect(pos).not.toBeNull();
+      if (!pos) throw new Error("expected available table position");
+      const newRect = {
+        x: pos.x,
+        y: pos.y,
+        width: DEFAULT_TABLE_WIDTH,
+        height: DEFAULT_TABLE_HEIGHT,
+      };
 
       // Ensure it does not overlap any previously placed table
       for (let j = 0; j < placed.length; j++) {
@@ -254,27 +276,94 @@ describe("findAvailableTablePosition", () => {
   });
 
   it("reuses holes when a table is removed", () => {
-    const table1 = { x: 5, y: 5, width: 7, height: 7 };
-    const table2 = { x: 14.2, y: 5, width: 7, height: 7 };
-    const table3 = { x: 23.4, y: 5, width: 7, height: 7 };
+    const table1 = {
+      x: 5,
+      y: 5,
+      width: DEFAULT_TABLE_WIDTH,
+      height: DEFAULT_TABLE_HEIGHT,
+    };
+    const table2 = {
+      x: 12,
+      y: 5,
+      width: DEFAULT_TABLE_WIDTH,
+      height: DEFAULT_TABLE_HEIGHT,
+    };
+    const table3 = {
+      x: 19,
+      y: 5,
+      width: DEFAULT_TABLE_WIDTH,
+      height: DEFAULT_TABLE_HEIGHT,
+    };
 
     // table2 is deleted, so (14.2, 5) should be filled next
     const pos = findAvailableTablePosition([table1, table3]);
-    expect(pos).toEqual({ x: 14.2, y: 5 });
+    expect(pos).toEqual({ x: 12, y: 5 });
   });
 
-  it("gracefully provides a fallback position when canvas is saturated", () => {
-    const pos = findAvailableTablePosition(
-      Array.from({ length: 110 }, (_, i) => ({
-        x: (i % 10) * 9,
-        y: Math.floor(i / 10) * 8,
-        width: 8,
-        height: 7,
-      })),
+  it("returns null when canvas is saturated", () => {
+    const pos = findAvailableTablePosition([
+      { x: 0, y: 0, width: 100, height: 100 },
+    ]);
+    expect(pos).toBeNull();
+  });
+
+  it("uses compact pixel-derived square and rectangle dimensions", () => {
+    expect(DEFAULT_TABLE_WIDTH).toBe(6);
+    expect(DEFAULT_TABLE_HEIGHT).toBe(9);
+    expect(DEFAULT_RECT_TABLE_WIDTH).toBe(8);
+    expect(DEFAULT_RECT_TABLE_HEIGHT).toBe(9);
+    expect(
+      findAvailableTablePosition([], DEFAULT_TABLE_WIDTH, DEFAULT_TABLE_HEIGHT),
+    ).toEqual({ x: 5, y: 5 });
+  });
+});
+
+describe("planCompactTableLayout", () => {
+  it("lays out 110 compact tables without overlap and keeps rectangles at their real dimensions", () => {
+    const tables = Array.from({ length: 110 }, (_, i) => ({
+      id: `table-${i}`,
+      number: i + 1,
+      shape: "SQUARE" as const,
+    }));
+    const plan = planCompactTableLayout(tables, []);
+    expect(plan).toHaveLength(110);
+    for (let i = 0; i < plan!.length; i++) {
+      const a = plan![i]!.rect;
+      expect(a.x + a.width).toBeLessThanOrEqual(100);
+      expect(a.y + a.height).toBeLessThanOrEqual(100);
+      for (const b of plan!.slice(0, i))
+        expect(rectsOverlap(a, b.rect)).toBe(false);
+    }
+    const rectPlan = planCompactTableLayout(
+      [{ id: "r", number: 1, shape: "RECTANGLE" }],
+      [],
     );
-    expect(pos.x).toBeGreaterThanOrEqual(0);
-    expect(pos.y).toBeGreaterThanOrEqual(0);
-    expect(pos.x + 7).toBeLessThanOrEqual(100);
-    expect(pos.y + 7).toBeLessThanOrEqual(100);
+    expect(rectPlan?.[0]?.rect).toEqual({ x: 5, y: 5, width: 8, height: 9 });
+  });
+
+  it("avoids obstacles, sorts stably, and does not mutate inputs", () => {
+    const tables = [
+      { id: "b", number: 2, shape: "SQUARE" as const },
+      { id: "a", number: 1, shape: "RECTANGLE" as const },
+    ];
+    const obstacles = [{ x: 5, y: 5, width: 8, height: 9 }];
+    const tablesCopy = structuredClone(tables);
+    const obstaclesCopy = structuredClone(obstacles);
+    const plan = planCompactTableLayout(tables, obstacles);
+    expect(plan?.map((entry) => entry.tableId)).toEqual(["a", "b"]);
+    expect(plan?.every(({ rect }) => !rectsOverlap(rect, obstacles[0]!))).toBe(
+      true,
+    );
+    expect(tables).toEqual(tablesCopy);
+    expect(obstacles).toEqual(obstaclesCopy);
+  });
+
+  it("returns null rather than a partial layout when obstacles fill the canvas", () => {
+    expect(
+      planCompactTableLayout(
+        [{ id: "a", number: 1, shape: "SQUARE" }],
+        [{ x: 0, y: 0, width: 100, height: 100 }],
+      ),
+    ).toBeNull();
   });
 });

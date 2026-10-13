@@ -2988,3 +2988,30 @@ Evidencia local en `docs/qa/evidence/system-usability-salon-list-service-2026-10
 Rollback acotado: retirar presentación/contrato/IPC/implementación de servicio y sus pruebas; no reset global ni borrar datos de una base instalada. Cualquier reversión de triggers/esquema persistido requiere una migración específica, no un downgrade manual en datos reales. Cambios§76 conservados. Servidor demo127.0.0.1:5173 responde200 para prueba del usuario tras recargar. **Sin commit, push, cambio de versión ni instalador**. US18 parcial y24/25 originales cerrados siguen separados de esta mejora.
 
 | 2026-10-10 | Lista de servicio de Salón validada (§77) | Amarillo15/rojo35; servido independiente y consumo nuevo pendiente. Integral338/75 (321+17), SQLite219/web277/dominio28/shell27, tipo-build7/7. Sin publicación. |
+
+## 78. Cliente en pedidos para retirar/envío (implementado y validado)
+
+Solicitud del usuario: analizar y simplificar la carga de cliente en el modal del pedido. Buscar ficha, editar datos del pedido y guardar un cliente eran difíciles de distinguir; Tab podía seleccionar una sugerencia sin intención y retiro mostraba dirección innecesaria.
+
+Carga manual sin guardar ficha continúa disponible. Cliente elegido en tarjeta con Cambiar cliente; sólo Enter/clic seleccionan y Tab navega. Dirección sólo en envío, con direcciones guardadas antes del editor y opción Otra dirección para este pedido. Alternar modalidad conserva datos localmente. Alta opcional con validación consistente, sin crear pedido automáticamente; tarifa oculta no bloquea retiro. Búsqueda pendiente invalidada al salir se recupera al reenfocar. Ficha recuperada por ID con reintento y guards contra respuesta tardía, sin sobrescribir snapshots editados.
+
+No cambios de contratos/SQLite/backend ni reglas económicas. Nombre/teléfono editados son del pedido; tarifa de domicilio registrado continúa recordándose en alta/edición normal, no al convertir modalidad. Se explica la persistencia existente, no se cambia.
+
+Validación focal de **38 escenarios E2E distintos**: regresión seleccionada 33/35 y pasada final adicional 6/6 tras adaptar dos expectativas obsoletas (incluye tres escenarios no seleccionados y una repetición reforzada; no sumar repeticiones). Web **282/282**, typecheck/build **7/7** cada uno, diff-check/formato focalizado sin errores. No se repitió la suite integral. Regresiones de modalidades, pago/PIN, stock/caja, rendiciones, productos primero, horarios y cancelación. Visual nativa revisada en 1100/1366 y zoom200 con controles alcanzables por desplazamiento interno. Detalles y límites: `docs/qa/CUSTOMER_ENTRY_E2E_AUDIT.md`; evidencia nueva local en `test-results/`.
+
+Se preservan cambios anteriores de ticket/cierre. Sin commit, push, cambio de versión ni instalador.
+
+| 2026-10-13 | Carga de cliente del pedido clarificada (§78) | Selección explícita, ficha opcional, dirección sólo envío y recuperación por ID. Focal38, web282, tipo/build7/7. Sin publicación. |
+## 79. Plano por sectores compacto y sin fallback superpuesto (implementado y validado)
+
+Solicitud: mesas demasiado grandes para el plano y superposición en sectores numerosos. Altas desde el plano usan 108×108 px (rectangulares compactadas 144×108), con tamaños normalizados derivados del canvas. Búsqueda de lugar por dimensiones reales; si falta espacio, informa antes de crear la mesa en vez de usar un fallback solapado.
+
+La vista inicia ajustada al área y muestra número/estado legibles al alejar; detalle al acercar/abrir o en título. El editor coloca propiedades debajo hasta xl para no recortar las mesas a 1100 px. Disposiciones existentes se conservan al navegar: **Editar plano → Ordenar mesas → Ordenar y compactar** confirma el reemplazo de posiciones/tamaños del sector. Evita las cajas de figuras; preserva IDs, nombres, números, formas, pedidos, cobros y stock. Cancelar/Escape no escriben. Actualizaciones individuales, no transacción masiva: fallo parcial informa conteo real, refresca y permite reintentar; no prometer rollback o capacidad ilimitada. Figuras conservadas y mínimos backend intactos; sin cambios SQLite/contratos/reglas económicas.
+
+Validación final: **21 escenarios E2E distintos** en siete specs (20/21 + repetición corregida 3/3, sin sumar duplicados). Cinco nuevos cubren sector60, cancelación, ocho altas numeradas >100, figura que bloquea canvas y fallo IPC en tercera escritura con exactamente2/10 guardadas/reintento. Regresiones de zoom, vector, controles/200%, ocupadas y Lista/servicio. Web **286/286**, 26 archivos, incluida geometría **23/23** y 110 posiciones compactas unitarias, no 110 altas E2E. Typecheck/build **7/7** cada uno; advertencia existente de chunk Vite, sin error. Revisión adicional sólo lectura sin hallazgos accionables.
+
+Capturas nativas 1100/1366 inspeccionadas: 60 mesas separadas, números/estados visibles y canvas dentro del viewport horizontal; panel debajo/al costado según ancho. Desplazamiento vertical normal y controles de zoom/pan preservados; no afirmar que toda la página cabe simultáneamente. Fallos preliminares de fixtures cacheados, expectativas de inicio100% y consulta del test fuera del renderer se corrigieron sin debilitar invariantes. Detalle: `docs/qa/FLOOR_PLAN_DENSITY_E2E_AUDIT.md`; evidencia local ignorada bajo `test-results/floor-density-verified/` y `floor-density-regression-final/`. No se repitió la suite integral.
+
+Cambios anteriores de cliente/ticket conservados. Servidor demo127.0.0.1:5173 disponible para recargar. **Sin commit, push, cambio de versión ni instalador**.
+
+| 2026-10-13 | Plano por sectores compacto validado (§79) | Compactación voluntaria, capacidad explícita y recuperación parcial. Focal21, web286, tipo/build7/7; visual1100/1366. Sin publicación. |

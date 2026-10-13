@@ -42,6 +42,8 @@ import {
   FLOOR_CANVAS_HEIGHT,
   FLOOR_CANVAS_WIDTH,
   findAvailableTablePosition,
+  planCompactTableLayout,
+  rectsOverlap,
   globalPointsToLocalGeometry,
   layoutSizeToPixels,
   pixelsToLayoutSize,
@@ -60,6 +62,11 @@ type TableDraft = Pick<
 >;
 
 type Position = { x: number; y: number };
+type TableArrangement = {
+  sectorName: string;
+  tables: RestaurantTableDto[];
+  obstacles: NormalizedRect[];
+};
 type FloorShapeDraft = Pick<
   FloorPlanShapeDto,
   | "sectorId"
@@ -274,6 +281,8 @@ export function TableFloorPlan({
   );
   const [addTableOpen, setAddTableOpen] = useState(false);
   const [newTableNumber, setNewTableNumber] = useState("");
+  const [arrangement, setArrangement] = useState<TableArrangement | null>(null);
+  const arrangedCountRef = useRef(0);
   const viewportRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
@@ -380,7 +389,9 @@ export function TableFloorPlan({
   };
 
   useEffect(() => {
-    setView({ zoom: 1, pan: { x: 0, y: 0 } });
+    // Start with an overview, not a cropped corner of the fixed-size canvas.
+    const frame = window.requestAnimationFrame(fitToView);
+    return () => window.cancelAnimationFrame(frame);
   }, [activeSectorId]);
 
   useEffect(() => {
@@ -617,9 +628,10 @@ export function TableFloorPlan({
     .filter((table) => table.sectorId === activeSectorId)
     .sort((left, right) => left.number - right.number);
   // Filtering the rendered tables keeps geometry, fit and editing data intact.
-  const visibleSectorTables = onlyOccupied && !editing
-    ? sectorTables.filter((table) => table.currentOrderId)
-    : sectorTables;
+  const visibleSectorTables =
+    onlyOccupied && !editing
+      ? sectorTables.filter((table) => table.currentOrderId)
+      : sectorTables;
   const sectorShapes = data.floorPlanShapes.filter(
     (shape) => shape.sectorId === activeSectorId,
   );
@@ -631,6 +643,63 @@ export function TableFloorPlan({
     {
       onSuccess: () => setMessage("Plano guardado."),
       onError: (value) => setMessage(humanError(value)),
+    },
+  );
+  const arrangeTables = useApiMutation(
+    async (input: TableArrangement) => {
+      arrangedCountRef.current = 0;
+      const layout = planCompactTableLayout(input.tables, input.obstacles);
+      if (!layout)
+        throw new Error(
+          "No hay espacio suficiente para ordenar todas las mesas sin superponerlas. Mové o reducí las figuras y volvé a intentar.",
+        );
+      const latestTables = new Map(
+        (await window.gastronomy.bootstrap()).tables.map((table) => [
+          table.id,
+          table,
+        ]),
+      );
+      for (const entry of layout) {
+        const table = latestTables.get(entry.tableId);
+        const original = input.tables.find(
+          (candidate) => candidate.id === entry.tableId,
+        )!;
+        if (!table?.active || table.sectorId !== original.sectorId)
+          throw new Error(
+            "El sector cambió mientras se ordenaba. Revisá el plano antes de reintentar.",
+          );
+        // Required metadata passes through; sector, shape and order state stay intact.
+        await window.gastronomy.updateTable({
+          tableId: entry.tableId,
+          number: table.number,
+          name: table.name,
+          active: table.active,
+          layoutX: entry.rect.x,
+          layoutY: entry.rect.y,
+          layoutWidth: entry.rect.width,
+          layoutHeight: entry.rect.height,
+        });
+        arrangedCountRef.current += 1;
+      }
+    },
+    {
+      onSuccess: () => {
+        setArrangement(null);
+        setSelectedTableId(null);
+        setSelectedShapeId(null);
+        setMessage("Plano guardado.");
+        window.requestAnimationFrame(fitToView);
+      },
+      onError: (value, input) => {
+        setArrangement(null);
+        setSelectedTableId(null);
+        setSelectedShapeId(null);
+        setMessage(
+          arrangedCountRef.current
+            ? `Se ordenaron ${arrangedCountRef.current} de ${input.tables.length} mesas. ${humanError(value)} Las restantes conservan su disposición. Podés reintentar Ordenar mesas.`
+            : humanError(value),
+        );
+      },
     },
   );
   const createSector = useApiMutation(
@@ -676,12 +745,8 @@ export function TableFloorPlan({
       );
       if (existing)
         throw new Error("Ya existe una mesa activa con ese número.");
-      const table = await window.gastronomy.ensureTable({
-        number: input.number,
-      });
-
       const sectorTables = tables.filter(
-        (t) => t.sectorId === input.sectorId && t.active && t.id !== table.id,
+        (t) => t.sectorId === input.sectorId && t.active,
       );
       const sectorShapes = data.floorPlanShapes.filter(
         (s) => s.sectorId === input.sectorId,
@@ -713,6 +778,13 @@ export function TableFloorPlan({
         defaultWidth,
         defaultHeight,
       );
+      if (!targetPos)
+        throw new Error(
+          "No hay espacio suficiente para otra mesa sin superponerla. Ordená las mesas o mové las figuras antes de agregarla.",
+        );
+      const table = await window.gastronomy.ensureTable({
+        number: input.number,
+      });
 
       return window.gastronomy.updateTable({
         tableId: table.id,
@@ -1189,6 +1261,14 @@ export function TableFloorPlan({
     }
   };
 
+  const hasOverlappingTables = sectorTables.some((table, index) =>
+    sectorTables
+      .slice(index + 1)
+      .some((other) =>
+        rectsOverlap(currentTableRect(table), currentTableRect(other), 0),
+      ),
+  );
+
   return (
     <div className="space-y-3">
       <Card className="p-3">
@@ -1304,9 +1384,33 @@ export function TableFloorPlan({
                 <Button
                   type="button"
                   variant="secondary"
-                  onClick={() => setAddTableOpen(true)}
+                  onClick={() => {
+                    createTable.reset();
+                    setMessage(null);
+                    setAddTableOpen(true);
+                  }}
                 >
                   <Plus size={15} /> Nueva mesa
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={
+                    !sectorTables.length ||
+                    updateTable.isPending ||
+                    createTable.isPending ||
+                    drawKind !== null
+                  }
+                  onClick={() => {
+                    setMessage(null);
+                    setArrangement({
+                      sectorName: activeSector.name,
+                      tables: sectorTables,
+                      obstacles: sectorShapes.map(currentShapeRect),
+                    });
+                  }}
+                >
+                  <MapTrifold size={15} /> Ordenar mesas
                 </Button>
                 <Button
                   type="button"
@@ -1383,9 +1487,19 @@ export function TableFloorPlan({
               : "Arrastrá las mesas y figuras para ubicarlas. También podés dibujar áreas y líneas."
             : "Elegí un sector y tocá una mesa para abrirla o continuar su pedido."}
         </p>
-        {message ? (
+        {hasOverlappingTables ? (
+          <p className="mt-1 text-xs font-semibold text-amber-800">
+            Hay mesas superpuestas en este sector.
+            {canManageTables
+              ? editing
+                ? " Usá Ordenar mesas para compactarlas y separarlas."
+                : " Podés ordenarlas desde Editar plano."
+              : ""}
+          </p>
+        ) : null}
+        {message && !addTableOpen ? (
           <p
-            className={`mt-2 rounded-lg px-3 py-2 text-xs font-semibold ${updateTable.isError || createSector.isError || renameSector.isError || deleteSector.isError || createTable.isError || createFloorShape.isError || updateFloorShape.isError || deleteFloorShape.isError ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}
+            className={`mt-2 rounded-lg px-3 py-2 text-xs font-semibold ${arrangeTables.isError || updateTable.isError || createSector.isError || renameSector.isError || deleteSector.isError || createTable.isError || createFloorShape.isError || updateFloorShape.isError || deleteFloorShape.isError ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}
             role="status"
           >
             {message}
@@ -1395,9 +1509,7 @@ export function TableFloorPlan({
 
       <div
         className={
-          editing
-            ? "grid gap-3 md:grid-cols-[minmax(0,1fr)_260px] lg:grid-cols-[minmax(0,1fr)_290px]"
-            : ""
+          editing ? "grid gap-3 xl:grid-cols-[minmax(0,1fr)_290px]" : ""
         }
       >
         <Card className="overflow-hidden p-0">
@@ -1413,11 +1525,6 @@ export function TableFloorPlan({
             onPointerCancel={() => setPanDrag(null)}
             className={`relative min-h-[420px] overflow-hidden bg-slate-200/70 sm:min-h-[480px] lg:min-h-[540px] select-none touch-none ${panDrag ? "cursor-grabbing" : drawKind ? "cursor-crosshair" : "cursor-grab"}`}
           >
-            <div className="pointer-events-none absolute left-4 top-4 z-20 flex items-center gap-2 rounded-xl bg-white/90 px-3 py-2 text-xs font-extrabold text-slate-600 shadow-sm backdrop-blur">
-              <MapTrifold size={17} className="text-brand-600" />
-              {activeSector?.name ?? "Sector"}
-            </div>
-
             <div
               ref={canvasRef}
               data-floor-canvas
@@ -1432,520 +1539,552 @@ export function TableFloorPlan({
                 backgroundSize: "28px 28px",
               }}
             >
-            {drawKind ? (
-              <div
-                data-floor-drawing-toolbar
-                className="absolute right-4 top-4 z-50 flex flex-wrap items-center justify-end gap-2 rounded-xl border border-brand-100 bg-white/95 p-2 shadow-lg backdrop-blur"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <span className="px-1 text-xs font-extrabold text-slate-600">
-                  {drawingPoints.length} nodos
-                </span>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() =>
-                    setDrawingPoints((current) => current.slice(0, -1))
-                  }
-                  disabled={!drawingPoints.length}
-                >
-                  Deshacer nodo
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={cancelDrawing}
-                >
-                  Cancelar dibujo
-                </Button>
-                <Button
-                  type="button"
-                  onClick={finishDrawing}
-                  disabled={
-                    drawingPoints.length < (drawKind === "POLYGON" ? 3 : 2) ||
-                    createFloorShape.isPending
-                  }
-                >
-                  {drawKind === "POLYGON"
-                    ? "Cerrar polígono"
-                    : "Finalizar línea"}
-                </Button>
-              </div>
-            ) : null}
-            {drawKind ? (
-              <div
-                className="absolute inset-0 z-40 cursor-crosshair"
-                aria-label="Área de dibujo por nodos"
-                onClick={(event) => {
-                  const point = canvasPointFromClient(
-                    event.clientX,
-                    event.clientY,
-                  );
-                  if (point)
-                    setDrawingPoints((current) =>
-                      current.length < 64 ? [...current, point] : current,
-                    );
-                }}
-              />
-            ) : null}
-            {drawKind && drawingPoints.length ? (
-              <svg
-                className="pointer-events-none absolute inset-0 z-30 h-full w-full"
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-                aria-hidden="true"
-              >
-                {drawKind === "POLYGON" ? (
-                  <polygon
-                    points={svgPoints(drawingPoints)}
-                    fill="#FDBA7452"
-                    stroke="#C2410C"
-                    strokeWidth="0.55"
-                    strokeDasharray="1.4 1"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ) : (
-                  <polyline
-                    points={svgPoints(drawingPoints)}
-                    fill="none"
-                    stroke="#C2410C"
-                    strokeWidth="0.75"
-                    strokeDasharray="1.4 1"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )}
-                {drawingPoints.map((point, index) => (
-                  <circle
-                    key={`${point.x}-${point.y}-${index}`}
-                    cx={point.x}
-                    cy={point.y}
-                    r="0.8"
-                    fill="#FFFFFF"
-                    stroke="#C2410C"
-                    strokeWidth="0.35"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
-              </svg>
-            ) : null}
-            {!visibleSectorTables.length && (!sectorShapes.length || (onlyOccupied && !editing)) ? (
-              <div className="pointer-events-none absolute left-10 top-16 z-20 flex items-center gap-4 rounded-2xl border border-dashed border-slate-300 bg-white/90 p-6 shadow-sm backdrop-blur">
-                <MapTrifold
-                  className="shrink-0 text-slate-400"
-                  size={40}
-                  weight="duotone"
-                />
-                <div>
-                  <p className="text-sm font-bold text-slate-700">
-                    {onlyOccupied && !editing
-                      ? "No hay mesas ocupadas en este sector."
-                      : "Este sector todavía no tiene elementos"}
-                  </p>
-                  {canManageTables && !(onlyOccupied && !editing) ? (
-                    <p className="mt-0.5 text-xs text-slate-600">
-                      Activá “Editar plano” para agregar mesas y figuras.
-                    </p>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-            {sectorShapes.map((shape) => {
-              const position = shapePositions[shape.id] ?? {
-                x: shape.layoutX,
-                y: shape.layoutY,
-              };
-              const selected = selectedShapeId === shape.id;
-              const appearance: FloorPlanShapeDto =
-                selected && shapeDraft ? { ...shape, ...shapeDraft } : shape;
-              const isVector =
-                appearance.kind === "POLYGON" || appearance.kind === "POLYLINE";
-              const style = {
-                left: `${position.x}%`,
-                top: `${position.y}%`,
-                width: `${appearance.layoutWidth}%`,
-                height: `${appearance.layoutHeight}%`,
-                touchAction: "none",
-              };
-              const visual = (
-                <>
-                  {isVector ? (
-                    <svg
-                      className="absolute inset-0 h-full w-full overflow-visible"
-                      viewBox="0 0 100 100"
-                      preserveAspectRatio="none"
-                      aria-hidden="true"
-                    >
-                      {appearance.kind === "POLYGON" ? (
-                        <polygon
-                          points={svgPoints(appearance.points)}
-                          fill={appearance.color}
-                          fillOpacity={appearance.fillOpacity}
-                          stroke={appearance.strokeColor}
-                          strokeWidth={appearance.strokeWidth}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      ) : (
-                        <polyline
-                          points={svgPoints(appearance.points)}
-                          fill="none"
-                          stroke={appearance.strokeColor}
-                          strokeWidth={appearance.strokeWidth}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      )}
-                    </svg>
-                  ) : null}
-                  <span
-                    className={`relative z-10 min-w-0 truncate rounded-md px-1 ${isVector ? "bg-white/80 py-0.5 shadow-sm" : ""}`}
-                  >
-                    {editing ? (
-                      <ArrowsOutCardinal
-                        className="mx-auto mb-0.5 opacity-50"
-                        size={13}
-                      />
-                    ) : null}
-                    {appearance.label || floorShapeLabels[appearance.kind]}
-                  </span>
-                </>
-              );
-              return (
+              {drawKind ? (
                 <div
-                  key={shape.id}
-                  className={`absolute ${editing ? "z-20" : "pointer-events-none z-0"}`}
-                  style={style}
+                  data-floor-drawing-toolbar
+                  className="absolute right-4 top-4 z-50 flex flex-wrap items-center justify-end gap-2 rounded-xl border border-brand-100 bg-white/95 p-2 shadow-lg backdrop-blur"
+                  onClick={(event) => event.stopPropagation()}
                 >
-                  <button
+                  <span className="px-1 text-xs font-extrabold text-slate-600">
+                    {drawingPoints.length} nodos
+                  </span>
+                  <Button
                     type="button"
-                    aria-label={`Editar figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
-                    tabIndex={editing ? 0 : -1}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelectedTableId(null);
-                      setSelectedShapeId(shape.id);
-                    }}
-                    onPointerDown={(event) => {
-                      if (!editing || drawKind) return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      const bounds = canvasRef.current?.getBoundingClientRect();
-                      if (!bounds) return;
-                      setSelectedTableId(null);
-                      setSelectedShapeId(shape.id);
-                      setShapeDrag({
-                        shapeId: shape.id,
-                        offsetX:
-                          ((event.clientX - bounds.left) / bounds.width) * 100 -
-                          position.x,
-                        offsetY:
-                          ((event.clientY - bounds.top) / bounds.height) * 100 -
-                          position.y,
-                      });
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                    }}
-                    onPointerMove={(event) => {
-                      if (shapeDrag?.shapeId !== shape.id) return;
-                      const next = shapePositionFromPointer(
-                        appearance,
-                        event.clientX,
-                        event.clientY,
-                        shapeDrag.offsetX,
-                        shapeDrag.offsetY,
-                      );
-                      setShapePositions((current) => ({
-                        ...current,
-                        [shape.id]: next,
-                      }));
-                    }}
-                    onPointerUp={(event) => {
-                      if (shapeDrag?.shapeId !== shape.id) return;
-                      const next = shapePositionFromPointer(
-                        appearance,
-                        event.clientX,
-                        event.clientY,
-                        shapeDrag.offsetX,
-                        shapeDrag.offsetY,
-                      );
-                      setShapePositions((current) => ({
-                        ...current,
-                        [shape.id]: next,
-                      }));
-                      setShapeDrag(null);
-                      persistShape(
-                        shape,
-                        next,
-                        selected && shapeDraft ? shapeDraft : undefined,
-                      );
-                    }}
-                    onPointerCancel={() => setShapeDrag(null)}
-                    className={`absolute inset-0 grid place-items-center px-2 text-center text-xs font-bold shadow-sm outline-none transition focus:ring-4 focus:ring-brand-200 ${isVector ? "border-0 bg-transparent text-slate-800" : "border-2 border-black/15"} ${appearance.kind === "ELLIPSE" ? "rounded-full" : "rounded-lg"} ${editing ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${selected ? "ring-4 ring-amber-300" : ""}`}
-                    style={
-                      isVector
-                        ? { color: appearance.strokeColor }
-                        : {
-                            backgroundColor: appearance.color,
-                            color: contrastColor(appearance.color),
-                          }
+                    variant="secondary"
+                    onClick={() =>
+                      setDrawingPoints((current) => current.slice(0, -1))
+                    }
+                    disabled={!drawingPoints.length}
+                  >
+                    Deshacer nodo
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={cancelDrawing}
+                  >
+                    Cancelar dibujo
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={finishDrawing}
+                    disabled={
+                      drawingPoints.length < (drawKind === "POLYGON" ? 3 : 2) ||
+                      createFloorShape.isPending
                     }
                   >
-                    {visual}
-                  </button>
-                  {editing && selected ? (
-                    <ResizeHandles
-                      label={`figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
-                      onPointerDown={(handle, event) =>
-                        startResize(
-                          "SHAPE",
-                          shape.id,
-                          handle,
-                          event,
-                          currentShapeRect(shape),
-                        )
-                      }
-                      onPointerMove={(_, event) =>
-                        moveResize("SHAPE", shape.id, event)
-                      }
-                      onPointerUp={(_, event) =>
-                        finishResize("SHAPE", shape.id, event)
-                      }
-                    />
-                  ) : null}
-                  {editing && selected && isVector
-                    ? appearance.points.map((point, nodeIndex) => (
-                        <button
-                          key={`${shape.id}-node-${nodeIndex}`}
-                          type="button"
-                          aria-label={`Editar nodo ${nodeIndex + 1} de figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
-                          title={`Nodo ${nodeIndex + 1}`}
-                          className="absolute z-50 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-brand-700 bg-white shadow-md outline-none ring-brand-200 hover:scale-125 focus:ring-4"
-                          style={{
-                            left: `${point.x}%`,
-                            top: `${point.y}%`,
-                            cursor: "crosshair",
-                            touchAction: "none",
-                          }}
-                          onClick={(event) => event.stopPropagation()}
-                          onPointerDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            setNodeDrag({ shapeId: shape.id, nodeIndex });
-                            event.currentTarget.setPointerCapture(
-                              event.pointerId,
-                            );
-                          }}
-                          onPointerMove={(event) => {
-                            if (
-                              nodeDrag?.shapeId !== shape.id ||
-                              nodeDrag.nodeIndex !== nodeIndex
-                            )
-                              return;
-                            updateShapeNode(
-                              shape,
-                              nodeIndex,
-                              event.clientX,
-                              event.clientY,
-                              false,
-                            );
-                          }}
-                          onPointerUp={(event) => {
-                            if (
-                              nodeDrag?.shapeId !== shape.id ||
-                              nodeDrag.nodeIndex !== nodeIndex
-                            )
-                              return;
-                            updateShapeNode(
-                              shape,
-                              nodeIndex,
-                              event.clientX,
-                              event.clientY,
-                              true,
-                            );
-                            setNodeDrag(null);
-                          }}
-                          onPointerCancel={() => setNodeDrag(null)}
-                        />
-                      ))
-                    : null}
+                    {drawKind === "POLYGON"
+                      ? "Cerrar polígono"
+                      : "Finalizar línea"}
+                  </Button>
                 </div>
-              );
-            })}
-            {visibleSectorTables.map((table) => {
-              const occupied = Boolean(table.currentOrderId);
-              const position = positions[table.id] ?? {
-                x: table.layoutX,
-                y: table.layoutY,
-              };
-              const selected = selectedTableId === table.id;
-              const width =
-                selected && draft ? draft.layoutWidth : table.layoutWidth;
-              const height =
-                selected && draft ? draft.layoutHeight : table.layoutHeight;
-              return (
+              ) : null}
+              {drawKind ? (
                 <div
-                  key={table.id}
-                  style={{
-                    left: `${position.x}%`,
-                    top: `${position.y}%`,
-                    width: `${layoutSizeToPixels(width, FLOOR_CANVAS_WIDTH)}px`,
-                    height: `${layoutSizeToPixels(height, FLOOR_CANVAS_HEIGHT)}px`,
+                  className="absolute inset-0 z-40 cursor-crosshair"
+                  aria-label="Área de dibujo por nodos"
+                  onClick={(event) => {
+                    const point = canvasPointFromClient(
+                      event.clientX,
+                      event.clientY,
+                    );
+                    if (point)
+                      setDrawingPoints((current) =>
+                        current.length < 64 ? [...current, point] : current,
+                      );
                   }}
-                  className="absolute z-10"
+                />
+              ) : null}
+              {drawKind && drawingPoints.length ? (
+                <svg
+                  className="pointer-events-none absolute inset-0 z-30 h-full w-full"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
                 >
-                  <button
-                    type="button"
-                    aria-label={`${editing ? "Editar" : occupied ? "Abrir pedido de" : "Abrir"} mesa ${table.number}`}
-                    disabled={!editing && !occupied && !data.cashSession}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      if (editing) {
-                        setSelectedShapeId(null);
-                        setSelectedTableId(table.id);
-                      } else onActivateTable(table);
-                    }}
-                    onPointerDown={(event) => {
-                      if (!editing || drawKind) return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      const bounds = canvasRef.current?.getBoundingClientRect();
-                      if (!bounds) return;
-                      setSelectedTableId(table.id);
-                      setSelectedShapeId(null);
-                      setDrag({
-                        tableId: table.id,
-                        offsetX:
-                          ((event.clientX - bounds.left) / bounds.width) * 100 -
-                          position.x,
-                        offsetY:
-                          ((event.clientY - bounds.top) / bounds.height) * 100 -
-                          position.y,
-                      });
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                    }}
-                    onPointerMove={(event) => {
-                      if (!editing || drag?.tableId !== table.id) return;
-                      const next = positionFromPointer(
-                        { ...table, layoutWidth: width, layoutHeight: height },
-                        event.clientX,
-                        event.clientY,
-                        drag.offsetX,
-                        drag.offsetY,
-                      );
-                      setPositions((current) => ({
-                        ...current,
-                        [table.id]: next,
-                      }));
-                    }}
-                    onPointerUp={(event) => {
-                      if (!editing || drag?.tableId !== table.id) return;
-                      const next = positionFromPointer(
-                        { ...table, layoutWidth: width, layoutHeight: height },
-                        event.clientX,
-                        event.clientY,
-                        drag.offsetX,
-                        drag.offsetY,
-                      );
-                      setPositions((current) => ({
-                        ...current,
-                        [table.id]: next,
-                      }));
-                      setDrag(null);
-                      persistPosition(table, next);
-                    }}
-                    onPointerCancel={() => setDrag(null)}
-                    onKeyDown={(event) => {
-                      if (
-                        !editing ||
-                        ![
-                          "ArrowLeft",
-                          "ArrowRight",
-                          "ArrowUp",
-                          "ArrowDown",
-                        ].includes(event.key)
-                      )
-                        return;
-                      event.preventDefault();
-                      const delta = event.shiftKey ? 5 : 1;
-                      const next = {
-                        x: clamp(
-                          position.x +
-                            (event.key === "ArrowLeft"
-                              ? -delta
-                              : event.key === "ArrowRight"
-                                ? delta
-                                : 0),
-                          0,
-                          100 - width,
-                        ),
-                        y: clamp(
-                          position.y +
-                            (event.key === "ArrowUp"
-                              ? -delta
-                              : event.key === "ArrowDown"
-                                ? delta
-                                : 0),
-                          0,
-                          100 - height,
-                        ),
-                      };
-                      setPositions((current) => ({
-                        ...current,
-                        [table.id]: next,
-                      }));
-                      persistPosition(table, next);
-                    }}
-                    className={`absolute inset-0 grid place-items-center border-2 px-2 text-center shadow-md transition focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-2xl" : "rounded-xl"} ${occupied ? "border-brand-500 bg-brand-700 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:-translate-y-0.5 hover:shadow-lg"}`}
-                    style={{ touchAction: "none" }}
-                  >
-                    <span className="min-w-0 max-w-full">
+                  {drawKind === "POLYGON" ? (
+                    <polygon
+                      points={svgPoints(drawingPoints)}
+                      fill="#FDBA7452"
+                      stroke="#C2410C"
+                      strokeWidth="0.55"
+                      strokeDasharray="1.4 1"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ) : (
+                    <polyline
+                      points={svgPoints(drawingPoints)}
+                      fill="none"
+                      stroke="#C2410C"
+                      strokeWidth="0.75"
+                      strokeDasharray="1.4 1"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
+                  {drawingPoints.map((point, index) => (
+                    <circle
+                      key={`${point.x}-${point.y}-${index}`}
+                      cx={point.x}
+                      cy={point.y}
+                      r="0.8"
+                      fill="#FFFFFF"
+                      stroke="#C2410C"
+                      strokeWidth="0.35"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ))}
+                </svg>
+              ) : null}
+              {!visibleSectorTables.length &&
+              (!sectorShapes.length || (onlyOccupied && !editing)) ? (
+                <div className="pointer-events-none absolute left-10 top-16 z-20 flex items-center gap-4 rounded-2xl border border-dashed border-slate-300 bg-white/90 p-6 shadow-sm backdrop-blur">
+                  <MapTrifold
+                    className="shrink-0 text-slate-400"
+                    size={40}
+                    weight="duotone"
+                  />
+                  <div>
+                    <p className="text-sm font-bold text-slate-700">
+                      {onlyOccupied && !editing
+                        ? "No hay mesas ocupadas en este sector."
+                        : "Este sector todavía no tiene elementos"}
+                    </p>
+                    {canManageTables && !(onlyOccupied && !editing) ? (
+                      <p className="mt-0.5 text-xs text-slate-600">
+                        Activá “Editar plano” para agregar mesas y figuras.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              {sectorShapes.map((shape) => {
+                const position = shapePositions[shape.id] ?? {
+                  x: shape.layoutX,
+                  y: shape.layoutY,
+                };
+                const selected = selectedShapeId === shape.id;
+                const appearance: FloorPlanShapeDto =
+                  selected && shapeDraft ? { ...shape, ...shapeDraft } : shape;
+                const isVector =
+                  appearance.kind === "POLYGON" ||
+                  appearance.kind === "POLYLINE";
+                const style = {
+                  left: `${position.x}%`,
+                  top: `${position.y}%`,
+                  width: `${appearance.layoutWidth}%`,
+                  height: `${appearance.layoutHeight}%`,
+                  touchAction: "none",
+                };
+                const visual = (
+                  <>
+                    {isVector ? (
+                      <svg
+                        className="absolute inset-0 h-full w-full overflow-visible"
+                        viewBox="0 0 100 100"
+                        preserveAspectRatio="none"
+                        aria-hidden="true"
+                      >
+                        {appearance.kind === "POLYGON" ? (
+                          <polygon
+                            points={svgPoints(appearance.points)}
+                            fill={appearance.color}
+                            fillOpacity={appearance.fillOpacity}
+                            stroke={appearance.strokeColor}
+                            strokeWidth={appearance.strokeWidth}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ) : (
+                          <polyline
+                            points={svgPoints(appearance.points)}
+                            fill="none"
+                            stroke={appearance.strokeColor}
+                            strokeWidth={appearance.strokeWidth}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
+                      </svg>
+                    ) : null}
+                    <span
+                      className={`relative z-10 min-w-0 truncate rounded-md px-1 ${isVector ? "bg-white/80 py-0.5 shadow-sm" : ""}`}
+                    >
                       {editing ? (
                         <ArrowsOutCardinal
-                          className="mx-auto mb-0.5 opacity-60"
+                          className="mx-auto mb-0.5 opacity-50"
                           size={13}
                         />
                       ) : null}
-                      <strong className="block truncate text-sm leading-tight">
-                        Mesa {table.number}
-                      </strong>
-                      {table.name ? (
-                        <span className="block truncate text-xs leading-tight">
-                          {table.name}
-                        </span>
-                      ) : null}
-                      <span className="block truncate text-xs font-bold leading-tight">
-                        {occupied
-                          ? formatMoney(table.currentTotalMinor)
-                          : "Libre"}
-                      </span>
-                      {occupied ? (
-                        <span className="block truncate text-xs leading-tight">
-                          {table.waiterName ?? "Sin mesero"} ·{" "}
-                          {formatElapsed(table.openedAt)}
-                        </span>
-                      ) : null}
+                      {appearance.label || floorShapeLabels[appearance.kind]}
                     </span>
-                  </button>
-                  {editing && selected ? (
-                    <ResizeHandles
-                      label={`mesa ${table.number}`}
-                      onPointerDown={(handle, event) =>
-                        startResize(
-                          "TABLE",
-                          table.id,
-                          handle,
-                          event,
-                          currentTableRect(table),
+                  </>
+                );
+                return (
+                  <div
+                    key={shape.id}
+                    className={`absolute ${editing ? "z-20" : "pointer-events-none z-0"}`}
+                    style={style}
+                  >
+                    <button
+                      type="button"
+                      aria-label={`Editar figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
+                      tabIndex={editing ? 0 : -1}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedTableId(null);
+                        setSelectedShapeId(shape.id);
+                      }}
+                      onPointerDown={(event) => {
+                        if (!editing || drawKind) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const bounds =
+                          canvasRef.current?.getBoundingClientRect();
+                        if (!bounds) return;
+                        setSelectedTableId(null);
+                        setSelectedShapeId(shape.id);
+                        setShapeDrag({
+                          shapeId: shape.id,
+                          offsetX:
+                            ((event.clientX - bounds.left) / bounds.width) *
+                              100 -
+                            position.x,
+                          offsetY:
+                            ((event.clientY - bounds.top) / bounds.height) *
+                              100 -
+                            position.y,
+                        });
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                      }}
+                      onPointerMove={(event) => {
+                        if (shapeDrag?.shapeId !== shape.id) return;
+                        const next = shapePositionFromPointer(
+                          appearance,
+                          event.clientX,
+                          event.clientY,
+                          shapeDrag.offsetX,
+                          shapeDrag.offsetY,
+                        );
+                        setShapePositions((current) => ({
+                          ...current,
+                          [shape.id]: next,
+                        }));
+                      }}
+                      onPointerUp={(event) => {
+                        if (shapeDrag?.shapeId !== shape.id) return;
+                        const next = shapePositionFromPointer(
+                          appearance,
+                          event.clientX,
+                          event.clientY,
+                          shapeDrag.offsetX,
+                          shapeDrag.offsetY,
+                        );
+                        setShapePositions((current) => ({
+                          ...current,
+                          [shape.id]: next,
+                        }));
+                        setShapeDrag(null);
+                        persistShape(
+                          shape,
+                          next,
+                          selected && shapeDraft ? shapeDraft : undefined,
+                        );
+                      }}
+                      onPointerCancel={() => setShapeDrag(null)}
+                      className={`absolute inset-0 grid place-items-center px-2 text-center text-xs font-bold shadow-sm outline-none transition focus:ring-4 focus:ring-brand-200 ${isVector ? "border-0 bg-transparent text-slate-800" : "border-2 border-black/15"} ${appearance.kind === "ELLIPSE" ? "rounded-full" : "rounded-lg"} ${editing ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${selected ? "ring-4 ring-amber-300" : ""}`}
+                      style={
+                        isVector
+                          ? { color: appearance.strokeColor }
+                          : {
+                              backgroundColor: appearance.color,
+                              color: contrastColor(appearance.color),
+                            }
+                      }
+                    >
+                      {visual}
+                    </button>
+                    {editing && selected ? (
+                      <ResizeHandles
+                        label={`figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
+                        onPointerDown={(handle, event) =>
+                          startResize(
+                            "SHAPE",
+                            shape.id,
+                            handle,
+                            event,
+                            currentShapeRect(shape),
+                          )
+                        }
+                        onPointerMove={(_, event) =>
+                          moveResize("SHAPE", shape.id, event)
+                        }
+                        onPointerUp={(_, event) =>
+                          finishResize("SHAPE", shape.id, event)
+                        }
+                      />
+                    ) : null}
+                    {editing && selected && isVector
+                      ? appearance.points.map((point, nodeIndex) => (
+                          <button
+                            key={`${shape.id}-node-${nodeIndex}`}
+                            type="button"
+                            aria-label={`Editar nodo ${nodeIndex + 1} de figura ${appearance.label || floorShapeLabels[appearance.kind]}`}
+                            title={`Nodo ${nodeIndex + 1}`}
+                            className="absolute z-50 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-brand-700 bg-white shadow-md outline-none ring-brand-200 hover:scale-125 focus:ring-4"
+                            style={{
+                              left: `${point.x}%`,
+                              top: `${point.y}%`,
+                              cursor: "crosshair",
+                              touchAction: "none",
+                            }}
+                            onClick={(event) => event.stopPropagation()}
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setNodeDrag({ shapeId: shape.id, nodeIndex });
+                              event.currentTarget.setPointerCapture(
+                                event.pointerId,
+                              );
+                            }}
+                            onPointerMove={(event) => {
+                              if (
+                                nodeDrag?.shapeId !== shape.id ||
+                                nodeDrag.nodeIndex !== nodeIndex
+                              )
+                                return;
+                              updateShapeNode(
+                                shape,
+                                nodeIndex,
+                                event.clientX,
+                                event.clientY,
+                                false,
+                              );
+                            }}
+                            onPointerUp={(event) => {
+                              if (
+                                nodeDrag?.shapeId !== shape.id ||
+                                nodeDrag.nodeIndex !== nodeIndex
+                              )
+                                return;
+                              updateShapeNode(
+                                shape,
+                                nodeIndex,
+                                event.clientX,
+                                event.clientY,
+                                true,
+                              );
+                              setNodeDrag(null);
+                            }}
+                            onPointerCancel={() => setNodeDrag(null)}
+                          />
+                        ))
+                      : null}
+                  </div>
+                );
+              })}
+              {visibleSectorTables.map((table) => {
+                const occupied = Boolean(table.currentOrderId);
+                const position = positions[table.id] ?? {
+                  x: table.layoutX,
+                  y: table.layoutY,
+                };
+                const selected = selectedTableId === table.id;
+                const width =
+                  selected && draft ? draft.layoutWidth : table.layoutWidth;
+                const height =
+                  selected && draft ? draft.layoutHeight : table.layoutHeight;
+                const compact = zoom < 0.8;
+                return (
+                  <div
+                    key={table.id}
+                    style={{
+                      left: `${position.x}%`,
+                      top: `${position.y}%`,
+                      width: `${layoutSizeToPixels(width, FLOOR_CANVAS_WIDTH)}px`,
+                      height: `${layoutSizeToPixels(height, FLOOR_CANVAS_HEIGHT)}px`,
+                    }}
+                    className="absolute z-10"
+                  >
+                    <button
+                      type="button"
+                      aria-label={`${editing ? "Editar" : occupied ? "Abrir pedido de" : "Abrir"} mesa ${table.number}`}
+                      title={`Mesa ${table.number}${table.name ? ` · ${table.name}` : ""} · ${occupied ? `${formatMoney(table.currentTotalMinor)} · ${table.waiterName ?? "Sin mesero"} · ${formatElapsed(table.openedAt)}` : "Libre"}`}
+                      disabled={!editing && !occupied && !data.cashSession}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (editing) {
+                          setSelectedShapeId(null);
+                          setSelectedTableId(table.id);
+                        } else onActivateTable(table);
+                      }}
+                      onPointerDown={(event) => {
+                        if (!editing || drawKind) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const bounds =
+                          canvasRef.current?.getBoundingClientRect();
+                        if (!bounds) return;
+                        setSelectedTableId(table.id);
+                        setSelectedShapeId(null);
+                        setDrag({
+                          tableId: table.id,
+                          offsetX:
+                            ((event.clientX - bounds.left) / bounds.width) *
+                              100 -
+                            position.x,
+                          offsetY:
+                            ((event.clientY - bounds.top) / bounds.height) *
+                              100 -
+                            position.y,
+                        });
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                      }}
+                      onPointerMove={(event) => {
+                        if (!editing || drag?.tableId !== table.id) return;
+                        const next = positionFromPointer(
+                          {
+                            ...table,
+                            layoutWidth: width,
+                            layoutHeight: height,
+                          },
+                          event.clientX,
+                          event.clientY,
+                          drag.offsetX,
+                          drag.offsetY,
+                        );
+                        setPositions((current) => ({
+                          ...current,
+                          [table.id]: next,
+                        }));
+                      }}
+                      onPointerUp={(event) => {
+                        if (!editing || drag?.tableId !== table.id) return;
+                        const next = positionFromPointer(
+                          {
+                            ...table,
+                            layoutWidth: width,
+                            layoutHeight: height,
+                          },
+                          event.clientX,
+                          event.clientY,
+                          drag.offsetX,
+                          drag.offsetY,
+                        );
+                        setPositions((current) => ({
+                          ...current,
+                          [table.id]: next,
+                        }));
+                        setDrag(null);
+                        persistPosition(table, next);
+                      }}
+                      onPointerCancel={() => setDrag(null)}
+                      onKeyDown={(event) => {
+                        if (
+                          !editing ||
+                          ![
+                            "ArrowLeft",
+                            "ArrowRight",
+                            "ArrowUp",
+                            "ArrowDown",
+                          ].includes(event.key)
                         )
-                      }
-                      onPointerMove={(_, event) =>
-                        moveResize("TABLE", table.id, event)
-                      }
-                      onPointerUp={(_, event) =>
-                        finishResize("TABLE", table.id, event)
-                      }
-                    />
-                  ) : null}
-                </div>
-              );
-            })}
+                          return;
+                        event.preventDefault();
+                        const delta = event.shiftKey ? 5 : 1;
+                        const next = {
+                          x: clamp(
+                            position.x +
+                              (event.key === "ArrowLeft"
+                                ? -delta
+                                : event.key === "ArrowRight"
+                                  ? delta
+                                  : 0),
+                            0,
+                            100 - width,
+                          ),
+                          y: clamp(
+                            position.y +
+                              (event.key === "ArrowUp"
+                                ? -delta
+                                : event.key === "ArrowDown"
+                                  ? delta
+                                  : 0),
+                            0,
+                            100 - height,
+                          ),
+                        };
+                        setPositions((current) => ({
+                          ...current,
+                          [table.id]: next,
+                        }));
+                        persistPosition(table, next);
+                      }}
+                      className={`absolute inset-0 grid place-items-center overflow-hidden border-2 px-1 text-center shadow-sm transition focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-xl" : "rounded-lg"} ${occupied ? "border-brand-500 bg-brand-700 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:shadow-md"}`}
+                      style={{ touchAction: "none" }}
+                    >
+                      <span className="min-w-0 max-h-full max-w-full overflow-hidden">
+                        {editing && !compact ? (
+                          <ArrowsOutCardinal
+                            className="mx-auto mb-0.5 opacity-60"
+                            size={13}
+                          />
+                        ) : null}
+                        <strong
+                          className="block truncate text-sm leading-tight"
+                          style={
+                            compact ? { fontSize: `${13 / zoom}px` } : undefined
+                          }
+                        >
+                          {compact ? table.number : `Mesa ${table.number}`}
+                        </strong>
+                        {table.name && !compact ? (
+                          <span className="block truncate text-xs leading-tight">
+                            {table.name}
+                          </span>
+                        ) : null}
+                        <span
+                          className="block truncate text-xs font-bold leading-tight"
+                          style={
+                            compact ? { fontSize: `${10 / zoom}px` } : undefined
+                          }
+                        >
+                          {compact
+                            ? occupied
+                              ? "En uso"
+                              : "Libre"
+                            : occupied
+                              ? formatMoney(table.currentTotalMinor)
+                              : "Libre"}
+                        </span>
+                        {occupied && !compact ? (
+                          <span className="block truncate text-xs leading-tight">
+                            {table.waiterName ?? "Sin mesero"} ·{" "}
+                            {formatElapsed(table.openedAt)}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                    {editing && selected ? (
+                      <ResizeHandles
+                        label={`mesa ${table.number}`}
+                        onPointerDown={(handle, event) =>
+                          startResize(
+                            "TABLE",
+                            table.id,
+                            handle,
+                            event,
+                            currentTableRect(table),
+                          )
+                        }
+                        onPointerMove={(_, event) =>
+                          moveResize("TABLE", table.id, event)
+                        }
+                        onPointerUp={(_, event) =>
+                          finishResize("TABLE", table.id, event)
+                        }
+                      />
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </Card>
@@ -2004,12 +2143,24 @@ export function TableFloorPlan({
                         shape,
                         layoutWidth:
                           shape === "RECTANGLE"
-                            ? pixelsToLayoutSize(DEFAULT_RECT_TABLE_WIDTH_PX, FLOOR_CANVAS_WIDTH)
-                            : pixelsToLayoutSize(DEFAULT_TABLE_WIDTH_PX, FLOOR_CANVAS_WIDTH),
+                            ? pixelsToLayoutSize(
+                                DEFAULT_RECT_TABLE_WIDTH_PX,
+                                FLOOR_CANVAS_WIDTH,
+                              )
+                            : pixelsToLayoutSize(
+                                DEFAULT_TABLE_WIDTH_PX,
+                                FLOOR_CANVAS_WIDTH,
+                              ),
                         layoutHeight:
                           shape === "RECTANGLE"
-                            ? pixelsToLayoutSize(DEFAULT_RECT_TABLE_HEIGHT_PX, FLOOR_CANVAS_HEIGHT)
-                            : pixelsToLayoutSize(DEFAULT_TABLE_HEIGHT_PX, FLOOR_CANVAS_HEIGHT),
+                            ? pixelsToLayoutSize(
+                                DEFAULT_RECT_TABLE_HEIGHT_PX,
+                                FLOOR_CANVAS_HEIGHT,
+                              )
+                            : pixelsToLayoutSize(
+                                DEFAULT_TABLE_HEIGHT_PX,
+                                FLOOR_CANVAS_HEIGHT,
+                              ),
                       });
                     }}
                   >
@@ -2026,11 +2177,19 @@ export function TableFloorPlan({
                       type="number"
                       min={108}
                       max={720}
-                      value={Math.round(layoutSizeToPixels(draft.layoutWidth, FLOOR_CANVAS_WIDTH))}
+                      value={Math.round(
+                        layoutSizeToPixels(
+                          draft.layoutWidth,
+                          FLOOR_CANVAS_WIDTH,
+                        ),
+                      )}
                       onChange={(event) =>
                         setDraft({
                           ...draft,
-                          layoutWidth: pixelsToLayoutSize(Number(event.target.value), FLOOR_CANVAS_WIDTH),
+                          layoutWidth: pixelsToLayoutSize(
+                            Number(event.target.value),
+                            FLOOR_CANVAS_WIDTH,
+                          ),
                         })
                       }
                     />
@@ -2040,11 +2199,19 @@ export function TableFloorPlan({
                       type="number"
                       min={84}
                       max={480}
-                      value={Math.round(layoutSizeToPixels(draft.layoutHeight, FLOOR_CANVAS_HEIGHT))}
+                      value={Math.round(
+                        layoutSizeToPixels(
+                          draft.layoutHeight,
+                          FLOOR_CANVAS_HEIGHT,
+                        ),
+                      )}
                       onChange={(event) =>
                         setDraft({
                           ...draft,
-                          layoutHeight: pixelsToLayoutSize(Number(event.target.value), FLOOR_CANVAS_HEIGHT),
+                          layoutHeight: pixelsToLayoutSize(
+                            Number(event.target.value),
+                            FLOOR_CANVAS_HEIGHT,
+                          ),
                         })
                       }
                     />
@@ -2301,6 +2468,46 @@ export function TableFloorPlan({
       </div>
 
       <Modal
+        open={Boolean(arrangement)}
+        onClose={() => {
+          if (!arrangeTables.isPending) setArrangement(null);
+        }}
+        closeDisabled={arrangeTables.isPending}
+        title={`Ordenar mesas de ${arrangement?.sectorName ?? "sector"}`}
+        description="Se reemplazarán la posición y el tamaño de las mesas de este sector por una distribución compacta, ordenada por número."
+      >
+        <p className="text-sm text-slate-600">
+          Se ordenarán {arrangement?.tables.length ?? 0} mesas. Sus números,
+          nombres y formas se conservan. Las figuras no se mueven ni se ocupan
+          sus espacios. Los pedidos, cobros y stock no se modifican.
+        </p>
+        <p className="mt-3 text-xs font-semibold text-amber-800">
+          Esta acción reemplaza tu disposición actual. Cancelar la conserva.
+        </p>
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={arrangeTables.isPending}
+            onClick={() => setArrangement(null)}
+          >
+            Cancelar
+          </Button>
+          <Button
+            type="button"
+            disabled={arrangeTables.isPending || !arrangement}
+            onClick={() => {
+              if (arrangement) arrangeTables.mutate(arrangement);
+            }}
+          >
+            {arrangeTables.isPending
+              ? "Ordenando mesas…"
+              : "Ordenar y compactar"}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
         open={Boolean(sectorDialog)}
         onClose={() => setSectorDialog(null)}
         title={
@@ -2363,6 +2570,11 @@ export function TableFloorPlan({
               createTable.mutate({ number, sectorId: activeSectorId });
           }}
         >
+          {createTable.isError && message ? (
+            <p role="alert" className="text-sm text-rose-700">
+              {message}
+            </p>
+          ) : null}
           <Field label="Número de mesa">
             <Input
               autoFocus
