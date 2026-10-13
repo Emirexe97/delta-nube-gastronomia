@@ -1,4 +1,7 @@
-import { installInteractionDiagnostics, attachInteractionDiagnostics } from "./interaction-diagnostics";
+import {
+  installInteractionDiagnostics,
+  attachInteractionDiagnostics,
+} from "./interaction-diagnostics";
 import {
   test,
   expect,
@@ -34,7 +37,11 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async ({}, info) => {
-  try { await attachInteractionDiagnostics(page, app, info, "interaction-state"); } catch (error) { console.warn("Diagnostic capture failed", error); }
+  try {
+    await attachInteractionDiagnostics(page, app, info, "interaction-state");
+  } catch (error) {
+    console.warn("Diagnostic capture failed", error);
+  }
   try {
     if (info.status !== info.expectedStatus && page && !page.isClosed()) {
       await info.attach("customer-search-state", {
@@ -99,10 +106,13 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
   await customerDialog
     .getByRole("button", { name: "Guardar y seleccionar" })
     .click();
-  await expect(page.getByText("Retiro E2E seleccionado")).toBeVisible();
+  await expect(page.getByText("Retiro E2E", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Cambiar cliente" }),
+  ).toBeVisible();
   await expect(
     page.getByLabel("Dirección (opcional)", { exact: true }),
-  ).toHaveValue("");
+  ).toBeHidden();
   await expect(createOrderButton).toBeEnabled();
   await page.getByRole("button", { name: "Crear pedido" }).click();
   await expect(page.getByText(/Pedido #\d+/)).toBeVisible();
@@ -187,12 +197,15 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   await customerDialog
     .getByRole("button", { name: "Guardar y seleccionar" })
     .click();
-  await expect(page.getByText("Cliente E2E seleccionado")).toBeVisible();
+  await expect(page.getByText("Cliente E2E", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Cambiar cliente" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Cambiar cliente" }).click();
   const customerSearch = page.getByRole("combobox", { name: /Buscar cliente/ });
   await customerSearch.fill("Cliente E2");
   await expect(page.getByRole("option", { name: /Cliente E2E/ })).toBeVisible();
-  await customerSearch.press("ArrowDown");
-  await customerSearch.press("Tab");
+  await customerSearch.press("Enter");
   await expect(page.getByLabel("Teléfono *", { exact: true })).toHaveValue(
     "11 2222-9090",
   );
@@ -259,7 +272,16 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   await deliveryCustomerOption.click();
   const addressSelector = page.getByLabel("Dirección guardada");
   await expect(addressSelector).toBeVisible();
-  await addressSelector.selectOption({ index: 1 });
+  await expect(addressSelector.locator("option")).toContainText([
+    "Otra dirección para este pedido",
+  ]);
+  const mitreAddress = addressSelector.locator("option").filter({
+    hasText: "Mitre 900",
+  });
+  await expect(mitreAddress).toHaveCount(1);
+  await addressSelector.selectOption(
+    (await mitreAddress.getAttribute("value")) ?? "",
+  );
   await expect(page.getByLabel("Dirección *", { exact: true })).toHaveValue(
     "Mitre 900",
   );
@@ -635,7 +657,7 @@ test("protege modales anidados y completa atajos y recuperación por teclado", a
     .fill("2625 000 000");
   await expect(
     draftCreation.getByLabel("Dirección (opcional)", { exact: true }),
-  ).toHaveValue("");
+  ).toBeHidden();
   await draftCreation.getByRole("button", { name: "Crear pedido" }).click();
   const draftEditor = page.getByRole("dialog", {
     name: /Pedido #\d+ · Para retirar/,

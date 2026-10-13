@@ -496,7 +496,7 @@ test("la búsqueda de clientes explica qué escribir sin mostrar tiempos interno
   await page.getByRole("button", { name: "Nuevo pedido", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(
-    dialog.getByText("Escribí nombre o teléfono para buscar un cliente.", {
+    dialog.getByText("Buscá un cliente guardado o completá los datos abajo.", {
       exact: true,
     }),
   ).toBeVisible();

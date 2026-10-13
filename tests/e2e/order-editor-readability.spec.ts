@@ -737,20 +737,21 @@ test("Nueva orden: ayuda y modos rápido/programado legibles; cancelar conserva 
   const observations = [];
   const customerQuery = create.getByPlaceholder("Ej.: Ana o 11 4444");
   const customerQueryHint = create.getByText(
-    "Escribí nombre o teléfono para buscar un cliente.",
+    "Buscá un cliente guardado o completá los datos abajo.",
     { exact: true },
   );
   const customerName = create.getByLabel("Nombre del cliente *", {
     exact: true,
   });
   const customerPhone = create.getByLabel("Teléfono *", { exact: true });
-  const address = create.getByLabel("Dirección (opcional)", { exact: true });
   const orderHelp = create.getByText(/Podés comenzar por los productos/);
   await expect(customerQuery).toBeVisible();
   await expect(customerQueryHint).toBeVisible();
   await expect(customerName).toBeVisible();
   await expect(customerPhone).toBeVisible();
-  await expect(address).toBeVisible();
+  await expect(
+    create.getByLabel("Dirección (opcional)", { exact: true }),
+  ).toBeHidden();
   await expect(orderHelp).toBeVisible();
   const requiredHelp = create.getByText("* Campos obligatorios.", {
     exact: true,
@@ -761,12 +762,10 @@ test("Nueva orden: ayuda y modos rápido/programado legibles; cancelar conserva 
   observations.push(await readable(customerQueryHint, "customer search hint"));
   observations.push(await readable(customerName, "new order customer name"));
   observations.push(await readable(customerPhone, "new order customer phone"));
-  observations.push(await readable(address, "new order address"));
   observations.push(await readable(orderHelp, "new order workflow helper"));
   await customerQuery.fill("Cliente temporal prueba");
   await customerName.fill("Cliente temporal prueba");
   await customerPhone.fill("1155000123");
-  await address.fill("Dirección temporal 12");
   await expect(create).toBeVisible();
   await writeFile(
     join(evidence, "create-after-fields.json"),
@@ -821,7 +820,6 @@ test("Nueva orden: ayuda y modos rápido/programado legibles; cancelar conserva 
   await customerQuery.fill("Cliente temporal prueba");
   await expect(customerName).toHaveValue("Cliente temporal prueba");
   await expect(customerPhone).toHaveValue("1155000123");
-  await expect(address).toHaveValue("Dirección temporal 12");
   expect(await scheduledDate.inputValue()).toBe(scheduledValue);
   await quickMode.click();
   await expect(delayInput).toHaveValue("43");

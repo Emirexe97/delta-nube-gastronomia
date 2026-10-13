@@ -34,6 +34,9 @@ export function OrderCustomerSelector(props: Props) {
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerDto | null>(
     null,
   );
+  const [hydrationAttempt, setHydrationAttempt] = useState(0);
+  const latestPropsRef = useRef(props);
+  latestPropsRef.current = props;
   const [searchError, setSearchError] = useState<string | null>(null);
   const searchRequestRef = useRef(0);
   const hydrationRequestRef = useRef(0);
@@ -97,35 +100,40 @@ export function OrderCustomerSelector(props: Props) {
   }, [props.open, props.customerId, selectedCustomer]);
 
   useEffect(() => {
-    if (!props.open || !props.customerId || !props.phone.trim()) return;
+    if (!props.open || !props.customerId) return;
     const request = ++hydrationRequestRef.current;
-    window.gastronomy.searchCustomers(props.phone).then((customers) => {
-      if (request !== hydrationRequestRef.current) return;
-      const customer = customers.find(
-        (candidate) => candidate.id === props.customerId,
-      );
-      if (!customer) return;
-      const selectedAddress =
-        customer.addresses.find(
-          (candidate) => candidate.address === props.address,
-        ) ?? (!props.address.trim() ? customer.addresses[0] : undefined);
-      setSelectedCustomer(customer);
-      props.setCustomerAddressId(selectedAddress?.id ?? null);
-      if (!props.address.trim() && selectedAddress) {
-        props.setAddress(selectedAddress.address);
-        props.setDeliveryFee(
-          String(selectedAddress.deliveryFeeMinor / 100).replace(".", ","),
+    void window.gastronomy
+      .getCustomerProfile({
+        customerId: props.customerId,
+        page: 1,
+        pageSize: 1,
+      })
+      .then(({ customer }) => {
+        const current = latestPropsRef.current;
+        if (
+          request !== hydrationRequestRef.current ||
+          !current.open ||
+          current.customerId !== customer.id
+        )
+          return;
+        const address = customer.addresses.find(
+          (candidate) => candidate.address.trim() === current.address.trim(),
         );
-      }
-      setQuery("");
-    }).catch(() => {
-      if (request === hydrationRequestRef.current)
-        setSearchError("No se pudo recuperar la ficha del cliente. Volvé a buscar al cliente para reintentar.");
-    });
+        setSelectedCustomer(customer);
+        // Hydration restores the saved choices, never overwrites typed snapshots.
+        current.setCustomerAddressId(address?.id ?? null);
+        setSearchError(null);
+      })
+      .catch(() => {
+        if (request === hydrationRequestRef.current)
+          setSearchError(
+            "No se pudo recuperar la ficha del cliente. Los datos del pedido se conservan.",
+          );
+      });
     return () => {
       hydrationRequestRef.current += 1;
     };
-  }, [props.open, props.type, props.customerId, props.phone]);
+  }, [props.open, props.type, props.customerId, hydrationAttempt]);
 
   const searchCustomers = useCallback(
     async (value: string) => {
@@ -175,214 +183,55 @@ export function OrderCustomerSelector(props: Props) {
       String((primaryAddress?.deliveryFeeMinor ?? 0) / 100).replace(".", ","),
     );
     setSelectedCustomer(customer);
+    setSearching(false);
+    searchFocusedRef.current = false;
+    window.requestAnimationFrame(() => phoneRef.current?.focus());
     setQuery("");
     setSuggestions([]);
     setListOpen(false);
   };
 
   const clearSelection = () => {
+    searchRequestRef.current += 1;
+    hydrationRequestRef.current += 1;
     props.setCustomerId(null);
     props.setCustomerAddressId(null);
     setSelectedCustomer(null);
+    setQuery("");
+    setSuggestions([]);
+    setListOpen(false);
+    setSearching(false);
+    setSearchError(null);
   };
   const waiting = query.trim() !== debouncedQuery.trim();
-
-  const invalidateSelectedCustomer = () => {
-    if (!props.customerId && !selectedCustomer) return;
-    clearSelection();
-    props.setName("");
-    props.setPhone("");
-    props.setAddress("");
-    props.setDeliveryFee("0");
-  };
 
   const resolvePendingSearch = async () => {
     const value = query.trim();
     if (!value) return false;
     const results = await searchCustomers(value);
-    const first = results?.[0];
-    if (!first) return false;
-    selectCustomer(first);
-    window.requestAnimationFrame(() => phoneRef.current?.focus());
-    return true;
+    if (!results?.length) return false;
+    if (results.length === 1) selectCustomer(results[0]!);
+    else setListOpen(true);
+    return results.length === 1;
   };
 
   return (
     <section className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="min-w-[240px] flex-1">
-          <Field label="Buscar cliente">
-            <div className="relative">
-              <MagnifyingGlass
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                size={16}
-              />
-              <Input
-                ref={searchInputRef}
-                aria-describedby="order-customer-search-hint"
-                autoFocus
-                value={query}
-                onChange={(event) => {
-                  hydrationRequestRef.current += 1;
-                  invalidateSelectedCustomer();
-                  searchRequestRef.current += 1;
-                  setQuery(event.target.value);
-                  setSuggestions([]);
-                  setSearching(false);
-                  setSearchError(null);
-                  setListOpen(true);
-                  setActiveIndex(0);
-                }}
-                onFocus={() => {
-                  searchFocusedRef.current = true;
-                  setListOpen(true);
-                }}
-                onBlur={() => {
-                  searchFocusedRef.current = false;
-                  searchRequestRef.current += 1;
-                  setSearching(false);
-                  window.setTimeout(() => setListOpen(false), 120);
-                }}
-                onKeyDown={(event) => {
-                  if (
-                    (event.key === "Enter" ||
-                      (event.key === "Tab" && !event.shiftKey)) &&
-                    (waiting || searching)
-                  ) {
-                    event.preventDefault();
-                    void resolvePendingSearch();
-                    return;
-                  }
-                  if (
-                    (event.key === "ArrowDown" || event.key === "ArrowUp") &&
-                    suggestions.length
-                  ) {
-                    event.preventDefault();
-                    const direction = event.key === "ArrowDown" ? 1 : -1;
-                    setActiveIndex(
-                      (activeIndex + direction + suggestions.length) %
-                        suggestions.length,
-                    );
-                    setListOpen(true);
-                    return;
-                  }
-                  if (
-                    (event.key === "Enter" || event.key === "Tab") &&
-                    listOpen &&
-                    suggestions.length
-                  ) {
-                    event.preventDefault();
-                    selectCustomer(suggestions[activeIndex] ?? suggestions[0]!);
-                    window.requestAnimationFrame(() =>
-                      phoneRef.current?.focus(),
-                    );
-                    return;
-                  }
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    return;
-                  }
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setListOpen(false);
-                  }
-                }}
-                placeholder={
-                  selectedCustomer
-                    ? `${selectedCustomer.name} seleccionado · buscá para cambiar`
-                    : "Ej.: Ana o 11 4444"
-                }
-                className="pl-9"
-                maxLength={120}
-                autoComplete="off"
-                role="combobox"
-                aria-autocomplete="list"
-                aria-expanded={listOpen && suggestions.length > 0}
-                aria-controls="order-customer-options"
-                aria-activedescendant={
-                  listOpen && suggestions[activeIndex]
-                    ? `order-customer-${suggestions[activeIndex]!.id}`
-                    : undefined
-                }
-              />
-              {listOpen && suggestions.length ? (
-                <div
-                  id="order-customer-options"
-                  role="listbox"
-                  aria-label="Clientes encontrados"
-                  className="absolute inset-x-0 top-[calc(100%+4px)] z-40 max-h-64 overflow-y-auto rounded-xl border border-brand-200 bg-white p-1.5 shadow-xl"
-                >
-                  {suggestions.map((customer, index) => (
-                    <button
-                      id={`order-customer-${customer.id}`}
-                      key={customer.id}
-                      type="button"
-                      role="option"
-                      aria-selected={index === activeIndex}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => selectCustomer(customer)}
-                      className={cn(
-                        "block w-full rounded-lg px-3 py-2 text-left transition",
-                        index === activeIndex
-                          ? "bg-brand-50 text-brand-900"
-                          : "text-slate-700 hover:bg-slate-50",
-                      )}
-                    >
-                      <strong className="block text-xs">{customer.name}</strong>
-                      <span className="text-xs text-slate-600">
-                        {customer.phone}
-                        {customer.addresses[0]?.address
-                          ? ` · ${customer.addresses[0].address}`
-                          : " · Sin dirección"}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-              {listOpen &&
-              debouncedQuery.trim() &&
-              !waiting &&
-              !searching &&
-              !selectedCustomer &&
-              !suggestions.length ? (
-                <div className="absolute inset-x-0 top-[calc(100%+4px)] z-40 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-lg">
-                  No encontramos coincidencias. Podés crear el cliente sin salir
-                  del pedido.
-                </div>
-              ) : null}
-            </div>
-          </Field>
-        </div>
-        <Button
-          type="button"
-          variant="secondary"
-          onClick={() => setCreateOpen(true)}
-          disabled={Boolean(props.customerId)}
-          title={
-            props.customerId
-              ? "Ya hay un cliente vinculado; buscá otro para cambiarlo."
-              : undefined
-          }
-        >
-          <Plus size={16} />
-          {props.customerId ? "Cliente ya vinculado" : "Crear cliente"}
-        </Button>
-      </div>
-      <p id="order-customer-search-hint" className="text-xs text-slate-600">
-        Escribí nombre o teléfono para buscar un cliente.
-      </p>
-      {waiting || searching ? (
-        <p className="text-xs font-semibold text-brand-700">
-            Buscando clientes…
-        </p>
-      ) : null}
+      <h3 className="text-sm font-bold text-slate-900">Cliente del pedido</h3>
       {props.customerId ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-xs font-bold text-emerald-800">
-          <span className="flex items-center gap-1">
-            <AddressBook size={14} />
-            {selectedCustomer?.name ?? "Cliente"} seleccionado
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
+          <div className="min-w-0">
+            <p className="flex items-center gap-1 text-xs font-semibold">
+              <AddressBook size={16} />
+              Cliente guardado
+            </p>
+            <strong className="block break-words">
+              {selectedCustomer?.name ?? props.name}
+            </strong>
+            <span className="block text-xs">
+              {selectedCustomer?.phone ?? props.phone}
+            </span>
+          </div>
           <button
             type="button"
             onClick={() => {
@@ -395,14 +244,189 @@ export function OrderCustomerSelector(props: Props) {
                 searchInputRef.current?.focus(),
               );
             }}
-            className="underline hover:text-emerald-950"
+            className="font-semibold underline"
           >
             Cambiar cliente
           </button>
         </div>
-      ) : null}
+      ) : (
+        <>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-[240px] flex-1">
+              <Field label="Buscar cliente">
+                <div className="relative">
+                  <MagnifyingGlass
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                    size={16}
+                  />
+                  <Input
+                    ref={searchInputRef}
+                    aria-describedby="order-customer-search-hint"
+                    autoFocus
+                    value={query}
+                    onChange={(event) => {
+                      hydrationRequestRef.current += 1;
+                      searchRequestRef.current += 1;
+                      setQuery(event.target.value);
+                      setSuggestions([]);
+                      setSearching(false);
+                      setSearchError(null);
+                      setListOpen(true);
+                      setActiveIndex(0);
+                    }}
+                    onFocus={() => {
+                      searchFocusedRef.current = true;
+                      setListOpen(true);
+                      // A blurred pending request is invalidated; refocus retries it.
+                      if (query.trim() && !suggestions.length)
+                        void searchCustomers(query.trim());
+                    }}
+                    onBlur={() => {
+                      searchFocusedRef.current = false;
+                      searchRequestRef.current += 1;
+                      setSearching(false);
+                      setListOpen(false);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && (waiting || searching)) {
+                        event.preventDefault();
+                        void resolvePendingSearch();
+                        return;
+                      }
+                      if (
+                        (event.key === "ArrowDown" ||
+                          event.key === "ArrowUp") &&
+                        suggestions.length
+                      ) {
+                        event.preventDefault();
+                        const direction = event.key === "ArrowDown" ? 1 : -1;
+                        setActiveIndex(
+                          (activeIndex + direction + suggestions.length) %
+                            suggestions.length,
+                        );
+                        setListOpen(true);
+                        return;
+                      }
+                      if (
+                        event.key === "Enter" &&
+                        listOpen &&
+                        suggestions.length
+                      ) {
+                        event.preventDefault();
+                        selectCustomer(
+                          suggestions[activeIndex] ?? suggestions[0]!,
+                        );
+                        return;
+                      }
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        return;
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setListOpen(false);
+                      }
+                    }}
+                    placeholder="Ej.: Ana o 11 4444"
+                    className="pl-9"
+                    maxLength={120}
+                    autoComplete="off"
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-expanded={listOpen && suggestions.length > 0}
+                    aria-controls="order-customer-options"
+                    aria-activedescendant={
+                      listOpen && suggestions[activeIndex]
+                        ? `order-customer-${suggestions[activeIndex]!.id}`
+                        : undefined
+                    }
+                  />
+                  {listOpen && suggestions.length ? (
+                    <div
+                      id="order-customer-options"
+                      role="listbox"
+                      aria-label="Clientes encontrados"
+                      className="absolute inset-x-0 top-[calc(100%+4px)] z-40 max-h-64 overflow-y-auto rounded-xl border border-brand-200 bg-white p-1.5 shadow-xl"
+                    >
+                      {suggestions.map((customer, index) => (
+                        <button
+                          id={`order-customer-${customer.id}`}
+                          key={customer.id}
+                          type="button"
+                          role="option"
+                          tabIndex={-1}
+                          aria-selected={index === activeIndex}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onPointerDown={(event) => event.preventDefault()}
+                          onClick={() => selectCustomer(customer)}
+                          className={cn(
+                            "block w-full rounded-lg px-3 py-2 text-left transition",
+                            index === activeIndex
+                              ? "bg-brand-50 text-brand-900"
+                              : "text-slate-700 hover:bg-slate-50",
+                          )}
+                        >
+                          <strong className="block text-xs">
+                            {customer.name}
+                          </strong>
+                          <span className="text-xs text-slate-600">
+                            {customer.phone}
+                            {customer.addresses[0]?.address
+                              ? ` · ${customer.addresses[0].address}`
+                              : " · Sin dirección"}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {listOpen &&
+                  !searchError &&
+                  debouncedQuery.trim() &&
+                  !waiting &&
+                  !searching &&
+                  !selectedCustomer &&
+                  !suggestions.length ? (
+                    <div className="absolute inset-x-0 top-[calc(100%+4px)] z-40 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-lg">
+                      No encontramos coincidencias. Podés completar los datos
+                      del pedido sin guardar una ficha.
+                    </div>
+                  ) : null}
+                </div>
+              </Field>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setCreateOpen(true)}
+            >
+              <Plus size={16} />
+              Crear cliente
+            </Button>
+          </div>
+          <p id="order-customer-search-hint" className="text-xs text-slate-600">
+            Buscá un cliente guardado o completá los datos abajo.
+          </p>
+          {waiting || searching ? (
+            <p className="text-xs font-semibold text-brand-700">
+              Buscando clientes…
+            </p>
+          ) : null}
+        </>
+      )}
       {searchError ? (
-        <p className="text-xs text-rose-700">{searchError}</p>
+        <div role="alert" className="text-xs text-rose-700">
+          <p>{searchError}</p>
+          {props.customerId ? (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setHydrationAttempt((value) => value + 1)}
+            >
+              Reintentar ficha
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Teléfono *">
@@ -426,36 +450,25 @@ export function OrderCustomerSelector(props: Props) {
           />
         </Field>
       </div>
-      <Field
-        label={
-          props.type === "DELIVERY" ? "Dirección *" : "Dirección (opcional)"
-        }
-      >
-        <Input
-          value={props.address}
-          onChange={(event) => {
-            props.setAddress(event.target.value);
-            props.setCustomerAddressId(null);
-          }}
-          placeholder="Calle, número y referencia"
-          maxLength={240}
-          required={props.type === "DELIVERY"}
-        />
-      </Field>
+      <p className="text-xs text-slate-600">
+        {props.customerId
+          ? "Nombre y teléfono editados se aplican sólo a este pedido."
+          : "Completá estos datos para el pedido. Crear cliente guarda una ficha para próximas visitas."}
+      </p>
       {props.type === "DELIVERY" &&
       selectedCustomer &&
-      selectedCustomer.addresses.length > 1 ? (
-        <Field
-          label="Dirección guardada"
-          hint="La dirección principal aparece seleccionada primero."
-        >
+      selectedCustomer.addresses.length > 0 ? (
+        <Field label="Dirección guardada" hint="La principal aparece primero.">
           <Select
             value={props.customerAddressId ?? ""}
             onChange={(event) => {
               const selected = selectedCustomer.addresses.find(
                 (address) => address.id === event.target.value,
               );
-              if (!selected) return;
+              if (!selected) {
+                props.setCustomerAddressId(null);
+                return;
+              }
               props.setCustomerAddressId(selected.id);
               props.setAddress(selected.address);
               props.setDeliveryFee(
@@ -463,29 +476,35 @@ export function OrderCustomerSelector(props: Props) {
               );
             }}
           >
+            <option value="">Otra dirección para este pedido</option>
             {selectedCustomer.addresses.map((address, index) => (
               <option key={address.id} value={address.id}>
-                {index === 0 ? "Principal" : address.label} · {address.address}
-                {` · Envío ${formatMoney(address.deliveryFeeMinor)}`}
+                {address.label ||
+                  (index === 0 ? "Principal" : `Dirección ${index + 1}`)}{" "}
+                · {address.address} · Envío{" "}
+                {formatMoney(address.deliveryFeeMinor)}
               </option>
             ))}
           </Select>
         </Field>
       ) : null}
+      {props.type === "DELIVERY" ? (
+        <Field label="Dirección *">
+          <Input
+            value={props.address}
+            onChange={(event) => {
+              props.setAddress(event.target.value);
+              props.setCustomerAddressId(null);
+            }}
+            placeholder="Calle, número y referencia"
+            maxLength={240}
+            required={props.type === "DELIVERY"}
+          />
+        </Field>
+      ) : null}
       <p className="text-xs font-semibold text-slate-600">
         * Campos obligatorios.
       </p>
-      {props.customerId &&
-      selectedCustomer &&
-      (props.name.trim() !== selectedCustomer.name ||
-        props.phone.trim() !== selectedCustomer.phone ||
-        !selectedCustomer.addresses.some(
-          (item) => item.address === props.address.trim(),
-        )) ? (
-        <p className="rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs font-semibold text-sky-800">
-          Los cambios se aplican sólo a este pedido.
-        </p>
-      ) : null}
       <CreateCustomerModal
         open={createOpen}
         initialQuery={query}
@@ -530,6 +549,7 @@ function CreateCustomerModal({
   const [address, setAddress] = useState("");
   const [fee, setFee] = useState("0");
   const [error, setError] = useState<string | null>(null);
+  const wasOpenRef = useRef(false);
   const mutation = useApiMutation(
     async (input: {
       name: string;
@@ -563,7 +583,12 @@ function CreateCustomerModal({
   );
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
     const queryLooksLikePhone =
       /^[+\d\s()-]+$/.test(initialQuery.trim()) &&
       initialQuery.replace(/\D/g, "").length >= 6;
@@ -584,19 +609,22 @@ function CreateCustomerModal({
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={() => {
+        if (!mutation.isPending) onClose();
+      }}
       title="Crear cliente sin salir del pedido"
-      description="Guardá el cliente para usarlo en este pedido."
+      description="Guardá una ficha y usala en este pedido. Guardar el cliente no crea el pedido."
+      closeDisabled={mutation.isPending}
     >
       <form
         className="grid gap-4"
         onSubmit={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          const deliveryFeeMinor = parseMoneyInput(fee);
+          const deliveryFeeMinor =
+            type === "DELIVERY" ? parseMoneyInput(fee) : 0;
           const addressRequired = type === "DELIVERY";
           if (
-            !name.trim() ||
             name.trim().length < 2 ||
             phone.replace(/\D/g, "").length < 6 ||
             (addressRequired && !address.trim()) ||
@@ -605,8 +633,8 @@ function CreateCustomerModal({
           )
             return;
           mutation.mutate({
-            name,
-            phone,
+            name: name.trim(),
+            phone: phone.trim(),
             addresses: address.trim()
               ? [
                   {
@@ -662,22 +690,38 @@ function CreateCustomerModal({
             />
           </Field>
         ) : null}
-        {error ? (
-          <p className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700">
-            {error}
+        {error ||
+        name.trim().length < 2 ||
+        phone.replace(/\D/g, "").length < 6 ||
+        (type === "DELIVERY" && !address.trim()) ||
+        (type === "DELIVERY" && parseMoneyInput(fee) == null) ? (
+          <p role="status" className="text-xs text-slate-600">
+            {error ??
+              (name.trim().length < 2
+                ? "Ingresá un nombre de al menos 2 caracteres."
+                : phone.replace(/\D/g, "").length < 6
+                  ? "Ingresá un teléfono con al menos 6 dígitos."
+                  : type === "DELIVERY" && !address.trim()
+                    ? "Ingresá una dirección para el envío."
+                    : "Ingresá un valor de envío válido.")}
           </p>
         ) : null}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            disabled={mutation.isPending}
+          >
             Cancelar
           </Button>
           <Button
             type="submit"
             disabled={
-              !name.trim() ||
-              !phone.trim() ||
+              name.trim().length < 2 ||
+              phone.replace(/\D/g, "").length < 6 ||
               (type === "DELIVERY" && !address.trim()) ||
-              parseMoneyInput(fee) == null ||
+              (type === "DELIVERY" && parseMoneyInput(fee) == null) ||
               mutation.isPending
             }
           >

@@ -9,16 +9,11 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
-const evidence = join(
-  process.cwd(),
-  "docs/qa/evidence/system-usability-customer-selector-fix-2026-10-08",
-);
 let app: ElectronApplication;
 let page: Page;
 let profile = "";
 
 test.beforeEach(async () => {
-  await mkdir(evidence, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-customer-selector-"));
   app = await electron.launch({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
@@ -48,9 +43,10 @@ test.afterEach(async () => {
     page &&
     !page.isClosed()
   ) {
+    await mkdir(test.info().outputPath(), { recursive: true });
     await writeFile(
       join(
-        evidence,
+        test.info().outputPath(),
         `failed-${test.info().title.replace(/[^a-z0-9]/gi, "_")}.json`,
       ),
       JSON.stringify(
@@ -110,6 +106,8 @@ async function setWindow(width: number, zoom = 1) {
 }
 
 async function capture(name: string, payload: unknown) {
+  const output = test.info().outputPath();
+  await mkdir(output, { recursive: true });
   const image = await app.evaluate(async ({ BrowserWindow }) => {
     const bitmap =
       await BrowserWindow.getAllWindows()[0]!.webContents.capturePage();
@@ -117,11 +115,11 @@ async function capture(name: string, payload: unknown) {
   });
   expect(image.size.width).toBeGreaterThan(0);
   await writeFile(
-    join(evidence, `${name}.png`),
+    join(output, `${name}.png`),
     Buffer.from(image.data, "base64"),
   );
   await writeFile(
-    join(evidence, `${name}.json`),
+    join(output, `${name}.json`),
     JSON.stringify(
       {
         ...((payload ?? {}) as object),
@@ -160,7 +158,7 @@ test("selector y Crear cliente alinean bordes inferiores; formulario alcanza con
         exact: true,
       });
       const hint = dialog.getByText(
-        "Escribí nombre o teléfono para buscar un cliente.",
+        "Buscá un cliente guardado o completá los datos abajo.",
         { exact: true },
       );
       await expect(hint).toBeVisible();
@@ -195,7 +193,7 @@ test("selector y Crear cliente alinean bordes inferiores; formulario alcanza con
             .getElementById(el.getAttribute("aria-describedby") || "")
             ?.textContent?.trim(),
         ),
-      ).toBe("Escribí nombre o teléfono para buscar un cliente.");
+      ).toBe("Buscá un cliente guardado o completá los datos abajo.");
       await dialog
         .getByRole("button", { name: "Cancelar", exact: true })
         .click();
@@ -229,7 +227,7 @@ test("selector y Crear cliente alinean bordes inferiores; formulario alcanza con
   });
 });
 
-test("búsqueda real por teclado selecciona cliente y dirección; Escape no cierra ni altera pedido", async () => {
+test("Enter/clic explícitos seleccionan cliente; Escape no cierra ni altera pedido", async () => {
   test.setTimeout(90_000);
   const fixture = await page.evaluate(async () => {
     const customer = await window.gastronomy.createCustomer({
@@ -257,7 +255,14 @@ test("búsqueda real por teclado selecciona cliente y dirección; Escape no cier
     fixture.before,
   );
   await search.press("ArrowDown");
-  await search.press("Enter");
+  await expect(delivery.getByRole("listbox")).toBeVisible();
+  await delivery.getByRole("option", { name: /US10 Selector teclado/ }).click();
+  await expect(
+    delivery.getByRole("combobox", { name: /Buscar cliente/ }),
+  ).toHaveCount(0);
+  await expect(
+    delivery.getByRole("button", { name: "Cambiar cliente" }),
+  ).toBeVisible();
   await expect(
     delivery.getByLabel("Nombre del cliente *", { exact: true }),
   ).toHaveValue(fixture.customer.name);
@@ -278,19 +283,18 @@ test("búsqueda real por teclado selecciona cliente y dirección; Escape no cier
   await expect(address).toHaveValue("Calle Dos 20");
   await delivery.getByLabel("Modalidad del pedido").selectOption("TAKEAWAY");
   const takeaway = page.getByRole("dialog", { name: "Nuevo Para retirar" });
-  await expect(
-    takeaway.getByLabel("Dirección (opcional)", { exact: true }),
-  ).toHaveValue("Calle Dos 20");
+  await expect(takeaway.getByLabel("Dirección *", { exact: true })).toHaveCount(
+    0,
+  );
   await takeaway.getByLabel("Modalidad del pedido").selectOption("DELIVERY");
   await expect(address).toHaveValue("Calle Dos 20");
+  await delivery.getByRole("button", { name: "Cambiar cliente" }).click();
   const query = delivery.getByRole("combobox", { name: /Buscar cliente/ });
-  // Validate pending phone search via the existing Tab path, independently of
-  // the known deferred popover close after modality changes (QA-03).
   await query.fill(fixture.customer.phone);
   await query.press("Tab");
-  await expect(delivery.getByLabel("Teléfono *", { exact: true })).toHaveValue(
-    fixture.customer.phone,
-  );
+  await expect(
+    delivery.getByLabel("Nombre del cliente *", { exact: true }),
+  ).toHaveValue("");
   const after = await page.evaluate(() => window.gastronomy.bootstrap());
   expect(after.orders).toEqual(fixture.before.orders);
   await capture("customer-selector-keyboard-preserved", {

@@ -392,7 +392,7 @@ test("la ayuda de campo al crear pedido no modifica datos al cancelar", async ()
   await page.getByRole("button", { name: "Nuevo pedido", exact: true }).click();
   const dialog = page.getByRole("dialog");
   const hint = dialog.getByText(
-    "Escribí nombre o teléfono para buscar un cliente.",
+    "Buscá un cliente guardado o completá los datos abajo.",
     { exact: true },
   );
   await expect(hint).toBeVisible();

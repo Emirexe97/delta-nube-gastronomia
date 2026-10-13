@@ -739,7 +739,7 @@ function NewOrderModal({
       description={
         editingOrder
           ? `Pedido #${editingOrder.number} · los productos cargados se conservan${editingOrder.printedAt ? " · reimprimí la comanda para reflejar los cambios" : ""}`
-          : "Carga rápida o pedido para una fecha y hora específicas"
+          : "Datos del cliente y de la entrega"
       }
     >
       <form
@@ -765,7 +765,8 @@ function NewOrderModal({
         </Field>
         {!editingOrder ? (
           <div className="text-xs text-slate-600">
-            Podés comenzar por los productos y completar estos datos al confirmar.
+            Podés comenzar por los productos y completar estos datos al
+            confirmar.
           </div>
         ) : null}
         <OrderCustomerSelector
@@ -786,7 +787,14 @@ function NewOrderModal({
         />
         {selectedType === "DELIVERY" ? (
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Costo de envío">
+            <Field
+              label="Costo de envío"
+              hint={
+                editingOrder && paidTypeChanged
+                  ? "Al cambiar la modalidad, este importe se aplica al pedido."
+                  : "Si elegís un domicilio registrado, este valor se recuerda para próximos envíos."
+              }
+            >
               <Input
                 value={fee}
                 onChange={(event) => setFee(event.target.value)}

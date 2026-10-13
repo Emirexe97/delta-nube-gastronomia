@@ -136,16 +136,27 @@ test("valida la ficha y evita reutilizar un cliente anterior durante autocomplet
   const search = newOrder.getByRole("combobox", { name: /Buscar cliente/ });
 
   await search.fill("Ana Selección QA");
+  await expect(newOrder.getByRole("listbox")).toBeVisible();
   await search.press("Tab");
+  await expect(newOrder.getByLabel("Teléfono *", { exact: true })).toHaveValue(
+    "",
+  );
+  await search.focus();
+  await expect(newOrder.getByRole("listbox")).toBeVisible();
+  await newOrder.getByRole("option", { name: /Ana Selección QA/ }).click();
+  await expect(
+    newOrder.getByRole("combobox", { name: /Buscar cliente/ }),
+  ).toHaveCount(0);
   await expect(newOrder.getByLabel("Teléfono *", { exact: true })).toHaveValue(
     "11 4444-1000",
   );
 
+  await newOrder.getByRole("button", { name: "Cambiar cliente" }).click();
   await search.fill("Mariana Selección QA");
   await expect(newOrder.getByLabel("Teléfono *", { exact: true })).toHaveValue(
     "",
   );
-  await search.press("Enter");
+  await newOrder.getByRole("option", { name: /Mariana Selección QA/ }).click();
   await expect(newOrder).toBeVisible();
   await expect(newOrder.getByLabel("Teléfono *", { exact: true })).toHaveValue(
     "11 5555-2000",
