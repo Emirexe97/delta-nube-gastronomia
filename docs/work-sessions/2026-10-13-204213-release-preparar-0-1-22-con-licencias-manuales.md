@@ -7,7 +7,7 @@
 
 ## Objetivo
 
-Sincronizar la version local de Delta Nube POS con el repositorio DiegoPerez-3/delta-nube-pos para que el desarrollo pueda continuar desde otro PC/Codex con contexto actualizado.
+Publicar Delta Nube Gastronomía 0.1.22 en `Emirexe97/delta-nube-gastronomia`, con licencias manuales, recuperación segura y preparación de DMG Intel/Apple Silicon. No publicar el repositorio POS Tienda ni su configuración remota desde este chat.
 
 ## Archivos tocados
 
@@ -72,17 +72,15 @@ Sincronizar la version local de Delta Nube POS con el repositorio DiegoPerez-3/d
 
 ## Verificaciones
 
-`powershell
+```powershell
 corepack pnpm --filter @gastronomy/web typecheck
-`
+```
 
 Resultado:
 
-- corepack pnpm --filter @gastronomy/web typecheck debe haber pasado antes del commit.
-- El script valida que no se suban 
-ode_modules, builds, .env, bases locales, logs, runtime desktop ni *.tsbuildinfo.
-- Commit base local antes de esta sesion: $baseCommit.
-- Upstream antes de esta sesion: $remoteCommit.
+- El typecheck web del script pasó; checks completos y resultados específicos se registran abajo.
+- Revisado que no se incluyan node_modules, builds, secretos .env, bases locales, logs, backups ni archivos tsbuildinfo. El archivo demo versionado anterior no contiene credenciales.
+- Base local/upstream antes de esta publicación: `eec8a92294151fb86f9ae2966cd65d8aaed1d7af`.
 
 ## Riesgos y pendientes
 
@@ -94,7 +92,7 @@ ode_modules, builds, .env, bases locales, logs, runtime desktop ni *.tsbuildinfo
 
 - Este archivo fue generado automaticamente antes del commit.
 - Usar este handoff como punto de partida para entender el lote de cambios posterior al ultimo commit.
-- Commit planeado: $CommitMessage.
+- Commits de implementación/preparación: `42f1df7` y `c43cbcf`. Se complementa este handoff antes del push.
 
 ## Evidencia de esta entrega
 
