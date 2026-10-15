@@ -18,6 +18,7 @@ const allowed = new Set([
   "licensing-secrets/private-key.pem",
   "licensing-secrets/public-key.pem",
   "licensing-secrets/admin-token",
+  "licensing-secrets/panel-password.hash",
 ]);
 const chunks = [];
 let bytes = 0;
@@ -81,6 +82,13 @@ for (const name of [
 }
 archive.fill(0);
 for (const chunk of chunks) chunk.fill(0);
+if (files.has("licensing-secrets/panel-password.hash")) {
+  const panelHash = (
+    await readFile("/restore/licensing-secrets/panel-password.hash", "utf8")
+  ).trim();
+  if (!/^scrypt\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{86}$/.test(panelHash))
+    throw new Error("Recovered panel password hash is malformed");
+}
 const privateKey = await readFile(
   "/restore/licensing-secrets/private-key.pem",
   "utf8",

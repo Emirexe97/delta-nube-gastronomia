@@ -7,6 +7,7 @@ const invoke = <T>(method: keyof DesktopApi, payload?: unknown) =>
 const api: DesktopApi = {
   getLicenseStatus: () => invoke("getLicenseStatus"),
   activateLicense: (input) => invoke("activateLicense", input),
+  requestLicenseAccess: (input) => invoke("requestLicenseAccess", input),
   refreshLicense: () => invoke("refreshLicense"),
   bootstrap: () => invoke("bootstrap"),
   getOrder: (input) => invoke("getOrder", input),

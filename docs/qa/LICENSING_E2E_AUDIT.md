@@ -68,3 +68,24 @@ Sin prueba física Mac ni impresión real; los DMG0.1.21 CI son anteriores al MV
 Autorización explícita commit/push/versión0.1.22. Repetidos tipo/build9/9, shell37/37 (incluye tres pruebas nuevas de guard ASAR correcto/ausente/sustituido), protocolo5/5, servicio6/6, web286/286 y backupPS5grupos; E2Elicencia final4/4 en48,7s (dev3+packaged1, no aumenta inventario13 por repetición). Auditoría sólo lectura de archivos/configuración no encontró bloqueadores ni secretos incluidos. Árbol de fuente publicado enmain, commits42f1df7/c43cbcf/5498656.
 
 Mac CIrun38486157882 desde5498656854bf3937436315b9f7dbfa086c07a1e6 success arm64+x64. Verificación de DMG/arquitecturaSQLite y **ASAR real con configuración pública/handlers de licencia** success en ambos. Artefactos descargados ignorados, hashes `docs/MACOS_BUILD.md`. Estos DMG0.1.22 **sí incluyen** licencias y requieren código de activación. No nueva NSISWindows ni firma/notarización/smoke físico Mac; no atribuir esa validación a CI.
+## Panel privado sin códigos — validación local 2026-10-15
+
+**Estado: implementación local, no despliegue productivo.** No se modificó la licencia de Pitt Burgers ni se publicó/creó un nuevo instalador. Cuenta y claves de fixtures aisladas; sin códigos/tokens productivos en pruebas o evidencia.
+
+| Verificación | Resultado |
+| --- | --- |
+| Workspace `pnpm typecheck`, `pnpm build`, `pnpm test` | 9/9 tareas por comando; protocolo7, servicio14, desktop46, database222, web286, domain28 |
+| `pnpm exec playwright test tests/e2e/licensing.spec.ts tests/e2e/licensing-packaged.spec.ts` | **5/5, 53.8s**: legacy empaquetado, nuevo panel real + dispositivo empaquetado, desarrollo3 |
+| Flujo nuevo sin mocks de IPC | Solicitud con clave cifrada → pendiente y escritura denegada → login del dueño → revisión de huella → aprobación sin vencimiento → ACTIVE → suspensión y escritura denegada → reactivación |
+| Offline y reinicio | Cierre del servidor HTTPS y relanzamiento con mismo perfil mantienen ACTIVE y la misma identidad cifrada |
+| Negativas servicio | Login/origen/CSRF, nonce ajeno/usado/expirado, no aprobado, binding ajeno, revisión obsoleta, recuperación explícita tras rechazo |
+| Revisión estática independiente | Corregidos contrato de refresh aprobado, recuperación de rechazo y límite vitalicio de solicitudes; re-revisión sin P1 nuevo en esos parches |
+| Visual escritorio y móvil390px | Capturas inspeccionadas, sin errores JS. Corregida expansión por ancho intrínseco de tablas; tablas desplazables dentro de contenedores acotados, sin desbordar el documento |
+
+Evidencia ignorada: `test-results/licensing-packaged-owner-p-69e03-nd-preserves-offline-access/private-owner-panel.png`; `trace.zip` de la misma carpeta. Credencial owner-fixture aleatoria sólo del entorno desechable; no publicar el trace sin sanitizar aunque no contenga secretos productivos.
+
+**Ejecución reproducible:** primero `pnpm test` (recompila SQLite para Node), luego `pnpm --filter @gastronomy/desktop-shell rebuild:native` y E2E. No ejecutarlos en paralelo: cambian el ABI del mismo módulo nativo. Los fallos iniciales por ABI mezclado y selectores estrictos se corrigieron; el resultado final anterior es la ejecución secuencial aprobada.
+
+**Pendiente de entrega comercial:** despliegue HTTPS con credenciales privadas y respaldo nuevo, nuevo cliente Mac y smoke físico. La suspensión sólo se aplica al próximo contacto del equipo; offline conserva el tiempo abonado. No hay MFA, transferencia autoservicio ni cobro automático. El panel por sí solo no actualiza una app0.1.23 ya instalada.
+
+El CLI de hash tiene prueba black-box adicional: salida externa verificada, no imprime contraseña, no sobrescribe y rechaza rutas dentro del repo por mayúsculas/junction/symlink. Servicio final14/14. Capturas locales adicionales en .licensing-local/panel-evidence/ (datos de demostración).

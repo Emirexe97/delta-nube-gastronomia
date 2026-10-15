@@ -29,6 +29,7 @@ const labels: Record<LicenseStatusDto["state"], string> = {
 
 function exclusiveDate(value: string | null) {
   if (!value) return "Sin fecha informada";
+  if (new Date(value).getUTCFullYear() >= 9999) return "Sin vencimiento";
   const date = new Date(new Date(value).getTime() - 1000);
   return Number.isNaN(date.getTime())
     ? "Sin fecha informada"
@@ -51,7 +52,7 @@ function remainingDays(value: string | null) {
 export function LicensePanel() {
   const queryClient = useQueryClient();
   const statusQuery = useLicenseStatus();
-  const [code, setCode] = useState("");
+  const [businessName, setBusinessName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const refresh = useMutation({
     mutationFn: () => window.gastronomy.refreshLicense(),
@@ -61,19 +62,20 @@ export function LicensePanel() {
     },
     onError: (value) => setError(humanError(value)),
   });
-  const activate = useMutation({
-    mutationFn: () => window.gastronomy.activateLicense({ code: code.trim() }),
+  const request = useMutation({
+    mutationFn: () => window.gastronomy.requestLicenseAccess({ businessName: businessName.trim() }),
     onSuccess: (status) => {
       queryClient.setQueryData(licenseQueryKey, status);
-      setCode("");
+      if (status.canOperate) setBusinessName("");
       setError(null);
     },
     onError: (value) => setError(humanError(value)),
   });
   const status = statusQuery.data;
-  const busy = activate.isPending || refresh.isPending;
-  const canActivate =
+  const busy = request.isPending || refresh.isPending;
+  const canRequest =
     status &&
+    status.enrollment?.status !== "PENDING" &&
     ["NOT_CONFIGURED", "UNACTIVATED", "INVALID", "EXPIRED"].includes(
       status.state,
     );
@@ -102,9 +104,9 @@ export function LicensePanel() {
                   {labels[status.state]}
                 </p>
               </div>
-              {status.businessName ? (
+              {status.businessName || status.enrollment?.businessName ? (
                 <p className="text-sm font-semibold text-slate-700">
-                  {status.businessName}
+                  {status.businessName ?? status.enrollment?.businessName}
                 </p>
               ) : null}
             </div>
@@ -155,16 +157,17 @@ export function LicensePanel() {
                 prioridad.
               </p>
             ) : null}
-            {canActivate ? (
+            {status.enrollment?.keyFingerprint ? <Info label="Huella de clave del equipo" value={status.enrollment.keyFingerprint} mono /> : null}
+            {canRequest ? (
               <Field
-                label="Código de activación"
-                hint="Ingresalo sólo si recibiste un código para este negocio."
+                label="Nombre del negocio"
+                hint="Solicitaremos la habilitación segura para este equipo."
               >
                 <Input
-                  value={code}
-                  onChange={(event) => setCode(event.target.value)}
+                  value={businessName}
+                  onChange={(event) => setBusinessName(event.target.value)}
                   autoComplete="off"
-                  placeholder="Código de activación"
+                  placeholder="Nombre del negocio"
                 />
               </Field>
             ) : null}
@@ -185,12 +188,12 @@ export function LicensePanel() {
           </p>
         ) : null}
         <div className="flex flex-wrap gap-2">
-          {canActivate ? (
+          {canRequest ? (
             <Button
-              onClick={() => activate.mutate()}
-              disabled={busy || !code.trim()}
+              onClick={() => request.mutate()}
+              disabled={busy || businessName.trim().length < 2}
             >
-              {activate.isPending ? "Activando…" : "Activar licencia"}
+              {request.isPending ? "Enviando solicitud…" : "Solicitar habilitación"}
             </Button>
           ) : null}
           <Button
@@ -201,7 +204,7 @@ export function LicensePanel() {
             {refresh.isPending
               ? "Verificando…"
               : status
-                ? "Verificar licencia"
+                ? status.enrollment?.status === "PENDING" ? "Verificar habilitación" : "Verificar licencia"
                 : "Reintentar"}
           </Button>
         </div>

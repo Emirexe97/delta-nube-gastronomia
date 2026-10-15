@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Administración de licencias · DeltaNube</title>
+    <link rel="stylesheet" href="/manage/panel.css" />
+    <script src="/manage/panel.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Saltar al contenido</a>
+    <header class="topbar">
+      <a
+        class="brand"
+        href="/manage/"
+        aria-label="DeltaNube, administración de licencias"
+      >
+        <span class="brand-mark" aria-hidden="true">D</span>
+        <span class="brand-copy"
+          ><strong>DeltaNube</strong><small>Centro de licencias</small></span
+        >
+      </a>
+      <div class="topbar-right">
+        <span class="secure-label"
+          ><span class="secure-dot"></span> Acceso privado</span
+        ><button
+          class="button button-quiet"
+          id="logoutButton"
+          type="button"
+          hidden
+        >
+          Cerrar sesión
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <section id="loginView" class="login-view" aria-labelledby="loginTitle">
+        <div class="login-aside">
+          <div class="aside-orbit orbit-one"></div>
+          <div class="aside-orbit orbit-two"></div>
+          <p class="eyebrow">ADMINISTRACIÓN · GASTRONOMÍA</p>
+          <h1>Un solo lugar.<br /><em>Control claro.</em></h1>
+          <p class="aside-copy">
+            Gestioná solicitudes y vigencias de licencia desde cualquier equipo
+            autorizado.
+          </p>
+          <div class="aside-note">
+            <span class="note-icon" aria-hidden="true">↗</span
+            ><span
+              >Los cambios se reflejan cuando el equipo vuelve a verificar su
+              licencia.</span
+            >
+          </div>
+        </div>
+        <div class="login-card">
+          <div class="card-kicker">Bienvenido</div>
+          <h2 id="loginTitle">Ingresar al panel</h2>
+          <p class="muted">Usá las credenciales privadas de administración.</p>
+          <form id="loginForm" autocomplete="on">
+            <label for="username">Usuario</label
+            ><input
+              id="username"
+              name="username"
+              autocomplete="username"
+              required
+            />
+            <label for="password">Contraseña</label
+            ><input
+              id="password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+            <p class="form-error" id="loginError" role="alert" hidden></p>
+            <button class="button button-primary button-wide" type="submit">
+              Ingresar <span aria-hidden="true">→</span>
+            </button>
+          </form>
+          <p class="login-foot">
+            <span aria-hidden="true">▣</span> Conexión protegida · No compartas
+            tus credenciales
+          </p>
+        </div>
+      </section>
+
+      <section
+        id="dashboardView"
+        class="dashboard"
+        aria-labelledby="pageTitle"
+        hidden
+      >
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">CENTRO DE CONTROL</p>
+            <h1 id="pageTitle">Licencias</h1>
+            <p class="muted">Solicitudes, vigencias y actividad reciente.</p>
+          </div>
+          <div class="heading-actions">
+            <span class="updated-label" id="updatedAt">Sin actualizar</span
+            ><button
+              class="button button-outline"
+              id="refreshButton"
+              type="button"
+            >
+              <span aria-hidden="true">↻</span> Actualizar
+            </button>
+          </div>
+        </div>
+        <p
+          id="globalMessage"
+          class="global-message"
+          role="status"
+          aria-live="polite"
+          hidden
+        ></p>
+        <div class="stat-grid" aria-label="Resumen de licencias">
+          <article class="stat-card stat-pending">
+            <div class="stat-icon" aria-hidden="true">⌛</div>
+            <div>
+              <span class="stat-label">Pendientes</span
+              ><strong id="pendingCount">—</strong>
+            </div>
+            <span class="stat-foot">requieren revisión</span>
+          </article>
+          <article class="stat-card">
+            <div class="stat-icon icon-teal" aria-hidden="true">✓</div>
+            <div>
+              <span class="stat-label">Aprobadas</span
+              ><strong id="approvedCount">—</strong>
+            </div>
+            <span class="stat-foot">solicitudes aprobadas</span>
+          </article>
+          <article class="stat-card">
+            <div class="stat-icon icon-navy" aria-hidden="true">◉</div>
+            <div>
+              <span class="stat-label">Licencias</span
+              ><strong id="licenseCount">—</strong>
+            </div>
+            <span class="stat-foot">registros totales</span>
+          </article>
+        </div>
+
+        <section class="panel-section" aria-labelledby="requestsTitle">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">REVISIÓN</p>
+              <h2 id="requestsTitle">Solicitudes recientes</h2>
+            </div>
+            <span class="section-caption"
+              >Verificá la huella con el cliente antes de aprobar</span
+            >
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Negocio</th>
+                  <th>Identificación</th>
+                  <th>Estado</th>
+                  <th>Fecha</th>
+                  <th><span class="sr-only">Acciones</span></th>
+                </tr>
+              </thead>
+              <tbody id="requestsBody"></tbody>
+            </table>
+            <div class="empty-state" id="requestsEmpty" hidden>
+              <span class="empty-symbol" aria-hidden="true">◇</span
+              ><strong>No hay solicitudes todavía</strong
+              ><span>Las nuevas solicitudes aparecerán aquí.</span>
+            </div>
+          </div>
+        </section>
+
+        <section
+          class="panel-section licenses-section"
+          aria-labelledby="licensesTitle"
+        >
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">VIGENCIAS</p>
+              <h2 id="licensesTitle">Licencias activas y suspendidas</h2>
+            </div>
+            <span class="section-caption"
+              >La vigencia se aplica en la próxima verificación del equipo</span
+            >
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Negocio</th>
+                  <th>Vigente hasta</th>
+                  <th>Estado</th>
+                  <th>Revisión</th>
+                  <th><span class="sr-only">Acciones</span></th>
+                </tr>
+              </thead>
+              <tbody id="licensesBody"></tbody>
+            </table>
+            <div class="empty-state" id="licensesEmpty" hidden>
+              <span class="empty-symbol" aria-hidden="true">◇</span
+              ><strong>Aún no hay licencias</strong
+              ><span>Las licencias aprobadas se mostrarán aquí.</span>
+            </div>
+          </div>
+        </section>
+
+        <section
+          class="panel-section audit-section"
+          aria-labelledby="auditTitle"
+        >
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">TRAZABILIDAD</p>
+              <h2 id="auditTitle">Actividad reciente</h2>
+            </div>
+          </div>
+          <div class="audit-list" id="auditList"></div>
+          <p class="empty-inline" id="auditEmpty" hidden>
+            La actividad aparecerá aquí cuando se realicen cambios.
+          </p>
+        </section>
+        <footer class="dashboard-foot">
+          <span
+            >DeltaNube <span aria-hidden="true">·</span> Administración
+            privada</span
+          ><span
+            >Los cambios remotos no son inmediatos si el equipo está sin
+            conexión.</span
+          >
+        </footer>
+      </section>
+    </main>
+
+    <dialog id="actionDialog" aria-labelledby="dialogTitle">
+      <form id="actionForm" class="dialog-card">
+        <button
+          type="button"
+          id="dialogClose"
+          class="dialog-close"
+          aria-label="Cerrar"
+        >
+          ×
+        </button>
+        <p class="eyebrow" id="dialogEyebrow">CONFIRMAR ACCIÓN</p>
+        <h2 id="dialogTitle">Revisar solicitud</h2>
+        <p id="dialogDescription" class="muted"></p>
+        <div id="dialogFields"></div>
+        <p id="dialogError" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button class="button button-outline" id="dialogCancel" type="button">
+            Cancelar</button
+          ><button
+            class="button button-primary"
+            id="dialogSubmit"
+            type="submit"
+          >
+            Confirmar
+          </button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

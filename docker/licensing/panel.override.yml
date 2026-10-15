@@ -1,0 +1,8 @@
+# Opt-in only: compose with this override after setting private owner credentials.
+# Do not publish /admin/* or copy the password hash into source control.
+services:
+  api:
+    environment:
+      PANEL_USERNAME: ${PANEL_USERNAME:?Set the private owner username}
+      PANEL_ORIGIN: ${PANEL_ORIGIN:?Set the exact HTTPS panel origin}
+      PANEL_PASSWORD_HASH_FILE: /run/credentials/panel-password.hash

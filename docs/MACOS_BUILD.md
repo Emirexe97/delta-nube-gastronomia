@@ -138,3 +138,10 @@ Artefacto GitHub `11939865642`, descargado y renombrado localmente sin cambiar s
 Validaciones locales finales: desktop **42/42**, scripts focalizados **8/8**, typecheck **9/9**, build **9/9**. La corrección NFD y la canonicalización del perfil preservan marca, aislamiento y licenciamiento; no cambian datos POS ni VPS. Commits de diagnóstico intermedios no entregaron paquetes fallidos.
 
 **Uso de prueba:** copiar este DMG arm64 a la Mac M1 y arrastrar la app a Aplicaciones. Reemplazar sólo la app de prueba anterior, no borrar los datos del negocio. Requiere licencia de activación. Aún sin Developer ID/notarización: macOS puede exigir autorización o bloquearla. No prometer ausencia de alertas ni desactivar Gatekeeper globalmente. Falta confirmar apertura/impresión en la Mac del usuario.
+## Panel privado sin códigos 0.1.24 — 2026-10-15
+
+Usuario autorizó commit/push, despliegue del panel y nuevo instalador M1. Versión raíz/shell0.1.24. Incluye solicitud de acceso desde la app, identidad Ed25519 cifrada por safeStorage y verificación/persistencia del permiso aprobado desde el panel; mantiene compatibilidad con permisos anteriores. No modifica datos del POS ni transfiere la licencia de Pitt Burgers.
+
+Guard ASAR ampliado: exige IPC/preload `requestLicenseAccess` y cableado de disponibilidad/cifrado/descifrado de safeStorage, además de configuración pública y APIs anteriores. Pruebas negativas eliminan cada frontera y deben fallar. Checks locales: tipo/build9/9, shell49/49 (guard ASAR6/6), protocolo7/7, servicio14/14 y backup5grupos; E2E5/5 previo sin cambios de lógica posteriores. Pendiente CI, descarga y recibo de hash del nuevo artefacto.
+
+Conservar workaround Unicode NFD y firma ad-hoc0.1.23. La publicación no añade Developer ID/notarización ni demuestra impresión en Mac física.

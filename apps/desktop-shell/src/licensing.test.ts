@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { signLease } from "@gastronomy/licensing";
+import { signLease, devicePublicKeyFingerprint, verifyDeviceProof } from "@gastronomy/licensing";
 // @ts-expect-error Node 24 runs TypeScript test files directly.
 import { DesktopLicensing } from "./licensing.ts";
 
@@ -289,7 +289,7 @@ test("manual renewal accepts a newer revision without changing the current wall 
 test("bad code and installation mismatch return clear generic messages; redirect is rejected", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gastronomy-license-fail-"));
   try {
-    const { publicKey } = keys();
+    const { publicKey, privateKey } = keys();
     const license = await setup(
       dir,
       () => Date.now(),
@@ -309,7 +309,7 @@ test("bad code and installation mismatch return clear generic messages; redirect
   }
   const dir2 = await mkdtemp(join(tmpdir(), "gastronomy-license-mismatch-"));
   try {
-    const { publicKey } = keys();
+    const { publicKey, privateKey } = keys();
     const license = await setup(
       dir2,
       () => Date.now(),
@@ -361,4 +361,106 @@ test("online refresh never discards elapsed monotonic time at the expiry boundar
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("no-code request persists only encrypted device key and leaves pending device unable to operate", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-enrollment-"));
+  try {
+    const { publicKey, privateKey } = keys();
+    const calls: string[] = [];
+    const license = new DesktopLicensing({
+      userDataPath: dir, isPackaged: true, now: Date.now,
+      config: { serverUrl: "https://example.test", publicKey },
+      safeStorage: { encryptString: (value) => Buffer.from(`encrypted:${value}`), decryptString: (value) => value.toString().replace(/^encrypted:/, "") },
+      fetch: async (url, init) => {
+        const path = new URL(String(url)).pathname; calls.push(path);
+        if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-1", nonce: "n".repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+        const body = JSON.parse(String(init?.body));
+        assert.equal(typeof body.signature, "string");
+        return new Response(JSON.stringify({ request: { id: "request-123", installationId: body.installationId, businessName: "Cafe Norte", keyFingerprint: devicePublicKeyFingerprint(body.publicKey), status: "PENDING", licenseId: null, createdAt: new Date().toISOString() }, token: responseToken(body.installationId, Date.now(), privateKey) }));
+      },
+    });
+    await license.initialize();
+    const status = await license.requestLicenseAccess({ businessName: "Cafe Norte" });
+    assert.equal(status.state, "UNACTIVATED");
+    assert.equal(status.canOperate, false);
+    assert.equal(status.enrollment?.status, "PENDING");
+    assert.deepEqual(calls, ["/v2/devices/challenge", "/v2/devices/request"]);
+    const identity = await readFile(join(dir, "device-identity.json"), "utf8");
+    assert.match(identity, /encryptedPrivateKey/);
+    assert.doesNotMatch(identity, /BEGIN PRIVATE KEY/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("approved signed enrollment persists across restart, stays active offline, then follows suspension and reactivation revisions", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-approved-device-"));
+  try {
+    let now = Date.parse("2026-02-01T12:00:00.000Z");
+    const { publicKey, privateKey } = keys();
+    let leaseStatus: "ACTIVE" | "SUSPENDED" = "ACTIVE"; let revision = 1; let issue = now; let goOffline = false;
+    const server = async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (goOffline) throw new Error("offline");
+      const path = new URL(String(url)).pathname; const body = JSON.parse(String(init?.body));
+      if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-123", nonce: "x".repeat(43), expiresAt: new Date(now + 60_000).toISOString() }));
+      if (path.endsWith("request") || path.endsWith("lease")) {
+        const purpose = path.endsWith("request") ? "request" as const : "lease" as const;
+        const proof = { purpose, challengeId: body.challengeId, nonce: "x".repeat(43), installationId: body.installationId, keyFingerprint: devicePublicKeyFingerprint(body.publicKey), ...(purpose === "request" ? { businessName: body.businessName } : {}) };
+        assert.equal(verifyDeviceProof(proof, body.signature, body.publicKey), true);
+        const token = responseToken(body.installationId, issue, privateKey, { revision, status: leaseStatus, businessName: "Cafe Norte", paidThrough: future(20, now) });
+        return new Response(JSON.stringify({ request: { id: "request-123", installationId: body.installationId, businessName: "Cafe Norte", keyFingerprint: proof.keyFingerprint, status: "APPROVED", licenseId: "license_123", createdAt: new Date(now).toISOString() }, token }));
+      }
+      throw new Error(`unexpected ${path}`);
+    };
+    const make = async () => {
+      const value = new DesktopLicensing({ userDataPath: dir, isPackaged: true, now: () => now, config: { serverUrl: "https://example.test", publicKey }, safeStorage: { encryptString: (s) => Buffer.from(`vault:${s}`), decryptString: (b) => b.toString().replace(/^vault:/, "") }, fetch: server });
+      await value.initialize(); return value;
+    };
+    const first = await make();
+    const active = await first.requestLicenseAccess({ businessName: "Cafe Norte" });
+    assert.equal(active.state, "ACTIVE"); assert.equal(active.canOperate, true);
+    goOffline = true; now += 8 * 86_400_000;
+    const restarted = await make();
+    assert.equal((await restarted.getStatus()).canOperate, true);
+    assert.equal((await restarted.refresh()).canOperate, true);
+    goOffline = false; leaseStatus = "SUSPENDED"; revision = 2; issue = now;
+    assert.equal((await restarted.refresh()).state, "SUSPENDED");
+    leaseStatus = "ACTIVE"; revision = 3; issue = now + 1;
+    assert.equal((await restarted.refresh()).state, "ACTIVE");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("invalid challenge/response and unavailable secure storage fail closed without creating plaintext identity", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-enroll-fail-"));
+  try {
+    const { publicKey } = keys();
+    const unavailable = new DesktopLicensing({ userDataPath: dir, isPackaged: true, config: { serverUrl: "https://example.test", publicKey }, safeStorage: { isAvailable: () => false, encryptString: (s) => Buffer.from(s), decryptString: (b) => b.toString() } });
+    await unavailable.initialize();
+    const unavailableStatus = await unavailable.requestLicenseAccess({ businessName: "Cafe Norte" });
+    assert.equal(unavailableStatus.canOperate, false); assert.match(unavailableStatus.message, /almacenamiento seguro/i);
+    assert.equal(await readFile(join(dir, "device-identity.json")).then(() => true, () => false), false);
+    const bad = new DesktopLicensing({ userDataPath: dir, isPackaged: true, config: { serverUrl: "https://example.test", publicKey }, safeStorage: { encryptString: (s) => Buffer.from(s), decryptString: (b) => b.toString() }, fetch: async () => new Response(JSON.stringify({ challengeId: "bad", nonce: "short", expiresAt: new Date(Date.now() + 60_000).toISOString() })) });
+    await bad.initialize();
+    const badStatus = await bad.requestLicenseAccess({ businessName: "Cafe Norte" });
+    assert.equal(badStatus.canOperate, false); assert.equal(badStatus.enrollment?.status, null);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("enrollment and lease polling serialize instead of consuming each other's responses", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-queue-"));
+  try {
+    const { publicKey } = keys(); const paths: string[] = []; let release!: () => void;
+    let waitFirst = new Promise<void>((resolve) => { release = resolve; });
+    const license = new DesktopLicensing({ userDataPath: dir, isPackaged: true, config: { serverUrl: "https://example.test", publicKey }, safeStorage: { encryptString: (s) => Buffer.from(s), decryptString: (b) => b.toString() }, fetch: async (url, init) => {
+      const path = new URL(String(url)).pathname; paths.push(path);
+      if (path.endsWith("challenge") && paths.length === 1) await waitFirst;
+      if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-123", nonce: "z".repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(JSON.stringify({ request: { id: "request-123", installationId: body.installationId, businessName: "Cafe Norte", keyFingerprint: devicePublicKeyFingerprint(body.publicKey), status: "PENDING", licenseId: null, createdAt: new Date().toISOString() } }));
+    } });
+    await license.initialize();
+    const request = license.requestLicenseAccess({ businessName: "Cafe Norte" });
+    const poll = license.refresh();
+    release(); await Promise.all([request, poll]);
+    assert.deepEqual(paths, ["/v2/devices/challenge", "/v2/devices/request", "/v2/devices/challenge", "/v2/devices/lease"]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

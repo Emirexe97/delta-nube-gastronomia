@@ -7,6 +7,8 @@ COPY packages/licensing/package.json packages/licensing/tsconfig.json ./packages
 COPY packages/licensing/src ./packages/licensing/src
 COPY apps/licensing-service/package.json apps/licensing-service/tsconfig.json ./apps/licensing-service/
 COPY apps/licensing-service/src ./apps/licensing-service/src
+COPY apps/licensing-service/panel ./apps/licensing-service/panel
+COPY apps/licensing-service/scripts ./apps/licensing-service/scripts
 RUN pnpm install --ignore-scripts --frozen-lockfile
 RUN pnpm --filter @gastronomy/licensing build && pnpm --filter @gastronomy/licensing-service build
 

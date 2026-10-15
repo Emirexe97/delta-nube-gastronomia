@@ -42,8 +42,24 @@ assert.ok(
   "Packaged main must include the licensing client",
 );
 assert.ok(
+  main.includes("gastronomy:requestLicenseAccess") &&
+    main.includes("requestLicenseAccess"),
+  "Packaged main must include the license access request IPC handler",
+);
+assert.ok(
   preload.includes("activateLicense") && preload.includes("refreshLicense"),
   "Packaged preload must expose activation and verification",
+);
+assert.ok(
+  preload.includes("requestLicenseAccess") &&
+    preload.includes('invoke("requestLicenseAccess"'),
+  "Packaged preload must expose the license access request API",
+);
+assert.ok(
+  main.includes("safeStorage.isEncryptionAvailable()") &&
+    main.includes("safeStorage.encryptString(value)") &&
+    main.includes("safeStorage.decryptString(value)"),
+  "Packaged main must wire Electron safeStorage availability, encryption, and decryption",
 );
 console.log(
   "Verified packaged public licensing configuration and main/preload handlers (not a physical Mac runtime test).",

@@ -1,4 +1,4 @@
-import { createPublicKey, randomUUID } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -6,6 +6,8 @@ import type { LicenseStatusDto } from "@gastronomy/contracts";
 import {
   leaseAccess,
   verifyLease,
+  devicePublicKeyFingerprint,
+  signDeviceProof,
   VERIFICATION_INTERVAL_MS,
 } from "@gastronomy/licensing";
 import type { LicenseLease } from "@gastronomy/licensing";
@@ -33,7 +35,9 @@ type Options = {
   config?: Config;
   configPath?: string;
   allowLoopbackHttp?: boolean;
+  safeStorage?: { isAvailable?: () => boolean; encryptString(value: string): Buffer; decryptString(value: Buffer): string };
 };
+type DeviceIdentity = { schema: 1; publicKey: string; encryptedPrivateKey: string; enrollment?: NonNullable<LicenseStatusDto["enrollment"]> };
 
 export class DesktopLicensing {
   private readonly now: () => number;
@@ -42,15 +46,22 @@ export class DesktopLicensing {
   private state!: Persisted;
   private config: Config;
   private flight: Promise<LicenseStatusDto> | null = null;
+  private operationQueue: Promise<void> = Promise.resolve();
   private invalid = false;
   private configured = false;
   private readonly file: string;
+  private readonly identityFile: string;
+  private identity: DeviceIdentity | null = null;
+  private identityPrivateKey: string | null = null;
+  private identityLoadError: string | null = null;
+  private enrollment: NonNullable<LicenseStatusDto["enrollment"]> = { requestId: null, status: null, keyFingerprint: null };
   private anchorMonotonic = 0;
   private anchorTrustedTime = 0;
   private lastPersistedEffective = 0;
   private persistChain: Promise<void> = Promise.resolve();
   private lastFailure: "offline" | "code" | "installation" | "invalid" | null =
     null;
+  private enrollmentError: string | null = null;
   private readonly options: Options;
   constructor(options: Options) {
     this.options = options;
@@ -59,6 +70,7 @@ export class DesktopLicensing {
     this.fetcher = options.fetch ?? fetch;
     this.config = options.config ?? {};
     this.file = join(options.userDataPath, "license-state.json");
+    this.identityFile = join(options.userDataPath, "device-identity.json");
   }
   async initialize() {
     if (!this.options.config && this.options.configPath) {
@@ -101,6 +113,20 @@ export class DesktopLicensing {
     );
     this.anchorMonotonic = this.monotonicNow();
     this.lastPersistedEffective = this.anchorTrustedTime;
+    try {
+      const identity = JSON.parse(await readFile(this.identityFile, "utf8")) as DeviceIdentity;
+      if (identity.schema !== 1 || typeof identity.publicKey !== "string" || typeof identity.encryptedPrivateKey !== "string") throw new Error("identity");
+      const decrypt = this.options.safeStorage?.decryptString;
+      if (!decrypt) throw new Error("secure storage unavailable");
+      const privateKey = decrypt(Buffer.from(identity.encryptedPrivateKey, "base64"));
+      const derived = createPublicKey(privateKey).export({ type: "spki", format: "pem" }).toString();
+      if (derived !== identity.publicKey) throw new Error("key mismatch");
+      this.identity = identity; this.identityPrivateKey = privateKey;
+      if (identity.enrollment) this.enrollment = identity.enrollment;
+    } catch (error) {
+      try { await readFile(this.identityFile); this.identityLoadError = "No se pudo recuperar de forma segura la identidad de este equipo. Contactá a soporte."; } catch { /* first run */ }
+      this.identity = null; this.identityPrivateKey = null;
+    }
   }
   private validConfig() {
     if (!this.config.publicKey || !this.config.serverUrl) return false;
@@ -183,7 +209,7 @@ export class DesktopLicensing {
         "UNACTIVATED",
         false,
         null,
-        this.failureMessage("UNACTIVATED"),
+        this.enrollmentError ?? (this.enrollment.status === "PENDING" ? "Solicitud enviada. Esperando habilitación del negocio." : this.enrollment.status === "REJECTED" ? "La solicitud de habilitación fue rechazada. Verificá los datos e intentá nuevamente." : this.failureMessage("UNACTIVATED")),
       );
     if (this.rollback())
       return this.dto(
@@ -268,15 +294,102 @@ export class DesktopLicensing {
         this.effectiveNow() - Date.parse(this.state.lastVerifiedAt ?? "") >=
           VERIFICATION_INTERVAL_MS,
       message,
+      enrollment: { ...this.enrollment },
     };
   }
   activate(code: string) {
+    return this.enqueue(() => { this.lastFailure = null; return this.online("/v1/activate", { code }); });
+  }
+  requestLicenseAccess(input: { businessName: string }) {
+    return this.enqueue(() => this.performLicenseAccessRequest(input));
+  }
+  private async performLicenseAccessRequest(input: { businessName: string }) {
     this.lastFailure = null;
-    return this.online("/v1/activate", { code });
+    this.enrollmentError = null;
+    const businessName = input.businessName.trim();
+    if (!businessName || businessName.length > 120) return this.getStatus();
+    try {
+      if (this.identityLoadError) throw new Error(this.identityLoadError);
+      if (!this.identity) {
+        if (!this.options.safeStorage || this.options.safeStorage.isAvailable?.() === false) throw new Error("El almacenamiento seguro del sistema no está disponible. No se puede solicitar la habilitación en este equipo.");
+        const pair = generateKeyPairSync("ed25519");
+        const publicKey = pair.publicKey.export({ type: "spki", format: "pem" }).toString();
+        const privateKey = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+        const encryptedPrivateKey = this.options.safeStorage.encryptString(privateKey).toString("base64");
+        this.identity = { schema: 1, publicKey, encryptedPrivateKey }; this.identityPrivateKey = privateKey;
+        await mkdir(dirname(this.identityFile), { recursive: true }); await this.persistIdentity();
+      }
+      const keyFingerprint = devicePublicKeyFingerprint(this.identity.publicKey);
+      const challenge = await this.postEnrollment("/v2/devices/challenge", { installationId: this.state.installationId, publicKey: this.identity.publicKey, purpose: "request" });
+      this.validateChallenge(challenge);
+      const signature = signDeviceProof({ purpose: "request", challengeId: challenge.challengeId, nonce: challenge.nonce, installationId: this.state.installationId, keyFingerprint, businessName }, this.identityPrivateKey!);
+      const result = await this.postEnrollment("/v2/devices/request", { installationId: this.state.installationId, publicKey: this.identity.publicKey, businessName, challengeId: challenge.challengeId, signature });
+      this.validateRequest(result, keyFingerprint);
+      this.enrollment = { requestId: result.request.id, status: result.request.status, keyFingerprint, businessName };
+      this.identity.enrollment = this.enrollment; await this.persistIdentity();
+      if (result.request.status === "APPROVED" && typeof result.token === "string") await this.acceptToken(result.token);
+      else if (result.token !== undefined) throw new ResponseProblem("invalid");
+    } catch (error) {
+      this.lastFailure = "offline";
+      if (error instanceof Error && (error.message.includes("almacenamiento seguro") || error.message.includes("identidad de este equipo"))) { this.enrollment = { ...this.enrollment, status: null }; this.enrollmentError = error.message; }
+    }
+    return this.getStatus();
+  }
+  private async postEnrollment(path: string, body: Record<string, string>) {
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const response = await this.fetcher(new URL(path, this.config.serverUrl), { method: "POST", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: controller.signal });
+      const raw = await this.readBoundedBody(response, controller.signal);
+      if (!response.ok) throw new Error("enrollment failed");
+      return JSON.parse(raw) as any;
+    } catch (error) { if (error instanceof ResponseProblem) throw error; throw new ResponseProblem("offline"); }
+    finally { clearTimeout(timer); }
+  }
+  private validateChallenge(value: any) {
+    if (!value || typeof value.challengeId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(value.challengeId) || typeof value.nonce !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.nonce) || !Number.isFinite(Date.parse(value.expiresAt)) || Date.parse(value.expiresAt) <= this.now()) throw new ResponseProblem("invalid");
+  }
+  private validateRequest(value: any, fingerprint: string) {
+    const request = value?.request;
+    if (!request || typeof request.id !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(request.id) || request.installationId !== this.state.installationId || request.keyFingerprint !== fingerprint || !["PENDING", "APPROVED", "REJECTED"].includes(request.status) || typeof request.businessName !== "string" || !Number.isFinite(Date.parse(request.createdAt)) || !(request.licenseId === null || typeof request.licenseId === "string")) throw new ResponseProblem("invalid");
+  }
+  private async persistIdentity() {
+    const temp = `${this.identityFile}.${randomUUID()}.tmp`;
+    await writeFile(temp, JSON.stringify(this.identity), { mode: 0o600 }); await rename(temp, this.identityFile);
   }
   refresh() {
-    this.lastFailure = null;
-    return this.online("/v1/verify", {});
+    return this.enqueue(() => {
+      this.lastFailure = null;
+      if (this.identity && this.identityPrivateKey) return this.refreshEnrollmentLease();
+      return this.online("/v1/verify", {});
+    });
+  }
+  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.operationQueue.then(work, work);
+    this.operationQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+  private async refreshEnrollmentLease() {
+    try {
+      const keyFingerprint = devicePublicKeyFingerprint(this.identity!.publicKey);
+      const challenge = await this.postEnrollment("/v2/devices/challenge", { installationId: this.state.installationId, publicKey: this.identity!.publicKey, purpose: "lease" });
+      this.validateChallenge(challenge);
+      const signature = signDeviceProof({ purpose: "lease", challengeId: challenge.challengeId, nonce: challenge.nonce, installationId: this.state.installationId, keyFingerprint }, this.identityPrivateKey!);
+      const result = await this.postEnrollment("/v2/devices/lease", { installationId: this.state.installationId, publicKey: this.identity!.publicKey, challengeId: challenge.challengeId, signature });
+      this.validateRequest(result, keyFingerprint);
+      this.enrollment = { requestId: result.request.id, status: result.request.status, keyFingerprint, ...(this.enrollment.businessName ? { businessName: this.enrollment.businessName } : {}) };
+      this.identity!.enrollment = this.enrollment; await this.persistIdentity();
+      if (result.request.status === "APPROVED" && typeof result.token === "string") await this.acceptToken(result.token);
+      else if (result.token !== undefined) throw new ResponseProblem("invalid");
+    } catch (error) { this.lastFailure = error instanceof ResponseProblem && error.kind === "invalid" ? "invalid" : "offline"; }
+    return this.getStatus();
+  }
+  private async acceptToken(token: string) {
+    const lease = verifyLease(token, this.config.publicKey!, this.state.installationId);
+    const currentLease = this.safeLease();
+    if (lease.revision < this.state.revision || (currentLease && lease.issuedAt <= currentLease.issuedAt)) throw new ResponseProblem("invalid");
+    const issuedAt = Date.parse(lease.issuedAt);
+    if (!Number.isFinite(issuedAt) || issuedAt + ROLLBACK_TOLERANCE < this.state.lastTrustedTime) throw new ResponseProblem("invalid");
+    this.state.token = token; this.state.revision = lease.revision; this.state.lastVerifiedAt = new Date(Math.max(issuedAt, this.effectiveNow())).toISOString(); this.state.lastTrustedTime = Math.max(this.state.lastTrustedTime, issuedAt); this.state.maxSeenWallClock = Math.max(this.state.maxSeenWallClock, this.now()); this.invalid = false; this.anchorTrustedTime = Math.max(this.effectiveNow(), issuedAt); this.anchorMonotonic = this.monotonicNow(); await this.persist(); this.lastFailure = null;
   }
   private online(
     path: string,

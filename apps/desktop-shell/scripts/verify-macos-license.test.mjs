@@ -25,7 +25,13 @@ const verifier = fileURLToPath(
 
 async function fixture(
   check,
-  { omitConfig = false, alterConfig = false } = {},
+  {
+    omitConfig = false,
+    alterConfig = false,
+    omitRequestHandler = false,
+    omitPreloadRequestSurface = false,
+    omitSafeStorageWiring = false,
+  } = {},
 ) {
   const temp = await mkdtemp(join(tmpdir(), "gastronomy-license-asar-"));
   try {
@@ -33,6 +39,36 @@ async function fixture(
     await mkdir(join(source, "dist"), { recursive: true });
     for (const file of ["main.js", "preload.js"]) {
       await copyFile(join(appRoot, "dist", file), join(source, "dist", file));
+    }
+    if (omitRequestHandler || omitSafeStorageWiring) {
+      const mainPath = join(source, "dist", "main.js");
+      let main = await readFile(mainPath, "utf8");
+      if (omitRequestHandler) {
+        main = main.replaceAll("requestLicenseAccess", "removedAccessHandler");
+      }
+      if (omitSafeStorageWiring) {
+        main = main.replace(
+          "safeStorage.isEncryptionAvailable()",
+          "safeStorage.isEncryptionAvailable_REMOVED()",
+        );
+        main = main.replace(
+          "safeStorage.encryptString(value)",
+          "safeStorage.encryptString_REMOVED(value)",
+        );
+        main = main.replace(
+          "safeStorage.decryptString(value)",
+          "safeStorage.decryptString_REMOVED(value)",
+        );
+      }
+      await writeFile(mainPath, main);
+    }
+    if (omitPreloadRequestSurface) {
+      const preloadPath = join(source, "dist", "preload.js");
+      const preload = (await readFile(preloadPath, "utf8")).replaceAll(
+        "requestLicenseAccess",
+        "requestLicenseAccess_REMOVED",
+      );
+      await writeFile(preloadPath, preload);
     }
     if (!omitConfig) {
       const config = JSON.parse(
@@ -85,5 +121,38 @@ test("packaged licensing check rejects a substituted endpoint", async () => {
       assert.match(stderr, /Packaged licensing config must match/);
     },
     { alterConfig: true },
+  );
+});
+
+test("packaged licensing check rejects a missing license access IPC handler", async () => {
+  await fixture(
+    ({ status, stderr }) => {
+      assert.notEqual(status, 0);
+      assert.match(stderr, /license access request IPC handler/);
+    },
+    { omitRequestHandler: true },
+  );
+});
+
+test("packaged licensing check rejects a missing preload license access surface", async () => {
+  await fixture(
+    ({ status, stderr }) => {
+      assert.notEqual(status, 0);
+      assert.match(stderr, /license access request API/);
+    },
+    { omitPreloadRequestSurface: true },
+  );
+});
+
+test("packaged licensing check rejects incomplete safeStorage encryption wiring", async () => {
+  await fixture(
+    ({ status, stderr }) => {
+      assert.notEqual(status, 0);
+      assert.match(
+        stderr,
+        /safeStorage availability, encryption, and decryption/,
+      );
+    },
+    { omitSafeStorageWiring: true },
   );
 });

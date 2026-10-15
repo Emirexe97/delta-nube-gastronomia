@@ -23,6 +23,7 @@ export interface LicenseStatusDto {
   lastVerifiedAt: IsoDateTime | null;
   verificationOverdue: boolean;
   message: string;
+  enrollment?: { requestId: string | null; status: "PENDING" | "APPROVED" | "REJECTED" | null; keyFingerprint: string | null; businessName?: string };
 }
 
 export const AUDIT_FILTER_ACTIONS = [
@@ -1212,6 +1213,7 @@ export interface SettleDeliveryInput extends IdempotentRequest {
 
 export interface DesktopApi {
   getLicenseStatus(): Promise<LicenseStatusDto>;
+  requestLicenseAccess(input: { businessName: string }): Promise<LicenseStatusDto>;
   activateLicense(input: { code: string }): Promise<LicenseStatusDto>;
   refreshLicense(): Promise<LicenseStatusDto>;
   bootstrap(): Promise<BootstrapDto>;

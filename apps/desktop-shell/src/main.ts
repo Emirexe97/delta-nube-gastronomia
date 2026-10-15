@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, session } from "electron";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { GastronomyApplication } from "@gastronomy/application";
@@ -28,6 +28,13 @@ let databasePath = "";
 let backgroundE2e = false;
 let licensing: DesktopLicensing | null = null;
 let licensingTimer: ReturnType<typeof setInterval> | null = null;
+let licensingPollInFlight = false;
+async function pollLicensing() {
+  if (!licensing || licensingPollInFlight) return;
+  licensingPollInFlight = true;
+  try { await licensing.refresh(); } catch { /* retain the last locally verified lease */ }
+  finally { licensingPollInFlight = false; }
+}
 
 function services() {
   if (!application || !repository)
@@ -298,6 +305,7 @@ function registerIpcHandlers() {
     | "testPrinter"
     | "getLicenseStatus"
     | "activateLicense"
+    | "requestLicenseAccess"
     | "refreshLicense"
   >;
   const completeMethodList = <T extends readonly ForwardedDesktopMethod[]>(
@@ -408,6 +416,10 @@ function registerIpcHandlers() {
     },
   );
   ipcMain.handle("gastronomy:refreshLicense", () => licensing!.refresh());
+  ipcMain.handle("gastronomy:requestLicenseAccess", (_event, input: { businessName?: unknown }) => {
+    if (typeof input?.businessName !== "string" || input.businessName.trim().length < 2 || input.businessName.trim().length > 120) throw new Error("Ingresá el nombre del negocio.");
+    return licensing!.requestLicenseAccess({ businessName: input.businessName.trim() });
+  });
   for (const method of methods) {
     handleData(`gastronomy:${method}`, async (_event, payload) => {
       const { appService } = services();
@@ -732,22 +744,13 @@ app
       userDataPath: app.getPath("userData"),
       isPackaged: app.isPackaged,
       configPath: resolve(__dirname, "../licensing-config.json"),
+      safeStorage: { isAvailable: () => safeStorage.isEncryptionAvailable(), encryptString: (value) => safeStorage.encryptString(value), decryptString: (value) => safeStorage.decryptString(value) },
     });
     await licensing.initialize();
     registerIpcHandlers();
     if (app.isPackaged) {
-      void licensing.refresh();
-      licensingTimer = setInterval(
-        () => {
-          void licensing!
-            .getStatus()
-            .then((status) =>
-              status.verificationOverdue ? licensing!.refresh() : status,
-            )
-            .catch(() => undefined);
-        },
-        60 * 60 * 1000,
-      );
+      void pollLicensing();
+      licensingTimer = setInterval(() => { void pollLicensing(); }, 60_000);
     }
     await createWindow();
   })

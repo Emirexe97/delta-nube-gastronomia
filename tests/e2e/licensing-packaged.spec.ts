@@ -33,6 +33,8 @@ let licenseId = "";
 let activationCode = "";
 let adminToken = "";
 let servicePort = 0;
+let panelUrl = "";
+const ownerPassword = "Isolated-owner-" + randomBytes(16).toString("hex");
 
 test.setTimeout(180_000);
 test.describe.configure({ mode: "serial" });
@@ -93,16 +95,6 @@ test.beforeAll(async () => {
   const serviceModule = await import(
     pathToFileURL(resolve(root, "apps/licensing-service/dist/server.js")).href
   );
-  licenseServer = serviceModule.createLicenseServer({
-    dbPath: serviceDb,
-    adminToken,
-    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-  });
-  await listen(licenseServer.server, "127.0.0.1");
-  const serviceAddress = licenseServer.server.address();
-  if (!serviceAddress || typeof serviceAddress === "string")
-    throw new Error("No se pudo abrir el servicio de licencias local.");
-
   const openssl = "C:/Program Files/Git/usr/bin/openssl.exe";
   const caKey = join(profile, "ca.key.pem");
   const caCert = join(profile, "ca.cert.pem");
@@ -133,7 +125,7 @@ test.beforeAll(async () => {
     const upstream = httpRequest(
       {
         host: "127.0.0.1",
-        port: serviceAddress.port,
+        port: servicePort,
         path: incoming.url,
         method: incoming.method,
         headers: { ...incoming.headers, host: "127.0.0.1" },
@@ -153,10 +145,32 @@ test.beforeAll(async () => {
   const proxyAddress = proxy.address();
   if (!proxyAddress || typeof proxyAddress === "string")
     throw new Error("No se pudo abrir el proxy HTTPS local.");
+  panelUrl = `https://127.0.0.1:${proxyAddress.port}`;
+  const { hashPanelPassword } = await import(
+    pathToFileURL(resolve(root, "apps/licensing-service/dist/panel-auth.js"))
+      .href
+  );
+  licenseServer = serviceModule.createLicenseServer({
+    dbPath: serviceDb,
+    adminToken,
+    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    rateLimit: 500,
+    panelAuth: {
+      username: "owner-fixture",
+      passwordHash: await hashPanelPassword(ownerPassword),
+      origin: panelUrl,
+      secureCookies: true,
+    },
+  });
+  await listen(licenseServer.server, "127.0.0.1");
+  const serviceAddress = licenseServer.server.address();
+  if (!serviceAddress || typeof serviceAddress === "string")
+    throw new Error("No se pudo abrir el servicio de licencias local.");
+  servicePort = serviceAddress.port;
   await writeFile(
     join(appDirectory, "licensing-config.json"),
     JSON.stringify({
-      serverUrl: `https://127.0.0.1:${proxyAddress.port}`,
+      serverUrl: panelUrl,
       publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
     }),
   );
@@ -436,6 +450,180 @@ test("packaged runtime enforces expired writes, preserves read access, and resum
   expect(finalState.cashSession?.expectedAmountMinor).toBe(
     (snapshot.cashSession?.expectedAmountMinor ?? 0) + 100,
   );
+});
+
+test("owner panel approves a packaged device without codes, suspends it and preserves offline access", async ({
+  browser,
+}, testInfo) => {
+  await app?.close();
+  app = undefined;
+  const buildOutput = join(fixtureRoot, "electron-builder", "win-unpacked");
+  const userData = join(profile, "panel-device-user-data");
+  const launch = () =>
+    electron.launch({
+      executablePath: join(buildOutput, "GastronomyLicenseTest.exe"),
+      args: [`--user-data-dir=${userData}`],
+      cwd: buildOutput,
+      env: {
+        ...process.env,
+        NODE_EXTRA_CA_CERTS: join(profile, "ca.cert.pem"),
+      },
+    });
+  app = await launch();
+  expect(await app.evaluate(({ app }) => app.isPackaged)).toBe(true);
+  page = await app.firstWindow();
+  await app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows().forEach((w) => w.hide()),
+  );
+  await page.getByRole("link", { name: "Configuración", exact: true }).click();
+  await page.getByRole("button", { name: "Licencia", exact: true }).click();
+  const client = page.locator("#settings-license");
+  await expect(client.getByPlaceholder("Código de activación")).toHaveCount(0);
+  await client.getByPlaceholder("Nombre del negocio").fill("E2E Panel Café");
+  await client
+    .getByRole("button", { name: "Solicitar habilitación", exact: true })
+    .click();
+  await expect
+    .poll(
+      async () =>
+        (await page!.evaluate(() => window.gastronomy.getLicenseStatus()))
+          .enrollment?.status,
+    )
+    .toBe("PENDING");
+  const pending = await page.evaluate(() =>
+    window.gastronomy.getLicenseStatus(),
+  );
+  expect(pending).toMatchObject({
+    state: "UNACTIVATED",
+    canOperate: false,
+    enrollment: { status: "PENDING" },
+  });
+  expect(pending.enrollment?.keyFingerprint).toHaveLength(64);
+  await expect(
+    page.evaluate(() =>
+      window.gastronomy.openCashSession({
+        openingAmountMinor: 0,
+        note: "Should remain denied",
+      }),
+    ),
+  ).rejects.toThrow(/licencia|habilitación/i);
+  const identityBytes = await readFile(
+    join(userData, "device-identity.json"),
+    "utf8",
+  );
+  expect(identityBytes).not.toContain("BEGIN PRIVATE KEY");
+  expect(JSON.parse(identityBytes).encryptedPrivateKey).toBeTruthy();
+
+  // Real owner browser -> cookie session -> CSRF protected HTTP API -> SQLite.
+  const ownerContext = await browser.newContext({ ignoreHTTPSErrors: true });
+  const owner = await ownerContext.newPage();
+  const errors: string[] = [];
+  owner.on("pageerror", (error) => errors.push(error.message));
+  await owner.goto(panelUrl + "/manage/");
+  await owner.getByLabel("Usuario", { exact: true }).fill("owner-fixture");
+  await owner.getByLabel("Contraseña", { exact: true }).fill(ownerPassword);
+  await owner.getByRole("button", { name: /Ingresar/ }).click();
+  await expect(
+    owner.getByRole("heading", { name: "Licencias", exact: true }),
+  ).toBeVisible();
+  const requestedRow = owner
+    .locator("#requestsBody tr")
+    .filter({ hasText: pending.installationId });
+  await expect(requestedRow).toContainText(pending.enrollment!.keyFingerprint!);
+  await requestedRow.getByRole("button", { name: "Revisar" }).click();
+  const dialog = owner.getByRole("dialog");
+  await dialog.getByRole("checkbox", { name: /Comparé esta huella/ }).check();
+  await dialog.getByLabel("Cómo asignar la licencia").selectOption("new");
+  await dialog.locator('[name="reason"]').fill("Aprobación de prueba aislada");
+  await dialog
+    .getByRole("button", { name: "Aprobar solicitud", exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  const licenseRow = owner
+    .locator("#licensesBody tr")
+    .filter({ hasText: "E2E Panel Café" });
+  await expect(licenseRow).toContainText("Sin vencimiento");
+  await client
+    .getByRole("button", { name: "Verificar habilitación", exact: true })
+    .last()
+    .click();
+  await expect
+    .poll(
+      async () =>
+        (await page!.evaluate(() => window.gastronomy.getLicenseStatus()))
+          .state,
+    )
+    .toBe("ACTIVE");
+  await expect(
+    client.getByText("Sin vencimiento", { exact: true }).first(),
+  ).toBeVisible();
+  const encryptedIdentityBeforeRestart =
+    JSON.parse(identityBytes).encryptedPrivateKey;
+
+  await licenseRow
+    .getByRole("button", { name: "Suspender", exact: true })
+    .click();
+  await dialog.locator('[name="reason"]').fill("Suspensión de prueba aislada");
+  await dialog
+    .getByRole("button", { name: "Suspender licencia", exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  expect(
+    await page.evaluate(() => window.gastronomy.refreshLicense()),
+  ).toMatchObject({ state: "SUSPENDED", canOperate: false });
+  await expect(
+    page.evaluate(() =>
+      window.gastronomy.openCashSession({
+        openingAmountMinor: 0,
+        note: "Suspended deny",
+      }),
+    ),
+  ).rejects.toThrow(/licencia/i);
+  await licenseRow
+    .getByRole("button", { name: "Reactivar", exact: true })
+    .click();
+  await dialog
+    .locator('[name="reason"]')
+    .fill("Reactivación de prueba aislada");
+  await dialog
+    .getByRole("button", { name: "Reactivar licencia", exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  expect(
+    await page.evaluate(() => window.gastronomy.refreshLicense()),
+  ).toMatchObject({ state: "ACTIVE", canOperate: true });
+  expect(errors).toEqual([]);
+  await owner.screenshot({
+    path: testInfo.outputPath("private-owner-panel.png"),
+    fullPage: true,
+  });
+  await owner.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await owner.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await owner.screenshot({
+    path: testInfo.outputPath("private-owner-panel-mobile.png"),
+    fullPage: true,
+  });
+  await ownerContext.close();
+  await new Promise<void>((resolveClose, reject) =>
+    proxy!.close((error) => (error ? reject(error) : resolveClose())),
+  );
+  expect(
+    await page.evaluate(() => window.gastronomy.refreshLicense()),
+  ).toMatchObject({ state: "ACTIVE", canOperate: true });
+  await app.close();
+  app = await launch();
+  page = await app.firstWindow();
+  expect(
+    await page.evaluate(() => window.gastronomy.getLicenseStatus()),
+  ).toMatchObject({ state: "ACTIVE", canOperate: true });
+  expect(
+    JSON.parse(await readFile(join(userData, "device-identity.json"), "utf8"))
+      .encryptedPrivateKey,
+  ).toBe(encryptedIdentityBeforeRestart);
 });
 
 async function listen(

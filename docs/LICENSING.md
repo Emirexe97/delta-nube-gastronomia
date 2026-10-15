@@ -128,4 +128,52 @@ Procedimiento para una futura restauración en vivo (no ejecutado; requiere apro
 - [ ] En Mac: smoke físico, persistencia, impresión, firma Developer ID y notarización para distribución confiable.
 - [ ] Flujo de soporte para reinstalación/cambio de equipo y condiciones comerciales aprobadas.
 
-Fuera de este MVP: cobro automático, webhooks PSP, panel web administrativo, endpoint de suspensión, transferencia autoservicio de instalación y rotación coordinada de claves. Una licencia por instalación; no modificar directamente SQL para simular pagos.
+Fuera del MVP inicial quedaron cobro automático, webhooks PSP, panel web administrativo, suspensión, transferencia autoservicio y rotación coordinada de claves. El panel y la suspensión tienen ahora implementación local en la sección siguiente, aún sin despliegue. Una licencia por instalación; no modificar directamente SQL para simular pagos.
+
+## Panel privado y aprobación sin códigos — 2026-10-15
+
+**Implementado y validado localmente; todavía no desplegado ni incluido en un nuevo instalador.** El usuario eligió un panel web privado con inicio de sesión, accesible desde cualquier PC una vez publicado por HTTPS. La licencia productiva de Pitt Burgers no se modificó durante esta implementación.
+
+### Uso previsto
+
+1. El cliente ingresa el nombre del negocio en Configuración → Licencia y pulsa **Solicitar habilitación**. Se muestran el identificador del equipo y la huella de su identidad.
+2. El propietario ingresa a `/manage/`, compara la huella con el cliente por un canal confiable y revisa la solicitud. Puede asignar una licencia existente compatible o crear una con fecha o **Sin vencimiento**.
+3. Tras aprobar, el equipo obtiene un permiso firmado al verificar (automáticamente cada 60 segundos mientras está conectado, o con **Verificar habilitación**). Sólo entonces se habilitan las operaciones.
+4. El panel permite rechazar/revisar nuevamente, suspender, reactivar y extender la vigencia; exige motivo y registra auditoría. La suspensión se observa en la próxima verificación: no es bloqueo instantáneo de un equipo offline.
+
+**Pitt Burgers:** seleccionar expresamente su licencia existente, no crear un duplicado. La asociación requiere el mismo equipo o una licencia aún no vinculada; no hay transferencia silenciosa. Confirmar la huella que muestre el nuevo cliente antes de aprobar. No alcanza conocer el UUID.
+
+### Fronteras de seguridad y compatibilidad
+
+| Área | Comportamiento |
+| --- | --- |
+| Propietario | Contraseña scrypt en archivo privado; sesión de 8 horas con cookie HttpOnly/SameSite=Strict, Secure en HTTPS; origen exacto y CSRF en mutaciones. El bearer administrativo nunca se envía al navegador. |
+| Equipo | Identidad Ed25519 por instalación; clave privada cifrada por safeStorage del sistema operativo. Challenges de 2 minutos, de un solo uso, ligados a propósito, equipo, huella y nombre solicitado. Identidad corrupta falla cerrada, no se reemplaza silenciosamente. |
+| Escrituras | Aprobación y cambios transaccionales; revisiones esperadas impiden sobrescribir cambios concurrentes; auditoría sin códigos, permisos ni claves privadas. |
+| Límites | Hasta 10000 solicitudes pendientes, con límites de red; expiran pendientes/rechazadas no asociadas después de 7 días. Nunca se purgan identidades aprobadas ni historial de auditoría por esa limpieza. |
+| Compatibilidad | Se conservan permisos schema 1 y APIs v1 para clientes anteriores. FIFO en el cliente evita confundir refresh con solicitud/activación. |
+| Offline | Los permisos válidos y el tiempo abonado sobreviven a fallos de red y reinicios. Una suspensión ya conocida persiste; una orden nueva requiere que el cliente vuelva a conectarse. |
+
+### Configuración para un despliegue futuro
+
+El panel permanece deshabilitado si no se configuran juntas `PANEL_USERNAME`, `PANEL_PASSWORD_HASH_FILE` y `PANEL_ORIGIN`. El origen debe ser el HTTPS exacto del panel. `docker/licensing/panel.override.yml` es un fragmento opt-in, no una modificación del VPS actual. Los assets se incluyen en `dist/panel` durante el build.
+
+Generar el hash con `node apps/licensing-service/scripts/set-panel-password.mjs <ruta-absoluta-privada-fuera-del-repo>` después del build; entregar la contraseña por stdin desde un gestor/canal protegido, nunca como argumento, historial, log ni archivo versionado. Exige 12–1024 bytes y no sobrescribe destinos existentes. En Windows aplicar ACL del usuario y SYSTEM; el modo POSIX por sí solo no limita una ACL de Windows.
+
+**Antes de publicar:** autorización explícita, respaldo nuevo de SQLite y claves de la autoridad y simulacro aislado de recuperación; configurar credenciales privadas; exponer solamente `/manage/` y `/v2/devices/*` además de las rutas públicas existentes, manteniendo `/admin/*` bloqueado por el edge. No abrir el puerto interno ni trasladar secretos al frontend. Probar login/CSRF/solicitud/permiso con una licencia técnica, no con Pitt Burgers. Una restauración debe recuperar la copia coherente completa, nunca recrear la clave de firma.
+
+### Validación y límites de entrega
+
+- `pnpm typecheck`, `pnpm build` y `pnpm test`: 9 tareas aprobadas en cada comando. Servicio 14 pruebas, protocolo 7, desktop 46, base 222 y web 286.
+- Pruebas negativas cubren login/origen/CSRF, challenge usado/ajeno/caducado, petición no aprobada, vínculo incorrecto, revisiones obsoletas y recuperación explícita de solicitudes rechazadas.
+- E2E 5/5 (53.8s): solicitud → aprobación desde navegador → Electron empaquetado activo → suspensión/reactivación → offline/reinicio, más compatibilidad v1 y desarrollo. Evidencia en `docs/qa/LICENSING_E2E_AUDIT.md`.
+- Demo local aislada en `http://127.0.0.1:8098/manage/`; credenciales/datos fuera de Git en `%LOCALAPPDATA%\DeltaNube\PanelPreview`, ACL usuario actual/SYSTEM. No controla producción ni representa al cliente real.
+
+**Pendiente:** autorización para commit/push, versión, despliegue y nuevo DMG; prueba física Mac, notarización y custodia portátil independiente. La app distribuida 0.1.23 no puede obtener por sí sola una aprobación sin código: hay que actualizar cliente **y** servicio. No se implementó cobro automático, transferencia de equipo ni MFA.
+
+**Rollback local del cambio:** retirar de forma coordinada el cliente de inscripción y panel/API v2 manteniendo v1, helpers compartidos y contratos coherentes; antes de revertir un despliegue respaldar DB y claves. El esquema es aditivo: no borrar solicitudes/identidades ni acortar licencias con SQL como atajo. El POS y sus datos no se migran por este cambio.
+### Publicación autorizada0.1.24 — 2026-10-15
+
+Usuario autorizó commit/push, despliegue productivo y nuevo DMG M1. Respaldo previo `authority-20261015T200622Z.dnbak`, cifrado DPAPI fuera de Git; recuperación aislada sin red aprobada (SQLite íntegra, misma clave,2licencias/1renovación), sin cambiar producción. Helpers de backup/validación pasan a usar la imagen del contenedor activo; recuperación admite opcionalmente sólo `panel-password.hash` con formato scrypt estricto además del allowlist previo. No incluye contraseña plana en backup del VPS. Credenciales de propietario se custodian en carpeta Windows privada fuera del repo, nunca en código ni navegador cliente.
+
+Estado al preparar fuente: despliegue/CI todavía pendientes de confirmar. Mantener `/admin/*`404 público, claves de firma originales y compatibilidad v1. Un cliente antiguo aún requiere la actualización de app para el nuevo flujo.

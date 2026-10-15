@@ -6343,6 +6343,7 @@ export function createDemoApi(
     async activateLicense() {
       return this.getLicenseStatus();
     },
+    async requestLicenseAccess() { return this.getLicenseStatus(); },
     async refreshLicense() {
       return this.getLicenseStatus();
     },

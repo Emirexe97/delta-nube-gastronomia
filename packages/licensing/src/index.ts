@@ -1,4 +1,12 @@
 import { sign, verify, createPrivateKey, createPublicKey } from "node:crypto";
+export {
+  devicePublicKeyFingerprint,
+  deviceProofMessage,
+  signDeviceProof,
+  verifyDeviceProof,
+  type DeviceProof,
+  type DeviceProofPurpose,
+} from "./device-enrollment.js";
 
 export const DAY_MS = 86_400_000;
 export const GRACE_MS = 3 * DAY_MS;
@@ -123,6 +131,7 @@ export function licenseAllowsMethod(
     "printCashSessionReport",
     "getLicenseStatus",
     "activateLicense",
+    "requestLicenseAccess",
     "refreshLicense",
   ]).has(method);
 }

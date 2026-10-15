@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 ROOT=/home/deploy/gastronomy-licensing
 API=gastronomy_licensing-api-1
-IMAGE=gastronomy-licensing:manual-v1
+IMAGE=$(docker inspect "$API" --format '{{.Config.Image}}')
 COMPOSE="$ROOT/docker/licensing/compose.yml"
 [[ $(realpath "$ROOT") == "$ROOT" && $(id -u) == 1000 ]]
 [[ $(docker inspect "$API" --format '{{index .Config.Labels "com.docker.compose.project"}}') == gastronomy_licensing ]]
