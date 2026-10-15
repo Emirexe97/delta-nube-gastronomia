@@ -45,7 +45,7 @@ jobs:
       - name: Package Intel app and create DMG
         if: matrix.arch == 'x64'
         run: |
-          pnpm --filter @gastronomy/desktop-shell exec electron-builder --mac dir --x64 --publish never -c.mac.identity=null -c.mac.hardenedRuntime=false
+          pnpm --filter @gastronomy/desktop-shell exec electron-builder --mac dir --x64 --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false
           app=$(find apps/desktop-shell/release/mac -maxdepth 1 -type d -name '*.app' -print -quit)
           test -n "$app"
           app_name=$(basename "$app" .app)
@@ -59,7 +59,7 @@ jobs:
 
       - name: Package Apple Silicon DMG
         if: matrix.arch == 'arm64'
-        run: pnpm --filter @gastronomy/desktop-shell exec electron-builder --mac dmg --arm64 --publish never -c.mac.identity=null -c.mac.hardenedRuntime=false
+        run: pnpm --filter @gastronomy/desktop-shell exec electron-builder --mac dmg --arm64 --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
@@ -73,6 +73,17 @@ jobs:
           test -n "$addon"
           file "$addon"
           file "$addon" | grep -q "${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}"
+
+      # Verify the deliverable, not the pre-DMG staging directory. Ad-hoc
+      # signatures are integrity checks only; they do not imply Gatekeeper trust.
+      - name: Verify app signature and native addon inside DMG
+        run: |
+          shopt -s nullglob
+          dmgs=(apps/desktop-shell/release/*.dmg)
+          test ${#dmgs[@]} -gt 0
+          for dmg in "${dmgs[@]}"; do
+            node apps/desktop-shell/scripts/verify-macos-dmg.mjs "$dmg" "${{ matrix.arch }}"
+          done
 
       # Check the actual ASAR, not just the source configuration: missing config
       # would make a packaged installation fail closed before activation.

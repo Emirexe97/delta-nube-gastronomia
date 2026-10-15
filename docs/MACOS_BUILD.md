@@ -1,6 +1,6 @@
 # Preparación y validación de la versión macOS
 
-Este documento describe cómo preparar y validar el empaquetado macOS de Delta Nube Gastronomía. **La existencia de esta guía no implica que la aplicación ni el instalador ya se hayan compilado o probado en una Mac.** La validación final debe hacerse en hardware o CI macOS.
+Este documento describe cómo preparar y validar el empaquetado macOS de Delta Nube Gastronomía. **0.1.22 arm64 fue bloqueado en una Mac M1 con el aviso «está dañado». No usar ese artefacto como instalador validado.** Se prepara 0.1.23 de prueba con firma ad-hoc y controles del paquete. La validación final en la Mac destinataria sigue pendiente.
 
 ## Requisitos del entorno
 
@@ -29,7 +29,7 @@ Para una matriz de distribución, producir y validar **arm64 (Apple Silicon)** y
 
 Los artefactos se esperan en `apps/desktop-shell/release/` (directorio `build.directories.output` actual). Anotar versión, arquitectura y nombre/hash de cada artefacto validado.
 
-El workflow manual `.github/workflows/build-macos.yml` genera artefactos **sin firma** en GitHub Actions, uno por arquitectura. Esta modalidad es sólo para pruebas internas; al descargarlos en otra Mac, Gatekeeper puede exigir aprobar la apertura desde Configuración del Sistema > Privacidad y seguridad.
+El workflow manual `.github/workflows/build-macos.yml` prepara artefactos **con firma ad-hoc**, uno por arquitectura. Esta firma no acredita un desarrollador ante Apple ni equivale a notarización: la modalidad sigue siendo sólo para pruebas internas y Gatekeeper puede bloquear la apertura. No desactivar Gatekeeper globalmente para distribuirlos.
 
 ## Validación funcional en Mac
 
@@ -100,3 +100,17 @@ Descargados en `apps/desktop-shell/release/mac-build/run-38486157882/` (ignorado
 **Sí incluyen licenciamiento**, URL pública y clave pública de autoridad; no incluyen claves privadas ni administración. Al instalar requieren código de activación para operar. Los permisos offline abonados y la recuperación al vencer funcionan según `docs/LICENSING.md`; no instalar sobre un negocio operativo sin preparar previamente su licencia, respaldo y prueba de actualización.
 
 Mantienen modalidad unsigned interna. La compilación/ASAR no reemplaza smoke físico Mac, impresión, firma/notarización ni validación de actualización de un negocio. No se generó un nuevo instalador Windows NSIS en esta solicitud.
+
+## Corrección de empaquetado 0.1.23 — 2026-10-14
+
+**Objetivo:** entregar otro DMG M1 de prueba sin reutilizar el nombre del paquete fallido 0.1.22. Usuario autorizó la corrección, publicación y compilación; no se cambia la lógica POS, las licencias ni el VPS.
+
+- Hallazgo confirmado: el workflow anterior pasaba `-c.mac.identity=null`, que en electron-builder 26.15.3 omite por completo la firma. El control `hdiutil verify` sólo verifica el contenedor DMG; no verifica la firma ni la apertura de la app.
+- Corrección implementada: firma ad-hoc (`identity=-`) con hardened runtime desactivado para este ensayo, verificación estricta de la app del DMG final y smoke empaquetado con perfil temporal. Mantener el control de licencia ASAR y la arquitectura SQLite.
+- Causa exacta del aviso en la Mac destinataria todavía no demostrada. No atribuirlo a WhatsApp ni afirmar que la nueva firma elimina todas las advertencias.
+- Distribución comercial: Developer ID Application, hardened runtime/entitlements adecuados, notarización y ticket, más prueba real de instalación e impresión en Mac.
+- Rollback acotado: revertir workflow/verificadores y versiones de esta corrección; no cambiar bases o autoridad. El DMG 0.1.22 bloqueado no es una alternativa aprobada.
+
+**Estado:** preparación en curso; no afirmar que existe un nuevo DMG validado hasta completar CI y descargarlo. Evidencia de ejecución, commit, archivo y hash se agregarán aquí al finalizar.
+
+Validación local: typecheck 9/9 y build 9/9; tests desktop 39/39 (incluyen dos invariantes nuevos del workflow/smoke), ASAR y empaquetado focalizados 5/5. Estos tests locales son estáticos para el flujo Mac: `codesign` y el arranque real se ejecutan en CI macOS. Revisión independiente sin hallazgos accionables. No se genera NSIS Windows.
