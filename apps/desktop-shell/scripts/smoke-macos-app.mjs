@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { _electron as electron } from "@playwright/test";
 import { printRecentMacCrashes } from "./macos-crash-diagnostics.mjs";
+import { spawnSync } from "node:child_process";
 
 const [executablePath] = process.argv.slice(2);
 assert.ok(
@@ -22,7 +23,7 @@ const startedAt = Date.now();
 try {
   app = await electron.launch({
     executablePath,
-    args: [`--user-data-dir=${profile}`],
+    args: [`--user-data-dir=${profile}`, "--enable-logging=stderr"],
     timeout: 30000,
   });
   const page = await app.firstWindow({ timeout: 30000 });
@@ -51,6 +52,32 @@ try {
     "Packaged app opened; SQLite-backed startup and licensing preload/IPC returned UNACTIVATED without activation.",
   );
 } catch (error) {
+  if (process.platform === "darwin") {
+    // Diagnostic control only, not an alternative passing smoke: does this
+    // exact executable also crash without Playwright's inspector flags?
+    const controlProfile = await mkdtemp(
+      join(tempRoot, "gastronomy-dmg-smoke-"),
+    );
+    try {
+      const control = spawnSync(
+        executablePath,
+        [`--user-data-dir=${controlProfile}`, "--enable-logging=stderr"],
+        { encoding: "utf8", timeout: 10000, killSignal: "SIGKILL" },
+      );
+      console.error(
+        "Direct launch diagnostic:",
+        JSON.stringify({
+          status: control.status,
+          signal: control.signal,
+          error: control.error?.code,
+          stderr: control.stderr?.slice(-12000),
+          stdout: control.stdout?.slice(-4000),
+        }),
+      );
+    } finally {
+      await rm(controlProfile, { recursive: true, force: true });
+    }
+  }
   await printRecentMacCrashes(startedAt);
   throw error;
 } finally {
