@@ -132,7 +132,7 @@ Fuera del MVP inicial quedaron cobro automático, webhooks PSP, panel web admini
 
 ## Panel privado y aprobación sin códigos — 2026-10-15
 
-**Implementado y validado localmente; todavía no desplegado ni incluido en un nuevo instalador.** El usuario eligió un panel web privado con inicio de sesión, accesible desde cualquier PC una vez publicado por HTTPS. La licencia productiva de Pitt Burgers no se modificó durante esta implementación.
+**Publicado0.1.24 y desplegado por HTTPS el 2026-10-15.** El usuario eligió y autorizó un panel web privado con inicio de sesión, accesible desde cualquier PC. La licencia productiva de Pitt Burgers no se modificó durante la implementación, despliegue ni piloto. El cliente debe actualizar la app para solicitar acceso sin código.
 
 ### Uso previsto
 
@@ -169,11 +169,19 @@ Generar el hash con `node apps/licensing-service/scripts/set-panel-password.mjs 
 - E2E 5/5 (53.8s): solicitud → aprobación desde navegador → Electron empaquetado activo → suspensión/reactivación → offline/reinicio, más compatibilidad v1 y desarrollo. Evidencia en `docs/qa/LICENSING_E2E_AUDIT.md`.
 - Demo local aislada en `http://127.0.0.1:8098/manage/`; credenciales/datos fuera de Git en `%LOCALAPPDATA%\DeltaNube\PanelPreview`, ACL usuario actual/SYSTEM. No controla producción ni representa al cliente real.
 
-**Pendiente:** autorización para commit/push, versión, despliegue y nuevo DMG; prueba física Mac, notarización y custodia portátil independiente. La app distribuida 0.1.23 no puede obtener por sí sola una aprobación sin código: hay que actualizar cliente **y** servicio. No se implementó cobro automático, transferencia de equipo ni MFA.
+**Pendiente:** instalación/prueba física Mac, notarización y custodia portátil independiente. La app anterior0.1.23 no puede obtener por sí sola una aprobación sin código: actualizar a0.1.24, sin borrar los datos del negocio. No se implementó cobro automático, transferencia de equipo ni MFA.
 
 **Rollback local del cambio:** retirar de forma coordinada el cliente de inscripción y panel/API v2 manteniendo v1, helpers compartidos y contratos coherentes; antes de revertir un despliegue respaldar DB y claves. El esquema es aditivo: no borrar solicitudes/identidades ni acortar licencias con SQL como atajo. El POS y sus datos no se migran por este cambio.
 ### Publicación autorizada0.1.24 — 2026-10-15
 
 Usuario autorizó commit/push, despliegue productivo y nuevo DMG M1. Respaldo previo `authority-20261015T200622Z.dnbak`, cifrado DPAPI fuera de Git; recuperación aislada sin red aprobada (SQLite íntegra, misma clave,2licencias/1renovación), sin cambiar producción. Helpers de backup/validación pasan a usar la imagen del contenedor activo; recuperación admite opcionalmente sólo `panel-password.hash` con formato scrypt estricto además del allowlist previo. No incluye contraseña plana en backup del VPS. Credenciales de propietario se custodian en carpeta Windows privada fuera del repo, nunca en código ni navegador cliente.
 
-Estado al preparar fuente: despliegue/CI todavía pendientes de confirmar. Mantener `/admin/*`404 público, claves de firma originales y compatibilidad v1. Un cliente antiguo aún requiere la actualización de app para el nuevo flujo.
+Fuente publicada en `main`, commit `cf9626803f815e6c455f0caa8dcee77504e43198`. Imagen `gastronomy-licensing:panel-0.1.24-cf96268` activa; compose conserva volúmenes/red/recursos y fija el contexto al release desplegado para no reconstruir fuentes anteriores. No se modificó Caddy, POS ni staging. Recibo y rollback acotado en `/home/deploy/gastronomy-licensing/operations/panel-20261015T201026Z/`: compose previo, snapshot consistente, candidato y digest de filas. Se ensayó migración aditiva sobre copia antes de actualizar. Las2licencias originales y clave pública conservaron exactamente sus valores. `/health`200, `/manage/`200, overview anónimo401, `/admin/licenses`404; POS/staging302 y saludables como antes. Pruebas aisladas Node22 del release en VPS20/20.
+
+**Panel:** `https://gastronomia.deltanubeweb.com/manage/`. Usuario/contraseña sólo en `%LOCALAPPDATA%\DeltaNube\PanelOwner\Acceso-panel-produccion.txt`, carpeta con ACL usuario actual/SYSTEM. No compartir ese archivo con el cliente. La autoridad guarda únicamente el hash scrypt, no la contraseña plana.
+
+Piloto HTTPS único aprobado: login/cookie segura, solicitud firmada pendiente, aprobación, permiso ACTIVE verificado con clave pública original, suspensión/reactivación y suspensión final. Registro `wDGen6A5gdAo1xP4EPcZyA`, etiquetado `PILOTO PANEL — NO CLIENTE`, final SUSPENDED; no negocio/pago real. Se compararon las2licencias originales antes/después sin cambios. Navegador real por HTTPS validó login, dashboard, móvil390px sin desborde/erroresJS y logout; Pitt figura Activa/Sin vencimiento en la autoridad, no prueba todavía que su app haya recibido el permiso.
+
+Respaldo posterior `authority-20261015T201156Z.dnbak` (102630bytes), cifrado DPAPI CurrentUser fuera de Git, incluye nuevo esquema y hash del panel. Recuperación aislada sin red aprobada:3licencias (incluye piloto técnico),1renovación, SQLite y misma clave; ninguna restauración sobre producción. Los helpers siguen la imagen activa. Conservar custodia del perfil Windows; esto no reemplaza la segunda copia portátil pendiente.
+
+CI Mac `38799556716` desde `cf96268`: success arm64+x64 con firma/arranque, SQLite y nuevo guard ASAR de inscripción cifrada. Artefacto M1 y hash en `MACOS_BUILD.md`. El operador debe comparar la huella de la solicitud real del cliente y seleccionar su licencia existente; no duplicar Pitt ni aprobar sólo por UUID.

@@ -89,3 +89,12 @@ Evidencia ignorada: `test-results/licensing-packaged-owner-p-69e03-nd-preserves-
 **Pendiente de entrega comercial:** despliegue HTTPS con credenciales privadas y respaldo nuevo, nuevo cliente Mac y smoke físico. La suspensión sólo se aplica al próximo contacto del equipo; offline conserva el tiempo abonado. No hay MFA, transferencia autoservicio ni cobro automático. El panel por sí solo no actualiza una app0.1.23 ya instalada.
 
 El CLI de hash tiene prueba black-box adicional: salida externa verificada, no imprime contraseña, no sobrescribe y rechaza rutas dentro del repo por mayúsculas/junction/symlink. Servicio final14/14. Capturas locales adicionales en .licensing-local/panel-evidence/ (datos de demostración).
+## Entrega autorizada0.1.24 y panel productivo — 2026-10-15
+
+Fuente `cf96268` publicada enmain. Repetidos tipo/build9/9, shell49/49 (nuevo ASAR6/6), protocolo7/7, servicio14/14 y backupPS5grupos. Node22 en contenedor aislado del VPS20/20; migración de nueva imagen sobre copia coherente no modificó las2filas de licencia originales. Despliegue conservó digest completo de filas/clave, red interna sin puertos y POS/staging saludables, con mismos200/404/302 públicos. Recibo `/home/deploy/gastronomy-licensing/operations/panel-20261015T201026Z/receipt.json` y detalles en `../LICENSING.md`.
+
+Piloto público único real por TLS confiable: cookie segura y CSRF de owner, solicitud firmada, aprobación y lease verificado con clave pública original, suspensión/reactivación y suspensión final. Sólo nuevo registro técnico `wDGen6A5gdAo1xP4EPcZyA`, sin cliente/pago; originales invariantes. Navegador público login/dashboard/móvil390px/logout aprobado sin erroresJS ni desborde; Pitt visible Activa/Sin vencimiento sin mutación. No equivale a permiso aplicado en su Mac.
+
+Respaldo anterior `authority-20261015T200622Z.dnbak` y posterior `authority-20261015T201156Z.dnbak`: ambas recuperaciones aisladas sin red aprobadas, última3licencias/1renovación (incluye piloto) y mismo par de claves. Nuevo hash del panel validado en allowlist; contraseña plana sólo en carpeta privada Windows, no evidencia ni Git. DPAPI sigue dependiendo de ese perfil.
+
+CI38799556716 success arm64+x64 desdecf96268 con firma/SQLite/arranque/ASAR nuevo aprobados. DMG M1 local0.1.24 y hash en `../MACOS_BUILD.md`. NoNSIS ni smoke físico Mac, impresión, DeveloperID/notarización o auditoría integral nueva. Próximo paso del usuario: actualizar app cliente, solicitar acceso y comparar huella antes de asignar la licencia Pitt existente.

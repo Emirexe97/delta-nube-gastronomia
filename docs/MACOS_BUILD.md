@@ -142,6 +142,18 @@ Validaciones locales finales: desktop **42/42**, scripts focalizados **8/8**, ty
 
 Usuario autorizó commit/push, despliegue del panel y nuevo instalador M1. Versión raíz/shell0.1.24. Incluye solicitud de acceso desde la app, identidad Ed25519 cifrada por safeStorage y verificación/persistencia del permiso aprobado desde el panel; mantiene compatibilidad con permisos anteriores. No modifica datos del POS ni transfiere la licencia de Pitt Burgers.
 
-Guard ASAR ampliado: exige IPC/preload `requestLicenseAccess` y cableado de disponibilidad/cifrado/descifrado de safeStorage, además de configuración pública y APIs anteriores. Pruebas negativas eliminan cada frontera y deben fallar. Checks locales: tipo/build9/9, shell49/49 (guard ASAR6/6), protocolo7/7, servicio14/14 y backup5grupos; E2E5/5 previo sin cambios de lógica posteriores. Pendiente CI, descarga y recibo de hash del nuevo artefacto.
+Guard ASAR ampliado: exige IPC/preload `requestLicenseAccess` y cableado de disponibilidad/cifrado/descifrado de safeStorage, además de configuración pública y APIs anteriores. Pruebas negativas eliminan cada frontera y deben fallar. Checks locales: tipo/build9/9, shell49/49 (guard ASAR6/6), protocolo7/7, servicio14/14 y backup5grupos; E2E5/5 previo sin cambios de lógica posteriores.
 
 Conservar workaround Unicode NFD y firma ad-hoc0.1.23. La publicación no añade Developer ID/notarización ni demuestra impresión en Mac física.
+
+### Instalador M1 0.1.24 listo
+
+[CI38799556716](https://github.com/Emirexe97/delta-nube-gastronomia/actions/runs/38799556716) **success arm64+x64**, fuente `cf9626803f815e6c455f0caa8dcee77504e43198`. Verificaciones del DMG final: firma ad-hoc estricta y helpers Unicode, SQLite/arquitectura, apertura del renderer empaquetado con perfil aislado y `UNACTIVATED`, ASAR con nueva solicitud y cifrado. No se activa una licencia en CI.
+
+| Archivo local ignorado | Bytes | SHA256 |
+| --- | ---: | --- |
+| `apps/desktop-shell/release/mac-build/run-38799556716/arm64/Delta-Nube-Gastronomia-0.1.24-arm64.dmg` | 115950543 | `9D0560C58BD141715AEB1F4C16CC13442040E9849875F458219E13EC5ED67D72` |
+
+El panel productivo ya está desplegado, con respaldo previo/posterior recuperados en aislamiento. **Cliente:** cerrar la app anterior, reemplazar solamente la app en Aplicaciones con el DMG arm64; no eliminar perfil/datos. Configuración → Licencia → nombre Pitt Burgers → Solicitar habilitación. **Propietario:** entrar al panel, comparar huella y asociar explícitamente la licencia Pitt Burgers existente; luego verificar habilitación en el cliente. No necesita código. No confundir el estado activo de la autoridad con permiso ya recibido por la Mac.
+
+La firma continúa ad-hoc: macOS puede advertir/bloquear. Falta prueba en Mac física y notarización; no desactivar Gatekeeper globalmente como solución. El commit posterior sólo de evidencia no cambia la fuente del instalador ni vuelve a compilarlo.
