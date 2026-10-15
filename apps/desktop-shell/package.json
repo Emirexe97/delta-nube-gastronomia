@@ -62,6 +62,9 @@
       ]
     },
     "mac": {
+      "extendInfo": {
+        "CFBundleName": "Delta Nube Gastronomi\u0301a"
+      },
       "target": [
         {
           "target": "dmg",

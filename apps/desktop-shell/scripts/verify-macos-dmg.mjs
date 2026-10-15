@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -55,6 +55,23 @@ try {
     `Expected one .app in ${dmg}, found ${apps.length}`,
   );
   const app = apps[0];
+  const bundleName = run("plutil", [
+    "-extract",
+    "CFBundleName",
+    "raw",
+    "-o",
+    "-",
+    join(app, "Contents", "Info.plist"),
+  ]).trim();
+  const helpers = await readdir(join(app, "Contents", "Frameworks"));
+  for (const suffix of ["", " (Renderer)", " (GPU)", " (Plugin)"]) {
+    // Byte-for-byte match, not filesystem normalization-tolerant existence:
+    // Electron discovers helpers from CFBundleName; v26 uses NFD filenames.
+    assert.ok(
+      helpers.includes(`${bundleName} Helper${suffix}.app`),
+      `CFBundleName does not match the packaged helper name (${suffix || "main"})`,
+    );
+  }
 
   // Deep strict verification covers nested frameworks and the unpacked native addon.
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", app]);

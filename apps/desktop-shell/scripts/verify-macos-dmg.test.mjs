@@ -16,6 +16,22 @@ const smoke = await readFile(
   new URL("./smoke-macos-app.mjs", import.meta.url),
   "utf8",
 );
+const desktop = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+);
+
+test("Mac CFBundleName matches v26 NFD helper filenames without changing display branding", () => {
+  assert.notEqual(
+    desktop.build.productName.normalize("NFD"),
+    desktop.build.productName,
+  );
+  assert.equal(
+    desktop.build.mac.extendInfo.CFBundleName,
+    desktop.build.productName.normalize("NFD"),
+  );
+  assert.equal(desktop.build.mac.extendInfo.CFBundleDisplayName, undefined);
+  assert.match(verifier, /helpers\.includes\(`\$\{bundleName\} Helper/);
+});
 
 test("macOS workflow creates explicit ad-hoc signatures and verifies the DMG before upload", () => {
   assert.equal((workflow.match(/-c\.mac\.identity=-/g) ?? []).length, 2);
