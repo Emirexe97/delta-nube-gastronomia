@@ -127,6 +127,8 @@ Run `38661701911`, fuente `e93cc72`: tras alinear Unicode la app **sí abrió el
 
 [CI run 38662059439](https://github.com/Emirexe97/delta-nube-gastronomia/actions/runs/38662059439), fuente `09a5f859939ba3826fa97f50a61fcbe1fcc160c9`: job **Build arm64 DMG** `116185411450` completado **success**. Verificador del DMG final aprobó coincidencia de helpers/CFBundleName, firma ad-hoc profunda/estricta, firma/arquitectura SQLite, licencia ASAR y apertura del renderer empaquetado con `isPackaged=true`, perfil temporal aislado y estado `UNACTIVATED`. No se activó una licencia ni se mutó la autoridad. Intel seguía en progreso al descargar el paquete M1.
 
+Estado final del run: **success arm64 y x64**. El paquete Intel también pasó el verificador y smoke; se entrega localmente sólo arm64 porque la Mac destinataria es M1. Los commits posteriores de evidencia no cambian la fuente compilada `09a5f85`.
+
 Artefacto GitHub `11939865642`, descargado y renombrado localmente sin cambiar sus bytes:
 
 | Archivo | Bytes | SHA256 |
