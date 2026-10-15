@@ -1,6 +1,6 @@
 # Preparación y validación de la versión macOS
 
-Este documento describe cómo preparar y validar el empaquetado macOS de Delta Nube Gastronomía. **0.1.22 arm64 fue bloqueado en una Mac M1 con el aviso «está dañado». No usar ese artefacto como instalador validado.** Se prepara 0.1.23 de prueba con firma ad-hoc y controles del paquete. La validación final en la Mac destinataria sigue pendiente.
+Este documento describe cómo preparar y validar el empaquetado macOS de Delta Nube Gastronomía. **0.1.22 arm64 fue bloqueado en una Mac M1 con el aviso «está dañado». No usar ese artefacto como instalador validado.** 0.1.23 arm64 de prueba está descargado, con firma ad-hoc y arranque empaquetado verificados en CI Mac. La validación final en la Mac destinataria sigue pendiente.
 
 ## Requisitos del entorno
 
@@ -111,7 +111,7 @@ Mantienen modalidad unsigned interna. La compilación/ASAR no reemplaza smoke f�
 - Distribución comercial: Developer ID Application, hardened runtime/entitlements adecuados, notarización y ticket, más prueba real de instalación e impresión en Mac.
 - Rollback acotado: revertir workflow/verificadores y versiones de esta corrección; no cambiar bases o autoridad. El DMG 0.1.22 bloqueado no es una alternativa aprobada.
 
-**Estado:** preparación en curso; no afirmar que existe un nuevo DMG validado hasta completar CI y descargarlo. Evidencia de ejecución, commit, archivo y hash se agregarán aquí al finalizar.
+**Estado:** 0.1.23 arm64 descargado y aprobado por las verificaciones de CI detalladas abajo; no equivale a validación de Gatekeeper en la Mac destinataria.
 
 Validación local: typecheck 9/9 y build 9/9; tests desktop 39/39 (incluyen dos invariantes nuevos del workflow/smoke), ASAR y empaquetado focalizados 5/5. Estos tests locales son estáticos para el flujo Mac: `codesign` y el arranque real se ejecutan en CI macOS. Revisión independiente sin hallazgos accionables. No se genera NSIS Windows.
 
@@ -122,3 +122,17 @@ Los runs `38660368094`, `38660892870` y `38661306386` pasaron firma/arquitectura
 Hallazgo adicional: electron-builder 26.15.3 normaliza nombres de helpers a NFD pero escribe `CFBundleName` en NFC. La tilde de «Gastronomía» genera nombres internamente distintos, defecto documentado por [la corrección upstream #9962](https://github.com/electron-userland/electron-builder/pull/9962). Se aplica un workaround acotado: `mac.extendInfo.CFBundleName` usa la misma forma NFD que los helpers, manteniendo `CFBundleDisplayName` y la marca visible. Evita migrar todas las herramientas a la versión mayor 27. Test de configuración y verificador del DMG exigen coincidencia exacta de nombres; la siguiente ejecución CI debe confirmar si resuelve el cierre.
 
 Run `38661701911`, fuente `e93cc72`: tras alinear Unicode la app **sí abrió el renderer y llegó a la aserción `isPackaged`**. El control directo ya no produjo SIGTRAP (permaneció abierto hasta el timeout diagnóstico). El smoke se detuvo por una comparación textual del perfil: Electron devolvió `/private/var/...` para el mismo directorio creado como `/var/...`. Se corrige la comparación usando `realpath` en ambos lados, sin eliminar la comprobación de aislamiento. Falta la ejecución completa exitosa y descarga.
+
+### Entrega M1 0.1.23: firma y arranque verificados
+
+[CI run 38662059439](https://github.com/Emirexe97/delta-nube-gastronomia/actions/runs/38662059439), fuente `09a5f859939ba3826fa97f50a61fcbe1fcc160c9`: job **Build arm64 DMG** `116185411450` completado **success**. Verificador del DMG final aprobó coincidencia de helpers/CFBundleName, firma ad-hoc profunda/estricta, firma/arquitectura SQLite, licencia ASAR y apertura del renderer empaquetado con `isPackaged=true`, perfil temporal aislado y estado `UNACTIVATED`. No se activó una licencia ni se mutó la autoridad. Intel seguía en progreso al descargar el paquete M1.
+
+Artefacto GitHub `11939865642`, descargado y renombrado localmente sin cambiar sus bytes:
+
+| Archivo | Bytes | SHA256 |
+| --- | ---: | --- |
+| `apps/desktop-shell/release/mac-build/run-38662059439/arm64/Delta-Nube-Gastronomia-0.1.23-arm64.dmg` | 115945719 | `4AF6AF40DB92FC803C00CDB727EDFECB54F261D73154F6F6F15B13E45AC65191` |
+
+Validaciones locales finales: desktop **42/42**, scripts focalizados **8/8**, typecheck **9/9**, build **9/9**. La corrección NFD y la canonicalización del perfil preservan marca, aislamiento y licenciamiento; no cambian datos POS ni VPS. Commits de diagnóstico intermedios no entregaron paquetes fallidos.
+
+**Uso de prueba:** copiar este DMG arm64 a la Mac M1 y arrastrar la app a Aplicaciones. Reemplazar sólo la app de prueba anterior, no borrar los datos del negocio. Requiere licencia de activación. Aún sin Developer ID/notarización: macOS puede exigir autorización o bloquearla. No prometer ausencia de alertas ni desactivar Gatekeeper globalmente. Falta confirmar apertura/impresión en la Mac del usuario.
