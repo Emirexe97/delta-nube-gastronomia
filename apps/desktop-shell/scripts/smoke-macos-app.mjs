@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { _electron as electron } from "@playwright/test";
@@ -36,8 +36,8 @@ try {
     "Smoke must exercise the packaged app",
   );
   assert.equal(
-    resolve(await app.evaluate(({ app }) => app.getPath("userData"))),
-    resolve(profile),
+    await realpath(await app.evaluate(({ app }) => app.getPath("userData"))),
+    await realpath(profile),
   );
   const status = await page.evaluate(() =>
     window.gastronomy.getLicenseStatus(),

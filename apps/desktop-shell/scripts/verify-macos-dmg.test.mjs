@@ -62,6 +62,7 @@ test("macOS workflow creates explicit ad-hoc signatures and verifies the DMG bef
 
 test("packaged runtime smoke reads unactivated licensing only in disposable userData", () => {
   assert.match(smoke, /--user-data-dir=/);
+  assert.match(smoke, /await realpath\(profile\)/);
   assert.match(smoke, /getLicenseStatus/);
   assert.match(smoke, /UNACTIVATED/);
   assert.doesNotMatch(smoke, /activateLicense|refreshLicense/);
