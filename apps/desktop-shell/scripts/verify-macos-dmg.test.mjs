@@ -40,6 +40,7 @@ test("macOS workflow creates explicit ad-hoc signatures and verifies the DMG bef
   assert.match(verifier, /timeout: 30000/);
   assert.match(verifier, /timeout: 120000/);
   assert.match(verifier, /better_sqlite3\.node/);
+  assert.match(verifier, /run\("lipo",\s*\[addon,\s*"-verify_arch"/);
   assert.match(verifier, /verify-macos-license\.mjs/);
 });
 

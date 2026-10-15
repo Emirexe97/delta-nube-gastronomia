@@ -88,7 +88,8 @@ try {
   );
   const addon = addons[0];
   run("codesign", ["--verify", "--strict", "--verbose=2", addon]);
-  run("lipo", ["-verify_arch", arch === "arm64" ? "arm64" : "x86_64", addon]);
+  // -verify_arch consumes all following arguments as architectures; input first.
+  run("lipo", [addon, "-verify_arch", arch === "arm64" ? "arm64" : "x86_64"]);
 
   const resources = join(app, "Contents", "Resources");
   const asar = join(resources, "app.asar");

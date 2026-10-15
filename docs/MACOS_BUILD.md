@@ -114,3 +114,5 @@ Mantienen modalidad unsigned interna. La compilación/ASAR no reemplaza smoke f�
 **Estado:** preparación en curso; no afirmar que existe un nuevo DMG validado hasta completar CI y descargarlo. Evidencia de ejecución, commit, archivo y hash se agregarán aquí al finalizar.
 
 Validación local: typecheck 9/9 y build 9/9; tests desktop 39/39 (incluyen dos invariantes nuevos del workflow/smoke), ASAR y empaquetado focalizados 5/5. Estos tests locales son estáticos para el flujo Mac: `codesign` y el arranque real se ejecutan en CI macOS. Revisión independiente sin hallazgos accionables. No se genera NSIS Windows.
+
+Primer CI de corrección: run `38659938753`, fuente `0d8ef23`. La firma ad-hoc se generó y las verificaciones de firma del bundle y SQLite aprobaron en arm64. El control nuevo detuvo la entrega por un error de argumentos del verificador: `lipo -verify_arch` interpreta todos los argumentos siguientes como arquitecturas, por lo que el archivo debe ir antes de esa opción. Se corrige el orden y se agrega un invariante de regresión antes de volver a compilar; ese run fallido no produjo instaladores aprobados.
