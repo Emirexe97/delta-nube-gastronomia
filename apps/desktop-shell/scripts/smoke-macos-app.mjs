@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { _electron as electron } from "@playwright/test";
+import { printRecentMacCrashes } from "./macos-crash-diagnostics.mjs";
 
 const [executablePath] = process.argv.slice(2);
 assert.ok(
@@ -17,6 +18,7 @@ assert.equal(
 );
 const profile = await mkdtemp(join(tempRoot, "gastronomy-dmg-smoke-"));
 let app;
+const startedAt = Date.now();
 try {
   app = await electron.launch({
     executablePath,
@@ -48,6 +50,9 @@ try {
   console.log(
     "Packaged app opened; SQLite-backed startup and licensing preload/IPC returned UNACTIVATED without activation.",
   );
+} catch (error) {
+  await printRecentMacCrashes(startedAt);
+  throw error;
 } finally {
   if (app) {
     let closeTimer;
