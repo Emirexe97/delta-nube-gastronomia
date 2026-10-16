@@ -1714,6 +1714,7 @@ export function createDemoApi(
         );
       const pendingSettlements = state.data.deliveryLedger.filter(
         (ledger) =>
+          ledger.cashSessionId === cash.id &&
           ledger.status === "PENDING" &&
           ledger.amountDueMinor > ledger.settledAmountMinor,
       ).length;

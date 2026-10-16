@@ -1187,9 +1187,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
              COALESCE(SUM(CASE WHEN direction = 'DRIVER_OWES_BUSINESS' THEN amount_due_minor - settled_amount_minor ELSE 0 END), 0) AS driver_owes_minor,
              COALESCE(SUM(CASE WHEN direction = 'BUSINESS_OWES_DRIVER' THEN amount_due_minor - settled_amount_minor ELSE 0 END), 0) AS business_owes_minor
            FROM delivery_ledger
-           WHERE status = 'PENDING' AND amount_due_minor > settled_amount_minor`,
+           WHERE status = 'PENDING' AND amount_due_minor > settled_amount_minor
+             AND order_id IN (
+               SELECT id FROM orders
+               WHERE COALESCE(cash_session_paid_id, cash_session_created_id) = ?
+             )`,
             )
-            .get() as Row;
+            .get(session.id) as Row;
           const pendingDeliveryDetails = this.db
             .prepare(
               `SELECT dl.id,
@@ -1204,9 +1208,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
            JOIN users u ON u.id = dl.driver_user_id
            WHERE dl.status = 'PENDING'
              AND dl.amount_due_minor > dl.settled_amount_minor
+             AND COALESCE(o.cash_session_paid_id, o.cash_session_created_id) = ?
            ORDER BY dl.created_at, dl.id`,
             )
-            .all() as Row[];
+            .all(session.id) as Row[];
           if (
             pending.length &&
             !settings.allowCloseWithPendingOrders &&
@@ -1220,7 +1225,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           }
           if (Number(pendingDeliveryLedger.count) > 0 && !input.force) {
             throw new Error(
-              `No se puede cerrar la caja: hay ${Number(pendingDeliveryLedger.count)} rendición(es) de delivery pendiente(s). Liquidá los saldos o usá un cierre forzado.`,
+              `No se puede cerrar la caja: hay ${Number(pendingDeliveryLedger.count)} rendición(es) de delivery pendiente(s) del turno actual. Liquidá los saldos o usá un cierre forzado.`,
             );
           }
           const dtoBefore = this.cashSessionDto(session);

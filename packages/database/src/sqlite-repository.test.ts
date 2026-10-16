@@ -2664,6 +2664,37 @@ test("cierre normal bloquea rendiciones de delivery y el forzado las audita", ()
   });
 });
 
+test("cierre controla y audita sólo rendiciones del turno actual sin liquidar las históricas", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const historical = createPendingDeliveryLedger(repository, "A");
+    repository.closeCashSession({
+      countedAmountMinor: 0, force: true,
+      reason: "Pendiente histórico", authorizerPin: "2468",
+    });
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const current = createPendingDeliveryLedger(repository, "B");
+    assert.throws(
+      () => repository.closeCashSession({ countedAmountMinor: 0 }),
+      /1 rendición\(es\).*del turno actual/,
+    );
+    const closed = repository.closeCashSession({
+      countedAmountMinor: 0, force: true,
+      reason: "Pendiente del turno B", authorizerPin: "2468",
+    });
+    const audit = repository.getAuditLog({ action: "CASH_FORCE_CLOSED" })
+      .find((entry) => entry.entityId === closed.id)!;
+    const details = JSON.parse(audit.afterJson!);
+    assert.equal(details.pendingDeliverySettlements, 1);
+    assert.deepEqual(details.pendingDeliveryDetails.map((row: { id: string }) => row.id), [current.id]);
+    repository.openCashSession({ openingAmountMinor: 0 });
+    assert.equal(repository.closeCashSession({ countedAmountMinor: 0 }).status, "CLOSED");
+    const ledger = repository.bootstrap().deliveryLedger;
+    assert.equal(ledger.find((row) => row.id === historical.id)?.status, "PENDING");
+    assert.equal(ledger.find((row) => row.id === current.id)?.status, "PENDING");
+  });
+});
+
 test("cierre persiste cambio final y efectivo retirado sin confundirlo con el arqueo", () => {
   withRepository((repository) => {
     repository.openCashSession({ openingAmountMinor: 5_000_000 });

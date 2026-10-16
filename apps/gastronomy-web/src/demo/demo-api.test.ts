@@ -1182,6 +1182,55 @@ describe("API de demostración", () => {
     ]);
   });
 
+  it("ignora rendiciones de otros turnos al cerrar y conserva su estado", async () => {
+    const storage = new MemoryStorage();
+    await createDemoApi(storage).bootstrap();
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    saved.data.settings.allowCloseWithPendingOrders = true;
+    saved.data.orders = saved.data.orders.map(
+      (order: { operationalStatus: string }) => ({
+        ...order,
+        operationalStatus: "DELIVERED",
+      }),
+    );
+    saved.data.deliveryLedger[0].cashSessionId = "cash-session-A";
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+
+    const api = createDemoApi(storage);
+    const current = (await api.bootstrap()).cashSession!;
+    await expect(
+      api.closeCashSession({ countedAmountMinor: current.expectedAmountMinor }),
+    ).resolves.toMatchObject({ status: "CLOSED" });
+
+    expect((await api.bootstrap()).deliveryLedger[0]).toMatchObject({
+      cashSessionId: "cash-session-A",
+      status: "PENDING",
+      settledAmountMinor: 0,
+    });
+  });
+
+  it("bloquea el cierre por una rendición pendiente del turno actual", async () => {
+    const storage = new MemoryStorage();
+    await createDemoApi(storage).bootstrap();
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    const sessionId = saved.data.cashSession.id;
+    saved.data.settings.allowCloseWithPendingOrders = true;
+    saved.data.orders = saved.data.orders.map(
+      (order: { operationalStatus: string }) => ({
+        ...order,
+        operationalStatus: "DELIVERED",
+      }),
+    );
+    saved.data.deliveryLedger[0].cashSessionId = sessionId;
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+
+    const api = createDemoApi(storage);
+    const current = (await api.bootstrap()).cashSession!;
+    await expect(
+      api.closeCashSession({ countedAmountMinor: current.expectedAmountMinor }),
+    ).rejects.toThrow(/rendición\(es\) de delivery pendiente/i);
+  });
+
   it("restablece el almacenamiento aislado", () => {
     const storage = new MemoryStorage();
     storage.setItem(DEMO_STORAGE_KEY, "cambios");

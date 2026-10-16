@@ -77,14 +77,17 @@ export function CashPage({ data }: { data: BootstrapDto }) {
       return map;
     }, new Map());
   const pendingDeliveryLedger = data.deliveryLedger.filter(
-    (row) => row.status === "PENDING",
+    (row) =>
+      row.cashSessionId === session?.id &&
+      row.status === "PENDING" &&
+      row.amountDueMinor > row.settledAmountMinor,
   );
   const pendingDriverOwesMinor = pendingDeliveryLedger
     .filter((row) => row.direction === "DRIVER_OWES_BUSINESS")
-    .reduce((sum, row) => sum + row.amountDueMinor, 0);
+    .reduce((sum, row) => sum + row.amountDueMinor - row.settledAmountMinor, 0);
   const pendingBusinessOwesMinor = pendingDeliveryLedger
     .filter((row) => row.direction === "BUSINESS_OWES_DRIVER")
-    .reduce((sum, row) => sum + row.amountDueMinor, 0);
+    .reduce((sum, row) => sum + row.amountDueMinor - row.settledAmountMinor, 0);
   return (
     <div className="panel-enter mx-auto max-w-[1200px] space-y-4">
       <div>
@@ -321,12 +324,12 @@ export function CashPage({ data }: { data: BootstrapDto }) {
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
               <div>
                 <p className="font-bold">
-                  Hay {pendingDeliveryLedger.length} rendición(es) sin conciliar
+                  Hay {pendingDeliveryLedger.length} rendición(es) del turno actual sin conciliar
                 </p>
                 <p className="mt-0.5 text-xs text-amber-800">
                   Ingresan {formatMoney(pendingDriverOwesMinor)} · salen{" "}
                   {formatMoney(pendingBusinessOwesMinor)}. Liquidá o usá cierre
-                  forzado con motivo y PIN.
+                  forzado de este turno con motivo y PIN.
                 </p>
               </div>
               <Badge tone="amber">Bloquea cierre normal</Badge>
@@ -807,12 +810,12 @@ function CloseCashModal({
           {pendingDeliveryCount ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
               <p className="font-bold">
-                {pendingDeliveryCount} rendición(es) siguen pendientes
+                {pendingDeliveryCount} rendición(es) de este turno siguen pendientes
               </p>
               <p className="mt-1 text-xs leading-5">
                 Repartidores deben {formatMoney(pendingDriverOwesMinor)} · el
                 negocio debe {formatMoney(pendingBusinessOwesMinor)}. El cierre
-                normal será rechazado hasta conciliarlas.
+                normal de este turno será rechazado hasta conciliarlas.
               </p>
             </div>
           ) : null}
