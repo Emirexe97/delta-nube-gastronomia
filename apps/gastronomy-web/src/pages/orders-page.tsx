@@ -403,7 +403,7 @@ function toLocalDateTimeInput(date: Date) {
     .slice(0, 16);
 }
 
-function NewOrderModal({
+export function NewOrderModal({
   open,
   type,
   data,

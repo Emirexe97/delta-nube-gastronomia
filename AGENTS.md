@@ -19,3 +19,10 @@
 - Antes de informar que una implementación está terminada, ejecutar las pruebas focalizadas, typecheck y build correspondientes.
 - No incluir archivos ajenos a la tarea en commits futuros.
 - No hacer commit, push ni regenerar el instalador sin una solicitud explícita del usuario.
+
+## Distribución por plataforma
+
+- Windows: usar actualización automática con descarga en segundo plano e instalación confirmada, con caja cerrada. No informar que está activa hasta configurar y validar feed/firma y una actualización real.
+- Mac: distribución manual mediante instalador. No activar el updater macOS; mantenerlo deshabilitado en sus builds.
+- Cuando el usuario pida crear una nueva versión o generar el instalador para la siguiente versión, generar también el instalador Mac y entregar la ruta absoluta de la carpeta que lo contiene.
+- Un pedido de commit/push por sí solo no autoriza cambio de versión, instalador ni despliegue.

@@ -62,6 +62,43 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
   const [history, setHistory] = useState<PurchaseDto[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [documentAction, setDocumentAction] = useState<{ purchase: PurchaseDto; itemId?: string } | null>(null);
+  const [documentActionProductId, setDocumentActionProductId] = useState("");
+  const [documentActionReason, setDocumentActionReason] = useState("");
+  const [documentActionPin, setDocumentActionPin] = useState("");
+  const [documentActionError, setDocumentActionError] = useState<string | null>(null);
+  const [documentActionPending, setDocumentActionPending] = useState(false);
+  const documentActionReceipt = useRef<{ fingerprint: string; key: string } | null>(null);
+  const openDocumentAction = (purchase: PurchaseDto, itemId?: string) => {
+    setDocumentAction({ purchase, itemId }); setDocumentActionProductId("");
+    setDocumentActionReason(""); setDocumentActionPin(""); setDocumentActionError(null); documentActionReceipt.current = null;
+  };
+  const submitDocumentAction = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!documentAction) return;
+    const { purchase, itemId } = documentAction;
+    const reason = documentActionReason.trim();
+    if (!reason || !documentActionPin.trim() || (itemId && !documentActionProductId)) {
+      setDocumentActionError("Completá el motivo, el PIN y el producto corregido si corresponde."); return;
+    }
+    const payload = itemId
+      ? { purchaseId: purchase.id, purchaseItemId: itemId, expectedRevision: purchase.revision ?? 0, productId: documentActionProductId, reason, authorizerPin: documentActionPin }
+      : { purchaseId: purchase.id, expectedRevision: purchase.revision ?? 0, reason, authorizerPin: documentActionPin };
+    const fingerprint = JSON.stringify({ kind: itemId ? "product" : "cancel", payload });
+    if (documentActionReceipt.current?.fingerprint !== fingerprint)
+      documentActionReceipt.current = { fingerprint, key: crypto.randomUUID() };
+    setDocumentActionPending(true);
+    try {
+      if (itemId)
+        await window.gastronomy.correctPurchaseItemProduct({ ...payload, purchaseItemId: itemId, productId: documentActionProductId, idempotencyKey: documentActionReceipt.current.key });
+      else await window.gastronomy.cancelPurchase({ ...payload, idempotencyKey: documentActionReceipt.current.key });
+      setHistory(await window.gastronomy.listPurchases()); setHistoryError(null);
+      setDocumentAction(null); documentActionReceipt.current = null;
+    } catch (value) {
+      setDocumentActionError(humanError(value));
+      try { setHistory(await window.gastronomy.listPurchases()); } catch { /* Keep the entered fields and original error. */ }
+    } finally { setDocumentActionPending(false); }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -350,7 +387,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
         p.items.some((i) => i.productId === costItem.productId),
     );
   const historyTotal = history.reduce(
-    (s, p) => s + (p.effectiveTotalMinor ?? p.totalMinor),
+    (s, p) => s + (p.cancelledAt ? 0 : p.effectiveTotalMinor ?? p.totalMinor),
     0,
   );
 
@@ -564,6 +601,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
                     <span className="font-bold text-slate-900">
                       {p.supplierName}
                     </span>
+                    {p.cancelledAt && <Badge tone="rose">Anulada</Badge>}
                     {p.invoiceNumber ? (
                       <span className="rounded-md border border-slate-200 bg-slate-100/70 px-1.5 py-0.5 text-xs font-semibold text-slate-600">
                         {p.invoiceNumber}
@@ -610,7 +648,9 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
                               )})
                             </span>
                           )}
-                          <span>{item.productName}</span>
+                          <span>{item.effectiveProductName ?? item.productName}</span>
+                          {item.effectiveProductName && <span className="font-normal">(original: {item.productName})</span>}
+                          {canCorrectPurchases && !p.cancelledAt && <button type="button" className="font-semibold text-brand-700 underline" onClick={() => openDocumentAction(p, item.id)}>Corregir producto</button>}
                           {item.effectiveUnitCostMinor !== undefined && (
                             <span className="font-normal">
                               · Costo corregido:{" "}
@@ -640,7 +680,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
                       Original: {formatMoney(p.totalMinor)}
                     </span>
                   )}
-                  {canCorrectPurchases && (
+                  {canCorrectPurchases && !p.cancelledAt && (
                     <Button
                       type="button"
                       variant="secondary"
@@ -650,7 +690,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
                       Corregir datos
                     </Button>
                   )}
-                  {canCorrectPurchases && (
+                  {canCorrectPurchases && !p.cancelledAt && (
                     <Button
                       type="button"
                       variant="secondary"
@@ -660,7 +700,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
                       Corregir costo
                     </Button>
                   )}
-                  {canCorrectPurchases && (
+                  {canCorrectPurchases && !p.cancelledAt && (
                     <Button
                       type="button"
                       variant="secondary"
@@ -670,6 +710,12 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
                       Corregir cantidad
                     </Button>
                   )}
+                  {canCorrectPurchases && !p.cancelledAt && (
+                    <Button type="button" variant="secondary" className="mt-2" onClick={() => openDocumentAction(p)}>
+                      Anular compra
+                    </Button>
+                  )}
+                  {p.cancelledAt && <p className="mt-1 text-xs text-rose-700">{p.cancellationReason}</p>}
                 </div>
               </div>
             ))}
@@ -1082,7 +1128,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
                     >
                       <option value="">Seleccionar…</option>
                       {data.products
-                        .filter((p) => p.active)
+                        .filter((p) => p.active && !p.comboDefinition)
                         .map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name}
@@ -1187,6 +1233,37 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
             </Button>
           </div>
         </form>
+      </Modal>
+      <Modal
+        open={documentAction !== null}
+        onClose={() => { if (!documentActionPending) setDocumentAction(null); }}
+        closeDisabled={documentActionPending}
+        title={documentAction?.itemId ? "Corregir producto de compra" : "Anular compra"}
+        description={documentAction?.itemId ? "Sólo cambia la referencia documental futura; no mueve existencias ni revalúa ventas anteriores." : "Se excluye del total de compras y de costos de referencia nuevos. No modifica stock ni caja."}
+        width="max-w-xl"
+      >
+        {documentAction && <form className="grid gap-4" onSubmit={submitDocumentAction} aria-busy={documentActionPending}>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+            <strong>Vista previa:</strong> {documentAction.itemId ? "Se conservará el producto original; sólo cambiará el producto vigente para referencias futuras válidas." : `El importe vigente ${formatMoney(documentAction.purchase.effectiveTotalMinor ?? documentAction.purchase.totalMinor)} dejará de contarse como compra. Existencias, ventas, costo de ventas y caja permanecen intactos.`}
+          </div>
+          {documentAction.itemId && <Field label="Producto vigente">
+            <Select value={documentActionProductId} onChange={(event) => setDocumentActionProductId(event.target.value)}>
+              <option value="">Elegir producto…</option>
+              {data.products.filter((product) => product.active).map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+            </Select>
+          </Field>}
+          <Field label="Motivo" hint="Quedará registrado en el historial de auditoría.">
+            <Input value={documentActionReason} maxLength={500} onChange={(event) => setDocumentActionReason(event.target.value)} />
+          </Field>
+          <Field label="PIN autorizador">
+            <Input type="password" inputMode="numeric" maxLength={8} value={documentActionPin} onChange={(event) => setDocumentActionPin(event.target.value.replace(/\D/g, ""))} />
+          </Field>
+          {documentActionError && <p role="alert" className="text-sm font-semibold text-rose-700">{documentActionError}</p>}
+          <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+            <Button type="button" variant="secondary" disabled={documentActionPending} onClick={() => setDocumentAction(null)}>Volver</Button>
+            <Button type="submit" disabled={documentActionPending}>{documentActionPending ? "Guardando…" : documentAction.itemId ? "Guardar corrección" : "Anular compra"}</Button>
+          </div>
+        </form>}
       </Modal>
     </div>
   );

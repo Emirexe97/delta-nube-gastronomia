@@ -37,6 +37,10 @@ import {
   Textarea,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
+import { OrderEditor } from "../components/order-editor";
+import { RepeatOrderModal } from "../components/repeat-order-modal";
+import { NewOrderModal } from "./orders-page";
+import { isRepeatOrderEligible } from "../repeat-order";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import {
   formatMoney,
@@ -70,6 +74,9 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [repeatSource, setRepeatSource] = useState<import("@gastronomy/contracts").OrderDto | null>(null);
+  const [createdDraft, setCreatedDraft] = useState<import("@gastronomy/contracts").OrderDto | null>(null);
+  const [editingRepeatedOrder, setEditingRepeatedOrder] = useState<import("@gastronomy/contracts").OrderDto | null>(null);
 
   useEffect(() => {
     setPage(1);
@@ -512,6 +519,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
         customer={viewing}
         paymentMethods={data.paymentMethods}
         cashOpen={Boolean(data.cashSession)}
+        canCreateOrders={data.currentUser.permissions.includes("orders.create") || data.currentUser.permissions.includes("*")}
         onClose={() => setViewing(null)}
         onEdit={() => {
           if (!viewing) return;
@@ -529,7 +537,11 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
             `/pedidos?nuevo=DELIVERY&cliente=${encodeURIComponent(customer.id)}`,
           );
         }}
+        onRepeatOrder={setRepeatSource}
       />
+      <RepeatOrderModal source={repeatSource} customer={viewing} cashOpen={Boolean(data.cashSession)} onClose={() => setRepeatSource(null)} onCreated={(order) => { setRepeatSource(null); setViewing(null); setCreatedDraft(order); }} />
+      <OrderEditor data={data} orderId={editingRepeatedOrder ? null : createdDraft?.id ?? null} fallbackOrder={createdDraft} onClose={() => setCreatedDraft(null)} onEditDraft={(orderId) => setEditingRepeatedOrder(data.orders.find((order) => order.id === orderId) ?? createdDraft)} />
+      <NewOrderModal open={Boolean(editingRepeatedOrder)} type={editingRepeatedOrder?.type ?? "TAKEAWAY"} data={data} editingOrder={editingRepeatedOrder} initialCustomer={null} onClose={() => setEditingRepeatedOrder(null)} onSaved={(order) => { setCreatedDraft(order); setEditingRepeatedOrder(null); }} />
     </div>
   );
 }
@@ -1430,18 +1442,22 @@ function CustomerProfileModal({
   customer,
   paymentMethods,
   cashOpen,
+  canCreateOrders,
   onClose,
   onEdit,
   onUpdated,
   onNewOrder,
+  onRepeatOrder,
 }: {
   customer: CustomerDto | null;
   paymentMethods: BootstrapDto["paymentMethods"];
   cashOpen: boolean;
+  canCreateOrders: boolean;
   onClose(): void;
   onEdit(): void;
   onUpdated(customer: CustomerDto): void;
   onNewOrder(customer: CustomerDto): void;
+  onRepeatOrder(order: import("@gastronomy/contracts").OrderDto): void;
 }) {
   const [profile, setProfile] = useState<CustomerProfileDto | null>(null);
   const [page, setPage] = useState(1);
@@ -1782,6 +1798,7 @@ function CustomerProfileModal({
                         <td>{paymentStatusLabels[order.paymentStatus]}</td>
                         <td className="text-right font-bold">
                           {formatMoney(order.totalMinor)}
+                          {canCreateOrders && isRepeatOrderEligible(order, currentCustomer.active) ? <Button type="button" variant="secondary" className="ml-2 h-7 px-2 text-xs" onClick={() => onRepeatOrder(order)}>Repetir</Button> : null}
                         </td>
                       </tr>
                     ))}

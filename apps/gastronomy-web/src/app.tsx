@@ -46,6 +46,7 @@ import { resetDemoData } from "./demo/demo-api";
 import { isDemoMode } from "./demo/install-demo";
 import { useEnterNavigation } from "./hooks/use-enter-navigation";
 import { useLicenseStatus } from "./components/license-panel";
+import { useAppUpdateStatus } from "./components/app-update-panel";
 
 const navigation = [
   { to: "/resumen", label: "Resumen", icon: ChartPieSlice, group: "General" },
@@ -101,6 +102,7 @@ export function App() {
   useEnterNavigation();
   const bootstrap = useBootstrap();
   const license = useLicenseStatus();
+  const appUpdate = useAppUpdateStatus();
   const location = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(
@@ -535,6 +537,26 @@ export function App() {
               className="shrink-0 rounded-lg border border-current/20 bg-white/70 px-3 py-1.5 font-bold hover:bg-white"
             >
               Ver licencia
+            </NavLink>
+          </div>
+        ) : null}
+        {appUpdate.data?.state === "READY" ? (
+          <div
+            className="flex shrink-0 items-center justify-between gap-3 border-b border-sky-200 bg-sky-50 px-5 py-2.5 text-xs text-sky-950"
+            role="status"
+            aria-live="polite"
+          >
+            <p className="min-w-0">
+              <strong>Actualización lista.</strong>{" "}
+              {appUpdate.data.availableVersion
+                ? `La versión ${appUpdate.data.availableVersion} está lista para instalar.`
+                : "Hay una nueva versión lista para instalar."}
+            </p>
+            <NavLink
+              to="/configuracion#settings-updates"
+              className="shrink-0 rounded-lg border border-sky-300 bg-white/80 px-3 py-1.5 font-bold hover:bg-white"
+            >
+              Ver actualización
             </NavLink>
           </div>
         ) : null}

@@ -1034,4 +1034,31 @@ BEGIN
     service_revision = service_revision + 1 WHERE id = OLD.order_id;
 END;`,
   },
+  {
+    version: 39,
+    name: "purchase_document_corrections",
+    sql: String.raw`ALTER TABLE purchases ADD COLUMN cancelled_at TEXT;
+ALTER TABLE purchases ADD COLUMN cancellation_reason TEXT;
+CREATE TABLE purchase_cancellations (
+ id TEXT PRIMARY KEY, purchase_id TEXT NOT NULL REFERENCES purchases(id), purchase_revision INTEGER NOT NULL,
+ reason TEXT NOT NULL, operator_user_id TEXT NOT NULL REFERENCES users(id), authorizer_user_id TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE INDEX purchase_cancellations_purchase_idx ON purchase_cancellations(purchase_id,purchase_revision);
+CREATE TRIGGER purchase_cancellations_no_update BEFORE UPDATE ON purchase_cancellations BEGIN SELECT RAISE(ABORT, 'purchase cancellations are immutable'); END;
+CREATE TRIGGER purchase_cancellations_no_delete BEFORE DELETE ON purchase_cancellations BEGIN SELECT RAISE(ABORT, 'purchase cancellations are immutable'); END;
+CREATE TABLE purchase_item_product_corrections (
+ id TEXT PRIMARY KEY, purchase_id TEXT NOT NULL REFERENCES purchases(id), purchase_item_id TEXT NOT NULL REFERENCES purchase_items(id),
+ previous_product_id TEXT NOT NULL, previous_product_name TEXT NOT NULL, corrected_product_id TEXT NOT NULL, corrected_product_name TEXT NOT NULL,
+ purchase_revision INTEGER NOT NULL, reason TEXT NOT NULL, operator_user_id TEXT NOT NULL REFERENCES users(id), authorizer_user_id TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE INDEX purchase_item_product_corrections_item_idx ON purchase_item_product_corrections(purchase_item_id,purchase_revision);
+CREATE TRIGGER purchase_item_product_corrections_no_update BEFORE UPDATE ON purchase_item_product_corrections BEGIN SELECT RAISE(ABORT, 'purchase product corrections are immutable'); END;
+CREATE TRIGGER purchase_item_product_corrections_no_delete BEFORE DELETE ON purchase_item_product_corrections BEGIN SELECT RAISE(ABORT, 'purchase product corrections are immutable'); END;`,
+  },
+  {
+    version: 40,
+    name: "product_combos",
+    sql: String.raw`ALTER TABLE products ADD COLUMN combo_definition_json TEXT;
+ALTER TABLE order_items ADD COLUMN combo_components_json TEXT;`,
+  },
 ];

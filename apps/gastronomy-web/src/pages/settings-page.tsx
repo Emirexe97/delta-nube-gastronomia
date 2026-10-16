@@ -25,6 +25,7 @@ import {
 import { useApiMutation } from "../api";
 import { humanError } from "../lib";
 import { LicensePanel } from "../components/license-panel";
+import { AppUpdatePanel } from "../components/app-update-panel";
 
 export function SettingsPage({ data }: { data: BootstrapDto }) {
   const [settings, setSettings] = useState<AppSettingsDto>(data.settings);
@@ -84,6 +85,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
               ["settings-print-texts", "Textos"],
               ["settings-backup", "Copias de seguridad"],
               ["settings-license", "Licencia"],
+              ["settings-updates", "Actualizaciones"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -156,6 +158,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             <Field label="Precio mitad y mitad">
               <Select
                 value={settings.halfAndHalfPricingMode}
+                disabled={settings.halfAndHalfEnabled === false}
                 onChange={(event) =>
                   setSettings((current) => ({
                     ...current,
@@ -168,6 +171,20 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                 <option value="MOST_EXPENSIVE">Variedad más cara</option>
               </Select>
             </Field>
+            <label className="flex items-center gap-3 rounded-lg border border-slate-100 p-3 text-xs font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                checked={settings.halfAndHalfEnabled ?? true}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    halfAndHalfEnabled: event.target.checked,
+                  }))
+                }
+                className="h-4 w-4 accent-brand-600"
+              />
+              Habilitar pizzas mitad y mitad
+            </label>
           </div>
         </Card>
         <Card className="p-4">
@@ -366,6 +383,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
       />
       <PrintTextSettingsCard settings={settings} onChange={setSettings} />
       <LicensePanel />
+      <AppUpdatePanel />
       <Card id="settings-backup" className="scroll-mt-20 p-4">
         <SectionTitle
           icon={Database}

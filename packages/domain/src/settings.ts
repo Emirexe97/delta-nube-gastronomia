@@ -5,6 +5,13 @@ export function assertAppSettings(settings: AppSettingsDto) {
     throw new Error("Ingresá el nombre visible del negocio.");
   if (settings.maxConcurrentCashSessions !== 1)
     throw new Error("La versión local admite una sola caja abierta a la vez.");
+  if (
+    settings.halfAndHalfEnabled !== undefined &&
+    typeof settings.halfAndHalfEnabled !== "boolean"
+  )
+    throw new Error(
+      "La configuración de pizzas mitad y mitad debe ser verdadera o falsa.",
+    );
   for (const profile of [settings.printing.kitchen, settings.printing.bill]) {
     if (!profile.profileName.trim())
       throw new Error("Cada perfil de impresión necesita un nombre.");

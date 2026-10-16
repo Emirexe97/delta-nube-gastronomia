@@ -46,6 +46,7 @@ import {
 } from "@gastronomy/ui";
 import { bootstrapKey, useApiMutation } from "../api";
 import { isDemoMode } from "../demo/install-demo";
+import { ComboOrderModal } from "./combo-order-modal";
 import { calculateHalfAndHalfBase, guardOrderAction } from "@gastronomy/domain";
 import {
   formatMoney,
@@ -110,6 +111,8 @@ export function OrderEditor({
     "KITCHEN_ORDER" | "CUSTOMER_BILL" | null
   >(null);
   const [addingProduct, setAddingProduct] = useState<ProductDto | null>(null);
+  const [comboProduct, setComboProduct] = useState<ProductDto | null>(null);
+  const [comboAddError, setComboAddError] = useState<string | null>(null);
   const [variantPickerProduct, setVariantPickerProduct] =
     useState<ProductDto | null>(null);
   const [addingQuantity, setAddingQuantity] = useState("1");
@@ -120,9 +123,19 @@ export function OrderEditor({
   const addingQuantityRef = useRef<HTMLInputElement>(null);
   const addingPriceRef = useRef<HTMLInputElement>(null);
   const addItemLockRef = useRef(false);
+  const addComboLockRef = useRef(false);
   const [activeProductIndex, setActiveProductIndex] = useState(0);
+  const halfAndHalfEnabled = data.settings.halfAndHalfEnabled ?? true;
+  useEffect(() => {
+    if (!halfAndHalfEnabled) setHalfOpen(false);
+  }, [halfAndHalfEnabled]);
   useEffect(() => {
     if (orderId) window.setTimeout(() => searchRef.current?.focus(), 80);
+  }, [orderId]);
+  useEffect(() => {
+    setComboProduct(null);
+    setComboAddError(null);
+    addComboLockRef.current = false;
   }, [orderId]);
 
   const isHalfAndHalfSearch = useMemo(() => {
@@ -232,6 +245,11 @@ export function OrderEditor({
       },
     },
   );
+  const addCombo = useApiMutation((input: Parameters<typeof window.gastronomy.addComboItem>[0]) => window.gastronomy.addComboItem(input), {
+    onSuccess: () => { setComboProduct(null); setComboAddError(null); setSearch(""); window.setTimeout(() => searchRef.current?.focus(), 50); },
+    onError: (value) => { const message = humanError(value); setComboAddError(message); setError(message); },
+    onSettled: () => { addComboLockRef.current = false; },
+  });
   const productPrice = (product: ProductDto) => {
     if (!order) return null;
     const code = order.type === "DINE_IN" ? "SALON" : order.type;
@@ -241,6 +259,11 @@ export function OrderEditor({
     );
   };
   const openProduct = (product: ProductDto) => {
+    if (product.comboDefinition) {
+      setComboAddError(null);
+      setComboProduct(product);
+      return;
+    }
     const price = productPrice(product);
     if (price == null) {
       setError("El producto no tiene un precio configurado para este canal.");
@@ -257,7 +280,8 @@ export function OrderEditor({
     }, 50);
   };
   const handleProductCardClick = (product: ProductDto) => {
-    if (locked || addItem.isPending) return;
+    if (locked || addItem.isPending || addCombo.isPending) return;
+    if (product.comboDefinition) { setComboProduct(product); return; }
     const variants = data.products.filter(
       (p) => p.parentProductId === product.id && p.active,
     );
@@ -501,13 +525,15 @@ export function OrderEditor({
         driverOpen ||
         Boolean(printConfirmKind) ||
         Boolean(addingProduct) ||
+        Boolean(comboProduct) ||
         Boolean(variantPickerProduct) ||
         Boolean(modifierItemId) ||
         Boolean(notesItemId);
       if (nestedDialogOpen) return;
 
       if (event.key === "F6") {
-        const canOpenHalf = !locked && data.products.length >= 2;
+        const canOpenHalf =
+          halfAndHalfEnabled && !locked && data.products.length >= 2;
         if (canOpenHalf) {
           event.preventDefault();
           setHalfOpen(true);
@@ -545,12 +571,14 @@ export function OrderEditor({
   }, [
     addingProduct,
     cancelOpen,
+    comboProduct,
     changeTableOpen,
     depositOpen,
     discardConfirmOpen,
     discountOpen,
     driverOpen,
     halfOpen,
+    halfAndHalfEnabled,
     modifierItemId,
     notesItemId,
     order,
@@ -584,6 +612,7 @@ export function OrderEditor({
       .includes("pizza"),
   );
   const showHalfAndHalfCard =
+    halfAndHalfEnabled &&
     !locked &&
     data.products.length >= 2 &&
     (isHalfAndHalfSearch || (isPizzaCategory && !search.trim()));
@@ -686,6 +715,7 @@ export function OrderEditor({
                   !halfOpen
                 ) {
                   if (
+                    halfAndHalfEnabled &&
                     isHalfAndHalfSearch &&
                     (!products.length || activeProductIndex === 0)
                   ) {
@@ -703,7 +733,7 @@ export function OrderEditor({
                   }
                 }
               }}
-              placeholder="Código, nombre, categoría… · Enter agrega · F6 mitad y mitad · ↑ ↓ navega"
+              placeholder={`Código, nombre, categoría… · Enter agrega${halfAndHalfEnabled ? " · F6 mitad y mitad" : ""} · ↑ ↓ navega`}
               className="bg-white pl-9"
               disabled={locked}
             />
@@ -904,10 +934,10 @@ export function OrderEditor({
             variant="secondary"
             className="mt-2 w-full"
             onClick={() => setHalfOpen(true)}
-            disabled={locked || data.products.length < 2}
+            disabled={!halfAndHalfEnabled || locked || data.products.length < 2}
           >
             <Pizza size={17} /> Pizza mitad y mitad{" "}
-            <kbd className="text-xs">F6</kbd>
+            {halfAndHalfEnabled ? <kbd className="text-xs">F6</kbd> : null}
           </Button>
         </section>
         <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-white">
@@ -1035,6 +1065,11 @@ export function OrderEditor({
                             className="ml-2 mt-0.5 text-xs font-semibold text-slate-600"
                           >
                             ½ {half.nameSnapshot}
+                          </p>
+                        ))}
+                        {item.comboComponents?.map((component) => (
+                          <p key={`${item.id}-${component.slotId}`} className="ml-2 mt-0.5 text-xs text-slate-600">
+                            {component.slotName}: {component.quantity}× {component.nameSnapshot}{component.modifiers.length ? ` · ${component.modifiers.map((modifier) => `+ ${modifier.nameSnapshot}`).join(", ")}` : ""}
                           </p>
                         ))}
                         {item.modifiers.map((modifier) => (
@@ -1607,7 +1642,7 @@ export function OrderEditor({
         }}
       />
       <HalfAndHalfModal
-        open={halfOpen}
+        open={halfOpen && halfAndHalfEnabled}
         order={order}
         data={data}
         onClose={() => {
@@ -1617,6 +1652,12 @@ export function OrderEditor({
         }}
         onError={setError}
       />
+      <ComboOrderModal open={Boolean(comboProduct)} product={comboProduct} data={data} orderType={order.type} pending={addCombo.isPending} error={comboAddError} onClose={() => { if (!addCombo.isPending) { setComboProduct(null); setComboAddError(null); } }} onSelect={(product, selections, quantity, idempotencyKey) => {
+        if (!order || addComboLockRef.current || addCombo.isPending) return;
+        addComboLockRef.current = true;
+        setComboAddError(null);
+        addCombo.mutate({ orderId: order.id, comboProductId: product.id, selections, quantity, idempotencyKey });
+      }} />
       <ModifierModal
         open={Boolean(modifierItemId)}
         itemId={modifierItemId}
@@ -2995,6 +3036,7 @@ function HalfAndHalfModal({
     const activeWithPrice = data.products.filter(
       (product) =>
         product.active &&
+        !product.comboDefinition &&
         product.prices.some((p) => p.priceListCode === priceListCode),
     );
     const pizzaCategoryOrName = activeWithPrice.filter(

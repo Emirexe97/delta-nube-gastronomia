@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, session } from "electron";
+import { app, autoUpdater as nativeUpdater, BrowserWindow, dialog, ipcMain, safeStorage, session } from "electron";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { GastronomyApplication } from "@gastronomy/application";
@@ -16,10 +16,14 @@ import { printHtml } from "./printer";
 import { cashSessionReportHtml } from "./cash-session-ticket";
 import { scheduledOrderBadge } from "./scheduled-order-ticket.cjs";
 import { createValidatedBackup } from "./safe-backup.cjs";
+import { comboComponentsHtml } from "./combo-ticket";
 import { restoreValidatedCopy } from "./safe-restore.cjs";
 import { isBackgroundTest } from "./e2e-background.cjs";
 import { DesktopLicensing } from "./licensing";
 import { licenseAllowsMethod } from "@gastronomy/licensing";
+import { UpdateInstallGate } from "./update-install-gate";
+import { createUpdateRuntime } from "./update-runtime";
+import type { DesktopUpdater } from "./app-updater";
 
 let mainWindow: BrowserWindow | null = null;
 let repository: SqliteGastronomyRepository | null = null;
@@ -29,11 +33,19 @@ let backgroundE2e = false;
 let licensing: DesktopLicensing | null = null;
 let licensingTimer: ReturnType<typeof setInterval> | null = null;
 let licensingPollInFlight = false;
+const operationGate = new UpdateInstallGate();
+let updater: DesktopUpdater | null = null;
+let updateTimer: ReturnType<typeof setInterval> | null = null;
+let updateStartupTimer: ReturnType<typeof setTimeout> | null = null;
+let updateQuitRequested = false;
+nativeUpdater.on("before-quit-for-update", () => { updateQuitRequested = true; });
 async function pollLicensing() {
   if (!licensing || licensingPollInFlight) return;
+  let release: (() => void) | undefined;
+  try { release = operationGate.enterOperation(); } catch { return; }
   licensingPollInFlight = true;
   try { await licensing.refresh(); } catch { /* retain the last locally verified lease */ }
-  finally { licensingPollInFlight = false; }
+  finally { licensingPollInFlight = false; release(); }
 }
 
 function services() {
@@ -85,6 +97,7 @@ function orderTicketHtml(
       const halves = item.halves.length
         ? `<div class="detail halves">½ ${escapeHtml(item.halves[0]?.nameSnapshot)} · ½ ${escapeHtml(item.halves[1]?.nameSnapshot)}</div>`
         : "";
+      const combo = comboComponentsHtml(item.comboComponents);
       const notes =
         isKitchen && item.notes
           ? `<div class="order-note item-obs"><strong>OBS:</strong> ${lineBreaks(item.notes)}</div>`
@@ -107,7 +120,7 @@ function orderTicketHtml(
         !isKitchen && template.showItemUnitPrice && item.quantity !== 1
           ? `<span class="unit-price">@ ${escapeHtml(formatMoney(item.unitPriceMinorSnapshot))} c/u</span>`
           : "";
-      return `<div class="item"><div class="item-main"><span class="product">${quantity}<strong>${escapeHtml(item.productNameSnapshot)}</strong>${unitPrice}</span>${price}</div>${halves}${modifiers ? `<div class="detail">${modifiers}</div>` : ""}${notes}</div>`;
+      return `<div class="item"><div class="item-main"><span class="product">${quantity}<strong>${escapeHtml(item.productNameSnapshot)}</strong>${unitPrice}</span>${price}</div>${halves}${combo}${modifiers ? `<div class="detail">${modifiers}</div>` : ""}${notes}</div>`;
     })
     .join("");
   const showBreakdown =
@@ -275,22 +288,20 @@ async function executePrintJob(
 }
 
 function registerIpcHandlers() {
-  let restoring = false;
-  let activeOperations = 0;
-  const handleData: typeof ipcMain.handle = (channel, listener) => {
+  // Licensing IPC is admitted too: no state persistence can race the installer.
+  const handleOperation: typeof ipcMain.handle = (channel, listener) => {
     ipcMain.handle(channel, async (...args) => {
+      const release = operationGate.enterOperation();
+      try { return await listener(...args); } finally { release(); }
+    });
+  };
+  const handleData: typeof ipcMain.handle = (channel, listener) => {
+    handleOperation(channel, async (...args) => {
       const method = String(channel).slice("gastronomy:".length);
       const status = await licensing!.getStatus();
       if (!licenseAllowsMethod(method, status.canOperate))
         throw new Error(status.message);
-      if (restoring)
-        throw new Error("Hay una restauración en curso. Esperá a que termine.");
-      activeOperations += 1;
-      try {
-        return await listener(...args);
-      } finally {
-        activeOperations -= 1;
-      }
+      return listener(...args);
     });
   };
   type ForwardedDesktopMethod = Exclude<
@@ -307,6 +318,9 @@ function registerIpcHandlers() {
     | "activateLicense"
     | "requestLicenseAccess"
     | "refreshLicense"
+    | "getAppUpdateStatus"
+    | "checkAppUpdate"
+    | "installAppUpdate"
   >;
   const completeMethodList = <T extends readonly ForwardedDesktopMethod[]>(
     methods: T &
@@ -315,6 +329,11 @@ function registerIpcHandlers() {
         : { missing: Exclude<ForwardedDesktopMethod, T[number]> }),
   ) => methods;
   const methods = completeMethodList([
+    "repeatOrder",
+    "addComboItem",
+    "configureProductCombo",
+    "cancelPurchase",
+    "correctPurchaseItemProduct",
     "bootstrap",
     "getOrder",
     "ensureTable",
@@ -402,8 +421,34 @@ function registerIpcHandlers() {
     "getDetailedReport",
     "getAuditLog",
   ] as const);
-  ipcMain.handle("gastronomy:getLicenseStatus", () => licensing!.getStatus());
-  ipcMain.handle(
+  // Updates remain available with an expired license (e.g. to recover a licensing bug).
+  ipcMain.handle("gastronomy:getAppUpdateStatus", () => updater!.getStatus());
+  handleOperation("gastronomy:checkAppUpdate", () => {
+    if (!services().appService.bootstrap().currentUser.permissions.includes("settings.manage"))
+      throw new Error("No tenés permiso para buscar actualizaciones.");
+    return updater!.check();
+  });
+  ipcMain.handle("gastronomy:installAppUpdate", () => {
+    if (updater!.getStatus().state !== "READY")
+      throw new Error("No hay una actualización lista para instalar.");
+    operationGate.beginInstall(() => {
+      const state = services().appService.bootstrap();
+      return {
+        permitted: state.currentUser.permissions.includes("settings.manage"),
+        cashOpen: state.cashSession?.status === "OPEN",
+      };
+    });
+    try {
+      const status = updater!.install();
+      if (status.state !== "INSTALLING") operationGate.cancelInstall();
+      return status;
+    } catch (error) {
+      operationGate.cancelInstall();
+      throw error;
+    }
+  });
+  handleOperation("gastronomy:getLicenseStatus", () => licensing!.getStatus());
+  handleOperation(
     "gastronomy:activateLicense",
     (_event, input: { code?: unknown }) => {
       if (
@@ -415,8 +460,8 @@ function registerIpcHandlers() {
       return licensing!.activate(input.code.trim());
     },
   );
-  ipcMain.handle("gastronomy:refreshLicense", () => licensing!.refresh());
-  ipcMain.handle("gastronomy:requestLicenseAccess", (_event, input: { businessName?: unknown }) => {
+  handleOperation("gastronomy:refreshLicense", () => licensing!.refresh());
+  handleOperation("gastronomy:requestLicenseAccess", (_event, input: { businessName?: unknown }) => {
     if (typeof input?.businessName !== "string" || input.businessName.trim().length < 2 || input.businessName.trim().length > 120) throw new Error("Ingresá el nombre del negocio.");
     return licensing!.requestLicenseAccess({ businessName: input.businessName.trim() });
   });
@@ -425,6 +470,11 @@ function registerIpcHandlers() {
       const { appService } = services();
       const target = appService[method] as (input?: any) => unknown;
       const idempotentMethods = [
+        "repeatOrder",
+        "addComboItem",
+        "configureProductCombo",
+        "cancelPurchase",
+        "correctPurchaseItemProduct",
         "payOrder",
         "markOrderServed",
         "createOrder",
@@ -593,13 +643,7 @@ function registerIpcHandlers() {
     return { path: result.filePath };
   });
   ipcMain.handle("gastronomy:restoreBackup", async () => {
-    if (restoring)
-      throw new Error("Hay una restauración en curso. Esperá a que termine.");
-    if (activeOperations > 0)
-      throw new Error(
-        "Esperá a que termine la operación actual y volvé a restaurar la copia.",
-      );
-    restoring = true;
+    operationGate.beginRestore();
     try {
       const selection = await dialog.showOpenDialog(mainWindow!, {
         title: "Restaurar copia de seguridad",
@@ -660,7 +704,7 @@ function registerIpcHandlers() {
       }
       return { path: source, restored: true };
     } finally {
-      restoring = false;
+      operationGate.endRestore();
     }
   });
 }
@@ -705,7 +749,17 @@ app.on("activate", () => {
   });
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  // NSIS can schedule quit before an async installer-spawn error is reported.
+  // Never honor that delayed update quit after its admission lock was released.
+  if (updateQuitRequested && (!operationGate.installationInProgress || updater?.getStatus().state !== "INSTALLING")) {
+    updateQuitRequested = false;
+    event.preventDefault();
+    return;
+  }
+  if (updateTimer) clearInterval(updateTimer);
+  if (updateStartupTimer) clearTimeout(updateStartupTimer);
+  updater?.dispose();
   if (licensingTimer) clearInterval(licensingTimer);
   licensingTimer = null;
   repository?.close();
@@ -747,12 +801,29 @@ app
       safeStorage: { isAvailable: () => safeStorage.isEncryptionAvailable(), encryptString: (value) => safeStorage.encryptString(value), decryptString: (value) => safeStorage.decryptString(value) },
     });
     await licensing.initialize();
+    updater = await createUpdateRuntime({
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      arch: process.arch,
+      currentVersion: app.getVersion(),
+      configPath: resolve(__dirname, "../updates-config.json"),
+      resourcesPath: process.resourcesPath,
+      appPath: resolve(process.execPath, "../../.."),
+      onStatusChange: (status) => {
+        if (status.state === "ERROR") operationGate.cancelInstall();
+      },
+    });
     registerIpcHandlers();
     if (app.isPackaged) {
       void pollLicensing();
       licensingTimer = setInterval(() => { void pollLicensing(); }, 60_000);
     }
     await createWindow();
+    if (updater.getStatus().state !== "DISABLED") {
+      // Background failures never prevent startup, sales, printing or license checks.
+      updateStartupTimer = setTimeout(() => { void updater?.check(); }, 30_000);
+      updateTimer = setInterval(() => { void updater?.check(); }, 6 * 60 * 60_000);
+    }
   })
   .catch((error) => {
     console.error("No se pudo iniciar Delta Nube Gastronomía", error);

@@ -1,4 +1,9 @@
 import type {
+  AddComboItemInput,
+  ConfigureProductComboInput,
+  RepeatOrderInput,
+  CancelPurchaseInput,
+  CorrectPurchaseItemProductInput,
   AddHalfAndHalfItemInput,
   AddOrderItemInput,
   AppSettingsDto,
@@ -127,6 +132,13 @@ function validateProductInventory(input: ProductInventoryInput) {
 }
 
 export interface GastronomyRepository {
+  repeatOrder(input: RepeatOrderInput): OrderDto;
+  addComboItem(input: AddComboItemInput): OrderDto;
+  configureProductCombo(input: ConfigureProductComboInput): ProductDto;
+  cancelPurchase(input: CancelPurchaseInput): PurchaseDto;
+  correctPurchaseItemProduct(
+    input: CorrectPurchaseItemProductInput,
+  ): PurchaseDto;
   bootstrap(): BootstrapDto;
   getOrder(orderId: Id): OrderDto;
   ensureTable(
@@ -268,7 +280,9 @@ export interface GastronomyRepository {
   listPurchases(): PurchaseDto[];
   createPurchase(input: CreatePurchaseInput): PurchaseDto;
   correctPurchaseMetadata(input: CorrectPurchaseMetadataInput): PurchaseDto;
-  correctPurchaseItemQuantity(input: CorrectPurchaseItemQuantityInput): PurchaseDto;
+  correctPurchaseItemQuantity(
+    input: CorrectPurchaseItemQuantityInput,
+  ): PurchaseDto;
   correctPurchaseItemCost(input: CorrectPurchaseItemCostInput): PurchaseDto;
   getFinanceReport(input: { from: string; to: string }): FinanceReportDto;
   getFinanceProductCosts(): FinanceReportDto["productCosts"];
@@ -503,6 +517,26 @@ export class GastronomyApplication {
       customerPhone: input.customerPhone?.trim() || null,
       deliveryAddress: input.deliveryAddress?.trim() || null,
     });
+  }
+
+  repeatOrder(input: RepeatOrderInput) {
+    return this.repository.repeatOrder(input);
+  }
+
+  addComboItem(input: AddComboItemInput) {
+    return this.repository.addComboItem(input);
+  }
+
+  configureProductCombo(input: ConfigureProductComboInput) {
+    return this.repository.configureProductCombo(input);
+  }
+
+  cancelPurchase(input: CancelPurchaseInput) {
+    return this.repository.cancelPurchase(input);
+  }
+
+  correctPurchaseItemProduct(input: CorrectPurchaseItemProductInput) {
+    return this.repository.correctPurchaseItemProduct(input);
   }
 
   updateDraftOrder(input: UpdateDraftOrderInput) {

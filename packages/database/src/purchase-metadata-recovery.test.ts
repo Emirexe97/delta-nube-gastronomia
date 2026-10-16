@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3-multiple-ciphers";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
+import { removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
 
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-metadata-"));
@@ -38,6 +39,15 @@ function protectedState(db: InstanceType<typeof Database>) {
     "cash_sessions", "cash_movements", "finance_expenses", "finance_recurring", "finance_expense_returns",
     "finance_expense_payment_corrections", "finance_expense_closed_payment_corrections"];
   return Object.fromEntries(tables.map((table) => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+}
+function withoutSchemaAdditions(state: Record<string, any>) {
+  return Object.fromEntries(Object.entries(state).map(([table, rows]) => [table, (rows as any[]).map((row) => {
+    const copy = { ...row };
+    if (table === "products") delete copy.combo_definition_json;
+    if (table === "order_items") delete copy.combo_components_json;
+    if (table === "purchases") { delete copy.revision; delete copy.cancelled_at; delete copy.cancellation_reason; }
+    return copy;
+  })]));
 }
 
 test("purchase metadata correction preserves original identity, items, total, later stock, costs and money with a full audit", () => fixture((repo, db) => {
@@ -128,14 +138,7 @@ test("migration adds zero revision to existing purchases without changing any hi
   try {
     const { purchase } = setup(repo);
     // Reproduce an actual persisted v34 database, then let constructor migrate it.
-    db.exec("DROP TRIGGER IF EXISTS orders_service_confirmed_items; DROP TRIGGER IF EXISTS order_items_service_insert; DROP TRIGGER IF EXISTS order_items_service_quantity_increase; DROP TRIGGER IF EXISTS order_items_service_delete_last");
-    db.exec("ALTER TABLE orders DROP COLUMN service_pending_since; ALTER TABLE orders DROP COLUMN served_at; ALTER TABLE orders DROP COLUMN service_revision");
-    db.prepare("DELETE FROM schema_migrations WHERE version=38").run();
-    db.exec("DROP TABLE purchase_item_quantity_corrections");
-    db.exec("DROP TABLE purchase_item_cost_corrections");
-    if ((db.prepare("PRAGMA table_info(purchases)").all() as any[]).some((column) => column.name === "revision"))
-      db.exec("ALTER TABLE purchases DROP COLUMN revision");
-    db.prepare("DELETE FROM schema_migrations WHERE version>=35").run();
+    rewindPurchaseTestSchema(db, 34);
     const before = db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id) as any;
     const businessBefore = protectedState(db);
     const receiptsBefore = db.prepare("SELECT * FROM command_receipts ORDER BY rowid").all();
@@ -143,12 +146,12 @@ test("migration adds zero revision to existing purchases without changing any hi
     repo = new SqliteGastronomyRepository(path, { adminPin: "2468" }); db = new Database(path);
     const row = db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id) as any;
     const { revision, ...historical } = row;
-    assert.equal(revision, 0); assert.deepEqual(historical, before);
+    assert.equal(revision, 0); assert.deepEqual(removeNewNullablePurchaseColumns(historical), before);
     assert.equal(repo.listPurchases().find((p) => p.id === purchase.id)?.revision, 0);
-    assert.deepEqual(protectedState(db), businessBefore);
+    assert.deepEqual(withoutSchemaAdditions(protectedState(db)), businessBefore);
     assert.deepEqual(db.prepare("SELECT * FROM command_receipts ORDER BY rowid").all(), receiptsBefore);
-    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 38);
-    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), [{ version: 35 }, { version: 36 }, { version: 37 }, { version: 38 }]);
+    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 40);
+    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), [{ version: 35 }, { version: 36 }, { version: 37 }, { version: 38 }, { version: 39 }, { version: 40 }]);
     assert.equal((db.prepare("SELECT COUNT(*) count FROM purchase_item_cost_corrections").get() as any).count, 0);
     assert.equal((db.prepare("SELECT COUNT(*) count FROM purchase_item_quantity_corrections").get() as any).count, 0);
   } finally {

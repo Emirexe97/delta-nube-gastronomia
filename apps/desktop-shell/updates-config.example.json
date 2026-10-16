@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "target": "win32-x64",
+  "feedUrl": "https://updates.example.com/stable/win32/x64/",
+  "windowsPublisherNames": ["Nombre legal exacto del certificado"]
+}

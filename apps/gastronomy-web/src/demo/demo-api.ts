@@ -26,6 +26,8 @@ import type {
   CorrectFinanceExpenseCashPaymentInput,
   CorrectFinanceExpenseClosedCashPaymentInput,
   CorrectPurchaseItemCostInput,
+  CancelPurchaseInput,
+  CorrectPurchaseItemProductInput,
   CorrectPurchaseItemQuantityInput,
   CancelFinanceExpenseInput,
   UnmarkFinanceExpensePaymentInput,
@@ -33,8 +35,12 @@ import type {
   FinanceRecurringDto,
   ReportFilters,
   UserDto,
+  AddComboItemInput,
+  ConfigureProductComboInput,
+  RepeatOrderInput,
 } from "@gastronomy/contracts";
 import { createDemoBootstrap, emptyDashboard } from "./demo-data";
+import { populateRepeatedDemoOrder } from "./repeat-order";
 import {
   assertOffPremiseCustomer,
   assertOrderTransition,
@@ -43,6 +49,9 @@ import {
   assertOrderAction,
   paymentStatusFor,
   businessDateFromOpening,
+  assertComboDefinition,
+  calculateComboPrice,
+  assertComboLineAmount,
 } from "@gastronomy/domain";
 
 export const DEMO_STORAGE_KEY = "delta-nube-gastronomia.demo.v5";
@@ -137,6 +146,10 @@ interface DemoState {
   purchases: PurchaseDto[];
   purchaseReceipts: Record<string, { purchaseId: string; requestJson: string; result?: PurchaseDto }>;
   purchaseMetadataCorrectionReceipts?: Record<string, { fingerprint: string; result: PurchaseDto }>;
+  purchaseCancellations?: Array<{ id: string; purchaseId: string; purchaseRevision: number; reason: string; createdAt: string; operatorUserId: string; authorizerUserId: string }>;
+  purchaseCancellationReceipts?: Record<string, { fingerprint: string; result: PurchaseDto }>;
+  purchaseItemProductCorrections?: Array<{ id: string; purchaseId: string; purchaseItemId: string; previousProductId: string; previousProductName: string; correctedProductId: string; correctedProductName: string; purchaseRevision: number; reason: string; operatorUserId: string; authorizerUserId: string; createdAt: string }>;
+  purchaseItemProductCorrectionReceipts?: Record<string, { fingerprint: string; result: PurchaseDto }>;
   purchaseItemCostCorrections?: Array<{
     id: string; purchaseId: string; purchaseItemId: string;
     previousUnitCostMinor: number; correctedUnitCostMinor: number;
@@ -159,6 +172,9 @@ interface DemoState {
     string,
     { unitCostMinor: number | null; quantity: number }
   >;
+  orderRepeatReceipts?: Record<string, { fingerprint: string; result: OrderDto }>;
+  comboConfigReceipts?: Record<string, { fingerprint: string; result: ProductDto }>;
+  comboAddReceipts?: Record<string, { fingerprint: string; result: OrderDto }>;
   financeExpenseMovements?: Record<string, string>;
   financeExpenseRecoveryReceipts?: Record<string, { fingerprint: string; result: FinanceExpenseDto }>;
   financeExpensePaymentReceipts?: Record<string, { fingerprint: string; result: FinanceExpenseDto }>;
@@ -572,6 +588,8 @@ function loadState(storage: DemoStorage): DemoState {
     }
     // Older demo profiles predate fee ownership; retain the historical default.
     parsed.data.settings.deliveryFeeBelongsToDriver ??= true;
+    // Historical demo profiles predate this option; keep the feature enabled.
+    parsed.data.settings.halfAndHalfEnabled ??= true;
     for (const order of parsed.data.orders) {
       // Old paid orders followed the legacy rule that the driver owned the fee.
       if (order.paidMinor > 0) order.deliveryFeeBelongsToDriver ??= true;
@@ -794,7 +812,12 @@ function normalize(state: DemoState) {
       order.servicePendingSince ??= null;
       order.servedAt ??= null;
     }
+    // Normalization repairs derived totals during startup/save, but must not
+    // make a persisted order look newly edited. Mutation paths call
+    // refreshOrder directly and own updatedAt changes.
+    const updatedAt = order.updatedAt;
     refreshOrder(order);
+    order.updatedAt = updatedAt;
   }
   state.data.tables.sort((left, right) => left.number - right.number);
   if (state.data.cashSession) {
@@ -1131,6 +1154,8 @@ export function createDemoApi(
     [...(state.purchaseItemQuantityCorrections ?? [])].reverse().find(
       (entry) => entry.purchaseId === purchaseId && entry.purchaseItemId === purchaseItemId,
     );
+  const latestPurchaseProductCorrection = (purchaseId: string, purchaseItemId: string) =>
+    [...(state.purchaseItemProductCorrections ?? [])].reverse().find((entry) => entry.purchaseId === purchaseId && entry.purchaseItemId === purchaseItemId);
   const effectivePurchaseQuantity = (purchaseId: string, item: PurchaseDto["items"][number]) =>
     latestPurchaseQuantityCorrection(purchaseId, item.id)?.correctedQuantityMinor ?? item.quantityMinor;
   const effectivePurchaseItemCost = (purchaseId: string, item: PurchaseDto["items"][number]) =>
@@ -1144,16 +1169,19 @@ export function createDemoApi(
   };
   const projectPurchase = (purchase: PurchaseDto): PurchaseDto => {
     const hasCorrection = (state.purchaseItemCostCorrections ?? []).some((entry) => entry.purchaseId === purchase.id) ||
-      (state.purchaseItemQuantityCorrections ?? []).some((entry) => entry.purchaseId === purchase.id);
-    if (!hasCorrection) return { ...purchase, revision: purchase.revision ?? 0 };
+      (state.purchaseItemQuantityCorrections ?? []).some((entry) => entry.purchaseId === purchase.id) ||
+      (state.purchaseItemProductCorrections ?? []).some((entry) => entry.purchaseId === purchase.id);
+    if (!hasCorrection) return { ...purchase, revision: purchase.revision ?? 0, cancelledAt: purchase.cancelledAt ?? null, cancellationReason: purchase.cancellationReason ?? null };
     const items = purchase.items.map((item) => {
       const costCorrection = latestPurchaseCostCorrection(purchase.id, item.id);
       const quantityCorrection = latestPurchaseQuantityCorrection(purchase.id, item.id);
-      if (!costCorrection && !quantityCorrection) return item;
+      const productCorrection = latestPurchaseProductCorrection(purchase.id, item.id);
+      if (!costCorrection && !quantityCorrection && !productCorrection) return item;
       return {
         ...item,
         ...(costCorrection ? { effectiveUnitCostMinor: costCorrection.correctedUnitCostMinor } : {}),
         ...(quantityCorrection ? { effectiveQuantityMinor: quantityCorrection.correctedQuantityMinor } : {}),
+        ...(productCorrection ? { effectiveProductId: productCorrection.correctedProductId, effectiveProductName: productCorrection.correctedProductName } : {}),
         effectiveLineTotalMinor: effectivePurchaseLineTotal(purchase.id, item),
       };
     });
@@ -1164,10 +1192,10 @@ export function createDemoApi(
     const manual = state.financeManualCosts?.[productId];
     if (manual != null)
       return { unitCostMinor: manual, source: "MANUAL" as const };
-    const purchase = [...state.purchases]
+    const purchase = [...state.purchases].filter((entry) => !entry.cancelledAt)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .flatMap((entry) => entry.items.map((item) => ({ purchase: entry, item })))
-      .find(({ item }) => item.productId === productId);
+      .find(({ purchase, item }) => (latestPurchaseProductCorrection(purchase.id, item.id)?.correctedProductId ?? item.productId) === productId);
     return purchase
       ? { unitCostMinor: effectivePurchaseItemCost(purchase.purchase.id, purchase.item), source: "PURCHASE" as const }
       : { unitCostMinor: null, source: "UNKNOWN" as const };
@@ -1179,7 +1207,11 @@ export function createDemoApi(
       for (const item of order.items) {
         const costs = (state.financeItemCosts ??= {});
         if (!costs[item.id]) {
-          const unitCostMinor = item.productId
+          const unitCostMinor = item.comboComponents?.length
+            ? item.comboComponents.map((part) => ({ cost: currentFinanceCost(part.productId).unitCostMinor, quantity: part.quantity })).every((part) => part.cost != null)
+              ? item.comboComponents.reduce((sum, part) => sum + currentFinanceCost(part.productId).unitCostMinor! * part.quantity, 0)
+              : null
+            : item.productId
             ? currentFinanceCost(item.productId).unitCostMinor
             : item.halves.length === 2
               ? (() => {
@@ -1453,7 +1485,10 @@ export function createDemoApi(
         (requiredByProduct.get(productId) ?? 0) + amount,
       );
     for (const item of order.items) {
-      if (item.productId) add(item.productId, item.quantity * 1000);
+      if (item.comboComponents?.length) {
+        for (const component of item.comboComponents)
+          add(component.productId, item.quantity * component.quantity * 1000);
+      } else if (item.productId) add(item.productId, item.quantity * 1000);
       else
         for (const half of item.halves)
           add(half.productId, item.quantity * 500);
@@ -1473,6 +1508,7 @@ export function createDemoApi(
       if (product.stockMinor != null) product.stockMinor -= required;
     }
   };
+  const consumeComboStock = (order: OrderDto) => reserveOrderStock(order);
   const releaseOrderStock = (order: OrderDto) => {
     if (!state.data.settings.stockEnabled) return;
     for (const [productId, amount] of stockRequirements(order)) {
@@ -1484,6 +1520,33 @@ export function createDemoApi(
   save();
 
   return {
+    async repeatOrder(input: RepeatOrderInput) {
+      if (!state.data.currentUser.permissions.includes("orders.create") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para crear pedidos.");
+      const key = input.idempotencyKey?.trim();
+      const fingerprint = JSON.stringify({ ...input, idempotencyKey: undefined });
+      if (key && state.orderRepeatReceipts?.[key]) {
+        const prior = state.orderRepeatReceipts[key]!;
+        if (prior.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(prior.result);
+      }
+      const original = JSON.stringify(state);
+      let candidateJson: string | null = original;
+      const memoryStorage: DemoStorage = { getItem: () => candidateJson, setItem: (_k, value) => { candidateJson = value; }, removeItem: () => { candidateJson = null; } };
+      const candidateApi = createDemoApi(memoryStorage);
+      const result = await populateRepeatedDemoOrder(candidateApi, input);
+      if (JSON.stringify(state) !== original) throw new Error("Los datos de demostración cambiaron durante la repetición; reintentá.");
+      if (!candidateJson) throw new Error("No se pudo preparar el pedido repetido.");
+      const candidateState = JSON.parse(candidateJson) as DemoState;
+      const originalState = JSON.parse(original) as DemoState;
+      const originalOrders = new Map(originalState.data.orders.map((order) => [order.id, order]));
+      candidateState.data.orders = candidateState.data.orders.map((order) => originalOrders.get(order.id) ?? order);
+      audit(candidateState, "ORDER", result.id, "ORDER_REPEATED", undefined, "orders.create");
+      if (key) (candidateState.orderRepeatReceipts ??= {})[key] = { fingerprint, result };
+      storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(candidateState));
+      state = candidateState;
+      return output(result);
+    },
+
     async bootstrap() {
       save();
       const data = output(state.data);
@@ -2234,10 +2297,83 @@ export function createDemoApi(
       return { discarded: true };
     },
 
+    async configureProductCombo(input: ConfigureProductComboInput) {
+      requirePin(input.authorizerPin);
+      if (!state.data.currentUser.permissions.includes("prices.bulk_update") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para editar precios.");
+      const receiptKey = input.idempotencyKey?.trim();
+      const fingerprint = JSON.stringify({ ...input, idempotencyKey: undefined });
+      if (receiptKey && state.comboConfigReceipts?.[receiptKey]) {
+        const previous = state.comboConfigReceipts[receiptKey]!;
+        if (previous.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(previous.result);
+      }
+      if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+      const product = productById(input.productId);
+      if (!state.data.categories.find((c) => c.id === product.categoryId)?.active) throw new Error("No se puede configurar un combo en una categoría inactiva.");
+      if (input.definition) {
+        if (product.stockMinor != null) throw new Error("Quitá el control de stock antes de configurar el combo.");
+        if (product.parentProductId) throw new Error("Una variante no puede configurarse como combo.");
+        assertComboDefinition(input.definition, product.id, state.data.products);
+        const eligible = new Set(state.data.products.filter((p) => p.active && !p.comboDefinition && state.data.categories.find((c) => c.id === p.categoryId)?.active).map((p) => p.id));
+        if (input.definition.slots.some((slot) => slot.productIds.some((id) => !eligible.has(id)))) throw new Error("Las opciones solo pueden incluir productos activos que no sean combos.");
+        if (state.data.products.some((p) => p.comboDefinition?.slots.some((s) => s.productIds.includes(product.id)))) throw new Error("Un producto usado en un combo no puede convertirse en combo.");
+      }
+      const before = clone(product.comboDefinition ?? null);
+      product.comboDefinition = clone(input.definition);
+      audit(state, "PRODUCT", product.id, "PRODUCT_COMBO_CONFIGURED", input.reason.trim(), "prices.bulk_update");
+      if (receiptKey) (state.comboConfigReceipts ??= {})[receiptKey] = { fingerprint, result: output(product) };
+      save();
+      return output(product);
+    },
+
+    async addComboItem(input: AddComboItemInput) {
+      if (!state.data.currentUser.permissions.includes("orders.edit") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para editar pedidos.");
+      const receiptKey = input.idempotencyKey?.trim();
+      const fingerprint = JSON.stringify({ ...input, idempotencyKey: undefined });
+      if (receiptKey && state.comboAddReceipts?.[receiptKey]) {
+        const previous = state.comboAddReceipts[receiptKey]!;
+        if (previous.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(previous.result);
+      }
+      const order = orderById(input.orderId);
+      assertOrderAction(order, "EDIT");
+      const combo = productById(input.comboProductId);
+      const definition = combo.comboDefinition;
+      if (!definition?.slots?.length) throw new Error("El producto no está configurado como combo.");
+      const quantity = input.quantity ?? 1;
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) throw new Error("La cantidad debe ser de 1 a 99.");
+      if (input.selections.length !== definition.slots.length || new Set(input.selections.map((s) => s.slotId)).size !== input.selections.length) throw new Error("Seleccioná una opción válida para cada grupo del combo.");
+      const components = definition.slots.map((slot) => {
+        const selection = input.selections.find((s) => s.slotId === slot.id);
+        if (!selection || !slot.productIds.includes(selection.productId)) throw new Error(`Selección inválida para ${slot.name}.`);
+        const product = productById(selection.productId);
+        if (!product.active || product.comboDefinition || !state.data.categories.find((c) => c.id === product.categoryId)?.active) throw new Error("Solo se pueden elegir productos activos de categorías activas que no sean combos.");
+        if (new Set(selection.modifierIds ?? []).size !== (selection.modifierIds ?? []).length) throw new Error("No se pueden repetir adicionales.");
+        const modifiers = (selection.modifierIds ?? []).map((modifierId) => {
+          const modifier = state.data.modifiers.find((m) => m.id === modifierId && m.active);
+          if (!modifier) throw new Error("El adicional no existe o está inactivo.");
+          return { modifierId, nameSnapshot: modifier.name, unitPriceMinorSnapshot: modifier.priceMinor };
+        });
+        return { slotId: slot.id, slotName: slot.name, productId: product.id, nameSnapshot: product.name, quantity: slot.quantity, modifiers };
+      });
+      const unit = calculateComboPrice(orderPrice(combo, order.type), components);
+      assertComboLineAmount(unit, quantity, order.subtotalMinor, order.deliveryFeeMinor);
+      const item: OrderItemDto = { id: uid("item", state), productId: combo.id, productNameSnapshot: combo.name, quantity, unitPriceMinorSnapshot: unit, discountMinorSnapshot: 0, notes: input.notes?.trim() || null, halves: [], modifiers: [], comboComponents: components, lineTotalMinor: unit * quantity };
+      if (order.lifecycleStatus === "CONFIRMED" && state.data.settings.stockEnabled) consumeComboStock({ ...order, items: [item] });
+      order.items.push(item);
+      refreshOrder(order);
+      registerServiceConsumption(order);
+      audit(state, "ORDER", order.id, "COMBO_ADDED");
+      if (receiptKey) (state.comboAddReceipts ??= {})[receiptKey] = { fingerprint, result: output(order) };
+      save();
+      return output(order);
+    },
+
     async addOrderItem(input) {
       const order = orderById(input.orderId);
       assertOrderAction(order, "EDIT");
       const product = productById(input.productId);
+      if (product.comboDefinition) throw new Error("Los combos deben agregarse con addComboItem.");
       if (!product.active) throw new Error("El producto está inactivo.");
       const quantity = input.quantity ?? 1;
       if (quantity <= 0)
@@ -2320,6 +2456,10 @@ export function createDemoApi(
         throw new Error("La cantidad debe ser mayor que cero.");
       }
       const oldQty = item.quantity;
+      if (item.comboComponents?.length) {
+        const unit = item.unitPriceMinorSnapshot + item.modifiers.reduce((sum, extra) => sum + extra.unitPriceMinorSnapshot, 0);
+        assertComboLineAmount(unit, newQty, order.subtotalMinor - item.lineTotalMinor, order.deliveryFeeMinor);
+      }
       if (newQty === oldQty) return output(order);
       const delta = newQty - oldQty;
 
@@ -2327,7 +2467,12 @@ export function createDemoApi(
         order.lifecycleStatus === "CONFIRMED" &&
         state.data.settings.stockEnabled
       ) {
-        if (item.productId) {
+        if (item.comboComponents?.length) {
+          const requirements = new Map<string, number>();
+          for (const component of item.comboComponents) requirements.set(component.productId, (requirements.get(component.productId) ?? 0) + delta * component.quantity * 1000);
+          for (const [productId, amount] of requirements) { const product = productById(productId); if (amount > 0 && product.stockMinor != null && product.stockMinor < amount) throw new Error(`Stock insuficiente para ${product.name}.`); }
+          for (const [productId, amount] of requirements) { const product = productById(productId); if (product.stockMinor != null) product.stockMinor -= amount; }
+        } else if (item.productId) {
           const product = state.data.products.find(
             (p) => p.id === item.productId,
           );
@@ -2381,10 +2526,15 @@ export function createDemoApi(
     },
 
     async addHalfAndHalfItem(input) {
+      if (state.data.settings.halfAndHalfEnabled === false)
+        throw new Error(
+          "Las pizzas mitad y mitad están deshabilitadas en Configuración.",
+        );
       const order = orderById(input.orderId);
       assertOrderAction(order, "EDIT");
       const first = productById(input.firstProductId);
       const second = productById(input.secondProductId);
+      if (first.comboDefinition || second.comboDefinition) throw new Error("Los combos no pueden agregarse como mitad y mitad.");
       const firstPrice = orderPrice(first, order.type);
       const secondPrice = orderPrice(second, order.type);
       const unit =
@@ -4125,6 +4275,7 @@ export function createDemoApi(
       validateProductInventory(input);
       const product = productById(input.productId);
       const category = categoryById(input.categoryId);
+      if (input.stockMinor != null && product.comboDefinition) throw new Error("Un combo no puede tener stock propio; configurá el inventario de sus componentes.");
       const nextParentId =
         input.parentProductId === undefined
           ? product.parentProductId
@@ -4544,6 +4695,7 @@ export function createDemoApi(
       for (const row of monthlyMap.values()) row.netExpensesMinor = row.expensesMinor - row.expenseReturnsMinor;
       let purchasesTotal = 0n;
       for (const purchase of state.purchases) {
+        if (purchase.cancelledAt) continue;
         const businessDate = businessDateFromOpening(purchase.createdAt);
         if (businessDate < input.from || businessDate > input.to) continue;
         const amount = projectPurchase(purchase).effectiveTotalMinor ?? purchase.totalMinor;
@@ -5242,6 +5394,8 @@ export function createDemoApi(
           const product = productById(item.productId);
           if (!product.active)
             throw new Error(`El producto ${product.name} está inactivo.`);
+            if (product.comboDefinition)
+              throw new Error("Registrá la compra de los componentes, no del combo.");
           const stockBeforeMinor = product.stockMinor ?? 0;
           const stockAfterMinor = stockBeforeMinor + item.quantityMinor;
           const lineTotalMinor = Math.round(
@@ -5300,6 +5454,56 @@ export function createDemoApi(
       }
     },
 
+    async cancelPurchase(input: CancelPurchaseInput) {
+      if (!state.data.currentUser.permissions.includes("purchases.manage") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para modificar compras.");
+      requirePin(input.authorizerPin);
+      const key = input.idempotencyKey?.trim() || globalThis.crypto?.randomUUID?.() || `${Date.now()}`;
+      const fingerprint = JSON.stringify({ operation: "cancelPurchase", input: { ...input, idempotencyKey: undefined } });
+      const prior = state.purchaseCancellationReceipts?.[key];
+      if (prior) { if (prior.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes."); return output(prior.result); }
+      const purchase = state.purchases.find((row) => row.id === input.purchaseId); if (!purchase) throw new Error("La compra no existe.");
+      if ((purchase.revision ?? 0) !== input.expectedRevision) throw new Error("La compra cambió. Actualizá y volvé a intentar.");
+      if (purchase.cancelledAt) throw new Error("La compra ya está anulada.");
+      const reason = typeof input.reason === "string" ? input.reason.trim() : ""; if (!reason || reason.length > 500) throw new Error("Indicá un motivo de hasta 500 caracteres.");
+      const authorized = state.data.users.find((user) => user.active && (user.permissions.includes("purchases.manage") || user.permissions.includes("*")));
+      if (!authorized) throw new Error("No hay un usuario con permiso para autorizar compras.");
+      const snapshot = clone(state);
+      try {
+        const before = projectPurchase(purchase); const nowAt = now(); purchase.cancelledAt = nowAt; purchase.cancellationReason = reason; purchase.revision = input.expectedRevision + 1;
+        (state.purchaseCancellations ??= []).push({ id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`, purchaseId: purchase.id, purchaseRevision: purchase.revision, reason, createdAt: nowAt, operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id });
+        const result = projectPurchase(purchase); (state.purchaseCancellationReceipts ??= {})[key] = { fingerprint, result };
+        audit(state, "PURCHASE", purchase.id, "PURCHASE_CANCELLED", reason, "purchases.manage");
+        const entry = state.audit[0]; if (entry?.entityId === purchase.id) { entry.authorizerName = authorized.fullName; entry.beforeJson = JSON.stringify(before); entry.afterJson = JSON.stringify(result); }
+        save(); return output(result);
+      } catch (error) { restore(snapshot); throw error; }
+    },
+
+    async correctPurchaseItemProduct(input: CorrectPurchaseItemProductInput) {
+      if (!state.data.currentUser.permissions.includes("purchases.manage") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para modificar compras.");
+      requirePin(input.authorizerPin);
+      const key = input.idempotencyKey?.trim() || globalThis.crypto?.randomUUID?.() || `${Date.now()}`;
+      const fingerprint = JSON.stringify({ operation: "correctPurchaseItemProduct", input: { ...input, idempotencyKey: undefined } });
+      const prior = state.purchaseItemProductCorrectionReceipts?.[key]; if (prior) { if (prior.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes."); return output(prior.result); }
+      const purchase = state.purchases.find((row) => row.id === input.purchaseId); if (!purchase) throw new Error("La compra no existe.");
+      if ((purchase.revision ?? 0) !== input.expectedRevision) throw new Error("La compra cambió. Actualizá y volvé a intentar.");
+      if (purchase.cancelledAt) throw new Error("No se puede corregir una compra anulada.");
+      const item = purchase.items.find((row) => row.id === input.purchaseItemId); if (!item) throw new Error("El producto no pertenece a esta compra.");
+      const product = state.data.products.find((row) => row.id === input.productId && row.active); if (!product) throw new Error("El producto no existe o está inactivo.");
+      const prev = latestPurchaseProductCorrection(purchase.id, item.id); const previousProductId = prev?.correctedProductId ?? item.productId;
+      const previousProductName = prev?.correctedProductName ?? item.productName; if (previousProductId === product.id) throw new Error("El producto elegido ya es el vigente.");
+      const reason = typeof input.reason === "string" ? input.reason.trim() : ""; if (!reason || reason.length > 500) throw new Error("Indicá un motivo de hasta 500 caracteres.");
+      const authorized = state.data.users.find((user) => user.active && (user.permissions.includes("purchases.manage") || user.permissions.includes("*"))); if (!authorized) throw new Error("No hay un usuario con permiso para autorizar compras.");
+      const snapshot = clone(state);
+      try {
+        const before = projectPurchase(purchase); const revision = input.expectedRevision + 1;
+        (state.purchaseItemProductCorrections ??= []).push({ id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`, purchaseId: purchase.id, purchaseItemId: item.id, previousProductId, previousProductName, correctedProductId: product.id, correctedProductName: product.name, purchaseRevision: revision, reason, operatorUserId: state.data.currentUser.id, authorizerUserId: authorized.id, createdAt: now() });
+        purchase.revision = revision; const result = projectPurchase(purchase); (state.purchaseItemProductCorrectionReceipts ??= {})[key] = { fingerprint, result };
+        audit(state, "PURCHASE", purchase.id, "PURCHASE_ITEM_PRODUCT_CORRECTED", reason, "purchases.manage");
+        const entry = state.audit[0]; if (entry?.entityId === purchase.id) { entry.authorizerName = authorized.fullName; entry.beforeJson = JSON.stringify(before); entry.afterJson = JSON.stringify(result); }
+        save(); return output(result);
+      } catch (error) { restore(snapshot); throw error; }
+    },
+
     async correctPurchaseItemCost(input: CorrectPurchaseItemCostInput) {
       const canManage = state.data.currentUser.permissions.includes("purchases.manage") || state.data.currentUser.permissions.includes("*");
       if (!canManage) throw new Error("No tenés permiso para modificar compras.");
@@ -5315,6 +5519,7 @@ export function createDemoApi(
       }
       const purchase = state.purchases.find((row) => row.id === input.purchaseId);
       if (!purchase) throw new Error("La compra no existe.");
+      if (purchase.cancelledAt) throw new Error("No se puede corregir una compra anulada.");
       const revision = purchase.revision ?? 0;
       if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== revision)
         throw new Error("La compra cambió. Actualizá y volvé a intentar.");
@@ -5386,6 +5591,8 @@ export function createDemoApi(
       }
       const purchase = state.purchases.find((row) => row.id === input.purchaseId);
       if (!purchase) throw new Error("La compra no existe.");
+      if (purchase.cancelledAt) throw new Error("No se puede corregir una compra anulada.");
+      if (purchase.cancelledAt) throw new Error("No se puede corregir una compra anulada.");
       const revision = purchase.revision ?? 0;
       if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.expectedRevision !== revision)
         throw new Error("La compra cambió. Actualizá y volvé a intentar.");
@@ -5512,6 +5719,7 @@ export function createDemoApi(
       if (!Number.isSafeInteger(input.newStockMinor) || input.newStockMinor < 0)
         throw new Error("El stock no es válido.");
       const product = productById(input.productId);
+      if (product.comboDefinition) throw new Error("Un combo no puede tener stock propio; ajustá el stock de sus componentes.");
       product.stockMinor = input.newStockMinor;
       audit(
         state,
@@ -6346,6 +6554,21 @@ export function createDemoApi(
     async requestLicenseAccess() { return this.getLicenseStatus(); },
     async refreshLicense() {
       return this.getLicenseStatus();
+    },
+    async getAppUpdateStatus() {
+      return {
+        state: "DISABLED" as const,
+        currentVersion: "demo",
+        availableVersion: null,
+        progress: null,
+        message: "Las actualizaciones automáticas solo están disponibles en la aplicación de escritorio instalada.",
+      };
+    },
+    async checkAppUpdate() {
+      return this.getAppUpdateStatus();
+    },
+    async installAppUpdate() {
+      return this.getAppUpdateStatus();
     },
   };
 }

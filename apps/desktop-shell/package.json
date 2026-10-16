@@ -11,7 +11,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test",
     "dist:win": "pnpm --filter @gastronomy/web build && pnpm build && pnpm rebuild:native && electron-builder --win nsis",
-    "dist:mac": "pnpm --filter @gastronomy/web build && pnpm build && electron-builder --mac"
+    "dist:mac": "pnpm --filter @gastronomy/web build && pnpm build && electron-builder --mac",
+    "dist:update:win": "pnpm --filter @gastronomy/web build && pnpm build && pnpm rebuild:native && electron-builder --config electron-builder.updates.cjs --win nsis --x64 --publish never",
+    "dist:update:mac:arm64": "pnpm --filter @gastronomy/web build && pnpm build && electron-builder --config electron-builder.updates.cjs --mac dmg zip --arm64 --publish never",
+    "dist:update:mac:x64": "pnpm --filter @gastronomy/web build && pnpm build && electron-builder --config electron-builder.updates.cjs --mac dmg zip --x64 --publish never"
   },
   "dependencies": {
     "@gastronomy/application": "workspace:*",
@@ -19,7 +22,9 @@
     "@gastronomy/database": "workspace:*",
     "@gastronomy/domain": "workspace:*",
     "@gastronomy/licensing": "workspace:*",
-    "better-sqlite3-multiple-ciphers": "12.11.1"
+    "better-sqlite3-multiple-ciphers": "12.11.1",
+    "electron-updater": "6.8.9",
+    "js-yaml": "4.3.2"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
@@ -43,6 +48,7 @@
       "renderer/**/*",
       "package.json",
       "licensing-config.json",
+      "updates-config.json",
       "node_modules/**/*"
     ],
     "asar": true,
@@ -63,11 +69,18 @@
     },
     "mac": {
       "extendInfo": {
-        "CFBundleName": "Delta Nube Gastronomi\u0301a"
+        "CFBundleName": "Delta Nube Gastronomía"
       },
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "x64",
             "arm64"

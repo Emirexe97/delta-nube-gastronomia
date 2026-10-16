@@ -7,6 +7,8 @@ import type { GastronomyRepository } from "@gastronomy/application";
 import { AUDIT_FILTER_ACTIONS } from "@gastronomy/contracts";
 import type {
   AddHalfAndHalfItemInput,
+  AddComboItemInput,
+  ConfigureProductComboInput,
   AddOrderItemInput,
   AppSettingsDto,
   AuditEntryDto,
@@ -46,10 +48,13 @@ import type {
   MarkOrderServedInput,
   ProductDto,
   RefundPaymentInput,
+  RepeatOrderInput,
   CreatePurchaseInput,
   CorrectPurchaseItemCostInput,
   CorrectPurchaseItemQuantityInput,
   CorrectPurchaseMetadataInput,
+  CancelPurchaseInput,
+  CorrectPurchaseItemProductInput,
   PurchaseDto,
   FinanceReportDto,
   FinanceExpenseDto,
@@ -98,8 +103,12 @@ import {
   paymentStatusFor,
   nonNegativeMoney,
   assertPermission,
+  assertComboDefinition,
+  calculateComboPrice,
+  assertComboLineAmount,
 } from "@gastronomy/domain";
 import { migrations } from "./migrations";
+import { populateRepeatedOrder } from "./repeat-order";
 
 type SqliteDatabase = InstanceType<typeof Database>;
 type Row = Record<string, unknown>;
@@ -124,6 +133,7 @@ const DEFAULT_SETTINGS: AppSettingsDto = {
   touchProductPanelEnabled: false,
   deliverySettlementEnabled: false,
   deliveryFeeBelongsToDriver: true,
+  halfAndHalfEnabled: true,
   deliveryDriverPaymentMode: "ACCUMULATED",
   enabledOrderStatuses: ["IN_PREPARATION", "DELIVERED"],
   quickDelayMinutes: [20, 30, 40, 45, 60],
@@ -1367,6 +1377,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           : Number(row.stock_critical_minor),
       imageDataUrl:
         row.image_data_url == null ? null : String(row.image_data_url),
+      comboDefinition: row.combo_definition_json == null ? null : JSON.parse(String(row.combo_definition_json)),
       prices: (pricesStatement.all(row.id) as Row[]).map((price) => ({
         priceListId: String(price.price_list_id),
         priceListCode: String(price.price_list_code),
@@ -1698,11 +1709,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const modifiers = (modifierStatement.all(item.id) as Row[]).map(
         (modifier) => ({
           id: String(modifier.id),
+          modifierId: String(modifier.modifier_id),
           nameSnapshot: String(modifier.name_snapshot),
           unitPriceMinorSnapshot: Number(modifier.unit_price_minor_snapshot),
           scope: String(modifier.scope) as never,
         }),
       );
+      const comboComponents = item.combo_components_json == null ? undefined : JSON.parse(String(item.combo_components_json));
       const lineTotalMinor = calculateLineTotal({
         unitPriceMinor: Number(item.unit_price_minor_snapshot),
         quantity: Number(item.quantity),
@@ -1721,6 +1734,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         notes: item.notes == null ? null : String(item.notes),
         halves,
         modifiers,
+        ...(comboComponents ? { comboComponents } : {}),
         lineTotalMinor,
       };
     });
@@ -2002,7 +2016,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         `SELECT COALESCE((SELECT c.corrected_unit_cost_minor FROM purchase_item_cost_corrections c
           WHERE c.purchase_item_id = pi.id ORDER BY c.purchase_revision DESC LIMIT 1), pi.unit_cost_minor) AS unit_cost_minor
          FROM purchase_items pi JOIN purchases p ON p.id = pi.purchase_id
-      WHERE pi.product_id = ? ORDER BY p.created_at DESC, pi.rowid DESC LIMIT 1`,
+         LEFT JOIN (SELECT purchase_item_id,corrected_product_id FROM purchase_item_product_corrections c
+           WHERE purchase_revision=(SELECT MAX(c2.purchase_revision) FROM purchase_item_product_corrections c2 WHERE c2.purchase_item_id=c.purchase_item_id)) pc ON pc.purchase_item_id=pi.id
+      WHERE COALESCE(pc.corrected_product_id,pi.product_id) = ? AND p.cancelled_at IS NULL
+      ORDER BY p.created_at DESC, pi.rowid DESC LIMIT 1`,
       )
       .get(productId) as Row | undefined;
     return purchase
@@ -2034,7 +2051,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   private snapshotOrderCosts(orderId: string) {
     const items = this.db
       .prepare(
-        "SELECT id, product_id, quantity FROM order_items WHERE order_id = ?",
+        "SELECT id, product_id, quantity, combo_components_json FROM order_items WHERE order_id = ?",
       )
       .all(orderId) as Row[];
     const halves = this.db.prepare(
@@ -2053,7 +2070,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         unitCostMinor: number | null;
         source: "MANUAL" | "PURCHASE" | "UNKNOWN" | "HALVES";
       };
-      if (item.product_id)
+      const combo = item.combo_components_json == null ? null : JSON.parse(String(item.combo_components_json)) as Array<{productId:string;quantity:number}>;
+      if (combo) {
+        const costs = combo.map((part) => ({ cost: this.currentProductCost(part.productId).unitCostMinor, quantity: part.quantity }));
+        cost = { unitCostMinor: costs.every((part) => part.cost != null) ? costs.reduce((sum, part) => sum + part.cost! * part.quantity, 0) : null, source: "MANUAL" };
+      } else if (item.product_id)
         cost = this.currentProductCost(String(item.product_id));
       else {
         const parts = halves.all(item.id) as Row[];
@@ -2627,7 +2648,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               .prepare("SELECT * FROM order_items WHERE order_id = ?")
               .all(orderId) as Row[];
             for (const item of rows) {
-              if (item.product_id) {
+              if (item.product_id && item.combo_components_json) {
+                const components = JSON.parse(String(item.combo_components_json)) as Array<{ productId: string; nameSnapshot: string; quantity: number }>;
+                for (const component of components) {
+                  const required = Number(item.quantity) * component.quantity * 1000;
+                  const p = this.db.prepare("SELECT stock_minor FROM products WHERE id=?").get(component.productId) as Row;
+                  if (p.stock_minor != null && Number(p.stock_minor) < required) throw new Error(`Stock insuficiente para ${component.nameSnapshot}.`);
+                  this.db.prepare("UPDATE products SET stock_minor=stock_minor-?,updated_at=? WHERE id=? AND stock_minor IS NOT NULL").run(required,timestamp,component.productId);
+                }
+              } else if (item.product_id) {
                 const product = this.db
                   .prepare(
                     "SELECT name, stock_minor FROM products WHERE id = ?",
@@ -2734,6 +2763,88 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return row;
   }
 
+  configureProductCombo(input: ConfigureProductComboInput): ProductDto {
+    assertPermission(this.currentUser().permissions, "prices.bulk_update");
+    const authorizer = this.authorizePin(input.authorizerPin, "prices.bulk_update");
+    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "configureProductCombo", undefined, input, () => {
+      const product = requireRow(this.db.prepare("SELECT p.*,c.active AS category_active FROM products p JOIN categories c ON c.id=p.category_id WHERE p.id = ?").get(input.productId) as Row | undefined, "El producto no existe.");
+      if (!product.category_active) throw new Error("No se puede configurar un combo en una categoría inactiva.");
+      if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+      if (input.definition) {
+        if (product.stock_minor != null) throw new Error("Quitá el control de stock antes de configurar el combo.");
+        const all = this.db.prepare("SELECT id, parent_product_id, combo_definition_json FROM products").all() as Row[];
+        const productDtos = all.map((p) => ({ id: String(p.id), parentProductId: p.parent_product_id == null ? null : String(p.parent_product_id), comboDefinition: p.combo_definition_json ? JSON.parse(String(p.combo_definition_json)) : null }));
+        assertComboDefinition(input.definition, input.productId, productDtos);
+        const configuredIds = input.definition.slots.flatMap((slot) => slot.productIds);
+        const activeIds = new Set((this.db.prepare("SELECT p.id FROM products p JOIN categories c ON c.id=p.category_id WHERE p.active=1 AND c.active=1 AND p.combo_definition_json IS NULL").all() as Row[]).map((row) => String(row.id)));
+        if (configuredIds.some((id) => !activeIds.has(id))) throw new Error("Las opciones solo pueden incluir productos activos que no sean combos.");
+        if (product.parent_product_id) throw new Error("Una variante no puede configurarse como combo.");
+        const used = all.some((p) => p.combo_definition_json && (JSON.parse(String(p.combo_definition_json)).slots as Array<{ productIds: string[] }>).some((s) => s.productIds.includes(input.productId)));
+        if (used) throw new Error("Un producto usado en un combo no puede convertirse en combo.");
+      }
+      this.db.prepare("UPDATE products SET combo_definition_json = ?, updated_at = ? WHERE id = ?").run(input.definition ? JSON.stringify(input.definition) : null, nowIso(), input.productId);
+      this.audit({ entityType: "PRODUCT", entityId: input.productId, action: "PRODUCT_COMBO_CONFIGURED", permission: "prices.bulk_update", reason: input.reason.trim(), before: { comboDefinition: product.combo_definition_json ? JSON.parse(String(product.combo_definition_json)) : null }, after: { comboDefinition: input.definition }, authorizerUserId: String(authorizer.id) });
+      return this.listProducts().find((p) => p.id === input.productId)!;
+    });
+  }
+
+  repeatOrder(input: RepeatOrderInput): OrderDto {
+    assertPermission(this.currentUser().permissions, "orders.create");
+    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "repeatOrder", undefined, input, () => {
+      const order = populateRepeatedOrder(this, input);
+      this.audit({ entityType: "ORDER", entityId: order.id, action: "ORDER_REPEATED", after: { sourceOrderId: input.sourceOrderId } });
+      return order;
+    });
+  }
+
+  addComboItem(input: AddComboItemInput): OrderDto {
+    assertPermission(this.currentUser().permissions, "orders.edit");
+    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "addComboItem", undefined, input, () => {
+      const order = this.editableOrder(input.orderId);
+      const combo = requireRow(this.db.prepare("SELECT p.*, c.name AS category_name, c.active AS category_active FROM products p JOIN categories c ON c.id=p.category_id WHERE p.id=? AND p.active=1 AND c.active=1").get(input.comboProductId) as Row | undefined, "El combo no existe, está inactivo o su categoría está inactiva.");
+      if (!combo.combo_definition_json) throw new Error("El producto no está configurado como combo.");
+      if (combo.parent_product_id) throw new Error("Una variante no puede ser combo.");
+      const definition = JSON.parse(String(combo.combo_definition_json)) as import("@gastronomy/contracts").ComboDefinitionDto;
+      const quantity = input.quantity ?? 1;
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) throw new Error("La cantidad debe ser de 1 a 99.");
+      if (input.selections.length !== definition.slots.length || new Set(input.selections.map((s) => s.slotId)).size !== input.selections.length) throw new Error("Seleccioná una opción válida para cada grupo del combo.");
+      const priceCode = this.priceListCodeForOrder(String(order.type) as OrderDto["type"]);
+      const price = requireRow(this.db.prepare("SELECT pp.amount_minor, pp.price_list_id FROM product_prices pp JOIN price_lists pl ON pl.id=pp.price_list_id WHERE pp.product_id=? AND pl.code=?").get(input.comboProductId, priceCode) as Row | undefined, "El combo no tiene precio para esta lista.");
+      const components: import("@gastronomy/contracts").OrderComboComponentDto[] = [];
+      for (const slot of definition.slots) {
+        const selection = input.selections.find((s) => s.slotId === slot.id);
+        if (!selection || !slot.productIds.includes(selection.productId)) throw new Error(`Selección inválida para ${slot.name}.`);
+        const p = requireRow(this.db.prepare("SELECT id,name,active,parent_product_id,combo_definition_json FROM products WHERE id=?").get(selection.productId) as Row | undefined, "El componente no existe.");
+        if (!p.active || p.combo_definition_json) throw new Error("Solo se pueden elegir productos activos que no sean combos.");
+        const modifiers: import("@gastronomy/contracts").OrderComboComponentDto["modifiers"] = [];
+        for (const modId of selection.modifierIds ?? []) {
+          if (new Set(selection.modifierIds ?? []).size !== (selection.modifierIds ?? []).length) throw new Error("No se pueden repetir adicionales.");
+          const mod = requireRow(this.db.prepare("SELECT m.id,m.name,m.price_minor FROM modifiers m WHERE m.id=? AND m.active=1").get(modId) as Row | undefined, "El adicional no existe o está inactivo.");
+          modifiers.push({ modifierId: String(mod.id), nameSnapshot: String(mod.name), unitPriceMinorSnapshot: Number(mod.price_minor) });
+        }
+        components.push({ slotId: slot.id, slotName: slot.name, productId: String(p.id), nameSnapshot: String(p.name), quantity: slot.quantity, modifiers });
+      }
+      const unitPrice = calculateComboPrice(Number(price.amount_minor), components);
+      assertComboLineAmount(unitPrice, quantity, Number(order.subtotal_minor), Number(order.delivery_fee_minor));
+      if (String(order.lifecycle_status) === "CONFIRMED" && this.getSettings().stockEnabled) {
+        for (const component of components) {
+          const required = quantity * component.quantity * 1000;
+          const stock = this.db.prepare("SELECT stock_minor FROM products WHERE id=?").get(component.productId) as Row;
+          if (stock.stock_minor != null && Number(stock.stock_minor) < required) throw new Error(`Stock insuficiente para ${component.nameSnapshot}.`);
+          this.db.prepare("UPDATE products SET stock_minor=stock_minor-?,updated_at=? WHERE id=? AND stock_minor IS NOT NULL").run(required,nowIso(),component.productId);
+        }
+      }
+      const timestamp=nowIso(), itemId=randomUUID();
+      const sortOrder=Number((this.db.prepare("SELECT COALESCE(MAX(sort_order),0)+1 AS next FROM order_items WHERE order_id=?").get(input.orderId) as Row).next);
+      this.db.prepare(`INSERT INTO order_items(id,order_id,product_id,product_name_snapshot,category_name_snapshot,quantity,unit_price_minor_snapshot,price_list_id,notes,sort_order,combo_components_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(itemId,input.orderId,input.comboProductId,combo.name,combo.category_name,quantity,unitPrice,price.price_list_id,input.notes?.trim()||null,sortOrder,JSON.stringify(components),timestamp,timestamp);
+      this.recalculateOrder(input.orderId);
+      if (String(order.lifecycle_status) === "CONFIRMED") this.snapshotOrderCosts(input.orderId);
+      this.audit({ entityType: "ORDER", entityId: input.orderId, action: "ORDER_COMBO_ADDED", after: { itemId, comboProductId: input.comboProductId, quantity } });
+      this.event("Order", input.orderId, "ComboAdded", { itemId, productId: input.comboProductId, quantity });
+      return this.getOrder(input.orderId);
+    });
+  }
+
   addOrderItem(input: AddOrderItemInput): OrderDto {
     const run = this.db.transaction(() => {
       const order = this.editableOrder(input.orderId);
@@ -2746,6 +2857,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           .get(input.productId) as Row | undefined,
         "El producto no existe o está inactivo.",
       );
+      if (product.combo_definition_json) throw new Error("Los combos deben agregarse con addComboItem.");
       const code = this.priceListCodeForOrder(
         String(order.type) as OrderDto["type"],
       );
@@ -2902,6 +3014,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         throw new Error("La cantidad debe ser mayor que cero.");
       }
       const oldQty = Number(item.quantity);
+      if (item.combo_components_json) {
+        const before = this.getOrder(input.orderId);
+        const current = before.items.find((row) => row.id === input.itemId)!;
+        const unit = current.unitPriceMinorSnapshot + current.modifiers.reduce((sum, extra) => sum + extra.unitPriceMinorSnapshot, 0);
+        assertComboLineAmount(unit, newQty, before.subtotalMinor - current.lineTotalMinor, before.deliveryFeeMinor);
+      }
       if (newQty === oldQty) {
         return this.getOrder(input.orderId);
       }
@@ -2912,7 +3030,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         String(order.lifecycle_status) === "CONFIRMED" &&
         this.getSettings().stockEnabled
       ) {
-        if (item.product_id) {
+        if (item.product_id && item.combo_components_json) {
+          for (const component of JSON.parse(String(item.combo_components_json)) as Array<{productId:string;nameSnapshot:string;quantity:number}>) {
+            const product = requireRow(this.db.prepare("SELECT stock_minor FROM products WHERE id=?").get(component.productId) as Row | undefined, "El componente no existe.");
+            const amount = delta * component.quantity * 1000;
+            if (amount > 0 && product.stock_minor != null && Number(product.stock_minor) < amount) throw new Error(`Stock insuficiente para ${component.nameSnapshot}.`);
+            if (product.stock_minor != null) this.db.prepare("UPDATE products SET stock_minor=stock_minor-?,updated_at=? WHERE id=?").run(amount,timestamp,component.productId);
+          }
+        } else if (item.product_id) {
           const product = requireRow(
             this.db
               .prepare("SELECT stock_minor, name FROM products WHERE id = ?")
@@ -3044,12 +3169,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput): OrderDto {
     const run = this.db.transaction(() => {
+      if (!(this.getSettings().halfAndHalfEnabled ?? true))
+        throw new Error("La opción de pizzas mitad y mitad está deshabilitada.");
       const order = this.editableOrder(input.orderId);
       const code = this.priceListCodeForOrder(
         String(order.type) as OrderDto["type"],
       );
+      const comboFlags = this.db.prepare("SELECT combo_definition_json FROM products WHERE id IN (?,?)").all(input.firstProductId, input.secondProductId) as Row[];
+      if (comboFlags.some((row) => row.combo_definition_json != null)) throw new Error("Los combos no pueden agregarse como mitad y mitad.");
       const productStatement = this.db.prepare(
-        `SELECT p.id, p.name, c.name AS category_name, pp.amount_minor, pp.price_list_id FROM products p
+        `SELECT p.id, p.name, p.combo_definition_json, c.name AS category_name, pp.amount_minor, pp.price_list_id FROM products p
          JOIN categories c ON c.id = p.category_id
          JOIN product_prices pp ON pp.product_id = p.id
          JOIN price_lists pl ON pl.id = pp.price_list_id
@@ -3063,6 +3192,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         productStatement.get(input.secondProductId, code) as Row | undefined,
         "La segunda variedad no tiene un precio válido.",
       );
+      if (first.combo_definition_json || second.combo_definition_json) throw new Error("Los combos no pueden agregarse como mitad y mitad.");
       const settings = this.getSettings();
       const basePrice = calculateHalfAndHalfBase(
         Number(first.amount_minor),
@@ -3185,7 +3315,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         String(order.lifecycle_status) === "CONFIRMED" &&
         this.getSettings().stockEnabled
       ) {
-        if (item.product_id) {
+        if (item.product_id && item.combo_components_json) {
+          for (const component of JSON.parse(String(item.combo_components_json)) as Array<{productId:string;quantity:number}>) this.db.prepare("UPDATE products SET stock_minor=stock_minor+?,updated_at=? WHERE id=? AND stock_minor IS NOT NULL").run(Number(item.quantity)*component.quantity*1000,nowIso(),component.productId);
+        } else if (item.product_id) {
           this.db
             .prepare(
               "UPDATE products SET stock_minor = stock_minor + ?, updated_at = ? WHERE id = ? AND stock_minor IS NOT NULL",
@@ -4316,7 +4448,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           .prepare("SELECT * FROM order_items WHERE order_id = ?")
           .all(input.orderId) as Row[];
         for (const item of items) {
-          if (item.product_id) {
+          if (item.product_id && item.combo_components_json) {
+            for (const component of JSON.parse(String(item.combo_components_json)) as Array<{productId:string;quantity:number}>) this.db.prepare("UPDATE products SET stock_minor=stock_minor+?,updated_at=? WHERE id=? AND stock_minor IS NOT NULL").run(Number(item.quantity)*component.quantity*1000,nowIso(),component.productId);
+          } else if (item.product_id) {
             this.db
               .prepare(
                 "UPDATE products SET stock_minor = stock_minor + ?, updated_at = ? WHERE id = ? AND stock_minor IS NOT NULL",
@@ -5956,6 +6090,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         this.listProducts().find((product) => product.id === input.productId),
         "El producto no existe.",
       );
+      if (input.stockMinor != null && before.comboDefinition) throw new Error("Un combo no puede tener stock propio; configurá el inventario de sus componentes.");
       requireRow(
         this.db
           .prepare("SELECT id FROM categories WHERE id = ? AND active = 1")
@@ -6621,7 +6756,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       )
       .all(input.from, input.to) as Row[];
     const purchasesInPeriod = this.db.prepare(
-      "SELECT id,total_minor FROM purchases WHERE business_date(created_at) BETWEEN ? AND ?",
+      "SELECT id,total_minor FROM purchases WHERE cancelled_at IS NULL AND business_date(created_at) BETWEEN ? AND ?",
     ).all(input.from, input.to) as Row[];
     let purchasesTotal = 0n;
     const lineCorrections = this.db.prepare(`SELECT purchase_item_id,line_total_minor FROM (
@@ -7444,11 +7579,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       UNION ALL SELECT q.purchase_item_id,q.effective_line_total_minor AS line_total_minor,q.purchase_revision FROM purchase_item_quantity_corrections q
     ) WHERE purchase_item_id IN (SELECT id FROM purchase_items WHERE purchase_id=?)
       ORDER BY purchase_revision DESC`);
+    const latestProducts = this.db.prepare(`SELECT c.* FROM purchase_item_product_corrections c
+      JOIN (SELECT purchase_item_id,MAX(purchase_revision) revision FROM purchase_item_product_corrections GROUP BY purchase_item_id) latest
+      ON latest.purchase_item_id=c.purchase_item_id AND latest.revision=c.purchase_revision WHERE c.purchase_id=?`);
     return rows.map((row) => {
       const itemRows = items.all(row.id) as Row[];
       const costs = new Map((latestCosts.all(row.id) as Row[]).map((cost) => [String(cost.purchase_item_id), cost]));
       const quantities = new Map((latestQuantities.all(row.id) as Row[]).map((quantity) => [String(quantity.purchase_item_id), quantity]));
       const lines = new Map<string, Row>();
+      const products = new Map((latestProducts.all(row.id) as Row[]).map((entry) => [String(entry.purchase_item_id), entry]));
       for (const line of latestLines.all(row.id) as Row[])
         if (!lines.has(String(line.purchase_item_id))) lines.set(String(line.purchase_item_id), line);
       let effectiveTotal = 0n;
@@ -7465,7 +7604,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           if (effectiveTotal > BigInt(Number.MAX_SAFE_INTEGER) || lineTotal > BigInt(Number.MAX_SAFE_INTEGER))
             throw new Error("El total corregido excede el límite seguro permitido.");
         }
-        if (!correction && !quantityCorrection) return {
+        if (!correction && !quantityCorrection && !products.has(String(item.id))) return {
           id: String(item.id), productId: String(item.product_id), productName: String(item.product_name_snapshot),
           quantityMinor: Number(item.quantity_minor), unitCostMinor: Number(item.unit_cost_minor), lineTotalMinor: Number(item.line_total_minor),
           stockBeforeMinor: Number(item.stock_before_minor), stockAfterMinor: Number(item.stock_after_minor),
@@ -7477,6 +7616,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           ...(quantityCorrection ? { effectiveQuantityMinor: Number(quantityCorrection.effective_quantity_minor) } : {}),
           ...(correction ? { effectiveUnitCostMinor: Number(correction.corrected_unit_cost_minor) } : {}),
           ...(lineCorrection ? { effectiveLineTotalMinor: Number(lineTotal) } : {}),
+          ...(products.has(String(item.id)) ? { effectiveProductId: String(products.get(String(item.id))!.corrected_product_id), effectiveProductName: String(products.get(String(item.id))!.corrected_product_name) } : {}),
         };
       });
       return {
@@ -7490,6 +7630,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       createdByUserId: String(row.created_by_user_id),
       createdByUserName: String(row.created_by_user_name),
       createdAt: String(row.created_at),
+      cancelledAt: row.cancelled_at == null ? null : String(row.cancelled_at),
+      cancellationReason: row.cancellation_reason == null ? null : String(row.cancellation_reason),
       ...(changed ? { effectiveTotalMinor: Number(effectiveTotal) } : {}),
       items: projectedItems,
     };
@@ -7529,7 +7671,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             timestamp,
           );
         const productStatement = this.db.prepare(
-          "SELECT id, name, stock_minor FROM products WHERE id = ? AND active = 1",
+            "SELECT id, name, stock_minor, combo_definition_json FROM products WHERE id = ? AND active = 1",
         );
         const updateStock = this.db.prepare(
           "UPDATE products SET stock_minor = ?, updated_at = ? WHERE id = ?",
@@ -7554,6 +7696,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             productStatement.get(item.productId) as Row | undefined,
             "El producto no existe o está inactivo.",
           );
+            if (product.combo_definition_json)
+              throw new Error("Registrá la compra de los componentes, no del combo.");
           const stockBeforeMinor = Number(product.stock_minor ?? 0);
           const stockAfterMinor = stockBeforeMinor + item.quantityMinor;
           const lineTotalMinor = Math.round(
@@ -7605,6 +7749,53 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     );
   }
 
+  cancelPurchase(input: CancelPurchaseInput): PurchaseDto {
+    assertPermission(this.currentUser().permissions, "purchases.manage");
+    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "cancelPurchase", undefined, { operation: "cancelPurchase", input }, () => {
+      const authorizer = this.authorizePin(input.authorizerPin, "purchases.manage");
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || !boundedText(input.reason, 500)) throw new Error("Ingresá un motivo válido.");
+      const before = requireRow(this.listPurchases().find((p) => p.id === input.purchaseId), "La compra no existe.");
+      if (before.revision !== input.expectedRevision) throw new Error("La compra fue modificada; actualizá antes de anularla.");
+      if (before.cancelledAt) throw new Error("La compra ya está anulada.");
+      const timestamp = nowIso(); const revision = input.expectedRevision + 1;
+      const updated = this.db.prepare("UPDATE purchases SET cancelled_at=?,cancellation_reason=?,revision=? WHERE id=? AND revision=? AND cancelled_at IS NULL")
+        .run(timestamp, input.reason.trim(), revision, input.purchaseId, input.expectedRevision);
+      if (updated.changes !== 1) throw new Error("La compra fue modificada; actualizá antes de anularla.");
+      this.db.prepare(`INSERT INTO purchase_cancellations(id,purchase_id,purchase_revision,reason,operator_user_id,authorizer_user_id,created_at) VALUES (?,?,?,?,?,?,?)`)
+        .run(randomUUID(), input.purchaseId, revision, input.reason.trim(), String(this.currentUser().id), String(authorizer.id), timestamp);
+      const after = requireRow(this.listPurchases().find((p) => p.id === input.purchaseId), "No se pudo leer la compra anulada.");
+      this.audit({ entityType: "PURCHASE", entityId: input.purchaseId, action: "PURCHASE_CANCELLED", permission: "purchases.manage", reason: input.reason.trim(), before, after, authorizerUserId: String(authorizer.id) });
+      return after;
+    });
+  }
+
+  correctPurchaseItemProduct(input: CorrectPurchaseItemProductInput): PurchaseDto {
+    assertPermission(this.currentUser().permissions, "purchases.manage");
+    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "correctPurchaseItemProduct", undefined, { operation: "correctPurchaseItemProduct", input }, () => {
+      const authorizer = this.authorizePin(input.authorizerPin, "purchases.manage");
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || !boundedText(input.reason, 500)) throw new Error("Ingresá un motivo válido.");
+      const before = requireRow(this.listPurchases().find((p) => p.id === input.purchaseId), "La compra no existe.");
+      if (before.revision !== input.expectedRevision) throw new Error("La compra fue modificada; actualizá antes de corregirla.");
+      if (before.cancelledAt) throw new Error("No se puede corregir una compra anulada.");
+      const item = this.db.prepare("SELECT * FROM purchase_items WHERE id=? AND purchase_id=?").get(input.purchaseItemId, input.purchaseId) as Row | undefined;
+      if (!item) throw new Error("El artículo no existe en esta compra.");
+      const product = this.db.prepare("SELECT id,name FROM products WHERE id=? AND active=1").get(input.productId) as Row | undefined;
+      if (!product) throw new Error("El producto elegido no existe o está inactivo.");
+      const current = this.db.prepare(`SELECT corrected_product_id FROM purchase_item_product_corrections WHERE purchase_item_id=? ORDER BY purchase_revision DESC LIMIT 1`).get(input.purchaseItemId) as Row | undefined;
+      const previousId = String(current?.corrected_product_id ?? item.product_id);
+      if (previousId === input.productId) throw new Error("El producto elegido ya es el vigente.");
+      const revision = input.expectedRevision + 1;
+      const updated = this.db.prepare("UPDATE purchases SET revision=? WHERE id=? AND revision=? AND cancelled_at IS NULL").run(revision, input.purchaseId, input.expectedRevision);
+      if (updated.changes !== 1) throw new Error("La compra fue modificada; actualizá antes de corregirla.");
+      const priorName = this.db.prepare("SELECT name FROM products WHERE id=?").get(previousId) as Row | undefined;
+      this.db.prepare(`INSERT INTO purchase_item_product_corrections(id,purchase_id,purchase_item_id,previous_product_id,previous_product_name,corrected_product_id,corrected_product_name,purchase_revision,reason,operator_user_id,authorizer_user_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(randomUUID(), input.purchaseId, input.purchaseItemId, previousId, String(priorName?.name ?? item.product_name_snapshot), input.productId, String(product.name), revision, input.reason.trim(), String(this.currentUser().id), String(authorizer.id), nowIso());
+      const after = requireRow(this.listPurchases().find((p) => p.id === input.purchaseId), "No se pudo leer la compra corregida.");
+      this.audit({ entityType: "PURCHASE", entityId: input.purchaseId, action: "PURCHASE_ITEM_PRODUCT_CORRECTED", permission: "purchases.manage", reason: input.reason.trim(), before, after, authorizerUserId: String(authorizer.id) });
+      return after;
+    });
+  }
+
   correctPurchaseItemCost(input: CorrectPurchaseItemCostInput): PurchaseDto {
     assertPermission(this.currentUser().permissions, "purchases.manage");
     return this.idempotentTransaction(input.idempotencyKey, input.terminalId,
@@ -7617,6 +7808,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           throw new Error("El costo unitario no es válido.");
         if (!boundedText(input.reason, 500)) throw new Error("Ingresá un motivo válido (hasta 500 caracteres).");
         const before = requireRow(this.listPurchases().find((p) => p.id === input.purchaseId), "La compra no existe.");
+        if (before.cancelledAt) throw new Error("No se puede corregir una compra anulada.");
         if (before.revision !== input.expectedRevision)
           throw new Error("La compra fue modificada; actualizá la información antes de corregirla.");
         const item = this.db.prepare("SELECT * FROM purchase_items WHERE id=? AND purchase_id=?")
@@ -7670,6 +7862,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           throw new Error("La cantidad corregida debe ser un entero positivo seguro.");
         if (!boundedText(input.reason, 500)) throw new Error("Ingresá un motivo válido (hasta 500 caracteres).");
         const before = requireRow(this.listPurchases().find((p) => p.id === input.purchaseId), "La compra no existe.");
+        if (before.cancelledAt) throw new Error("No se puede corregir una compra anulada.");
         if (before.revision !== input.expectedRevision)
           throw new Error("La compra fue modificada; actualizá la información antes de corregirla.");
         const item = this.db.prepare("SELECT * FROM purchase_items WHERE id=? AND purchase_id=?")
@@ -7729,6 +7922,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           throw new Error("Completá datos de compra válidos.");
         const before = requireRow(this.listPurchases().find((purchase) => purchase.id === input.purchaseId),
           "La compra no existe.");
+        if (before.cancelledAt) throw new Error("No se puede corregir una compra anulada.");
         if (before.revision !== input.expectedRevision)
           throw new Error("La compra fue modificada; actualizá la información antes de corregirla.");
         const invoiceNumber = input.invoiceNumber === undefined ? before.invoiceNumber : input.invoiceNumber?.trim() || null;
@@ -7760,6 +7954,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           .get(input.productId) as Row | undefined,
         "El producto no existe.",
       );
+      if (product.combo_definition_json) throw new Error("Un combo no puede tener stock propio; ajustá el stock de sus componentes.");
       this.db
         .prepare(
           "UPDATE products SET stock_minor = ?, updated_at = ? WHERE id = ?",

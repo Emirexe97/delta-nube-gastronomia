@@ -23,7 +23,12 @@ export interface LicenseStatusDto {
   lastVerifiedAt: IsoDateTime | null;
   verificationOverdue: boolean;
   message: string;
-  enrollment?: { requestId: string | null; status: "PENDING" | "APPROVED" | "REJECTED" | null; keyFingerprint: string | null; businessName?: string };
+  enrollment?: {
+    requestId: string | null;
+    status: "PENDING" | "APPROVED" | "REJECTED" | null;
+    keyFingerprint: string | null;
+    businessName?: string;
+  };
 }
 
 export const AUDIT_FILTER_ACTIONS = [
@@ -50,11 +55,16 @@ export const AUDIT_FILTER_ACTIONS = [
   "CATEGORY_DELETED",
   "PRODUCT_DELETED",
   "PRODUCT_UPDATED",
+  "PRODUCT_COMBO_CONFIGURED",
+  "ORDER_COMBO_ADDED",
+  "ORDER_REPEATED",
   "PRODUCTS_BULK_UPDATED",
   "STOCK_ADJUSTED",
   "PURCHASE_METADATA_CORRECTED",
   "PURCHASE_ITEM_QUANTITY_CORRECTED",
   "PURCHASE_ITEM_COST_CORRECTED",
+  "PURCHASE_CANCELLED",
+  "PURCHASE_ITEM_PRODUCT_CORRECTED",
   "USER_CREATED",
   "DRIVER_CREATED",
   "USER_UPDATED",
@@ -153,6 +163,8 @@ export interface AppSettingsDto {
   deliverySettlementEnabled: boolean;
   /** Whether delivery fees belong to the driver; absent legacy values mean true. */
   deliveryFeeBelongsToDriver?: boolean;
+  /** Whether new half-and-half pizzas can be added; absent legacy values mean true. */
+  halfAndHalfEnabled?: boolean;
   deliveryDriverPaymentMode?: "ON_ORDER_PAYMENT" | "ACCUMULATED";
   enabledOrderStatuses: OrderOperationalStatus[];
   quickDelayMinutes: number[];
@@ -206,6 +218,46 @@ export interface ProductDto {
   stockCriticalMinor: number | null;
   imageDataUrl: string | null;
   prices: ProductPriceDto[];
+  comboDefinition?: ComboDefinitionDto | null;
+}
+
+export interface ComboDefinitionDto {
+  slots: Array<{ id: Id; name: string; quantity: number; productIds: Id[] }>;
+}
+
+export interface OrderComboComponentDto {
+  slotId: Id;
+  slotName: string;
+  productId: Id;
+  nameSnapshot: string;
+  quantity: number;
+  modifiers: Array<{
+    modifierId: Id;
+    nameSnapshot: string;
+    unitPriceMinorSnapshot: MoneyMinor;
+  }>;
+}
+
+export interface ConfigureProductComboInput extends IdempotentRequest {
+  productId: Id;
+  definition: ComboDefinitionDto | null;
+  reason: string;
+  authorizerPin: string;
+}
+
+export interface AddComboItemInput extends IdempotentRequest {
+  orderId: Id;
+  comboProductId: Id;
+  selections: Array<{ slotId: Id; productId: Id; modifierIds?: Id[] }>;
+  quantity?: number;
+  notes?: string | null;
+}
+
+export interface RepeatOrderInput extends IdempotentRequest {
+  sourceOrderId: Id;
+  customerId: Id;
+  type: "TAKEAWAY" | "DELIVERY";
+  customerAddressId?: Id | null;
 }
 
 export interface ModifierDto {
@@ -377,6 +429,7 @@ export interface FloorPlanShapeDto {
 
 export interface OrderItemModifierDto {
   id: Id;
+  modifierId?: Id | null;
   nameSnapshot: string;
   unitPriceMinorSnapshot: MoneyMinor;
   scope: ModifierScope;
@@ -399,6 +452,7 @@ export interface OrderItemDto {
   notes: string | null;
   halves: OrderItemHalfDto[];
   modifiers: OrderItemModifierDto[];
+  comboComponents?: OrderComboComponentDto[];
   lineTotalMinor: MoneyMinor;
 }
 
@@ -874,6 +928,8 @@ export interface PurchaseItemDto {
   effectiveQuantityMinor?: number;
   effectiveUnitCostMinor?: MoneyMinor;
   effectiveLineTotalMinor?: MoneyMinor;
+  effectiveProductId?: Id;
+  effectiveProductName?: string;
 }
 
 export interface PurchaseDto {
@@ -888,6 +944,24 @@ export interface PurchaseDto {
   createdAt: IsoDateTime;
   items: PurchaseItemDto[];
   effectiveTotalMinor?: MoneyMinor;
+  cancelledAt?: IsoDateTime | null;
+  cancellationReason?: string | null;
+}
+
+export interface CancelPurchaseInput extends IdempotentRequest {
+  purchaseId: Id;
+  expectedRevision: number;
+  reason: string;
+  authorizerPin: string;
+}
+
+export interface CorrectPurchaseItemProductInput extends IdempotentRequest {
+  purchaseId: Id;
+  purchaseItemId: Id;
+  expectedRevision: number;
+  productId: Id;
+  reason: string;
+  authorizerPin: string;
 }
 
 export interface CorrectPurchaseItemQuantityInput extends IdempotentRequest {
@@ -1211,9 +1285,22 @@ export interface SettleDeliveryInput extends IdempotentRequest {
   authorizerPin: string;
 }
 
+export interface AppUpdateStatusDto {
+  state: "DISABLED" | "IDLE" | "CHECKING" | "CURRENT" | "DOWNLOADING" | "READY" | "INSTALLING" | "ERROR";
+  currentVersion: string;
+  availableVersion: string | null;
+  progress: number | null;
+  message: string;
+}
+
 export interface DesktopApi {
+  getAppUpdateStatus(): Promise<AppUpdateStatusDto>;
+  checkAppUpdate(): Promise<AppUpdateStatusDto>;
+  installAppUpdate(): Promise<AppUpdateStatusDto>;
   getLicenseStatus(): Promise<LicenseStatusDto>;
-  requestLicenseAccess(input: { businessName: string }): Promise<LicenseStatusDto>;
+  requestLicenseAccess(input: {
+    businessName: string;
+  }): Promise<LicenseStatusDto>;
   activateLicense(input: { code: string }): Promise<LicenseStatusDto>;
   refreshLicense(): Promise<LicenseStatusDto>;
   bootstrap(): Promise<BootstrapDto>;
@@ -1234,6 +1321,7 @@ export interface DesktopApi {
   ): Promise<CashSessionReportDto>;
   markOrderServed(input: MarkOrderServedInput): Promise<OrderDto>;
   createOrder(input: CreateOrderInput): Promise<OrderDto>;
+  repeatOrder(input: RepeatOrderInput): Promise<OrderDto>;
   updateDraftOrder(input: UpdateDraftOrderInput): Promise<OrderDto>;
   confirmOrder(input: ConfirmOrderInput): Promise<OrderDto>;
   discardDraftOrder(input: { orderId: Id }): Promise<{ discarded: boolean }>;
@@ -1243,6 +1331,7 @@ export interface DesktopApi {
   ): Promise<OrderDto>;
   updateOrderItemNotes(input: UpdateOrderItemNotesInput): Promise<OrderDto>;
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput): Promise<OrderDto>;
+  addComboItem(input: AddComboItemInput): Promise<OrderDto>;
   removeOrderItem(input: { orderId: Id; itemId: Id }): Promise<OrderDto>;
   addOrderItemModifier(input: {
     orderId: Id;
@@ -1358,6 +1447,7 @@ export interface DesktopApi {
     }>;
   }): Promise<ProductDto>;
   updateProduct(input: UpdateProductInput): Promise<ProductDto>;
+  configureProductCombo(input: ConfigureProductComboInput): Promise<ProductDto>;
   deleteProduct(input: {
     productId: Id;
     reason: string;
@@ -1371,6 +1461,10 @@ export interface DesktopApi {
   }): Promise<ModifierDto>;
   listPurchases(): Promise<PurchaseDto[]>;
   createPurchase(input: CreatePurchaseInput): Promise<PurchaseDto>;
+  cancelPurchase(input: CancelPurchaseInput): Promise<PurchaseDto>;
+  correctPurchaseItemProduct(
+    input: CorrectPurchaseItemProductInput,
+  ): Promise<PurchaseDto>;
   correctPurchaseMetadata(
     input: CorrectPurchaseMetadataInput,
   ): Promise<PurchaseDto>;

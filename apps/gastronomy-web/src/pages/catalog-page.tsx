@@ -31,6 +31,7 @@ import {
   cn,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
+import { ComboConfigModal } from "../components/combo-config-modal";
 import { convertProductImageToWebp } from "../product-image";
 import {
   auditActionLabel,
@@ -186,6 +187,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   >(null);
   const [modifierOpen, setModifierOpen] = useState(false);
   const [stockProduct, setStockProduct] = useState<ProductDto | null>(null);
+  const [comboProduct, setComboProduct] = useState<ProductDto | null>(null);
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(
     new Set(),
   );
@@ -816,6 +818,15 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                 <SlidersHorizontal size={14} />
                                 Ajustar
                               </button>
+                              {(data.currentUser.permissions.includes("prices.bulk_update") || data.currentUser.permissions.includes("*")) && <button
+                                type="button"
+                                aria-label={`Configurar combo ${parent.name}`}
+                                title="Configurar o quitar opciones de combo"
+                                onClick={() => setComboProduct(parent)}
+                                className="focus-ring inline-flex h-8 items-center rounded-lg border border-amber-200 px-2.5 text-xs font-bold text-amber-800 transition hover:bg-amber-50"
+                              >
+                                {parent.comboDefinition ? "Editar combo" : "Configurar combo"}
+                              </button>}
                               <button
                                 type="button"
                                 aria-label={`Editar ${parent.name}`}
@@ -1092,6 +1103,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         product={stockProduct}
         onClose={() => setStockProduct(null)}
       />
+      <ComboConfigModal open={Boolean(comboProduct)} product={comboProduct} products={data.products} onClose={() => setComboProduct(null)} />
       <BulkProductsModal
         open={bulkOpen}
         products={selectedProducts}

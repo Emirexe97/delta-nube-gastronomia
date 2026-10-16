@@ -16,6 +16,7 @@ export const demoSettings: AppSettingsDto = {
   businessName: "Delta Nube · Local demo",
   currency: "ARS",
   halfAndHalfPricingMode: "HALF_PLUS_HALF",
+  halfAndHalfEnabled: true,
   stockEnabled: true,
   maxConcurrentCashSessions: 1,
   allowCloseWithPendingOrders: false,
