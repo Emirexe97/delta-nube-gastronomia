@@ -34,8 +34,11 @@ Respaldo consistente posterior a la regularización y previo a preparar 0.1.25: 
 - Cliente instalado localmente: 0.1.21. Caja 32 está abierta; se solicitó cerrarla mediante arqueo real antes de actualizar. No actualizar ni declarar la instalación 0.1.25 aprobada hasta completar ese paso y validar el instalador en el entorno destinatario.
 - El usuario confirmó que la caja no puede cerrarse hasta terminar el turno. No se cerró ni se instaló sobre el programa operativo.
 
-## Distribución pendiente
+## Artefactos y distribución
 
+- Windows NSIS x64 generado: `apps/desktop-shell/release/Delta Nube Gastronomía Setup 0.1.25.exe`, 97.919.857 bytes, SHA256 `3B20FE3AE65A243684B58ADC4F490C9AC1BDB2BECD98AB3B97CD514F68C77024`. Versión del instalador 0.1.25; Authenticode `NotSigned`, apto para el procedimiento manual actual, no para activar el updater firmado.
+- Fuente publicada: `3d3766f05632afd6faa0bbfe223b00049b1ce879`. [CI Mac 38978872205](https://github.com/Emirexe97/delta-nube-gastronomia/actions/runs/38978872205): arm64 y x64 `success`; firma ad-hoc, SQLite/arquitectura, licencia ASAR y arranque del paquete verificados en macOS CI. Ambos descargados; tamaño y SHA256 de los ZIP coinciden con GitHub. No implica prueba física ni impresión Mac.
+- Carpeta Mac local: `C:\Users\Bonis\Documents\ChatGPT\Delta Nube Gastronomía\apps\desktop-shell\release\mac-build\run-38978872205`. Subcarpetas `arm64` y `x64`, con DMG 0.1.25 y metadatos del build. Hashes de DMG en `docs/MACOS_BUILD.md`.
 - macOS: el workflow manual `.github/workflows/build-macos.yml` produce DMG arm64/x64 en GitHub Actions. Publicar únicamente la fuente de esta entrega y ejecutar desde ese commit; el artefacto anterior 0.1.24 no sustituye la compilación 0.1.25.
 - Updater Windows: `apps/desktop-shell/updates-config.json` continúa con `enabled: false`; no hay feed HTTPS ni certificado Authenticode configurados. Por tanto, no publicar ni habilitar actualización automática.
 - Licencia: faltan las credenciales del owner del panel y el `known_hosts` SSH de esta PC. No marcar una solicitud/aprobación de licencia como activa sin confirmación y acción en la autoridad correspondiente.
@@ -43,8 +46,8 @@ Respaldo consistente posterior a la regularización y previo a preparar 0.1.25: 
 
 ## Próximos pasos
 
-1. Completar la validación de release y registrar comandos/resultados exactos.
-2. Cerrar la caja 32 con arqueo real y realizar la actualización local cuando el instalador 0.1.25 esté disponible.
-3. Verificar instalación, flujos y persistencia; registrar modelo/OS, arquitectura, artefacto y SHA256.
-4. Sincronizar el commit autorizado que contiene 0.1.25 y solicitar el workflow Mac; guardar run, commit fuente, artefacto y hash.
+1. Cerrar la caja 32 con arqueo real al finalizar la noche y crear un respaldo consistente nuevo que incluya ese cierre. El respaldo de preparación no sustituye ese respaldo final.
+2. Instalar el NSIS 0.1.25 conservando el perfil operativo. No instalar durante el turno abierto.
+3. Solicitar/aprobar la habilitación del equipo desde la autoridad con el propietario, sin crear licencias duplicadas ni simular permisos locales.
+4. Verificar versión instalada, `canOperate=true`, arranque, datos y persistencia antes de registrar la instalación como aprobada para trabajar.
 5. Habilitar/publicar updater sólo tras configurar feed HTTPS y Authenticode y completar ensayo real N→N+1. Mantener la distribución Mac como instalador manual.

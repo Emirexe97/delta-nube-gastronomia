@@ -157,3 +157,20 @@ Conservar workaround Unicode NFD y firma ad-hoc0.1.23. La publicación no añade
 El panel productivo ya está desplegado, con respaldo previo/posterior recuperados en aislamiento. **Cliente:** cerrar la app anterior, reemplazar solamente la app en Aplicaciones con el DMG arm64; no eliminar perfil/datos. Configuración → Licencia → nombre Pitt Burgers → Solicitar habilitación. **Propietario:** entrar al panel, comparar huella y asociar explícitamente la licencia Pitt Burgers existente; luego verificar habilitación en el cliente. No necesita código. No confundir el estado activo de la autoridad con permiso ya recibido por la Mac.
 
 La firma continúa ad-hoc: macOS puede advertir/bloquear. Falta prueba en Mac física y notarización; no desactivar Gatekeeper globalmente como solución. El commit posterior sólo de evidencia no cambia la fuente del instalador ni vuelve a compilarlo.
+
+## Entrega manual 0.1.25 — 2026-10-16
+
+Corrección del cierre de caja: sólo controla rendiciones con saldo del turno actual, sin liquidar ni ocultar del historial las de otras cajas. Fuente `3d3766f05632afd6faa0bbfe223b00049b1ce879`, publicada con autorización explícita del usuario.
+
+[CI 38978872205](https://github.com/Emirexe97/delta-nube-gastronomia/actions/runs/38978872205) completado **success en arm64 y x64**. Ambos DMG pasaron firma ad-hoc estricta y helpers Unicode, arquitectura/firma SQLite, licencia ASAR y arranque del renderer empaquetado con perfil temporal aislado. El updater permanece deshabilitado; entrega Mac manual. No se activaron licencias en CI.
+
+Carpeta absoluta: `C:\Users\Bonis\Documents\ChatGPT\Delta Nube Gastronomía\apps\desktop-shell\release\mac-build\run-38978872205`.
+
+| Archivo local ignorado | Bytes | SHA256 |
+| --- | ---: | --- |
+| `arm64/Delta-Nube-Gastronomia-0.1.25-arm64.dmg` | 116547485 | `6581B533C7CBE5CB03906DBC425D19F11D264A8BC05832B8DC5D1A7827921035` |
+| `x64/Delta-Nube-Gastronomia-0.1.25-x64.dmg` | 140910389 | `DEC21461EE7DF2F5CEDFC69916662D18627B09837F592C70D3EB5F5071C2966F` |
+
+Artefactos GitHub `12079604698` (arm64) y `12080480909` (x64); los ZIP descargados coinciden exactamente en tamaño y SHA256 con los metadatos de GitHub. Los DMG sólo fueron renombrados localmente, sin alterar sus bytes. `build-metadata.json` local registra fuente, run y verificación de archivos.
+
+La validación CI no sustituye instalación e impresión en la Mac destinataria ni Developer ID/notarización. Para M1 usar `arm64`. Conservar perfil, base y licencia al reemplazar únicamente la aplicación. Evidencia de Windows y estado pendiente de instalación al final de turno: `docs/work-sessions/2026-10-16-release-0-1-25-rendiciones.md`.
