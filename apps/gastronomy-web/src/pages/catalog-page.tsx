@@ -123,6 +123,33 @@ export function buildCatalogProductGroups(
 
 export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [query, setQuery] = useState("");
+  // Prices and stock do not change when typing a search. Formatting every
+  // visible cell again would construct hundreds of locale formatters per key.
+  const productDisplay = useMemo(
+    () =>
+      new Map(
+        data.products.map((product) => [
+          product.id,
+          {
+            prices: {
+              SALON: formatMoney(
+                product.prices.find((price) => price.priceListCode === "SALON")
+                  ?.amountMinor ?? 0,
+              ),
+              OFF_PREMISE: formatMoney(
+                product.prices.find((price) => price.priceListCode === "TAKEAWAY")
+                  ?.amountMinor ?? 0,
+              ),
+            },
+            stock:
+              product.stockMinor == null
+                ? "Sin control"
+                : `${(product.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`,
+          },
+        ]),
+      ),
+    [data.products],
+  );
   const [searchParams, setSearchParams] = useSearchParams();
   const [categoryFilter, setCategoryFilter] = useState("");
   const [statusFilter, setStatusFilter] =
@@ -778,15 +805,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                           </td>
                           {visiblePriceListCodes.map((code) => (
                             <td key={code} className="text-right font-semibold">
-                              {formatMoney(
-                                parent.prices.find(
-                                  (price) =>
-                                    price.priceListCode ===
-                                    (code === "OFF_PREMISE"
-                                      ? "TAKEAWAY"
-                                      : code),
-                                )?.amountMinor ?? 0,
-                              )}
+                              {productDisplay.get(parent.id)!.prices[code]}
                             </td>
                           ))}
                           <td>
@@ -796,9 +815,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                               onClick={() => setStockProduct(parent)}
                               className="font-bold text-brand-700 hover:underline"
                             >
-                              {parent.stockMinor == null
-                                ? "Sin control"
-                                : `${(parent.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
+                              {productDisplay.get(parent.id)!.stock}
                             </button>
                           </td>
                           <td>
@@ -896,15 +913,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                     key={code}
                                     className="text-right text-xs font-semibold text-slate-700"
                                   >
-                                    {formatMoney(
-                                      variant.prices.find(
-                                        (price) =>
-                                          price.priceListCode ===
-                                          (code === "OFF_PREMISE"
-                                            ? "TAKEAWAY"
-                                            : code),
-                                      )?.amountMinor ?? 0,
-                                    )}
+                                    {productDisplay.get(variant.id)!.prices[code]}
                                   </td>
                                 ))}
                                 <td>
@@ -914,9 +923,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                     onClick={() => setStockProduct(variant)}
                                     className="font-bold text-xs text-brand-700 hover:underline"
                                   >
-                                    {variant.stockMinor == null
-                                      ? "Sin control"
-                                      : `${(variant.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
+                                    {productDisplay.get(variant.id)!.stock}
                                   </button>
                                 </td>
                                 <td>
