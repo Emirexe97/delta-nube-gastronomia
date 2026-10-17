@@ -170,3 +170,134 @@ test("motivo de cierre usa movimiento de la sesión completa y se escapa", () =>
     "Motivo del cierre:",
   );
 });
+
+test("detalle informativo lista egresos del turno completo con anulaciones", () => {
+  const data = report();
+  data.session.movements = [
+    {
+      id: "expense",
+      type: "EXPENSE",
+      amountMinor: 12_345,
+      affectsCash: true,
+      paymentMethodCode: "CASH",
+      orderId: null,
+      userId: "admin",
+      reason: '<compra> & "urgente"',
+      createdAt: "2026-10-13T00:15:00-03:00",
+      reversedById: "reversal",
+    },
+    {
+      id: "reversal",
+      type: "ADJUSTMENT",
+      amountMinor: -12_345,
+      affectsCash: true,
+      paymentMethodCode: "CASH",
+      orderId: null,
+      userId: "admin",
+      reason: "Reversión",
+      createdAt: "2026-10-13T00:20:00-03:00",
+      referenceId: "expense",
+    },
+    {
+      id: "noncash",
+      type: "EXPENSE",
+      amountMinor: 99_000,
+      affectsCash: false,
+      paymentMethodCode: "TRANSFER",
+      orderId: null,
+      userId: "admin",
+      reason: "No efectivo",
+      createdAt: "2026-10-13T00:25:00-03:00",
+    },
+  ];
+  // Los filtros de ventas vacíos no deben reemplazar ni borrar los movimientos del turno.
+  data.movements = [];
+  const html = cashSessionReportHtml(data, settings, {});
+  expect(html).toContain("Detalle de egresos en efectivo");
+  expect(html).toContain("Gasto");
+  expect(html).toContain("Ajuste de salida");
+  expect(html).toContain("&lt;compra&gt; &amp; &quot;urgente&quot;");
+  expect(html).toContain("13/10/2026, 00:15:00");
+  expect(html).toContain("Anulado · Compensado en el arqueo");
+  expect(html).toContain("Anulación");
+  expect(html).toContain("Detalle informativo; estos importes ya están incluidos en el arqueo.");
+  expect(html.replaceAll("\u00a0", " ")).toContain("$ 123,45");
+  expect(html).not.toContain("No efectivo");
+  expect(html).not.toContain("Sin egresos en efectivo registrados.");
+
+  // Una sesión con movimientos=[] es autoritativa aunque el informe filtrado trajera datos.
+  data.movements = data.session.movements;
+  data.session.movements = [];
+  expect(cashSessionReportHtml(data, settings, {})).toContain(
+    "Sin egresos en efectivo registrados.",
+  );
+});
+
+test("histórico sin detalle no revela motivos y los resúmenes no inventan filas", () => {
+  const data = report();
+  data.detailAvailable = false;
+  data.session.cashExpenseMinor = 500;
+  data.session.movements = [
+    {
+      id: "old",
+      type: "EXPENSE",
+      amountMinor: 500,
+      affectsCash: true,
+      paymentMethodCode: "CASH",
+      orderId: null,
+      userId: "admin",
+      reason: "Secreto histórico",
+      createdAt: data.session.closedAt!,
+    },
+  ];
+  const html = cashSessionReportHtml(data, settings, {});
+  expect(html).toContain("Detalle de egresos no disponible.");
+  expect(html).not.toContain("Secreto histórico");
+  expect(html).not.toContain("Sin egresos en efectivo registrados.");
+
+  data.detailAvailable = true;
+  data.session.movements = [];
+  expect(cashSessionReportHtml(data, settings, {})).toContain("Detalle de egresos no disponible.");
+});
+
+test("conceptos largos no desbordan el ancho del ticket de 58 ni 80 mm", async ({ page }) => {
+  const data = report();
+  data.session.movements = [
+    {
+      id: "long",
+      type: "REFUND",
+      amountMinor: 123_456_789,
+      affectsCash: true,
+      paymentMethodCode: "CASH",
+      orderId: null,
+      userId: "admin",
+      reason: "Concepto extenso de una devolución ".repeat(24) + "SinEspacios".repeat(24),
+      createdAt: data.session.closedAt!,
+    },
+  ];
+  for (const paperWidth of ["58mm", "80mm"] as const) {
+    const html = cashSessionReportHtml(
+      data,
+      {
+        ...settings,
+        printing: {
+          ...settings.printing,
+          bill: { ...settings.printing.bill, paperWidth },
+        },
+      },
+      {},
+    );
+    await page.setContent(html);
+    const width = await page.locator("body").evaluate((body) => ({
+      client: body.clientWidth,
+      scroll: body.scrollWidth,
+    }));
+    expect(width.scroll).toBeLessThanOrEqual(width.client + 1);
+    const bounds = await page.locator(".outflow-item .row").evaluate((row) => {
+      const [label, amount] = [...row.children].map(child => child.getBoundingClientRect());
+      return { labelRight: label.right, amountLeft: amount.left };
+    });
+    expect(bounds.labelRight).toBeLessThanOrEqual(bounds.amountLeft);
+    await page.screenshot({ path: test.info().outputPath(`egresos-${paperWidth}.png`), fullPage: true });
+  }
+});

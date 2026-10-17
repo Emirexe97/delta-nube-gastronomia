@@ -1,10 +1,43 @@
-import type { CashMovementType, CashSessionDto } from "@gastronomy/contracts";
+import type { CashMovementDto, CashMovementType, CashSessionDto } from "@gastronomy/contracts";
 import { assertMoneyMinor, nonNegativeMoney } from "./money";
 
 export interface CashMovementValue {
   type: CashMovementType;
   amountMinor: number;
   affectsCash?: boolean;
+}
+
+/** Informational outgoing entries; the closing totals already include them. */
+export function cashOutflowDetails(movements: CashMovementDto[]) {
+  return movements.flatMap((movement) => {
+    if (movement.affectsCash === false) return [];
+    let label: string;
+    let outflowMinor: number;
+    switch (movement.type) {
+      case "EXPENSE":
+        label = movement.orderId != null ? "Envío y rendición" : "Gasto";
+        outflowMinor = movement.amountMinor;
+        break;
+      case "WITHDRAWAL":
+        label = "Retiro";
+        outflowMinor = movement.amountMinor;
+        break;
+      case "REFUND":
+        label = "Devolución o vuelto";
+        outflowMinor = movement.amountMinor;
+        break;
+      case "ADJUSTMENT":
+        label = "Ajuste de salida";
+        outflowMinor = -movement.amountMinor;
+        break;
+      default:
+        return [];
+    }
+    if (outflowMinor <= 0) return [];
+    // Preserve reversals and their links: incoming compensation is accounted
+    // for in the summary, while this list explains each recorded outgoing entry.
+    return [{ ...movement, label, outflowMinor }];
+  });
 }
 
 /** Totals shown in the close report exclude the float retained in the drawer. */

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cashClosingTotals, cashReportBreakdown } from "./cash";
+import { cashClosingTotals, cashOutflowDetails, cashReportBreakdown } from "./cash";
 import type { CashMovementDto } from "@gastronomy/contracts";
 
 function movement(overrides: Partial<CashMovementDto>): CashMovementDto {
@@ -10,6 +10,51 @@ function movement(overrides: Partial<CashMovementDto>): CashMovementDto {
     createdAt: "2026-10-10T12:00:00.000Z", ...overrides,
   };
 }
+
+test("el detalle identifica cada salida de efectivo por su tipo y conserva sus conceptos", () => {
+  const movements = [
+    movement({ id: "expense", orderId: null, reason: "Compra de harina" }),
+    movement({ id: "delivery", reason: "Pago del pedido #24" }),
+    movement({ id: "withdrawal", type: "WITHDRAWAL", reason: "Retiro del titular" }),
+    movement({ id: "refund", type: "REFUND", reason: "Vuelto" }),
+    movement({ id: "adjustment", type: "ADJUSTMENT", amountMinor: -500, reason: "Corrección" }),
+  ];
+  const before = structuredClone(movements);
+  const details = cashOutflowDetails(movements);
+  assert.deepEqual(details.map(({ id, label, outflowMinor, reason }) => ({ id, label, outflowMinor, reason })), [
+    { id: "expense", label: "Gasto", outflowMinor: 25_000, reason: "Compra de harina" },
+    { id: "delivery", label: "Envío y rendición", outflowMinor: 25_000, reason: "Pago del pedido #24" },
+    { id: "withdrawal", label: "Retiro", outflowMinor: 25_000, reason: "Retiro del titular" },
+    { id: "refund", label: "Devolución o vuelto", outflowMinor: 25_000, reason: "Vuelto" },
+    { id: "adjustment", label: "Ajuste de salida", outflowMinor: 500, reason: "Corrección" },
+  ]);
+  assert.deepEqual(movements, before);
+});
+
+test("el detalle excluye entradas, aperturas, cierres, ceros y pagos que no afectan efectivo", () => {
+  const movements = [
+    ...(["OPENING", "CLOSING", "SALE", "INCOME"] as const).map(type => movement({ type })),
+    movement({ type: "ADJUSTMENT", amountMinor: 500 }),
+    movement({ type: "ADJUSTMENT", amountMinor: 0 }),
+    movement({ amountMinor: 0 }),
+    movement({ amountMinor: -500 }),
+    movement({ affectsCash: false, paymentMethodCode: "TRANSFER" }),
+    movement({ type: "WITHDRAWAL", affectsCash: false }),
+    movement({ type: "REFUND", affectsCash: false }),
+    movement({ type: "ADJUSTMENT", amountMinor: -500, affectsCash: false }),
+  ];
+  assert.deepEqual(cashOutflowDetails(movements), []);
+});
+
+test("el detalle conserva egresos anulados y anulaciones sin descontar la compensación otra vez", () => {
+  const original = movement({ id: "original", reversedById: "compensation" });
+  const compensation = movement({ id: "compensation", type: "INCOME", referenceId: "original" });
+  const outgoingReversal = movement({ id: "reversal", referenceId: "incoming", reason: "Anulación del ingreso" });
+  const details = cashOutflowDetails([original, compensation, outgoingReversal]);
+  assert.deepEqual(details.map(item => item.id), ["original", "reversal"]);
+  assert.equal(details[0]?.reversedById, "compensation");
+  assert.equal(details[1]?.referenceId, "incoming");
+});
 
 test("no inventa gastos negativos cuando el detalle de envíos supera el agregado conservado", () => {
   const rows = cashReportBreakdown({

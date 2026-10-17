@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { cashClosingTotals, cashReportBreakdown } from "@gastronomy/domain";
+import {
+  cashClosingTotals,
+  cashOutflowDetails,
+  cashReportBreakdown,
+} from "@gastronomy/domain";
 import type {
   CashSessionHistoryItemDto,
   CashSessionReportFilters,
@@ -639,6 +643,15 @@ export function PrintCashSessionReportModal({
 }) {
   const bootstrap = useBootstrap();
   const closingTotals = cashClosingTotals(data.session);
+  const cashMovements = data.session.movements ?? data.movements;
+  const outflows = data.detailAvailable
+    ? cashOutflowDetails(cashMovements)
+    : [];
+  const hasSummarizedOutflows = Boolean(
+    (data.session.cashExpenseMinor ?? 0) > 0 ||
+      (data.session.cashWithdrawalMinor ?? 0) > 0 ||
+      (data.session.cashRefundMinor ?? 0) > 0,
+  );
   const closingReason = data.detailAvailable
     ? data.session.movements
         ?.find((movement) => movement.type === "CLOSING")
@@ -1016,6 +1029,60 @@ export function PrintCashSessionReportModal({
               <p className="mt-1 text-xs text-slate-600">
                 Los pagos a repartidores ya están incluidos en los egresos.
               </p>
+            </>
+
+            <>
+              <div className="my-2 border-t border-dashed border-slate-400" />
+              <div className="font-bold uppercase text-xs tracking-wide mb-1">
+                DETALLE DE EGRESOS EN EFECTIVO
+              </div>
+              {!data.detailAvailable ? (
+                <p className="border border-dashed border-black p-2 text-xs">
+                  Detalle de egresos no disponible.
+                </p>
+              ) : outflows.length ? (
+                <>
+                  <div className="space-y-1">
+                    {outflows.map((movement) => (
+                      <div
+                        key={movement.id}
+                        className="border-b border-dotted border-slate-400 pb-1 break-inside-avoid"
+                      >
+                        <div className="flex justify-between items-start gap-2">
+                          <strong className="min-w-0 break-words">
+                            {movement.label}
+                          </strong>
+                          <strong className="shrink-0 whitespace-nowrap">
+                            {formatMoney(movement.outflowMinor)}
+                          </strong>
+                        </div>
+                        <p className="break-words">
+                          {movement.reason?.trim() || "Sin concepto registrado"}
+                        </p>
+                        <p className="text-xs text-slate-600 break-words">
+                          {new Date(movement.createdAt).toLocaleString("es-AR", {
+                            timeZone: "America/Buenos_Aires",
+                            hourCycle: "h23",
+                          })}
+                          {movement.reversedById
+                            ? " · Anulado · Compensado en el arqueo"
+                            : ""}
+                          {movement.referenceId ? " · Anulación" : ""}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-xs text-slate-600">
+                    Detalle informativo; estos importes ya están incluidos en el arqueo.
+                  </p>
+                </>
+              ) : hasSummarizedOutflows ? (
+                <p className="border border-dashed border-black p-2 text-xs">
+                  Detalle de egresos no disponible.
+                </p>
+              ) : (
+                <p className="text-xs">Sin egresos en efectivo registrados.</p>
+              )}
             </>
 
             {data.detailAvailable &&

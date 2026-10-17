@@ -6,6 +6,7 @@ import type {
 } from "@gastronomy/contracts";
 import {
   cashClosingTotals,
+  cashOutflowDetails,
   cashReportBreakdown,
   formatMoney,
 } from "@gastronomy/domain";
@@ -205,12 +206,38 @@ export function cashSessionReportHtml(
     <p class="hint">${closed ? "Esperado y contado excluyen el cambio final que queda en caja." : "El esperado excluye el cambio inicial; todavía no es un cierre definitivo."}</p>
   </section>`;
 
+  const cashMovements = session.movements ?? report.movements;
+  const outflows = report.detailAvailable
+    ? cashOutflowDetails(cashMovements)
+    : [];
+  const hasSummarizedOutflows = Boolean(
+    (session.cashExpenseMinor ?? 0) > 0 ||
+      (session.cashWithdrawalMinor ?? 0) > 0 ||
+      (session.cashRefundMinor ?? 0) > 0,
+  );
+  const outflowSection = !report.detailAvailable
+    ? `<p class="notice">Detalle de egresos no disponible.</p>`
+    : outflows.length
+      ? `${outflows
+          .map(
+            (movement) => `<div class="outflow-item">
+              <div class="row"><strong>${escapeHtml(movement.label)}</strong><strong>${money(movement.outflowMinor)}</strong></div>
+              <p class="outflow-reason">${escapeHtml(movement.reason?.trim() || "Sin concepto registrado")}</p>
+              <p class="hint">${date(movement.createdAt)}${movement.reversedById ? " · Anulado · Compensado en el arqueo" : ""}${movement.referenceId ? " · Anulación" : ""}</p>
+            </div>`,
+          )
+          .join("")}<p class="hint">Detalle informativo; estos importes ya están incluidos en el arqueo.</p>`
+      : hasSummarizedOutflows
+        ? `<p class="notice">Detalle de egresos no disponible.</p>`
+        : `<p class="hint">Sin egresos en efectivo registrados.</p>`;
+
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Informe de caja #${escapeHtml(session.number)}</title><style>
     @page{size:${paperMm}mm auto;margin:${marginMm}mm}
     *{box-sizing:border-box}body{font-family:Verdana,Arial,sans-serif;width:${contentMm}mm;margin:0;color:#000;background:#fff;font-size:${fontSizePx}px;font-weight:400;line-height:1.35;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
     h1,h2,h3,p{margin:0}.center{text-align:center}.title{font-size:18px;font-weight:900;line-height:1.15;text-transform:uppercase}.subtitle{font-size:14px;font-weight:700;margin:5px 0 3px}.terminal{font-size:12px}.state{display:inline-block;border:1px solid #000;padding:2px 6px;margin:7px 0;font-size:12px;font-weight:700;text-transform:uppercase}
     .metadata{padding:7px 0;border-top:1px solid #000}.meta-line{margin:3px 0;font-size:12px}.meta-line strong{font-weight:700}.section-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.5px;margin:12px 0 5px;padding-top:7px;border-top:1px solid #000;break-after:avoid}
     .row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:8px;margin:5px 0;line-height:1.3;break-inside:avoid}.row>span:first-child{min-width:0;overflow-wrap:anywhere}.row strong,.row>span:last-child:not(:first-child){font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}.total,.key-total{font-size:${profile.paperWidth === "58mm" ? 14 : 16}px;font-weight:900;border-top:1px solid #000;padding-top:6px;margin-top:7px}.difference{border-top:1px dashed #000;padding-top:5px;font-weight:700}
+    .outflow-item{margin:6px 0;padding-bottom:5px;border-bottom:1px dotted #777;break-inside:avoid}.outflow-reason{overflow-wrap:anywhere;word-break:break-word;margin:3px 0}.outflow-item .row{gap:4px}.outflow-item .row>strong:first-child{min-width:0;white-space:normal;overflow-wrap:anywhere}
     .closing-result{border:2px solid #000;padding:8px 6px;margin:6px 0 10px}.closing-result .section-title{border:0;padding:0;margin:0 0 5px}.result-status{font-size:13px;text-transform:uppercase;font-weight:900;margin-bottom:6px}.hint{font-size:12px;margin-top:6px;line-height:1.3}.divider{border-top:1px dashed #000;margin:8px 0}.notice{border:1px dashed #000;padding:6px;font-size:12px;margin:6px 0}.printed-footer{font-size:12px;margin:10px 0 4px}.waiter-group{margin:8px 0;break-inside:avoid}.waiter-name-row{font-weight:900}.waiter-table-row{padding-left:8px}.waiter-total-row{border-top:1px dashed #000;padding-top:4px}
   </style></head><body>
     <header class="center"><h1 class="title">${escapeHtml(settings.businessName)}</h1><h2 class="subtitle">INFORME DE CAJA #${escapeHtml(session.number)}</h2><p class="terminal">${escapeHtml(settings.printing.terminalLabel)}</p><p class="state">${closed ? "Cierre definitivo" : "Informe provisorio"}</p></header>
@@ -220,6 +247,7 @@ export function cashSessionReportHtml(
     <section>${heading("Resumen")}${row("Ventas", money(report.totals.salesMinor), "total")}${row("Pedidos", escapeHtml(report.totals.orderCount))}${row("Ticket promedio", money(report.totals.averageTicketMinor))}${row("Descuentos", money(report.totals.discountsMinor))}${row("Devoluciones", money(report.totals.refundsMinor))}<p class="hint">Ventas de todos los medios; no equivalen al efectivo disponible.</p></section>
     ${alwaysSections}
     <section>${heading("Movimientos de efectivo")}${cashRows}<p class="hint">Arqueo del turno completo. Los envíos y rendiciones se descuentan una sola vez.</p></section>
+    <section>${heading("Detalle de egresos en efectivo")}${outflowSection}</section>
     ${optionalSections}
     <footer class="center printed-footer"><div class="divider"></div><strong>Impreso:</strong> ${escapeHtml(new Date().toLocaleString("es-AR", { timeZone: "America/Buenos_Aires", hourCycle: "h23" }))}<p>Informe interno · No fiscal</p></footer>
     <div aria-hidden="true" style="height:${Math.max(0, profile.feedLinesBeforeCut) * 3.5}mm"></div>
