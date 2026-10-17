@@ -2,7 +2,7 @@
 
 ## Objetivo
 
-Preparar la versión 0.1.25, corregir el alcance de rendiciones a la caja actual y conservar evidencia de la regularización solicitada por el usuario. El usuario autorizó expresamente commit/push de esta entrega para generar Mac mediante CI. La instalación local se posterga hasta el cierre real de caja al terminar el turno; no se declara aprobación operativa mientras falten instalación y licencia.
+Preparar la versión 0.1.25, corregir el alcance de rendiciones a la caja actual y conservar evidencia de la regularización solicitada por el usuario. El usuario autorizó expresamente commit/push de esta entrega para generar Mac mediante CI. La instalación se realizó el 17/10 tras confirmar el cierre real de caja. El 17/10 a las 17:21 (Buenos Aires) se verificó licencia activa y se registró la instalación Windows como aprobada para trabajar.
 
 ## Archivos y cambios
 
@@ -31,8 +31,20 @@ Respaldo consistente posterior a la regularización y previo a preparar 0.1.25: 
 - SQLite 12.11.1 probado en memoria con Electron 39.8.10 / ABI 140. El empaquetado Windows conserva ese addon validado (`npmRebuild=false` sólo en la invocación; no cambia la configuración versionada).
 - Smoke del paquete Windows real sobre copia consistente de la base: versión 0.1.25, `isPackaged=true`, perfil temporal aislado, renderer/Caja correctos, cero rendiciones pendientes. Hash de pedidos/sesiones/movimientos idéntico antes y después del arranque/migración. Evidencia local ignorada: `apps/desktop-shell/release/qa-0.1.25/packaged-smoke.json` y `packaged-cash.png`.
 - Ese perfil de prueba devuelve `UNACTIVATED`, `canOperate=false`; updater `DISABLED`. No equivale a licencia aprobada ni instalación sobre el perfil operativo.
-- Cliente instalado localmente: 0.1.21. Caja 32 está abierta; se solicitó cerrarla mediante arqueo real antes de actualizar. No actualizar ni declarar la instalación 0.1.25 aprobada hasta completar ese paso y validar el instalador en el entorno destinatario.
-- El usuario confirmó que la caja no puede cerrarse hasta terminar el turno. No se cerró ni se instaló sobre el programa operativo.
+- El 16/10 el usuario confirmó que la caja no podía cerrarse hasta terminar el turno; la actualización se postergó conservando 0.1.21.
+- El 17/10 el usuario informó turno cerrado y autorizó proseguir. Se comprobó caja 32 `CLOSED`, ninguna caja abierta y cero rendiciones pendientes antes de instalar.
+
+### Instalación Windows real — 2026-10-17
+
+- Respaldo consistente nuevo: `C:\Users\Bonis\AppData\Local\DeltaNubeBackups\antes-instalar-0.1.25-2026-10-17T19-10-08-376Z\gastronomy.sqlite`, `integrity_check=ok`, 765 pedidos y 32 cajas cerradas. Incluye el cierre final del turno.
+- SHA256 del NSIS comprobado antes de ejecutar. Instalación silenciosa del paquete existente, salida 0. Ejecutable instalado en `C:\Users\Bonis\AppData\Local\Programs\@gastronomydesktop-shell\Delta Nube Gastronomía.exe`, versión 0.1.25.0.
+- Arranque del ejecutable instalado: `app.getVersion()=0.1.25`, `isPackaged=true`, perfil operativo original conservado. Caja cerrada y cero rendiciones pendientes.
+- Después del arranque/migración: base íntegra, hash de pedidos/sesiones/movimientos idéntico al respaldo. Comprobación adicional sin cambios en 13 tablas originales de clientes, direcciones, usuarios, productos, categorías, pagos, devoluciones, mesas, ítems, modificadores, listas/precios y rendiciones.
+- Se envió la solicitud de habilitación del equipo a la autoridad por el flujo firmado de la aplicación. Estado `PENDING` / `UNACTIVATED`, `canOperate=false`. Identificador y huella permanecen en la evidencia local; no se versionan permisos ni credenciales.
+- Se pidió al propietario aprobar esa solicitud en el panel porque esta PC no tiene credenciales administrativas ni sesión accesible desde la herramienta de navegador. No se simuló aprobación ni se alteró el control de licencia.
+- Evidencia local ignorada en `apps/desktop-shell/release/qa-0.1.25/`: `pre-install-receipt.json`, `installed-verification.json`, `business-data-verification.json`, `enrollment-pending.json` e `installed-license-pending.png`.
+- Tras confirmar el usuario la aprobación y verificación en el cliente, se comprobó permiso persistido con firma Ed25519 válida, vinculado a esta instalación y sin retroceso de reloj: inscripción `APPROVED`, licencia `ACTIVE`, `canOperate=true`, revisión 1. Última verificación online registrada a las 20:20:59 UTC / 17:20:59 Buenos Aires. No se registran tokens, claves ni datos privados de licencia en Git.
+- Base final íntegra: 765 pedidos, 32 cajas cerradas, ninguna caja abierta y cero rendiciones pendientes. Aprobación operativa Windows registrada en `apps/desktop-shell/release/qa-0.1.25/work-approval.json`. La aplicación quedó iniciada normalmente; el usuario puede restaurar su ventana minimizada.
 
 ## Artefactos y distribución
 
@@ -41,13 +53,9 @@ Respaldo consistente posterior a la regularización y previo a preparar 0.1.25: 
 - Carpeta Mac local: `C:\Users\Bonis\Documents\ChatGPT\Delta Nube Gastronomía\apps\desktop-shell\release\mac-build\run-38978872205`. Subcarpetas `arm64` y `x64`, con DMG 0.1.25 y metadatos del build. Hashes de DMG en `docs/MACOS_BUILD.md`.
 - macOS: el workflow manual `.github/workflows/build-macos.yml` produce DMG arm64/x64 en GitHub Actions. Publicar únicamente la fuente de esta entrega y ejecutar desde ese commit; el artefacto anterior 0.1.24 no sustituye la compilación 0.1.25.
 - Updater Windows: `apps/desktop-shell/updates-config.json` continúa con `enabled: false`; no hay feed HTTPS ni certificado Authenticode configurados. Por tanto, no publicar ni habilitar actualización automática.
-- Licencia: faltan las credenciales del owner del panel y el `known_hosts` SSH de esta PC. No marcar una solicitud/aprobación de licencia como activa sin confirmación y acción en la autoridad correspondiente.
-- Aprobación funcional: pendiente de instalación real 0.1.25, arranque, flujo POS/rendiciones, persistencia y registro del resultado. CI/build por sí solos no equivalen a instalación aprobada.
+- Licencia aprobada por el propietario y permiso firmado recibido/verificado por el cliente. No se trasladaron credenciales administrativas a esta PC.
+- **Windows 0.1.25: instalación verificada y aprobada para trabajar**, con licencia activa y conservación de datos comprobada. Esta aprobación no incluye instalación física Mac ni habilita el updater.
 
-## Próximos pasos
+## Distribución automática futura
 
-1. Cerrar la caja 32 con arqueo real al finalizar la noche y crear un respaldo consistente nuevo que incluya ese cierre. El respaldo de preparación no sustituye ese respaldo final.
-2. Instalar el NSIS 0.1.25 conservando el perfil operativo. No instalar durante el turno abierto.
-3. Solicitar/aprobar la habilitación del equipo desde la autoridad con el propietario, sin crear licencias duplicadas ni simular permisos locales.
-4. Verificar versión instalada, `canOperate=true`, arranque, datos y persistencia antes de registrar la instalación como aprobada para trabajar.
-5. Habilitar/publicar updater sólo tras configurar feed HTTPS y Authenticode y completar ensayo real N→N+1. Mantener la distribución Mac como instalador manual.
+El updater sigue deshabilitado. Su activación requiere configurar feed HTTPS y Authenticode y completar ensayo real N→N+1. Mantener la distribución Mac como instalador manual. Esto no bloquea el uso de la instalación Windows manual aprobada.
