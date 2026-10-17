@@ -1,5 +1,11 @@
 # Preparación y validación de la versión macOS
 
+## Entrega manual 0.1.26 — 2026-10-17
+
+[CI 39068935566](https://github.com/Emirexe97/delta-nube-gastronomia/actions/runs/39068935566), etiqueta `v0.1.26`, fuente `da71b51d5cd5295cc27a3b48357457c5e99d7afa`: arm64 y x64 aprobados, incluidos firma ad-hoc, SQLite, licencia ASAR y arranque del paquete dentro del DMG. Incluye el detalle de egresos en el informe de caja. No activa el updater Mac ni acredita notarización o impresión física.
+
+Carpeta absoluta de los DMG descargados y verificados: `C:\Users\Bonis\Documents\ChatGPT\Delta Nube Gastronomía\apps\desktop-shell\release\mac-build\run-39068935566`. Los ZIP coinciden en tamaño y hash con GitHub Actions. Nombres y hashes de cada DMG en [la sesión de entrega 0.1.26](work-sessions/2026-10-17-release-0-1-26-egresos.md).
+
 Este documento describe cómo preparar y validar el empaquetado macOS de Delta Nube Gastronomía. **0.1.22 arm64 fue bloqueado en una Mac M1 con el aviso «está dañado». No usar ese artefacto como instalador validado.** 0.1.23 arm64 de prueba está descargado, con firma ad-hoc y arranque empaquetado verificados en CI Mac. La validación final en la Mac destinataria sigue pendiente.
 
 ## Requisitos del entorno
