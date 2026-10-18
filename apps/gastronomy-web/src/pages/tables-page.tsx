@@ -52,7 +52,20 @@ const waiterRoleLabels = {
 export function TablesPage({ data }: { data: BootstrapDto }) {
   const pageRef = useRef<HTMLDivElement>(null);
   const lastScrollTopRef = useRef<number>(0);
-  const [onlyOccupied, setOnlyOccupied] = useState(false);
+  const [onlyOccupied, setOnlyOccupied] = useState(() => {
+    try {
+      return localStorage.getItem("gastronomy.salon.onlyOccupied") === "true";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("gastronomy.salon.onlyOccupied", String(onlyOccupied));
+    } catch {
+      // A blocked/full store must not prevent working with tables.
+    }
+  }, [onlyOccupied]);
   const [view, setView] = useState<"CLASSIC" | "PLAN" | "LIST">(() => {
     try {
       const stored = localStorage.getItem("gastronomy.salon.view");

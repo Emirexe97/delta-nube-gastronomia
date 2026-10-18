@@ -621,7 +621,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     };
   }
 
-  private getSettings(): AppSettingsDto {
+  getSettings(): AppSettingsDto {
     const row = requireRow(
       this.db
         .prepare("SELECT value_json FROM settings WHERE key = 'app'")

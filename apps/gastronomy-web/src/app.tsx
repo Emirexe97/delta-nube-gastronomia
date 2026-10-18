@@ -28,6 +28,7 @@ import {
 } from "@phosphor-icons/react";
 import { Badge, cn } from "@gastronomy/ui";
 import { useBootstrap } from "./api";
+import { OrderPrintStatus } from "./components/order-print-status";
 import { formatMoney } from "./lib";
 import { DashboardPage } from "./pages/dashboard-page";
 import { TablesPage } from "./pages/tables-page";
@@ -512,6 +513,7 @@ export function App() {
             </div>
           </div>
         </header>
+        <OrderPrintStatus />
         {licenseNotice ? (
           <div
             className={`flex shrink-0 items-center justify-between gap-3 border-b px-5 py-2.5 text-xs ${licenseNotice.canOperate ? "border-amber-200 bg-amber-50 text-amber-950" : "border-rose-200 bg-rose-50 text-rose-950"}`}

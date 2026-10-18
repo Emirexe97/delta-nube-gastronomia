@@ -7,7 +7,9 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useStore } from "zustand";
+import { isOrderPrintActive, orderPrintCoordinator, type OrderPrintRequest } from "../order-print";
 import type {
   BootstrapDto,
   CustomerDto,
@@ -75,6 +77,11 @@ export function OrderEditor({
   onEditDraft?(orderId: string): void;
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const currentOrderId = useRef(orderId);
+  currentOrderId.current = orderId;
+  const orderPrint = useStore(orderPrintCoordinator.store, (state) => state.jobs[orderId ?? ""]);
+  const orderPrintBusy = isOrderPrintActive(orderPrint);
   const bootstrapOrder = data.orders.find((candidate) => candidate.id === orderId);
   const historicalOrder = useQuery({
     queryKey: [...bootstrapKey, "order", orderId],
@@ -432,20 +439,13 @@ export function OrderEditor({
     },
   );
   const print = useApiMutation(
-    async (input: {
-      orderId: string;
-      kind: "KITCHEN_ORDER" | "CUSTOMER_BILL";
-      confirmFirst?: boolean;
-    }) => {
-      if (input.confirmFirst)
-        await window.gastronomy.confirmOrder({ orderId: input.orderId });
-      return window.gastronomy.printOrder({
-        orderId: input.orderId,
-        kind: input.kind,
-      });
-    },
+    (input: OrderPrintRequest) => orderPrintCoordinator.run(input, () => {
+      // Confirmation is already durable. Refresh it while native printing continues.
+      void queryClient.invalidateQueries({ queryKey: bootstrapKey }).catch(() => undefined);
+    }),
     {
       onSuccess: (result, input) => {
+        if (currentOrderId.current !== input.orderId) return;
         const label = input.kind === "KITCHEN_ORDER" ? "Comanda" : "Cuenta";
         setSkippedPrintKind(result.status === "SKIPPED" ? input.kind : null);
         setPrintFeedback(
@@ -457,19 +457,20 @@ export function OrderEditor({
         );
         setPrintConfirmKind(null);
       },
-      onError: (value) => setError(humanError(value)),
+      onError: (value, input) => { if (currentOrderId.current === input.orderId) setError(humanError(value)); },
     },
   );
   const retryPrint = useApiMutation(
-    (input: { jobId: string }) => window.gastronomy.retryPrint(input),
+    (input: OrderPrintRequest) => orderPrintCoordinator.run(input),
     {
-      onSuccess: () => setError(null),
-      onError: (value) => setError(humanError(value)),
+      onSuccess: (_result, input) => { if (currentOrderId.current === input.orderId) setError(null); },
+      onError: (value, input) => { if (currentOrderId.current === input.orderId) setError(humanError(value)); },
     },
   );
 
   useEffect(() => {
     setPrintFeedback(null);
+    setError(null);
     setPrintConfirmKind(null);
     setSkippedPrintKind(null);
     setAddingProduct(null);
@@ -483,6 +484,7 @@ export function OrderEditor({
     ? data.printJobs.find(
         (job) =>
           job.orderId === order.id &&
+          !(job.id === orderPrint?.resultJobId && (orderPrint.status === "PRINTED" || orderPrint.status === "SKIPPED")) &&
           ["FAILED", "QUEUED", "RECOVERING"].includes(job.status),
       )
     : undefined;
@@ -493,8 +495,9 @@ export function OrderEditor({
           .map((job) => job.kind)
       : [],
   );
+  if (orderPrint?.status === "PRINTED") printedKinds.add(orderPrint.kind);
   const requestPrint = (kind: "KITCHEN_ORDER" | "CUSTOMER_BILL") => {
-    if (!order || print.isPending || pendingPrint) return;
+    if (!order || orderPrintBusy || pendingPrint) return;
     setPrintFeedback(null);
     setError(null);
     if (printedKinds.has(kind)) {
@@ -503,6 +506,7 @@ export function OrderEditor({
     }
     print.mutate({
       orderId: order.id,
+      orderNumber: order.number,
       kind,
       confirmFirst:
         kind === "KITCHEN_ORDER" && order.lifecycleStatus === "DRAFT",
@@ -543,7 +547,7 @@ export function OrderEditor({
 
       if (event.key === "F7") {
         const canPrintComanda =
-          order.items.length > 0 && !print.isPending && !Boolean(pendingPrint);
+          order.items.length > 0 && !orderPrintBusy && !Boolean(pendingPrint);
         if (canPrintComanda) {
           event.preventDefault();
           requestPrint("KITCHEN_ORDER");
@@ -586,7 +590,7 @@ export function OrderEditor({
     payOpen,
     pendingPrint,
     printConfirmKind,
-    print.isPending,
+    orderPrintBusy,
     refundOpen,
     variantPickerProduct,
   ]);
@@ -625,10 +629,11 @@ export function OrderEditor({
   const canConfirm = guardOrderAction(order, "CONFIRM");
   const canDeliver = guardOrderAction(order, "DELIVER");
   const confirmReprint = () => {
-    if (!printConfirmKind) return;
+    if (!printConfirmKind || orderPrintBusy || pendingPrint) return;
     setPrintFeedback(null);
     setError(null);
-    print.mutate({ orderId: order.id, kind: printConfirmKind });
+    setPrintConfirmKind(null);
+    print.mutate({ orderId: order.id, orderNumber: order.number, kind: printConfirmKind });
   };
   const editorBusy =
     addItem.isPending ||
@@ -639,8 +644,7 @@ export function OrderEditor({
     assignDriver.isPending ||
     confirm.isPending ||
     discard.isPending ||
-    print.isPending ||
-    retryPrint.isPending;
+    orderPrint?.status === "PREPARING";
   const advancedStatuses = data.settings.modules.advancedStatuses;
   const nextOperationalStatus: OrderOperationalStatus =
     advancedStatuses && order.operationalStatus === "IN_PREPARATION"
@@ -1174,7 +1178,14 @@ export function OrderEditor({
               </div>
             )}
           </div>
-          {pendingPrint ? (
+          {orderPrintBusy && (
+            <p role="status" className="mx-3 mb-2 rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs text-sky-900">
+              {orderPrint?.status === "PREPARING"
+                ? "Guardando el pedido…"
+                : "Enviando a la impresora. Podés cerrar este pedido y seguir trabajando."}
+            </p>
+          )}
+          {pendingPrint && !orderPrintBusy ? (
             <div className="mx-3 mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
               <div className="flex items-start justify-between gap-2">
                 <span>
@@ -1188,9 +1199,9 @@ export function OrderEditor({
                 </span>
                 <button
                   disabled={
-                    retryPrint.isPending || pendingPrint.status === "RECOVERING"
+                    orderPrintBusy || retryPrint.isPending || pendingPrint.status === "RECOVERING"
                   }
-                  onClick={() => retryPrint.mutate({ jobId: pendingPrint.id })}
+                  onClick={() => retryPrint.mutate({ orderId: order.id, orderNumber: order.number, kind: pendingPrint.kind, retryJobId: pendingPrint.id })}
                   className="shrink-0 rounded-md bg-amber-200 px-2 py-1 font-bold hover:bg-amber-300"
                 >
                   {retryPrint.isPending || pendingPrint.status === "RECOVERING"
@@ -1311,12 +1322,12 @@ export function OrderEditor({
                 onClick={() => requestPrint("KITCHEN_ORDER")}
                 disabled={
                   !order.items.length ||
-                  print.isPending ||
+                  orderPrintBusy ||
                   Boolean(pendingPrint)
                 }
               >
                 <Printer size={16} />{" "}
-                {print.isPending
+                {orderPrintBusy
                   ? "Enviando…"
                   : skippedPrintKind === "KITCHEN_ORDER"
                     ? "Reintentar comanda"
@@ -1333,12 +1344,12 @@ export function OrderEditor({
                 disabled={
                   !order.items.length ||
                   isDraft ||
-                  print.isPending ||
+                  orderPrintBusy ||
                   Boolean(pendingPrint)
                 }
               >
                 <Printer size={16} />{" "}
-                {print.isPending
+                {orderPrintBusy
                   ? "Enviando…"
                   : skippedPrintKind === "CUSTOMER_BILL"
                     ? "Reintentar cuenta"
@@ -1870,7 +1881,7 @@ export function OrderEditor({
       <Modal
         open={Boolean(printConfirmKind)}
         onClose={() => setPrintConfirmKind(null)}
-        closeDisabled={print.isPending}
+        closeDisabled={orderPrintBusy}
         title="Confirmar reimpresión"
         description="Se enviará una nueva impresión"
       >
@@ -1885,16 +1896,16 @@ export function OrderEditor({
               type="button"
               variant="secondary"
               onClick={() => setPrintConfirmKind(null)}
-              disabled={print.isPending}
+              disabled={orderPrintBusy}
             >
               Cancelar
             </Button>
             <Button
               type="button"
               onClick={confirmReprint}
-              disabled={!printConfirmKind || print.isPending}
+              disabled={!printConfirmKind || orderPrintBusy}
             >
-              {print.isPending ? "Enviando…" : "Reimprimir"}
+              {orderPrintBusy ? "Enviando…" : "Reimprimir"}
             </Button>
           </div>
         </div>

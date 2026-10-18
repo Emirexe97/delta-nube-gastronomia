@@ -82,6 +82,13 @@ export function CashPage({ data }: { data: BootstrapDto }) {
       row.status === "PENDING" &&
       row.amountDueMinor > row.settledAmountMinor,
   );
+  const pendingOrderCount = data.orders.filter(
+    (order) =>
+      (order.cashSessionCreatedId === session?.id ||
+        order.cashSessionPaidId === session?.id) &&
+      order.operationalStatus !== "DELIVERED" &&
+      order.operationalStatus !== "CANCELLED",
+  ).length;
   const pendingDriverOwesMinor = pendingDeliveryLedger
     .filter((row) => row.direction === "DRIVER_OWES_BUSINESS")
     .reduce((sum, row) => sum + row.amountDueMinor - row.settledAmountMinor, 0);
@@ -373,6 +380,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
           session={session}
           paymentMethods={data.dashboard.byPaymentMethod}
           allPaymentMethods={data.paymentMethods}
+          pendingOrderCount={pendingOrderCount}
           pendingDeliveryCount={pendingDeliveryLedger.length}
           pendingDriverOwesMinor={pendingDriverOwesMinor}
           pendingBusinessOwesMinor={pendingBusinessOwesMinor}
@@ -641,6 +649,7 @@ function CloseCashModal({
   session,
   paymentMethods,
   allPaymentMethods,
+  pendingOrderCount,
   pendingDeliveryCount,
   pendingDriverOwesMinor,
   pendingBusinessOwesMinor,
@@ -652,6 +661,7 @@ function CloseCashModal({
   session: CashSessionDto;
   paymentMethods: DashboardSummaryDto["byPaymentMethod"];
   allPaymentMethods?: BootstrapDto["paymentMethods"];
+  pendingOrderCount: number;
   pendingDeliveryCount: number;
   pendingDriverOwesMinor: number;
   pendingBusinessOwesMinor: number;
@@ -666,6 +676,8 @@ function CloseCashModal({
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
+  const hasPendingOperations =
+    pendingOrderCount > 0 || pendingDeliveryCount > 0;
   useLayoutEffect(() => {
     if (!open) return;
     setCounted("");
@@ -676,11 +688,17 @@ function CloseCashModal({
     setError(null);
     setReviewing(false);
   }, [open, session.id, session.openingAmountMinor]);
+  useEffect(() => {
+    if (hasPendingOperations) return;
+    setForce(false);
+    setPin("");
+  }, [hasPendingOperations]);
 
   // An untouched count is pending, not a known zero. Keep this distinction
   // local to cash close so explicit "0" still participates in shortage checks.
   const countedMinor = counted.trim() === "" ? null : parseMoneyInput(counted);
-  const closingFloatMinor = parseMoneyInput(closingFloat);
+  const closingFloatMinor =
+    closingFloat.trim() === "" ? null : parseMoneyInput(closingFloat);
   const closingTotals = cashClosingTotals({
     ...session,
     countedAmountMinor: countedMinor,
@@ -708,7 +726,9 @@ function CloseCashModal({
     closingFloatMinor >= 0 &&
     !invalidFloat &&
     (!needsReason || Boolean(reason.trim())) &&
-    (!force || (Boolean(reason.trim()) && pin.length >= 4));
+    (!(force && hasPendingOperations) ||
+      (Boolean(reason.trim()) && pin.length >= 4));
+  const effectiveForce = force && hasPendingOperations;
   const mutation = useApiMutation(
     (input: CloseCashSessionInput) => window.gastronomy.closeCashSession(input),
     {
@@ -721,9 +741,9 @@ function CloseCashModal({
     mutation.mutate({
       countedAmountMinor: countedMinor,
       closingFloatAmountMinor: closingFloatMinor,
-      force,
+      force: effectiveForce,
       reason: reason.trim() || undefined,
-      authorizerPin: force ? pin : undefined,
+      authorizerPin: effectiveForce ? pin : undefined,
     });
   };
   return (
@@ -866,7 +886,7 @@ function CloseCashModal({
               El cambio final no puede superar el efectivo contado.
             </ErrorMessage>
           ) : null}
-          {needsReason || force ? (
+          {needsReason || effectiveForce ? (
             <div className="grid gap-3 sm:grid-cols-2">
               <Field
                 label={
@@ -882,7 +902,7 @@ function CloseCashModal({
                   required
                 />
               </Field>
-              {force ? (
+              {effectiveForce ? (
                 <Field label="PIN de autorización">
                   <Input
                     type="password"
@@ -904,19 +924,50 @@ function CloseCashModal({
             movements={session.movements}
             allPaymentMethods={allPaymentMethods}
           />
-          <label className="flex items-start gap-2 text-xs text-slate-600">
-            <input
-              type="checkbox"
-              checked={force}
-              onChange={(event) => {
-                setForce(event.target.checked);
-                setError(null);
-              }}
-              className="mt-0.5 accent-brand-600"
-            />
-            Forzar cierre si existen pedidos pendientes (requiere motivo y
-            autorización).
-          </label>
+          {hasPendingOperations ? (
+            <label className="flex items-start gap-2 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={force}
+                onChange={(event) => {
+                  setForce(event.target.checked);
+                  setError(null);
+                }}
+                className="mt-0.5 accent-brand-600"
+              />
+              Forzar cierre con pedidos o rendiciones pendientes (requiere
+              motivo y autorización).
+            </label>
+          ) : (
+            <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
+              No hay pedidos ni rendiciones pendientes. El cierre será normal;
+              si hay diferencia de arqueo, su motivo no requiere cierre forzado.
+            </p>
+          )}
+          {!valid ? (
+            <p className="text-xs text-slate-600" role="status">
+              {countedMinor == null
+                ? "Ingresá un total contado válido. "
+                : countedMinor < 0
+                  ? "El total contado no puede ser negativo. "
+                  : ""}
+              {closingFloatMinor == null
+                ? "Ingresá un cambio final válido. "
+                : closingFloatMinor < 0
+                  ? "El cambio final no puede ser negativo. "
+                  : ""}
+              {invalidFloat ? "El cambio final supera el efectivo contado. " : ""}
+              {needsReason && !reason.trim()
+                ? "Indicá el motivo de la diferencia de arqueo. "
+                : ""}
+              {effectiveForce && !reason.trim()
+                ? "Indicá el motivo del cierre forzado. "
+                : ""}
+              {effectiveForce && pin.length < 4
+                ? "Ingresá el PIN de autorización (al menos 4 dígitos)."
+                : ""}
+            </p>
+          ) : null}
           {error ? <ErrorMessage>{error}</ErrorMessage> : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={onClose}>

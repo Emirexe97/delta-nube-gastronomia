@@ -2,6 +2,11 @@ import { join } from "node:path";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { tmpdir } from "node:os";
 import { isBackgroundTest } from "./e2e-background.cjs";
+import {
+  measurePrintStage,
+  type PrintTimingObserver,
+  type PrintTimingOutcome,
+} from "./print-timing";
 import type { PrinterProfileDto } from "@gastronomy/contracts";
 
 type PrinterInfo = { name: string; isDefault?: boolean };
@@ -10,6 +15,7 @@ type PrintOptions = {
   parent?: BrowserWindow | null;
   forcePreview?: boolean;
   skipPreview?: boolean;
+  onTiming?: PrintTimingObserver;
 };
 
 export type PrintOutcome = "PRINTED" | "SKIPPED";
@@ -47,6 +53,19 @@ async function contentHeightMicrons(contents: Electron.WebContents) {
   );
   const measured = Math.ceil((heightPx * 25_400) / 96) + 4_000;
   return Math.max(40_000, Math.min(500_000, measured));
+}
+
+function nativePrint(
+  contents: Electron.WebContents,
+  settings: Electron.WebContentsPrintOptions,
+  observer?: PrintTimingObserver,
+): Promise<{ success: boolean; reason?: string }> {
+  return measurePrintStage("nativeprint", observer, () =>
+    new Promise((resolve) => {
+      contents.print(settings, (success, reason) => resolve({ success, reason }));
+    }),
+    (result): PrintTimingOutcome => (result.success ? "success" : "error"),
+  );
 }
 
 export function resolvePrinterTarget(
@@ -206,6 +225,7 @@ async function dispatchWithoutPreview(
   html: string,
   profile: PrinterProfileDto,
   deviceName?: string,
+  onTiming?: PrintTimingObserver,
 ): Promise<PrintOutcome> {
   const window = new BrowserWindow({
     show: false,
@@ -217,24 +237,26 @@ async function dispatchWithoutPreview(
     },
   });
   try {
-    await window.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+    await measurePrintStage("loadURL", onTiming, () =>
+      window.loadURL(
+        `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+      ),
     );
-    const height = await contentHeightMicrons(window.webContents);
-    return await new Promise<PrintOutcome>((resolve, reject) => {
-      window.webContents.print(
-        {
-          ...printSettings(profile, height),
-          silent: false,
-          ...(deviceName ? { deviceName } : {}),
-        },
-        (success, reason) => {
-          if (success) resolve("PRINTED");
-          else if (reason === "Print job canceled") resolve("SKIPPED");
-          else reject(new Error(reason || "Falló la impresión."));
-        },
-      );
-    });
+    const height = await measurePrintStage("layout", onTiming, () =>
+      contentHeightMicrons(window.webContents),
+    );
+    const result = await nativePrint(
+      window.webContents,
+      {
+        ...printSettings(profile, height),
+        silent: false,
+        ...(deviceName ? { deviceName } : {}),
+      },
+      onTiming,
+    );
+    if (result.success) return "PRINTED";
+    if (result.reason === "Print job canceled") return "SKIPPED";
+    throw new Error(result.reason || "Falló la impresión.");
   } catch (error) {
     throw error instanceof Error ? error : new Error("Falló la impresión.");
   } finally {
@@ -261,12 +283,17 @@ export async function printHtml(
   }
   if (profile.mode === "SYSTEM_DIALOG") {
     return options.skipPreview
-      ? dispatchWithoutPreview(html, profile)
+      ? dispatchWithoutPreview(html, profile, undefined, options.onTiming)
       : showPreview(html, profile, options.parent);
   }
   let target: string | null = null;
   try {
-    target = resolvePrinterTarget(profile, await getPrinters());
+    const printers = await measurePrintStage(
+      "getPrinters",
+      options.onTiming,
+      getPrinters,
+    );
+    target = resolvePrinterTarget(profile, printers);
   } catch {
     target = null;
   }
@@ -277,7 +304,7 @@ export async function printHtml(
       );
     }
     return options.skipPreview
-      ? dispatchWithoutPreview(html, profile)
+      ? dispatchWithoutPreview(html, profile, undefined, options.onTiming)
       : showPreview(
           html,
           profile,
@@ -296,19 +323,20 @@ export async function printHtml(
     },
   });
   try {
-    await window.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+    await measurePrintStage("loadURL", options.onTiming, () =>
+      window.loadURL(
+        `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+      ),
     );
-    const height = await contentHeightMicrons(window.webContents);
-    await new Promise<void>((resolve, reject) => {
-      window.webContents.print(
-        { ...printSettings(profile, height), silent: true, deviceName: target },
-        (success, reason) =>
-          success
-            ? resolve()
-            : reject(new Error(reason || "Falló la impresión directa.")),
-      );
-    });
+    const height = await measurePrintStage("layout", options.onTiming, () =>
+      contentHeightMicrons(window.webContents),
+    );
+    const result = await nativePrint(
+      window.webContents,
+      { ...printSettings(profile, height), silent: true, deviceName: target },
+      options.onTiming,
+    );
+    if (!result.success) throw new Error(result.reason || "Falló la impresión directa.");
   } catch (error) {
     throw error instanceof Error
       ? error

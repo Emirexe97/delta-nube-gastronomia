@@ -13,6 +13,7 @@ import type {
 import { formatMoney } from "@gastronomy/domain";
 import { SqliteGastronomyRepository } from "@gastronomy/database";
 import { printHtml } from "./printer";
+import { createPrintDiagnostics, type PrintDiagnostics } from "./print-diagnostics";
 import { cashSessionReportHtml } from "./cash-session-ticket";
 import { scheduledOrderBadge } from "./scheduled-order-ticket.cjs";
 import { createValidatedBackup } from "./safe-backup.cjs";
@@ -38,6 +39,11 @@ let updater: DesktopUpdater | null = null;
 let updateTimer: ReturnType<typeof setInterval> | null = null;
 let updateStartupTimer: ReturnType<typeof setTimeout> | null = null;
 let updateQuitRequested = false;
+let printDiagnostics: PrintDiagnostics | undefined;
+function printTiming() {
+  printDiagnostics ??= createPrintDiagnostics(join(app.getPath("userData"), "diagnostics"));
+  return printDiagnostics.start();
+}
 nativeUpdater.on("before-quit-for-update", () => { updateQuitRequested = true; });
 async function pollLicensing() {
   if (!licensing || licensingPollInFlight) return;
@@ -165,6 +171,7 @@ async function printOrder(
       : settings.printing.bill;
   return printHtml(orderTicketHtml(order, kind, settings), profile, {
     parent: mainWindow,
+    onTiming: printTiming(),
   });
 }
 
@@ -263,13 +270,13 @@ async function executePrintJob(
   orderId: string,
   kind: "KITCHEN_ORDER" | "CUSTOMER_BILL",
 ) {
-  const { appService, localRepository } = services();
+  const { localRepository } = services();
   const order = localRepository.getOrder(orderId);
   try {
     const outcome = await printOrder(
       order,
       kind,
-      appService.bootstrap().settings,
+      localRepository.getSettings(),
     );
     if (outcome === "SKIPPED") {
       localRepository.discardPrintJob(jobId);
