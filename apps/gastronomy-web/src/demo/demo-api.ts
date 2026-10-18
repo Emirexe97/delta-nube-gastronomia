@@ -39,6 +39,7 @@ import type {
   ConfigureProductComboInput,
   CreateComboInput,
   RepeatOrderInput,
+  IngredientDto, SaveIngredientInput, ProductCostConfigurationDto, SetProductCostConfigurationInput,
 } from "@gastronomy/contracts";
 import { createDemoBootstrap, emptyDashboard } from "./demo-data";
 import { populateRepeatedDemoOrder } from "./repeat-order";
@@ -53,6 +54,7 @@ import {
   assertComboDefinition,
   calculateComboPrice,
   assertComboLineAmount,
+  assertIngredientValues, calculateIngredientRecipeCost,
 } from "@gastronomy/domain";
 
 export const DEMO_STORAGE_KEY = "delta-nube-gastronomia.demo.v5";
@@ -169,6 +171,8 @@ interface DemoState {
   financeExpenses?: FinanceExpenseDto[];
   financeRecurring?: FinanceRecurringDto[];
   financeManualCosts?: Record<string, number>;
+  ingredients?: IngredientDto[];
+  productCostRecipes?: Record<string, { enabled: boolean; items: Array<{ ingredientId:string; quantityMicros:number }> }>;
   financeItemCosts?: Record<
     string,
     { unitCostMinor: number | null; quantity: number }
@@ -531,6 +535,8 @@ function loadState(storage: DemoStorage): DemoState {
     parsed.historicalSessions ??= [];
     parsed.movements ??= [];
     parsed.purchases ??= [];
+    parsed.ingredients ??= [];
+    parsed.productCostRecipes ??= {};
     parsed.purchaseReceipts ??= {};
     parsed.financeExpenseRecoveryReceipts ??= {};
     parsed.financeExpensePaymentReceipts ??= {};
@@ -1191,6 +1197,8 @@ export function createDemoApi(
     return { ...purchase, revision: purchase.revision ?? 0, items, effectiveTotalMinor };
   };
   const currentFinanceCost = (productId: string) => {
+    const recipe=state.productCostRecipes?.[productId];
+    if(recipe?.enabled) return { unitCostMinor:calculateIngredientRecipeCost(recipe.items,state.ingredients??[]),source:"RECIPE" as const };
     const manual = state.financeManualCosts?.[productId];
     if (manual != null)
       return { unitCostMinor: manual, source: "MANUAL" as const };
@@ -4523,6 +4531,46 @@ export function createDemoApi(
       return output(state.purchases.map(projectPurchase));
     },
 
+    async listIngredients() {
+      if (!state.data.currentUser.permissions.some((p) => p === "finance.view" || p === "finance.manage" || p === "*")) throw new Error("No tenés permiso para consultar costos.");
+      return output(state.ingredients ?? []);
+    },
+
+    async saveIngredient(input: SaveIngredientInput) {
+      if (!state.data.currentUser.permissions.includes("finance.manage") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para gestionar costos.");
+      assertIngredientValues(input);
+      const ingredients=state.ingredients ??= [];
+      const existing=input.ingredientId ? ingredients.find((i)=>i.id===input.ingredientId) : undefined;
+      if(input.ingredientId && !existing) throw new Error("El ingrediente no existe.");
+      if(existing && existing.baseUnit!==input.baseUnit && Object.values(state.productCostRecipes??{}).some((r)=>r.items.some((i)=>i.ingredientId===existing.id))) throw new Error("No se puede cambiar la unidad de un ingrediente usado en una receta.");
+      const dto:IngredientDto={id:existing?.id??`ingredient-${++state.sequence}`,name:input.name.trim(),presentation:input.presentation.trim(),baseUnit:input.baseUnit,presentationQuantityMicros:input.presentationQuantityMicros,presentationCostMinor:input.presentationCostMinor};
+      const candidateIngredients=ingredients.filter((i)=>i.id!==dto.id).concat(dto);
+      for(const recipe of Object.values(state.productCostRecipes??{}).filter((r)=>r.enabled&&r.items.some((i)=>i.ingredientId===dto.id))) calculateIngredientRecipeCost(recipe.items,candidateIngredients);
+      if(existing) Object.assign(existing,dto); else ingredients.push(dto);
+      audit(state,"INGREDIENT",dto.id,existing?"INGREDIENT_UPDATED":"INGREDIENT_CREATED",null,"finance.manage"); save(); return output(dto);
+    },
+
+    async getProductCostConfiguration(input: {productId:string}) {
+      if (!state.data.currentUser.permissions.some((p) => p === "finance.view" || p === "finance.manage" || p === "*")) throw new Error("No tenés permiso para consultar costos.");
+      productById(input.productId); const recipe=state.productCostRecipes?.[input.productId];
+      return output({productId:input.productId,recipeEnabled:recipe?.enabled??false,recipeItems:recipe?.items??[],manualUnitCostMinor:state.financeManualCosts?.[input.productId]??null});
+    },
+
+    async setProductCostConfiguration(input: SetProductCostConfigurationInput) {
+      if (!state.data.currentUser.permissions.includes("finance.manage") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para gestionar costos.");
+      const product=productById(input.productId);
+      if(typeof input.recipeEnabled!=="boolean"||!Array.isArray(input.recipeItems)||input.recipeItems.length>100) throw new Error("La configuración de receta no es válida.");
+      if(input.recipeEnabled&&input.recipeItems.length===0) throw new Error("La receta debe incluir al menos un ingrediente.");
+      if(input.manualUnitCostMinor!==null && (!Number.isSafeInteger(input.manualUnitCostMinor)||input.manualUnitCostMinor<0)) throw new Error("El costo no es válido.");
+      if(input.recipeEnabled) {
+        if(product.comboDefinition) throw new Error("Los combos no admiten recetas directas.");
+        calculateIngredientRecipeCost(input.recipeItems,state.ingredients??[]);
+      } else if(input.recipeItems.length) calculateIngredientRecipeCost(input.recipeItems,state.ingredients??[]);
+      if(input.manualUnitCostMinor==null) delete (state.financeManualCosts??={})[input.productId]; else (state.financeManualCosts??={})[input.productId]=input.manualUnitCostMinor;
+      (state.productCostRecipes??={})[input.productId]={enabled:input.recipeEnabled,items:structuredClone(input.recipeItems)};
+      audit(state,"PRODUCT",input.productId,"PRODUCT_COST_CONFIGURATION_SET",null,"finance.manage"); save(); return output(input);
+    },
+
     async getFinanceProductCosts() {
       if (
         !state.data.currentUser.permissions.includes("finance.view") &&
@@ -5382,12 +5430,15 @@ export function createDemoApi(
     },
 
     async setFinanceProductCost(input) {
+      if (!state.data.currentUser.permissions.includes("finance.manage") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para gestionar costos.");
       if (
         input.unitCostMinor != null &&
         (!Number.isSafeInteger(input.unitCostMinor) || input.unitCostMinor < 0)
       )
         throw new Error("El costo no es válido.");
       productById(input.productId);
+      const savedRecipe=(state.productCostRecipes??={})[input.productId];
+      if(savedRecipe) savedRecipe.enabled=false;
       if (input.unitCostMinor == null)
         delete (state.financeManualCosts ??= {})[input.productId];
       else

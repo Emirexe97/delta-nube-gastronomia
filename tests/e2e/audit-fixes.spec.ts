@@ -115,7 +115,7 @@ test("cobra 150,50 pesos exactos y conserva el costo manual en centavos", async 
     .locator("select")
     .filter({ has: page.locator(`option[value="${order.productId}"]`) });
   await costs.selectOption(order.productId);
-  const cost = page.getByLabel("Costo unitario", { exact: true });
+  const cost = page.getByLabel("Costo manual por unidad", { exact: true });
   await expect(cost).toHaveValue("150,50");
   await page
     .getByRole("button", { name: "Guardar costo", exact: true })

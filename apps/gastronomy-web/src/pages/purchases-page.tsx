@@ -802,6 +802,8 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
           <p className="text-sm text-slate-600">
             {costSource === "MANUAL"
               ? "El producto tiene un costo manual; no se cambiará."
+              : costSource === "RECIPE"
+                ? "El costo del producto se calcula con su receta de ingredientes."
               : newerPurchase
                 ? "Hay una compra más nueva: el costo vigente del producto se conserva."
                 : "El costo vigente respeta las compras más recientes y cualquier costo manual."}

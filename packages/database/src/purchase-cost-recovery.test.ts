@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3-multiple-ciphers";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
-import { removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
+import { latestSchemaVersion, removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
 
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-cost-"));
@@ -172,8 +172,8 @@ test("migration from schema 35 creates empty append-only correction ledger witho
     rewindPurchaseTestSchema(db, 35);
     db.close(); repo.close(); repo = new SqliteGastronomyRepository(path, { adminPin: "2468" }); db = new Database(path);
     assert.deepEqual(removeNewNullablePurchaseColumns(db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id) as any), before);
-    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 40);
-    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), [{version:35},{version:36},{version:37},{version:38},{version:39},{version:40}]);
+    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, latestSchemaVersion);
+    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), [{version:35},{version:36},{version:37},{version:38},{version:39},{version:40},{version:41}]);
     assert.equal((db.prepare("SELECT COUNT(*) n FROM purchase_item_cost_corrections").get() as any).n, 0);
   } finally { db.close(); repo.close(); assert.equal(dirname(resolve(dir)), resolve(tmpdir())); assert.ok(basename(dir).startsWith("gastronomy-purchase-cost-")); rmSync(dir, { recursive: true, force: true }); }
 });

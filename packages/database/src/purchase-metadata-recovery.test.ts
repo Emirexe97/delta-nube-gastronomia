@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3-multiple-ciphers";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
-import { removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
+import { latestSchemaVersion, removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
 
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-metadata-"));
@@ -150,8 +150,8 @@ test("migration adds zero revision to existing purchases without changing any hi
     assert.equal(repo.listPurchases().find((p) => p.id === purchase.id)?.revision, 0);
     assert.deepEqual(withoutSchemaAdditions(protectedState(db)), businessBefore);
     assert.deepEqual(db.prepare("SELECT * FROM command_receipts ORDER BY rowid").all(), receiptsBefore);
-    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 40);
-    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), [{ version: 35 }, { version: 36 }, { version: 37 }, { version: 38 }, { version: 39 }, { version: 40 }]);
+    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, latestSchemaVersion);
+    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), [{ version: 35 }, { version: 36 }, { version: 37 }, { version: 38 }, { version: 39 }, { version: 40 }, { version: 41 }]);
     assert.equal((db.prepare("SELECT COUNT(*) count FROM purchase_item_cost_corrections").get() as any).count, 0);
     assert.equal((db.prepare("SELECT COUNT(*) count FROM purchase_item_quantity_corrections").get() as any).count, 0);
   } finally {

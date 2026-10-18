@@ -58,6 +58,7 @@ import type {
   CorrectPurchaseItemProductInput,
   PurchaseDto,
   FinanceReportDto,
+  IngredientDto, SaveIngredientInput, ProductCostConfigurationDto, SetProductCostConfigurationInput,
   FinanceExpenseDto,
   FinanceExpenseReturnDto,
   FinanceRecurringDto,
@@ -107,6 +108,7 @@ import {
   assertComboDefinition,
   calculateComboPrice,
   assertComboLineAmount,
+  assertIngredientValues, calculateIngredientRecipeCost,
 } from "@gastronomy/domain";
 import { migrations } from "./migrations";
 import { populateRepeatedOrder } from "./repeat-order";
@@ -2005,8 +2007,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   private currentProductCost(productId: string): {
     unitCostMinor: number | null;
-    source: "MANUAL" | "PURCHASE" | "UNKNOWN";
+    source: "MANUAL" | "PURCHASE" | "UNKNOWN" | "RECIPE";
   } {
+    const recipe = this.db.prepare("SELECT enabled,items_json FROM product_cost_recipes WHERE product_id=?").get(productId) as Row | undefined;
+    if (recipe?.enabled) {
+      const items = JSON.parse(String(recipe.items_json)) as Array<{ingredientId:string;quantityMicros:number}>;
+      const ingredients = this.listIngredientRows(items.map((item) => item.ingredientId));
+      return { unitCostMinor: calculateIngredientRecipeCost(items, ingredients), source: "RECIPE" };
+    }
     const manual = this.db
       .prepare(
         "SELECT unit_cost_minor FROM finance_product_costs WHERE product_id = ?",
@@ -2031,6 +2039,74 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return purchase
       ? { unitCostMinor: Number(purchase.unit_cost_minor), source: "PURCHASE" }
       : { unitCostMinor: null, source: "UNKNOWN" };
+  }
+
+  private listIngredientRows(ids?: string[]): IngredientDto[] {
+    const rows = ids?.length ? this.db.prepare(`SELECT * FROM ingredients WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as Row[] : this.db.prepare("SELECT * FROM ingredients ORDER BY name COLLATE NOCASE,id").all() as Row[];
+    return rows.map((r) => ({ id:String(r.id), name:String(r.name), presentation:String(r.presentation), baseUnit:r.base_unit as IngredientDto["baseUnit"], presentationQuantityMicros:Number(r.presentation_quantity_micros), presentationCostMinor:Number(r.presentation_cost_minor) }));
+  }
+
+  listIngredients(): IngredientDto[] {
+    const permissions=this.currentUser().permissions;
+    if(!permissions.includes("finance.view")&&!permissions.includes("finance.manage")&&!permissions.includes("*")) throw new Error("No tenés permiso para consultar costos.");
+    return this.listIngredientRows();
+  }
+
+  saveIngredient(input: SaveIngredientInput): IngredientDto {
+    assertPermission(this.currentUser().permissions, "finance.manage"); assertIngredientValues(input);
+    const run = this.db.transaction(() => {
+      const id = input.ingredientId ?? randomUUID();
+      const existing = this.db.prepare("SELECT id,base_unit FROM ingredients WHERE id=?").get(id) as Row | undefined;
+      if (input.ingredientId && !existing) throw new Error("El ingrediente no existe.");
+      if (existing && existing.base_unit !== input.baseUnit) {
+        const used = this.db.prepare("SELECT 1 FROM product_cost_recipes WHERE EXISTS (SELECT 1 FROM json_each(items_json) WHERE json_extract(value,'$.ingredientId')=?) LIMIT 1").get(id);
+        if (used) throw new Error("No se puede cambiar la unidad de un ingrediente usado en una receta.");
+      }
+      const now = nowIso();
+      this.db.prepare(`INSERT INTO ingredients(id,name,presentation,base_unit,presentation_quantity_micros,presentation_cost_minor,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,presentation=excluded.presentation,base_unit=excluded.base_unit,presentation_quantity_micros=excluded.presentation_quantity_micros,presentation_cost_minor=excluded.presentation_cost_minor,updated_at=excluded.updated_at`)
+        .run(id,input.name.trim(),input.presentation.trim(),input.baseUnit,input.presentationQuantityMicros,input.presentationCostMinor,now,now);
+      const affected=this.db.prepare("SELECT items_json FROM product_cost_recipes WHERE enabled=1 AND EXISTS (SELECT 1 FROM json_each(items_json) WHERE json_extract(value,'$.ingredientId')=?)").all(id) as Row[];
+      for(const recipe of affected) {
+        const items=JSON.parse(String(recipe.items_json)) as Array<{ingredientId:string;quantityMicros:number}>;
+        calculateIngredientRecipeCost(items,this.listIngredientRows(items.map((item)=>item.ingredientId)));
+      }
+      const after = { ...input, ingredientId:id, name:input.name.trim(), presentation:input.presentation.trim() };
+      this.audit({ entityType:"INGREDIENT",entityId:id,action:existing?"INGREDIENT_UPDATED":"INGREDIENT_CREATED",permission:"finance.manage",after });
+      return { id,name:after.name,presentation:after.presentation,baseUnit:input.baseUnit,presentationQuantityMicros:input.presentationQuantityMicros,presentationCostMinor:input.presentationCostMinor };
+    });
+    return run();
+  }
+
+  getProductCostConfiguration(input: { productId: Id }): ProductCostConfigurationDto {
+    const permissions=this.currentUser().permissions;
+    if(!permissions.includes("finance.view")&&!permissions.includes("finance.manage")&&!permissions.includes("*")) throw new Error("No tenés permiso para consultar costos.");
+    requireRow(this.db.prepare("SELECT id FROM products WHERE id=?").get(input.productId) as Row|undefined,"El producto no existe.");
+    const manual=this.db.prepare("SELECT unit_cost_minor FROM finance_product_costs WHERE product_id=?").get(input.productId) as Row|undefined;
+    const row=this.db.prepare("SELECT enabled,items_json FROM product_cost_recipes WHERE product_id=?").get(input.productId) as Row|undefined;
+    return { productId:input.productId,recipeEnabled:Boolean(row?.enabled),recipeItems:row?JSON.parse(String(row.items_json)):[],manualUnitCostMinor:manual?Number(manual.unit_cost_minor):null };
+  }
+
+  setProductCostConfiguration(input: SetProductCostConfigurationInput): ProductCostConfigurationDto {
+    assertPermission(this.currentUser().permissions,"finance.manage");
+    requireRow(this.db.prepare("SELECT id,combo_definition_json FROM products WHERE id=?").get(input.productId) as Row|undefined,"El producto no existe.");
+    if (input.manualUnitCostMinor!==null) nonNegativeMoney(input.manualUnitCostMinor,"costo unitario");
+    if (typeof input.recipeEnabled !== "boolean" || !Array.isArray(input.recipeItems) || input.recipeItems.length>100) throw new Error("La configuración de receta no es válida.");
+    if (input.recipeEnabled && input.recipeItems.length===0) throw new Error("La receta debe incluir al menos un ingrediente.");
+    if (input.recipeItems.length>0) {
+      const ingredients=this.listIngredientRows(input.recipeItems.map((i)=>i.ingredientId));
+      calculateIngredientRecipeCost(input.recipeItems,ingredients);
+    }
+    const row=this.db.prepare("SELECT combo_definition_json FROM products WHERE id=?").get(input.productId) as Row;
+    if (input.recipeEnabled && row.combo_definition_json != null) throw new Error("Los combos no admiten recetas directas.");
+    const run=this.db.transaction(()=>{
+      const now=nowIso();
+      if(input.manualUnitCostMinor===null) this.db.prepare("DELETE FROM finance_product_costs WHERE product_id=?").run(input.productId);
+      else this.db.prepare(`INSERT INTO finance_product_costs(product_id,unit_cost_minor,updated_at) VALUES (?,?,?) ON CONFLICT(product_id) DO UPDATE SET unit_cost_minor=excluded.unit_cost_minor,updated_at=excluded.updated_at`).run(input.productId,input.manualUnitCostMinor,now);
+      this.db.prepare(`INSERT INTO product_cost_recipes(product_id,enabled,items_json,updated_at) VALUES (?,?,?,?) ON CONFLICT(product_id) DO UPDATE SET enabled=excluded.enabled,items_json=excluded.items_json,updated_at=excluded.updated_at`).run(input.productId,input.recipeEnabled?1:0,JSON.stringify(input.recipeItems),now);
+      this.audit({entityType:"PRODUCT",entityId:input.productId,action:"PRODUCT_COST_CONFIGURATION_SET",permission:"finance.manage",after:input});
+      return input;
+    }); return run();
   }
 
   private latestPurchaseItemQuantity(itemId: string, fallback: number): number {
@@ -2074,7 +2150,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const quantity = Number(item.quantity);
       let cost: {
         unitCostMinor: number | null;
-        source: "MANUAL" | "PURCHASE" | "UNKNOWN" | "HALVES";
+        source: "MANUAL" | "PURCHASE" | "UNKNOWN" | "RECIPE" | "HALVES";
       };
       const combo = item.combo_components_json == null ? null : JSON.parse(String(item.combo_components_json)) as Array<{productId:string;quantity:number}>;
       if (combo) {
@@ -2777,6 +2853,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       if (!product.category_active) throw new Error("No se puede configurar un combo en una categoría inactiva.");
       if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
       if (input.definition) {
+        const activeRecipe = this.db.prepare("SELECT enabled FROM product_cost_recipes WHERE product_id=? AND enabled=1").get(input.productId);
+        if (activeRecipe) throw new Error("Desactivá el costo por ingredientes antes de configurar un combo.");
         if (product.stock_minor != null) throw new Error("Quitá el control de stock antes de configurar el combo.");
         const all = this.db.prepare("SELECT id, parent_product_id, combo_definition_json FROM products").all() as Row[];
         const productDtos = all.map((p) => ({ id: String(p.id), parentProductId: p.parent_product_id == null ? null : String(p.parent_product_id), comboDefinition: p.combo_definition_json ? JSON.parse(String(p.combo_definition_json)) : null }));
@@ -7573,24 +7651,28 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         .get(input.productId) as Row | undefined,
       "El producto no existe.",
     );
-    if (input.unitCostMinor == null)
-      this.db
-        .prepare("DELETE FROM finance_product_costs WHERE product_id = ?")
-        .run(input.productId);
-    else
-      this.db
-        .prepare(
-          `INSERT INTO finance_product_costs(product_id,unit_cost_minor,updated_at) VALUES (?,?,?)
+    const run=this.db.transaction(()=>{
+      this.db.prepare("UPDATE product_cost_recipes SET enabled=0,updated_at=? WHERE product_id=?").run(nowIso(),input.productId);
+      if (input.unitCostMinor == null)
+        this.db
+          .prepare("DELETE FROM finance_product_costs WHERE product_id = ?")
+          .run(input.productId);
+      else
+        this.db
+          .prepare(
+            `INSERT INTO finance_product_costs(product_id,unit_cost_minor,updated_at) VALUES (?,?,?)
       ON CONFLICT(product_id) DO UPDATE SET unit_cost_minor=excluded.unit_cost_minor,updated_at=excluded.updated_at`,
-        )
-        .run(input.productId, input.unitCostMinor, nowIso());
-    this.audit({
-      entityType: "PRODUCT",
-      entityId: input.productId,
-      action: "FINANCE_PRODUCT_COST_SET",
-      permission: "finance.manage",
-      after: { unitCostMinor: input.unitCostMinor },
+          )
+          .run(input.productId, input.unitCostMinor, nowIso());
+      this.audit({
+        entityType: "PRODUCT",
+        entityId: input.productId,
+        action: "FINANCE_PRODUCT_COST_SET",
+        permission: "finance.manage",
+        after: { unitCostMinor: input.unitCostMinor },
+      });
     });
+    run();
   }
 
   listPurchases(): PurchaseDto[] {

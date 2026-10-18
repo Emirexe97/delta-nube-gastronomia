@@ -1061,4 +1061,26 @@ CREATE TRIGGER purchase_item_product_corrections_no_delete BEFORE DELETE ON purc
     sql: String.raw`ALTER TABLE products ADD COLUMN combo_definition_json TEXT;
 ALTER TABLE order_items ADD COLUMN combo_components_json TEXT;`,
   },
+  {
+    version: 41,
+    name: "ingredient_recipe_costs",
+    sql: String.raw`CREATE TABLE ingredients (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, presentation TEXT NOT NULL, base_unit TEXT NOT NULL CHECK(base_unit IN ('KG','L','UNIT')),
+ presentation_quantity_micros INTEGER NOT NULL CHECK(presentation_quantity_micros > 0), presentation_cost_minor INTEGER NOT NULL CHECK(presentation_cost_minor >= 0),
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+DROP INDEX finance_order_item_costs_order_idx;
+ALTER TABLE finance_order_item_costs RENAME TO finance_order_item_costs_old;
+CREATE TABLE finance_order_item_costs (
+ order_item_id TEXT PRIMARY KEY REFERENCES order_items(id) ON DELETE CASCADE, order_id TEXT NOT NULL REFERENCES orders(id),
+ unit_cost_minor INTEGER, quantity INTEGER NOT NULL CHECK(quantity > 0), total_cost_minor INTEGER,
+ source TEXT NOT NULL CHECK(source IN ('MANUAL','PURCHASE','UNKNOWN','HALVES','RECIPE')), captured_at TEXT NOT NULL
+);
+INSERT INTO finance_order_item_costs SELECT * FROM finance_order_item_costs_old;
+DROP TABLE finance_order_item_costs_old;
+CREATE INDEX finance_order_item_costs_order_idx ON finance_order_item_costs(order_id);
+CREATE TABLE product_cost_recipes (
+ product_id TEXT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), items_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
+);`,
+  },
 ];

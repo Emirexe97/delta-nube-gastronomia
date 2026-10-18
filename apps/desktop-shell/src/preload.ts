@@ -5,6 +5,10 @@ const invoke = <T>(method: keyof DesktopApi, payload?: unknown) =>
   ipcRenderer.invoke(`gastronomy:${method}`, payload) as Promise<T>;
 
 const api: DesktopApi = {
+  listIngredients: () => invoke("listIngredients"),
+  saveIngredient: (input) => invoke("saveIngredient", input),
+  getProductCostConfiguration: (input) => invoke("getProductCostConfiguration", input),
+  setProductCostConfiguration: (input) => invoke("setProductCostConfiguration", input),
   getAppUpdateStatus: () => invoke("getAppUpdateStatus"),
   checkAppUpdate: () => invoke("checkAppUpdate"),
   installAppUpdate: () => invoke("installAppUpdate"),

@@ -1170,7 +1170,7 @@ export interface FinanceReportDto {
     productId: Id;
     productName: string;
     unitCostMinor: MoneyMinor | null;
-    source: "MANUAL" | "PURCHASE" | "UNKNOWN";
+    source: "MANUAL" | "PURCHASE" | "UNKNOWN" | "RECIPE";
   }>;
   monthly: Array<{
     expenseReturnsMinor?: MoneyMinor;
@@ -1182,6 +1182,13 @@ export interface FinanceReportDto {
     expensesMinor: MoneyMinor;
   }>;
 }
+
+export type IngredientUnit = "KG" | "L" | "UNIT";
+export interface IngredientDto { id: Id; name: string; presentation: string; baseUnit: IngredientUnit; presentationQuantityMicros: number; presentationCostMinor: number; }
+export interface RecipeIngredientDto { ingredientId: string; quantityMicros: number; }
+export interface ProductCostConfigurationDto { productId: string; recipeEnabled: boolean; recipeItems: RecipeIngredientDto[]; manualUnitCostMinor: number | null; }
+export interface SaveIngredientInput { ingredientId?: string; name: string; presentation: string; baseUnit: IngredientUnit; presentationQuantityMicros: number; presentationCostMinor: number; }
+export interface SetProductCostConfigurationInput extends ProductCostConfigurationDto {}
 
 export interface CreateFinanceExpenseInput extends IdempotentRequest {
   title: string;
@@ -1307,6 +1314,10 @@ export interface AppUpdateStatusDto {
 }
 
 export interface DesktopApi {
+  listIngredients(): Promise<IngredientDto[]>;
+  saveIngredient(input: SaveIngredientInput): Promise<IngredientDto>;
+  getProductCostConfiguration(input: { productId: string }): Promise<ProductCostConfigurationDto>;
+  setProductCostConfiguration(input: SetProductCostConfigurationInput): Promise<ProductCostConfigurationDto>;
   getAppUpdateStatus(): Promise<AppUpdateStatusDto>;
   checkAppUpdate(): Promise<AppUpdateStatusDto>;
   installAppUpdate(): Promise<AppUpdateStatusDto>;

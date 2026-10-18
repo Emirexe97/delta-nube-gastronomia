@@ -1,10 +1,17 @@
 import type Database from "better-sqlite3-multiple-ciphers";
+import { migrations } from "./migrations";
+
+export const latestSchemaVersion = Math.max(
+  ...migrations.map((migration) => migration.version),
+);
 
 /** Rewinds only schema artifacts newer than targetVersion, preserving business rows. */
 export function rewindPurchaseTestSchema(
   db: InstanceType<typeof Database>,
   targetVersion: number,
 ) {
+  if (targetVersion < 41)
+    db.exec("DROP TABLE IF EXISTS product_cost_recipes; DROP TABLE IF EXISTS ingredients;");
   if (targetVersion < 40) {
     const products = db.prepare("PRAGMA table_info(products)").all() as Array<{
       name: string;

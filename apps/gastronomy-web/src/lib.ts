@@ -154,6 +154,9 @@ const auditLabels: Record<string, string> = {
   FINANCE_RECURRING_CREATED: "Gasto recurrente creado",
   FINANCE_RECURRING_STOPPED: "Gasto recurrente detenido",
   FINANCE_PRODUCT_COST_SET: "Costo de producto actualizado",
+  INGREDIENT_CREATED: "Ingrediente creado",
+  INGREDIENT_UPDATED: "Ingrediente actualizado",
+  PRODUCT_COST_CONFIGURATION_SET: "Costo de producto configurado",
 };
 const entityLabels: Record<string, string> = {
   ORDER: "Pedido",
@@ -161,6 +164,7 @@ const entityLabels: Record<string, string> = {
   DELIVERY_LEDGER: "Rendición",
   SETTINGS: "Configuración",
   PRODUCT: "Producto",
+  INGREDIENT: "Ingrediente",
   PRODUCT_BATCH: "Lote de productos",
   PURCHASE: "Compra",
   PAYMENT: "Pago",

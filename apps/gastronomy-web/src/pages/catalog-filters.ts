@@ -9,7 +9,7 @@ export type CatalogFilters = {
 
 export type ProductCost = {
   unitCostMinor: number | null;
-  source: "MANUAL" | "PURCHASE" | "UNKNOWN";
+  source: "MANUAL" | "PURCHASE" | "RECIPE" | "UNKNOWN";
 };
 export type CatalogGroup = {
   parent: ProductDto;

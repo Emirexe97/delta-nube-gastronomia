@@ -33,6 +33,7 @@ import {
   parseMoneyInput,
 } from "../lib";
 import { fullMonthForRange } from "./finance-period";
+import { ProductCostEditor } from "../components/product-cost-editor";
 
 const today = () => {
   const date = new Date();
@@ -71,7 +72,6 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
   const [payMethod, setPayMethod] = useState("CASH");
   const [fromCash, setFromCash] = useState(false);
   const [productId, setProductId] = useState("");
-  const [unitCost, setUnitCost] = useState("");
   const [recovery, setRecovery] = useState<{
     mode: "correct" | "cancel" | "unmark" | "cash-payment" | "closed-payment" | "monthly-correct" | "monthly-cancel";
     item: FinanceExpenseDto;
@@ -152,8 +152,6 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
       );
     return [...grouped].sort((a, b) => b[1] - a[1]);
   }, [activeExpenses, report?.expenseReturns]);
-  const unitCostMinor = parseMoneyInput(unitCost);
-  const costInvalid = Boolean(unitCost.trim()) && unitCostMinor == null;
 
   const coverage =
     report && report.costedItems + report.unknownCostItems > 0
@@ -1210,36 +1208,12 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                   Ver productos sin costo
                 </Link>
               ) : null}
-              <form
-                className="mt-3 flex flex-wrap items-end gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  if (!productId || !unitCost.trim() || unitCostMinor == null) {
-                    setError("Ingresá un costo válido, mayor o igual a cero.");
-                    return;
-                  }
-                  void run(
-                    () =>
-                      window.gastronomy.setFinanceProductCost({
-                        productId,
-                        unitCostMinor,
-                      }),
-                    "Costo actualizado.",
-                  );
-                }}
-              >
+              <div className="mt-3 space-y-3">
                 <Field label="Producto">
                   <Select
+                    aria-label="Producto para costo"
                     value={productId}
-                    onChange={(event) => {
-                      const id = event.target.value;
-                      setProductId(id);
-                      const cost = report.productCosts.find(
-                        (item) => item.productId === id,
-                      )?.unitCostMinor;
-                      setUnitCost(cost == null ? "" : moneyInputValue(cost));
-                    }}
-                    required
+                    onChange={(event) => setProductId(event.target.value)}
                   >
                     <option value="">Elegir producto</option>
                     {report.productCosts.map((item) => (
@@ -1252,53 +1226,21 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                     ))}
                   </Select>
                 </Field>
-                <Field label="Costo unitario">
-                  <Input
-                    inputMode="decimal"
-                    value={unitCost}
-                    onChange={(event) => setUnitCost(event.target.value)}
-                    placeholder="0,00"
-                    required
+                {(data.currentUser.permissions.includes("finance.manage") ||
+                  data.currentUser.permissions.includes("*")) &&
+                data.products.find((product) => product.id === productId) ? (
+                  <ProductCostEditor
+                    key={productId}
+                    product={data.products.find(
+                      (product) => product.id === productId,
+                    )!}
+                    onSaved={() => {
+                      setMessage("Costo actualizado.");
+                      setReload((value) => value + 1);
+                    }}
                   />
-                </Field>
-                {costInvalid ? (
-                  <p
-                    role="alert"
-                    className="text-xs font-semibold text-rose-700"
-                  >
-                    Ingresá un costo válido, mayor o igual a cero.
-                  </p>
                 ) : null}
-                <Button
-                  type="submit"
-                  disabled={
-                    !productId || !unitCost.trim() || costInvalid || busy
-                  }
-                >
-                  Guardar costo
-                </Button>
-                {report.productCosts.find(
-                  (item) => item.productId === productId,
-                )?.source === "MANUAL" ? (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(
-                        () =>
-                          window.gastronomy.setFinanceProductCost({
-                            productId,
-                            unitCostMinor: null,
-                          }),
-                        "Se vuelve a usar el costo de compras.",
-                      )
-                    }
-                  >
-                    Usar costo de compras
-                  </Button>
-                ) : null}
-              </form>
+              </div>
             </Card>
           </section>
         </>

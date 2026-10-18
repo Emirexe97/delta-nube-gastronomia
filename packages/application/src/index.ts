@@ -54,6 +54,7 @@ import type {
   FinanceReportDto,
   FinanceExpenseDto,
   FinanceRecurringDto,
+  IngredientDto, SaveIngredientInput, ProductCostConfigurationDto, SetProductCostConfigurationInput,
   CreateFinanceExpenseInput,
   CorrectFinanceExpenseInput,
   CancelFinanceExpenseInput,
@@ -133,6 +134,10 @@ function validateProductInventory(input: ProductInventoryInput) {
 }
 
 export interface GastronomyRepository {
+  listIngredients(): IngredientDto[];
+  saveIngredient(input: SaveIngredientInput): IngredientDto;
+  getProductCostConfiguration(input: { productId: Id }): ProductCostConfigurationDto;
+  setProductCostConfiguration(input: SetProductCostConfigurationInput): ProductCostConfigurationDto;
   repeatOrder(input: RepeatOrderInput): OrderDto;
   addComboItem(input: AddComboItemInput): OrderDto;
   configureProductCombo(input: ConfigureProductComboInput): ProductDto;
@@ -430,6 +435,11 @@ export interface GastronomyRepository {
 
 export class GastronomyApplication {
   constructor(private readonly repository: GastronomyRepository) {}
+
+  listIngredients() { return this.repository.listIngredients(); }
+  saveIngredient(input: SaveIngredientInput) { return this.repository.saveIngredient(input); }
+  getProductCostConfiguration(input: { productId: Id }) { return this.repository.getProductCostConfiguration(input); }
+  setProductCostConfiguration(input: SetProductCostConfigurationInput) { return this.repository.setProductCostConfiguration(input); }
 
   private normalizeCustomerTags(tags?: string[]) {
     const normalized = [

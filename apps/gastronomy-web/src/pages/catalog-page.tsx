@@ -33,6 +33,8 @@ import {
 import { useApiMutation } from "../api";
 import { ComboConfigModal } from "../components/combo-config-modal";
 import { CombosTable } from "../components/combos-table";
+import { IngredientsPanel } from "../components/ingredients-panel";
+import { ProductCostEditor } from "../components/product-cost-editor";
 import { convertProductImageToWebp } from "../product-image";
 import {
   auditActionLabel,
@@ -161,6 +163,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const canViewCosts =
     data.currentUser.permissions.includes("finance.view") ||
     data.currentUser.permissions.includes("*");
+  const canManageCosts =
+    data.currentUser.permissions.includes("finance.manage") ||
+    data.currentUser.permissions.includes("*");
   const [productCosts, setProductCosts] = useState<
     FinanceReportDto["productCosts"]
   >([]);
@@ -195,7 +200,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [categoryQuery, setCategoryQuery] = useState("");
   const [comboQuery, setComboQuery] = useState("");
   const [tab, setTab] = useState<
-    "PRODUCTS" | "CATEGORIES" | "MODIFIERS" | "COMBOS"
+    "PRODUCTS" | "CATEGORIES" | "MODIFIERS" | "COMBOS" | "INGREDIENTS"
   >("PRODUCTS");
   useEffect(() => {
     if (costParam === "sin" || costParam === "con") setTab("PRODUCTS");
@@ -219,6 +224,17 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [stockProduct, setStockProduct] = useState<ProductDto | null>(null);
   const [comboProduct, setComboProduct] = useState<ProductDto | null>(null);
   const [comboOpen, setComboOpen] = useState(false);
+  const [ingredientOpen, setIngredientOpen] = useState(false);
+  const [costProduct, setCostProduct] = useState<ProductDto | null>(null);
+  useEffect(() => {
+    if (
+      searchParams.get("tab") === "ingredients" &&
+      (canViewCosts || canManageCosts)
+    ) {
+      setTab("INGREDIENTS");
+      setCostProduct(null);
+    }
+  }, [searchParams.get("tab"), canViewCosts, canManageCosts]);
   const canManageCombos =
     data.currentUser.permissions.includes("prices.bulk_update") ||
     data.currentUser.permissions.includes("*");
@@ -375,6 +391,11 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {tab === "INGREDIENTS" && canManageCosts ? (
+            <Button onClick={() => setIngredientOpen(true)}>
+              <Plus size={17} /> Nuevo ingrediente
+            </Button>
+          ) : null}
           {tab === "CATEGORIES" ? (
             <Button variant="secondary" onClick={() => setCategoryOpen(true)}>
               <Plus size={17} /> Nueva categoría
@@ -414,22 +435,28 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             ["CATEGORIES", "Categorías"],
             ["MODIFIERS", "Modificadores"],
             ["COMBOS", "Combos"],
+            ["INGREDIENTS", "Ingredientes"],
           ] as const
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            role="tab"
-            aria-selected={tab === value}
-            onClick={() => setTab(value)}
-            className={`h-9 flex-1 rounded-lg text-xs font-bold transition ${tab === value ? "bg-brand-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}
-          >
-            {label}
-            {value === "PRODUCTS" && selectedProductIds.size
-              ? ` · ${selectedProductIds.size}`
-              : ""}
-          </button>
-        ))}
+        )
+          .filter(
+            ([value]) =>
+              value !== "INGREDIENTS" || canViewCosts || canManageCosts,
+          )
+          .map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={tab === value}
+              onClick={() => setTab(value)}
+              className={`h-9 flex-1 rounded-lg text-xs font-bold transition ${tab === value ? "bg-brand-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+            >
+              {label}
+              {value === "PRODUCTS" && selectedProductIds.size
+                ? ` · ${selectedProductIds.size}`
+                : ""}
+            </button>
+          ))}
       </div>
 
       {tab === "MODIFIERS" && selectedProducts.length ? (
@@ -852,6 +879,16 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                           </td>
                           <td className="text-right">
                             <div className="flex justify-end gap-1.5">
+                              {canManageCosts && !parent.comboDefinition ? (
+                                <Button
+                                  variant="secondary"
+                                  className="h-8 px-2.5 text-xs"
+                                  aria-label={`Costo de ${parent.name}`}
+                                  onClick={() => setCostProduct(parent)}
+                                >
+                                  Costo
+                                </Button>
+                              ) : null}
                               <button
                                 type="button"
                                 aria-label={`Ajustar inventario de ${parent.name}`}
@@ -957,6 +994,17 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                 </td>
                                 <td className="text-right">
                                   <div className="flex justify-end gap-1.5">
+                                    {canManageCosts &&
+                                    !variant.comboDefinition ? (
+                                      <Button
+                                        variant="secondary"
+                                        className="h-7 px-2 text-xs"
+                                        aria-label={`Costo de ${variant.name}`}
+                                        onClick={() => setCostProduct(variant)}
+                                      >
+                                        Costo
+                                      </Button>
+                                    ) : null}
                                     <button
                                       type="button"
                                       aria-label={`Ajustar inventario de ${variant.name}`}
@@ -1017,6 +1065,13 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             <EmptyProducts onCreate={() => openNewProduct()} />
           )}
         </Card>
+      ) : tab === "INGREDIENTS" ? (
+        <IngredientsPanel
+          canManage={canManageCosts}
+          createOpen={ingredientOpen}
+          onCloseCreate={() => setIngredientOpen(false)}
+          onSaved={() => setCostReload((value) => value + 1)}
+        />
       ) : tab === "COMBOS" ? (
         <CombosTable
           products={data.products}
@@ -1159,6 +1214,23 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           setComboProduct(null);
         }}
       />
+      <Modal
+        open={Boolean(costProduct)}
+        onClose={() => setCostProduct(null)}
+        title={`Costo · ${costProduct?.name ?? ""}`}
+        width="max-w-3xl"
+      >
+        {costProduct && (
+          <ProductCostEditor
+            key={costProduct.id}
+            product={costProduct}
+            onSaved={() => {
+              setCostProduct(null);
+              setCostReload((value) => value + 1);
+            }}
+          />
+        )}
+      </Modal>
       <BulkProductsModal
         open={bulkOpen}
         products={selectedProducts}

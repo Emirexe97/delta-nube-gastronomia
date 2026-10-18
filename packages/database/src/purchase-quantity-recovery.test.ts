@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3-multiple-ciphers";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
-import { removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
+import { latestSchemaVersion, removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
 
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-quantity-"));
@@ -205,10 +205,10 @@ test("quantity ledger is immutable and migration 37 upgrades schema 36 without c
     // Return the fixture to schema 36 while retaining all real historical business rows.
     rewindPurchaseTestSchema(db, 36);
     db.close(); repo.close(); repo = new SqliteGastronomyRepository(path, { adminPin: "2468" }); db = new Database(path);
-    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, 40);
+    assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, latestSchemaVersion);
     assert.deepEqual(removeNewNullablePurchaseColumns(db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id) as any), purchaseBefore);
     assert.deepEqual(db.prepare("SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY rowid").all(purchase.id), itemsBefore);
-    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=36 ORDER BY version").all(), [{version:36},{version:37},{version:38},{version:39},{version:40}]);
+    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=36 ORDER BY version").all(), [{version:36},{version:37},{version:38},{version:39},{version:40},{version:41}]);
     correctQuantity(repo, input);
     assert.throws(() => db.prepare("UPDATE purchase_item_quantity_corrections SET reason='edited'").run(), /immutable|inmutable/i);
     assert.throws(() => db.prepare("DELETE FROM purchase_item_quantity_corrections").run(), /immutable|inmutable/i);
