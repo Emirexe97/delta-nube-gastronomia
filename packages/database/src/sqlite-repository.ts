@@ -9,6 +9,7 @@ import type {
   AddHalfAndHalfItemInput,
   AddComboItemInput,
   ConfigureProductComboInput,
+  CreateComboInput,
   AddOrderItemInput,
   AppSettingsDto,
   AuditEntryDto,
@@ -2791,6 +2792,39 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       this.audit({ entityType: "PRODUCT", entityId: input.productId, action: "PRODUCT_COMBO_CONFIGURED", permission: "prices.bulk_update", reason: input.reason.trim(), before: { comboDefinition: product.combo_definition_json ? JSON.parse(String(product.combo_definition_json)) : null }, after: { comboDefinition: input.definition }, authorizerUserId: String(authorizer.id) });
       return this.listProducts().find((p) => p.id === input.productId)!;
     });
+  }
+
+  createCombo(input: CreateComboInput): ProductDto {
+    assertPermission(this.currentUser().permissions, "prices.bulk_update");
+    if (!input.name.trim()) throw new Error("Ingresá el nombre del producto.");
+    if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+    if (input.prices.some((price) => !Number.isSafeInteger(price.amountMinor) || price.amountMinor < 0))
+      throw new Error("Ingresá precios válidos y dentro del rango permitido.");
+    // Validate the authorizer before opening the transaction; all writes below
+    // still share the outer transaction and roll back together on any failure.
+    this.authorizePin(input.authorizerPin, "prices.bulk_update");
+    return this.idempotentTransaction(
+      input.idempotencyKey,
+      input.terminalId,
+      "createCombo",
+      undefined,
+      input,
+      () => {
+        const product = this.createProduct({
+          categoryId: input.categoryId,
+          name: input.name,
+          code: input.code,
+          stockMinor: null,
+          prices: input.prices,
+        });
+        return this.configureProductCombo({
+          productId: product.id,
+          definition: input.definition,
+          reason: input.reason,
+          authorizerPin: input.authorizerPin,
+        });
+      },
+    );
   }
 
   repeatOrder(input: RepeatOrderInput): OrderDto {

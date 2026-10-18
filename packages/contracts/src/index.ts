@@ -245,6 +245,19 @@ export interface ConfigureProductComboInput extends IdempotentRequest {
   authorizerPin: string;
 }
 
+export interface CreateComboInput extends IdempotentRequest {
+  categoryId: Id;
+  name: string;
+  code?: string | null;
+  prices: Array<{
+    priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY";
+    amountMinor: MoneyMinor;
+  }>;
+  definition: ComboDefinitionDto;
+  reason: string;
+  authorizerPin: string;
+}
+
 export interface AddComboItemInput extends IdempotentRequest {
   orderId: Id;
   comboProductId: Id;
@@ -1446,6 +1459,7 @@ export interface DesktopApi {
       amountMinor: MoneyMinor;
     }>;
   }): Promise<ProductDto>;
+  createCombo(input: CreateComboInput): Promise<ProductDto>;
   updateProduct(input: UpdateProductInput): Promise<ProductDto>;
   configureProductCombo(input: ConfigureProductComboInput): Promise<ProductDto>;
   deleteProduct(input: {

@@ -11,6 +11,7 @@ const api: DesktopApi = {
   repeatOrder: (input) => invoke("repeatOrder", input),
   addComboItem: (input) => invoke("addComboItem", input),
   configureProductCombo: (input) => invoke("configureProductCombo", input),
+  createCombo: (input) => invoke("createCombo", input),
   cancelPurchase: (input) => invoke("cancelPurchase", input),
   correctPurchaseItemProduct: (input) =>
     invoke("correctPurchaseItemProduct", input),

@@ -37,6 +37,7 @@ import type {
   UserDto,
   AddComboItemInput,
   ConfigureProductComboInput,
+  CreateComboInput,
   RepeatOrderInput,
 } from "@gastronomy/contracts";
 import { createDemoBootstrap, emptyDashboard } from "./demo-data";
@@ -174,6 +175,7 @@ interface DemoState {
   >;
   orderRepeatReceipts?: Record<string, { fingerprint: string; result: OrderDto }>;
   comboConfigReceipts?: Record<string, { fingerprint: string; result: ProductDto }>;
+  comboCreateReceipts?: Record<string, { fingerprint: string; result: ProductDto }>;
   comboAddReceipts?: Record<string, { fingerprint: string; result: OrderDto }>;
   financeExpenseMovements?: Record<string, string>;
   financeExpenseRecoveryReceipts?: Record<string, { fingerprint: string; result: FinanceExpenseDto }>;
@@ -4228,6 +4230,52 @@ export function createDemoApi(
       );
       save();
       return { deleted: true as const };
+    },
+
+    async createCombo(input: CreateComboInput) {
+      requirePin(input.authorizerPin);
+      if (!state.data.currentUser.permissions.includes("prices.bulk_update") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para editar precios.");
+      const receiptKey = input.idempotencyKey?.trim();
+      const fingerprint = JSON.stringify({ ...input, idempotencyKey: undefined });
+      const previous = receiptKey ? state.comboCreateReceipts?.[receiptKey] : undefined;
+      if (previous) {
+        if (previous.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(previous.result);
+      }
+      if (!input.name.trim()) throw new Error("Ingresá el nombre del producto.");
+      if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+      const category = categoryById(input.categoryId);
+      if (!category.active) throw new Error("No se puede configurar un combo en una categoría inactiva.");
+      const prices = normalizeProductPrices(input.prices);
+      if (prices.some((price) => !Number.isSafeInteger(price.amountMinor) || price.amountMinor < 0)) throw new Error("Ingresá precios válidos y dentro del rango permitido.");
+      const proposedId = "__combo_candidate_validation__";
+      const candidate: ProductDto = {
+        id: proposedId,
+        categoryId: category.id,
+        categoryName: category.name,
+        name: input.name.trim(),
+        code: input.code?.trim() || null,
+        parentProductId: null,
+        sortOrder: state.data.products.filter((p) => p.categoryId === category.id).length + 1,
+        active: true,
+        stockMinor: null,
+        stockTargetMinor: null,
+        stockMinMinor: null,
+        stockCriticalMinor: null,
+        imageDataUrl: null,
+        prices: prices.map((price) => ({ priceListId: `price-${price.priceListCode.toLowerCase()}`, ...price })),
+      };
+      assertComboDefinition(input.definition, candidate.id, [...state.data.products, candidate]);
+      const eligible = new Set(state.data.products.filter((p) => p.active && !p.comboDefinition && state.data.categories.find((c) => c.id === p.categoryId)?.active).map((p) => p.id));
+      if (input.definition.slots.some((slot) => slot.productIds.some((id) => !eligible.has(id)))) throw new Error("Las opciones solo pueden incluir productos activos que no sean combos.");
+      // All validations run before either product or audit state is changed.
+      const product = { ...candidate, id: uid("product", state), comboDefinition: clone(input.definition) };
+      state.data.products.push(product);
+      audit(state, "PRODUCT", product.id, "PRODUCTO_CREADO");
+      audit(state, "PRODUCT", product.id, "PRODUCT_COMBO_CONFIGURED", input.reason.trim(), "prices.bulk_update");
+      if (receiptKey) (state.comboCreateReceipts ??= {})[receiptKey] = { fingerprint, result: output(product) };
+      save();
+      return output(product);
     },
 
     async createProduct(input) {

@@ -32,6 +32,7 @@ import {
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { ComboConfigModal } from "../components/combo-config-modal";
+import { CombosTable } from "../components/combos-table";
 import { convertProductImageToWebp } from "../product-image";
 import {
   auditActionLabel,
@@ -137,8 +138,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                   ?.amountMinor ?? 0,
               ),
               OFF_PREMISE: formatMoney(
-                product.prices.find((price) => price.priceListCode === "TAKEAWAY")
-                  ?.amountMinor ?? 0,
+                product.prices.find(
+                  (price) => price.priceListCode === "TAKEAWAY",
+                )?.amountMinor ?? 0,
               ),
             },
             stock:
@@ -191,9 +193,10 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     };
   }, [canViewCosts, costReload, data.products, data.currentUser.id]);
   const [categoryQuery, setCategoryQuery] = useState("");
-  const [tab, setTab] = useState<"PRODUCTS" | "CATEGORIES" | "MODIFIERS">(
-    "PRODUCTS",
-  );
+  const [comboQuery, setComboQuery] = useState("");
+  const [tab, setTab] = useState<
+    "PRODUCTS" | "CATEGORIES" | "MODIFIERS" | "COMBOS"
+  >("PRODUCTS");
   useEffect(() => {
     if (costParam === "sin" || costParam === "con") setTab("PRODUCTS");
   }, [costParam]);
@@ -215,15 +218,22 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [modifierOpen, setModifierOpen] = useState(false);
   const [stockProduct, setStockProduct] = useState<ProductDto | null>(null);
   const [comboProduct, setComboProduct] = useState<ProductDto | null>(null);
+  const [comboOpen, setComboOpen] = useState(false);
+  const canManageCombos =
+    data.currentUser.permissions.includes("prices.bulk_update") ||
+    data.currentUser.permissions.includes("*");
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(
     new Set(),
   );
   const [bulkOpen, setBulkOpen] = useState(false);
   const [variantBaseProduct, setVariantBaseProduct] =
     useState<ProductDto | null>(null);
-  const [expandedProductIds, setExpandedProductIds] = useState<Set<string>>(
-    new Set(),
-  );
+  const [expansionOverrides, setExpansionOverrides] = useState<
+    Map<string, boolean>
+  >(new Map());
+  useEffect(() => {
+    setExpansionOverrides(new Map());
+  }, [query, categoryFilter, statusFilter, stockFilter, costFilterExtended]);
 
   const costs = useMemo(
     () =>
@@ -278,21 +288,22 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   );
 
   const isGroupExpanded = (group: CatalogProductGroup) => {
-    if (group.hasMatchingVariant) return true;
-    return expandedProductIds.has(group.parent.id);
+    return expansionOverrides.get(group.parent.id) ?? group.hasMatchingVariant;
   };
 
-  const toggleExpand = (productId: string) => {
-    setExpandedProductIds((current) => {
-      const next = new Set(current);
-      if (next.has(productId)) {
-        next.delete(productId);
-      } else {
-        next.add(productId);
-      }
+  const toggleExpand = (group: CatalogProductGroup) => {
+    setExpansionOverrides((current) => {
+      const next = new Map(current);
+      next.set(
+        group.parent.id,
+        !(current.get(group.parent.id) ?? group.hasMatchingVariant),
+      );
       return next;
     });
   };
+  const anyVariantsExpanded = productGroups.some(
+    (group) => group.variants.length > 0 && isGroupExpanded(group),
+  );
 
   const visibleProducts = useMemo(() => {
     const list: ProductDto[] = [];
@@ -305,7 +316,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       }
     }
     return list;
-  }, [productGroups, expandedProductIds, query]);
+  }, [productGroups, expansionOverrides]);
 
   const selectedProducts = useMemo(
     () => data.products.filter((product) => selectedProductIds.has(product.id)),
@@ -356,7 +367,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     <div className="panel-enter mx-auto max-w-[1500px] space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-extrabold">Catálogo, modificadores y stock</h2>
+          <h2 className="text-lg font-extrabold">
+            Catálogo, modificadores y stock
+          </h2>
           <p className="text-xs text-slate-600">
             Precios por canal y control opcional de existencias
           </p>
@@ -367,7 +380,17 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
               <Plus size={17} /> Nueva categoría
             </Button>
           ) : null}
-          {tab !== "CATEGORIES" ? (
+          {tab === "COMBOS" && canManageCombos ? (
+            <Button
+              onClick={() => {
+                setComboProduct(null);
+                setComboOpen(true);
+              }}
+            >
+              <Plus size={17} /> Nuevo combo
+            </Button>
+          ) : null}
+          {tab === "PRODUCTS" || tab === "MODIFIERS" ? (
             <Button
               onClick={() =>
                 tab === "PRODUCTS" ? openNewProduct() : setModifierOpen(true)
@@ -390,6 +413,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             ["PRODUCTS", "Productos"],
             ["CATEGORIES", "Categorías"],
             ["MODIFIERS", "Modificadores"],
+            ["COMBOS", "Combos"],
           ] as const
         ).map(([value, label]) => (
           <button
@@ -605,22 +629,23 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
               <Button
                 variant="secondary"
                 onClick={() => {
-                  if (expandedProductIds.size > 0) {
-                    setExpandedProductIds(new Set());
-                  } else {
-                    setExpandedProductIds(
-                      new Set(baseProductsWithVariants.map((p) => p.id)),
-                    );
-                  }
+                  setExpansionOverrides(
+                    new Map(
+                      baseProductsWithVariants.map((p) => [
+                        p.id,
+                        !anyVariantsExpanded,
+                      ]),
+                    ),
+                  );
                 }}
                 className="text-xs"
                 title={
-                  expandedProductIds.size > 0
+                  anyVariantsExpanded
                     ? "Colapsar todas las variantes desplegadas"
                     : "Desplegar todas las variantes en la tabla"
                 }
               >
-                {expandedProductIds.size > 0
+                {anyVariantsExpanded
                   ? "Colapsar variantes"
                   : "Expandir variantes"}
               </Button>
@@ -762,7 +787,8 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                       ? "Ocultar variantes"
                                       : "Desplegar variantes"
                                   }
-                                  onClick={() => toggleExpand(parent.id)}
+                                  aria-expanded={expanded}
+                                  onClick={() => toggleExpand(group)}
                                   className="focus-ring flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 shadow-2xs transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
                                 >
                                   <CaretDown
@@ -784,7 +810,8 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                 {hasVariants ? (
                                   <button
                                     type="button"
-                                    onClick={() => toggleExpand(parent.id)}
+                                    aria-expanded={expanded}
+                                    onClick={() => toggleExpand(group)}
                                     title={
                                       expanded
                                         ? "Ocultar variantes"
@@ -835,15 +862,6 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                 <SlidersHorizontal size={14} />
                                 Ajustar
                               </button>
-                              {(data.currentUser.permissions.includes("prices.bulk_update") || data.currentUser.permissions.includes("*")) && <button
-                                type="button"
-                                aria-label={`Configurar combo ${parent.name}`}
-                                title="Configurar o quitar opciones de combo"
-                                onClick={() => setComboProduct(parent)}
-                                className="focus-ring inline-flex h-8 items-center rounded-lg border border-amber-200 px-2.5 text-xs font-bold text-amber-800 transition hover:bg-amber-50"
-                              >
-                                {parent.comboDefinition ? "Editar combo" : "Configurar combo"}
-                              </button>}
                               <button
                                 type="button"
                                 aria-label={`Editar ${parent.name}`}
@@ -913,7 +931,11 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                     key={code}
                                     className="text-right text-xs font-semibold text-slate-700"
                                   >
-                                    {productDisplay.get(variant.id)!.prices[code]}
+                                    {
+                                      productDisplay.get(variant.id)!.prices[
+                                        code
+                                      ]
+                                    }
                                   </td>
                                 ))}
                                 <td>
@@ -995,6 +1017,23 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             <EmptyProducts onCreate={() => openNewProduct()} />
           )}
         </Card>
+      ) : tab === "COMBOS" ? (
+        <CombosTable
+          products={data.products}
+          query={comboQuery}
+          onQueryChange={setComboQuery}
+          canManage={canManageCombos}
+          onCreate={() => {
+            setComboProduct(null);
+            setComboOpen(true);
+          }}
+          onEditOptions={(product) => {
+            setComboProduct(product);
+            setComboOpen(true);
+          }}
+          onEditProduct={setEditingProduct}
+          onDelete={setDeletingProduct}
+        />
       ) : tab === "CATEGORIES" ? (
         <CategoryTable
           categories={data.categories}
@@ -1110,7 +1149,16 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         product={stockProduct}
         onClose={() => setStockProduct(null)}
       />
-      <ComboConfigModal open={Boolean(comboProduct)} product={comboProduct} products={data.products} onClose={() => setComboProduct(null)} />
+      <ComboConfigModal
+        open={comboOpen}
+        product={comboProduct}
+        products={data.products}
+        categories={data.categories}
+        onClose={() => {
+          setComboOpen(false);
+          setComboProduct(null);
+        }}
+      />
       <BulkProductsModal
         open={bulkOpen}
         products={selectedProducts}
@@ -2246,11 +2294,25 @@ function ProductModal({
     setHistoryLoading(true);
     setHistoryError(null);
     Promise.all([
-      window.gastronomy.getAuditLog({ action: "PRODUCT_UPDATED", search: product.id, limit: 5 }),
-      window.gastronomy.getAuditLog({ action: "STOCK_ADJUSTED", search: product.id, limit: 5 }),
+      window.gastronomy.getAuditLog({
+        action: "PRODUCT_UPDATED",
+        search: product.id,
+        limit: 5,
+      }),
+      window.gastronomy.getAuditLog({
+        action: "STOCK_ADJUSTED",
+        search: product.id,
+        limit: 5,
+      }),
     ])
       .then((groups) => {
-        const entries = groups.flat().sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.id.localeCompare(a.id));
+        const entries = groups
+          .flat()
+          .sort(
+            (a, b) =>
+              b.timestamp.localeCompare(a.timestamp) ||
+              b.id.localeCompare(a.id),
+          );
         if (!cancelled)
           setHistory(
             entries
@@ -2261,7 +2323,9 @@ function ProductModal({
       .catch(() => {
         if (!cancelled) {
           setHistory([]);
-          setHistoryError("No se pudo cargar el historial. Cerrá y volvé a abrir la ficha para reintentar.");
+          setHistoryError(
+            "No se pudo cargar el historial. Cerrá y volvé a abrir la ficha para reintentar.",
+          );
         }
       })
       .finally(() => {
@@ -2791,7 +2855,9 @@ function ProductModal({
                 Cargando cambios…
               </p>
             ) : historyError ? (
-              <p role="alert" className="px-3 py-3 text-xs text-rose-700">{historyError}</p>
+              <p role="alert" className="px-3 py-3 text-xs text-rose-700">
+                {historyError}
+              </p>
             ) : history.length ? (
               <ul className="divide-y divide-slate-100">
                 {history.map((entry) => (
@@ -2800,13 +2866,20 @@ function ProductModal({
                     className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs"
                   >
                     <span className="font-semibold text-slate-700">
-                      <span className="block">{auditActionLabel(entry.action)}</span>
-                      <span className="font-normal">{entry.reason || "Sin detalle"}</span>
+                      <span className="block">
+                        {auditActionLabel(entry.action)}
+                      </span>
+                      <span className="font-normal">
+                        {entry.reason || "Sin detalle"}
+                      </span>
                     </span>
                     <span className="text-slate-600">
                       {new Date(entry.timestamp).toLocaleString("es-AR")} ·{" "}
                       {entry.operatorName || entry.authorizerName || "Sistema"}
-                      {entry.authorizerName && entry.authorizerName !== entry.operatorName ? ` · Autorizó ${entry.authorizerName}` : null}
+                      {entry.authorizerName &&
+                      entry.authorizerName !== entry.operatorName
+                        ? ` · Autorizó ${entry.authorizerName}`
+                        : null}
                     </span>
                   </li>
                 ))}

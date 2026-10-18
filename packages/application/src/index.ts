@@ -1,6 +1,7 @@
 import type {
   AddComboItemInput,
   ConfigureProductComboInput,
+  CreateComboInput,
   RepeatOrderInput,
   CancelPurchaseInput,
   CorrectPurchaseItemProductInput,
@@ -135,6 +136,7 @@ export interface GastronomyRepository {
   repeatOrder(input: RepeatOrderInput): OrderDto;
   addComboItem(input: AddComboItemInput): OrderDto;
   configureProductCombo(input: ConfigureProductComboInput): ProductDto;
+  createCombo(input: CreateComboInput): ProductDto;
   cancelPurchase(input: CancelPurchaseInput): PurchaseDto;
   correctPurchaseItemProduct(
     input: CorrectPurchaseItemProductInput,
@@ -906,6 +908,16 @@ export class GastronomyApplication {
     const prices = normalizeProductPrices(input.prices);
     for (const price of prices) nonNegativeMoney(price.amountMinor, "precio");
     return this.repository.createProduct({ ...input, prices });
+  }
+
+  createCombo(input: CreateComboInput) {
+    if (!input.name.trim()) throw new Error("Ingresá el nombre del producto.");
+    if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+    if (!/^\d{4,8}$/.test(input.authorizerPin))
+      throw new Error("El PIN de autorización no es válido.");
+    const prices = normalizeProductPrices(input.prices);
+    for (const price of prices) nonNegativeMoney(price.amountMinor, "precio");
+    return this.repository.createCombo({ ...input, prices });
   }
 
   updateProduct(input: UpdateProductInput) {

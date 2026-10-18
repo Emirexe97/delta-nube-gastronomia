@@ -5,6 +5,40 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
 
+test("createCombo atomically creates prices and definition, and is idempotent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gastronomy-create-combo-"));
+  const repo = new SqliteGastronomyRepository(join(dir, "test.sqlite"), {
+    adminPin: "2468",
+    seedStarterCatalog: true,
+  });
+  try {
+    const input = {
+      categoryId: "category-1",
+      name: "Combo atómico",
+      prices: ["SALON", "TAKEAWAY", "DELIVERY"].map((priceListCode) => ({
+        priceListCode: priceListCode as "SALON" | "TAKEAWAY" | "DELIVERY",
+        amountMinor: 12500,
+      })),
+      definition: { slots: [{ id: "main", name: "Principal", quantity: 1, productIds: ["starter-muzza-grande"] }] },
+      reason: "Alta combo",
+      authorizerPin: "2468",
+      idempotencyKey: "create-combo-once",
+    };
+    const created = repo.createCombo(input);
+    assert.deepEqual(created.comboDefinition, input.definition);
+    assert.equal(created.prices.find((price) => price.priceListCode === "SALON")?.amountMinor, 12500);
+    assert.deepEqual(repo.createCombo(input), created);
+    assert.equal(repo.bootstrap().products.filter((product) => product.name === input.name).length, 1);
+
+    assert.throws(() => repo.createCombo({ ...input, idempotencyKey: "bad-definition", definition: { slots: [{ id: "bad", name: "Mala", quantity: 1, productIds: ["missing-product"] }] } }));
+    assert.throws(() => repo.createCombo({ ...input, idempotencyKey: "bad-pin", authorizerPin: "0000" }), /PIN incorrecto/i);
+    assert.equal(repo.bootstrap().products.some((product) => product.name === input.name && product.id !== created.id), false);
+  } finally {
+    repo.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("combo configuration and item preserve component snapshots and calculate the configured price", () => {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-combo-"));
   const repo = new SqliteGastronomyRepository(join(dir, "test.sqlite"), {

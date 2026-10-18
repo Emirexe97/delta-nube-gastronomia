@@ -16,6 +16,42 @@ class Storage implements DemoStorage {
   }
 }
 
+it("demo createCombo validates before mutation and replays the same idempotency key", async () => {
+  const storage = new Storage();
+  const api = createDemoApi(storage);
+  const category = await api.createCategory({ name: "Alta combo" });
+  const component = await api.createProduct({
+    categoryId: category.id,
+    name: "Componente",
+    prices: ["SALON", "TAKEAWAY", "DELIVERY"].map((priceListCode) => ({
+      priceListCode: priceListCode as "SALON" | "TAKEAWAY" | "DELIVERY",
+      amountMinor: 5000,
+    })),
+  });
+  const input = {
+    categoryId: category.id,
+    name: "Combo atómico",
+    prices: ["SALON", "TAKEAWAY", "DELIVERY"].map((priceListCode) => ({
+      priceListCode: priceListCode as "SALON" | "TAKEAWAY" | "DELIVERY",
+      amountMinor: 9000,
+    })),
+    definition: { slots: [{ id: "main", name: "Principal", quantity: 1, productIds: [component.id] }] },
+    reason: "Alta combo",
+    authorizerPin: "1234",
+    idempotencyKey: "demo-create-combo",
+  };
+  const created = await api.createCombo(input);
+  expect(created.comboDefinition).toEqual(input.definition);
+  expect(await api.createCombo(input)).toEqual(created);
+  await expect(api.createCombo({ ...input, name: "Otro nombre" })).rejects.toThrow(/idempotencia/i);
+  expect((await api.bootstrap()).products.filter((product) => product.name === input.name)).toHaveLength(1);
+  const writesBeforeInvalid = storage.writes;
+  await expect(api.createCombo({ ...input, idempotencyKey: "demo-invalid-combo", authorizerPin: "0000" })).rejects.toThrow(/PIN/i);
+  await expect(api.createCombo({ ...input, idempotencyKey: "demo-invalid-definition", definition: { slots: [{ id: "bad", name: "Mala", quantity: 1, productIds: ["missing"] }] } })).rejects.toThrow();
+  expect(storage.writes).toBe(writesBeforeInvalid);
+  expect((await api.bootstrap()).products.filter((product) => product.name === input.name)).toHaveLength(1);
+});
+
 async function seed(name: string, stock: number) {
   const storage = new Storage();
   const api = createDemoApi(storage);

@@ -1,22 +1,35 @@
 import { useEffect, useRef, useState } from "react";
-import type { ComboDefinitionDto, ProductDto } from "@gastronomy/contracts";
+import type {
+  CategoryDto,
+  ComboDefinitionDto,
+  ConfigureProductComboInput,
+  CreateComboInput,
+  ProductDto,
+} from "@gastronomy/contracts";
 import { assertComboDefinition } from "@gastronomy/domain";
-import { Button, Field, Input, Modal } from "@gastronomy/ui";
+import { Button, Field, Input, Modal, Select } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
-import { humanError } from "../lib";
+import { humanError, parseMoneyInput } from "../lib";
 
 export function ComboConfigModal({
   open,
   product,
   products,
+  categories,
   onClose,
 }: {
   open: boolean;
   product: ProductDto | null;
   products: ProductDto[];
+  categories: CategoryDto[];
   onClose(): void;
 }) {
   const [slots, setSlots] = useState<ComboDefinitionDto["slots"]>([]);
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [salonPrice, setSalonPrice] = useState("");
+  const [offPremisePrice, setOffPremisePrice] = useState("");
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -25,8 +38,14 @@ export function ComboConfigModal({
     idempotencyKey: string;
   } | null>(null);
   const mutation = useApiMutation(
-    (input: Parameters<typeof window.gastronomy.configureProductCombo>[0]) =>
-      window.gastronomy.configureProductCombo(input),
+    (
+      request:
+        | { mode: "create"; input: CreateComboInput }
+        | { mode: "edit"; input: ConfigureProductComboInput },
+    ) =>
+      request.mode === "create"
+        ? window.gastronomy.createCombo(request.input)
+        : window.gastronomy.configureProductCombo(request.input),
     {
       onSuccess: () => {
         setError(null);
@@ -37,9 +56,14 @@ export function ComboConfigModal({
   );
   const productId = product?.id;
   useEffect(() => {
-    if (!open || !product) return;
+    if (!open) return;
+    setName("");
+    setCode("");
+    setCategoryId(categories.find((category) => category.active)?.id ?? "");
+    setSalonPrice("");
+    setOffPremisePrice("");
     setSlots(
-      product.comboDefinition?.slots.map((slot) => ({
+      product?.comboDefinition?.slots.map((slot) => ({
         ...slot,
         productIds: [...slot.productIds],
       })) ?? [
@@ -56,12 +80,15 @@ export function ComboConfigModal({
     setError(null);
     submissionRef.current = null;
   }, [open, productId]);
-  if (!product) return null;
+  if (!open) return null;
   const candidates = products.filter(
     (candidate) =>
-      candidate.id !== product.id &&
+      candidate.id !== product?.id &&
       !candidate.comboDefinition &&
-      candidate.active,
+      candidate.active &&
+      categories.some(
+        (category) => category.id === candidate.categoryId && category.active,
+      ),
   );
 
   const submit = (definition: ComboDefinitionDto | null) => {
@@ -76,7 +103,7 @@ export function ComboConfigModal({
     }
     if (definition) {
       try {
-        assertComboDefinition(definition, product.id, products);
+        assertComboDefinition(definition, product?.id, products);
       } catch (validationError) {
         setError(humanError(validationError));
         return;
@@ -92,31 +119,59 @@ export function ComboConfigModal({
         );
         return;
       }
-      if (product.stockMinor != null) {
+      if (product?.stockMinor != null) {
         setError(
           "Desactivá el control de stock de este producto antes de configurarlo como combo. No se quitará stock automáticamente.",
         );
         return;
       }
     }
-    const fingerprint = JSON.stringify({
-      productId: product.id,
-      definition,
-      reason: reason.trim(),
-      authorizerPin: pin,
-    });
+    const common = { reason: reason.trim(), authorizerPin: pin };
+    let request:
+      | { mode: "create"; input: CreateComboInput }
+      | { mode: "edit"; input: ConfigureProductComboInput };
+    if (product) {
+      request = {
+        mode: "edit",
+        input: { ...common, productId: product.id, definition },
+      };
+    } else {
+      const salon = parseMoneyInput(salonPrice);
+      const offPremise = parseMoneyInput(offPremisePrice);
+      if (
+        !name.trim() ||
+        !categoryId ||
+        salon == null ||
+        offPremise == null ||
+        !definition
+      ) {
+        setError("Completá nombre, categoría y precios válidos del combo.");
+        return;
+      }
+      request = {
+        mode: "create",
+        input: {
+          ...common,
+          name: name.trim(),
+          code: code.trim() || null,
+          categoryId,
+          definition,
+          prices: [
+            { priceListCode: "SALON", amountMinor: salon },
+            { priceListCode: "TAKEAWAY", amountMinor: offPremise },
+            { priceListCode: "DELIVERY", amountMinor: offPremise },
+          ],
+        },
+      };
+    }
+    const fingerprint = JSON.stringify(request);
     if (submissionRef.current?.fingerprint !== fingerprint)
       submissionRef.current = {
         fingerprint,
         idempotencyKey: crypto.randomUUID(),
       };
-    mutation.mutate({
-      productId: product.id,
-      definition,
-      reason: reason.trim(),
-      authorizerPin: pin,
-      idempotencyKey: submissionRef.current.idempotencyKey,
-    });
+    request.input.idempotencyKey = submissionRef.current.idempotencyKey;
+    mutation.mutate(request);
   };
   const edit = (
     update: (
@@ -135,11 +190,73 @@ export function ComboConfigModal({
         if (!mutation.isPending) onClose();
       }}
       closeDisabled={mutation.isPending}
-      title={`Configurar combo · ${product.name}`}
-      description="El precio del combo usa el precio del producto; los componentes no suman su precio de venta."
+      title={product ? `Editar opciones · ${product.name}` : "Nuevo combo"}
+      description="El combo tiene precio propio; los componentes no suman su precio de venta."
+      width="max-w-3xl"
     >
       <div className="max-h-[58vh] space-y-3 overflow-y-auto pr-1">
-        {product.stockMinor != null && (
+        {!product && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Nombre del combo">
+              <Input
+                aria-label="Nombre del combo"
+                disabled={mutation.isPending}
+                maxLength={120}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </Field>
+            <Field label="Categoría">
+              <Select
+                aria-label="Categoría del combo"
+                disabled={mutation.isPending}
+                value={categoryId}
+                onChange={(event) => setCategoryId(event.target.value)}
+              >
+                <option value="">Seleccioná una categoría</option>
+                {categories
+                  .filter((category) => category.active)
+                  .map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+              </Select>
+            </Field>
+            <Field label="Código (opcional)">
+              <Input
+                aria-label="Código del combo"
+                disabled={mutation.isPending}
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+              />
+            </Field>
+            <div />
+            <Field label="Precio Salón">
+              <Input
+                aria-label="Precio Salón del combo"
+                inputMode="decimal"
+                disabled={mutation.isPending}
+                value={salonPrice}
+                onChange={(event) => setSalonPrice(event.target.value)}
+              />
+            </Field>
+            <Field label="Precio Delivery / Para retirar">
+              <Input
+                aria-label="Precio Delivery / Para retirar del combo"
+                inputMode="decimal"
+                disabled={mutation.isPending}
+                value={offPremisePrice}
+                onChange={(event) => setOffPremisePrice(event.target.value)}
+              />
+            </Field>
+            <p className="text-xs text-slate-500 sm:col-span-2">
+              El stock se controla en los componentes, según las opciones
+              elegidas al vender.
+            </p>
+          </div>
+        )}
+        {product?.stockMinor != null && (
           <p
             role="alert"
             className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900"
@@ -157,6 +274,7 @@ export function ComboConfigModal({
               <Field label={`Opción ${index + 1}`}>
                 <Input
                   disabled={mutation.isPending}
+                  aria-label={`Nombre de opción ${index + 1}`}
                   maxLength={80}
                   value={slot.name}
                   onChange={(event) =>
@@ -173,6 +291,7 @@ export function ComboConfigModal({
               <Field label="Cantidad">
                 <Input
                   disabled={mutation.isPending}
+                  aria-label={`Cantidad de opción ${index + 1}`}
                   type="number"
                   min={1}
                   max={99}
@@ -254,6 +373,7 @@ export function ComboConfigModal({
         <Field label="Motivo">
           <Input
             disabled={mutation.isPending}
+            aria-label="Motivo"
             value={reason}
             onChange={(event) => {
               setReason(event.target.value);
@@ -265,6 +385,7 @@ export function ComboConfigModal({
         <Field label="PIN de autorización">
           <Input
             disabled={mutation.isPending}
+            aria-label="PIN de autorización"
             type="password"
             inputMode="numeric"
             value={pin}
@@ -285,7 +406,7 @@ export function ComboConfigModal({
         )}
       </div>
       <div className="mt-4 flex justify-between gap-2">
-        {product.comboDefinition && (
+        {product?.comboDefinition && (
           <Button
             variant="secondary"
             disabled={mutation.isPending || !authorized}
@@ -304,11 +425,22 @@ export function ComboConfigModal({
           </Button>
           <Button
             disabled={
-              mutation.isPending || !authorized || product.stockMinor != null
+              mutation.isPending ||
+              !authorized ||
+              product?.stockMinor != null ||
+              (!product &&
+                (!name.trim() ||
+                  !categoryId ||
+                  parseMoneyInput(salonPrice) == null ||
+                  parseMoneyInput(offPremisePrice) == null))
             }
             onClick={() => submit({ slots })}
           >
-            {mutation.isPending ? "Guardando…" : "Guardar combo"}
+            {mutation.isPending
+              ? "Guardando…"
+              : product
+                ? "Guardar combo"
+                : "Crear combo"}
           </Button>
         </div>
       </div>
