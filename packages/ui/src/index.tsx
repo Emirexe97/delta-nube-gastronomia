@@ -5,6 +5,8 @@ import clsx, { type ClassValue } from "clsx";
 type ModalStackListener = () => void;
 
 let modalStack: string[] = [];
+let nextModalOrder = 0;
+const modalOrders = new Map<string, number>();
 const modalStackListeners = new Set<ModalStackListener>();
 let bodyOverflowBeforeFirstModal: string | null = null;
 
@@ -12,19 +14,23 @@ function emitModalStackChange() {
   modalStackListeners.forEach((listener) => listener());
 }
 
-function registerModal(id: string) {
+function registerModal(id: string, order: number) {
   if (modalStack.includes(id)) return;
   if (!modalStack.length && typeof document !== "undefined") {
     bodyOverflowBeforeFirstModal = document.body.style.overflow;
     document.body.style.overflow = "hidden";
   }
-  modalStack = [...modalStack, id];
+  modalOrders.set(id, order);
+  modalStack = [...modalStack, id].sort(
+    (left, right) => modalOrders.get(left)! - modalOrders.get(right)!,
+  );
   emitModalStackChange();
 }
 
 function unregisterModal(id: string) {
   if (!modalStack.includes(id)) return;
   modalStack = modalStack.filter((candidate) => candidate !== id);
+  modalOrders.delete(id);
   if (!modalStack.length && typeof document !== "undefined") {
     document.body.style.overflow = bodyOverflowBeforeFirstModal ?? "";
     bodyOverflowBeforeFirstModal = null;
@@ -49,6 +55,46 @@ function isTopModal(id: string) {
 
 export function cn(...values: ClassValue[]) {
   return clsx(values);
+}
+
+const WorkspaceContext = React.createContext<{
+  active: boolean;
+  portalRoot: HTMLDivElement | null;
+} | null>(null);
+
+export function useWorkspaceActive() {
+  return React.useContext(WorkspaceContext)?.active ?? true;
+}
+
+/** Keep both the page and its portalled dialogs alive while another section is active. */
+export function PreservedWorkspace({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  const [portalRoot, setPortalRoot] = React.useState<HTMLDivElement | null>(
+    null,
+  );
+  const context = React.useMemo(
+    () => ({ active, portalRoot }),
+    [active, portalRoot],
+  );
+  return (
+    <WorkspaceContext.Provider value={context}>
+      <div
+        hidden={!active}
+        aria-hidden={!active || undefined}
+        ref={(node) => node?.toggleAttribute("inert", !active)}
+        data-preserved-workspace="true"
+        data-workspace-active={String(active)}
+      >
+        {children}
+        <div ref={setPortalRoot} />
+      </div>
+    </WorkspaceContext.Provider>
+  );
 }
 
 export const Button = React.forwardRef<
@@ -212,7 +258,17 @@ export function Modal({
   confirmClose?: boolean;
   closeConfirmationMessage?: string;
 }) {
+  const workspace = React.useContext(WorkspaceContext);
+  const enabled =
+    open &&
+    (workspace?.active ?? true) &&
+    (!workspace || workspace.portalRoot !== null);
   const dialogRef = React.useRef<HTMLElement>(null);
+  const lastFocusedRef = React.useRef<HTMLElement | null>(null);
+  const wasOpen = React.useRef(false);
+  const openingOrder = React.useRef(0);
+  if (open && !wasOpen.current) openingOrder.current = ++nextModalOrder;
+  wasOpen.current = open;
   const onCloseRef = React.useRef(onClose);
   const closeDisabledRef = React.useRef(closeDisabled);
   const confirmCloseRef = React.useRef(confirmClose);
@@ -234,12 +290,12 @@ export function Modal({
     confirmationMessageRef.current = closeConfirmationMessage;
   }, [closeConfirmationMessage, closeDisabled, confirmClose, onClose]);
   React.useEffect(() => {
-    if (!open) return;
-    registerModal(modalId);
+    if (!enabled) return;
+    registerModal(modalId, openingOrder.current);
     return () => unregisterModal(modalId);
-  }, [modalId, open]);
+  }, [modalId, enabled]);
   React.useEffect(() => {
-    if (!open) return;
+    if (!enabled) return;
     const previousActive =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -261,11 +317,23 @@ export function Modal({
         return;
       }
       if (event.key !== "Tab" || !dialogRef.current) return;
+      const navigationControls = workspace
+        ? [
+            ...document.querySelectorAll<HTMLElement>(
+              "[data-app-navigation] a[href], [data-app-navigation] button:not([disabled])",
+            ),
+          ]
+        : [];
       const focusable = [
+        ...navigationControls,
         ...dialogRef.current.querySelectorAll<HTMLElement>(
           'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
         ),
-      ].filter((element) => !element.hasAttribute("hidden"));
+      ].filter(
+        (element) =>
+          !element.closest("[hidden], [inert]") &&
+          element.getClientRects().length > 0,
+      );
       if (!focusable.length) {
         event.preventDefault();
         dialogRef.current.focus({ preventScroll: true });
@@ -273,6 +341,19 @@ export function Modal({
       }
       const first = focusable[0]!;
       const last = focusable[focusable.length - 1]!;
+      if (workspace) {
+        event.preventDefault();
+        const index = focusable.indexOf(document.activeElement as HTMLElement);
+        const next =
+          index < 0
+            ? event.shiftKey
+              ? focusable.length - 1
+              : 0
+            : (index + (event.shiftKey ? -1 : 1) + focusable.length) %
+              focusable.length;
+        focusable[next]?.focus();
+        return;
+      }
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
@@ -282,8 +363,19 @@ export function Modal({
       }
     };
     const frame = window.requestAnimationFrame(() => {
-      if (!dialogRef.current?.contains(document.activeElement))
-        dialogRef.current?.focus({ preventScroll: true });
+      if (
+        !isTopModal(modalId) ||
+        dialogRef.current?.contains(document.activeElement)
+      )
+        return;
+      const lastFocused = lastFocusedRef.current;
+      if (
+        lastFocused?.isConnected &&
+        !lastFocused.closest("[hidden], [inert]") &&
+        lastFocused.getClientRects().length > 0
+      )
+        lastFocused.focus({ preventScroll: true });
+      else dialogRef.current?.focus({ preventScroll: true });
     });
     window.addEventListener("keydown", handler);
     return () => {
@@ -303,12 +395,16 @@ export function Modal({
         // No robes el foco si la persona o una automatización ya avanzó al
         // siguiente control durante el frame de desmontaje del modal.
         if (!needsRestoration) return;
-        if (previousActive?.isConnected && !previousActive.closest("[inert]")) {
+        if (
+          previousActive?.isConnected &&
+          !previousActive.closest("[hidden], [inert]") &&
+          previousActive.getClientRects().length > 0
+        ) {
           previousActive.focus({ preventScroll: true });
           return;
         }
         const topDialog = document.querySelector<HTMLElement>(
-          '[role="dialog"][aria-modal="true"]',
+          '[role="dialog"][data-top-dialog="true"]',
         );
         const fallback = topDialog?.querySelector<HTMLElement>(
           'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
@@ -316,28 +412,37 @@ export function Modal({
         (fallback ?? topDialog)?.focus({ preventScroll: true });
       });
     };
-  }, [modalId, open]);
+  }, [modalId, enabled, Boolean(workspace)]);
   const requestClose = () => {
     if (closeDisabled) return;
     if (confirmClose && !window.confirm(closeConfirmationMessage)) return;
     onClose();
   };
-  if (!open) return null;
+  if (!open || (workspace && !workspace.portalRoot)) return null;
   return createPortal(
     <div
-      ref={(node) => node?.toggleAttribute("inert", !topModal)}
+      ref={(node) => node?.toggleAttribute("inert", !enabled || !topModal)}
       data-testid="modal-overlay"
       data-modal-depth={depth}
-      aria-hidden={!topModal || undefined}
-      style={{ zIndex: 100 + depth * 10 }}
+      aria-hidden={!enabled || !topModal || undefined}
+      style={{
+        zIndex: 100 + depth * 10,
+        ...(workspace ? { left: "var(--app-navigation-width, 0px)" } : {}),
+      }}
       className="fixed inset-0 flex items-stretch justify-center overflow-hidden bg-slate-950/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
     >
       <section
         ref={dialogRef}
         tabIndex={-1}
         role="dialog"
-        aria-modal={topModal || undefined}
+        aria-modal={(enabled && topModal && !workspace) || undefined}
+        data-workspace-dialog={workspace ? "true" : undefined}
+        data-top-dialog={enabled && topModal ? "true" : undefined}
         aria-busy={closeDisabled || undefined}
+        onFocusCapture={(event) => {
+          if (event.target instanceof HTMLElement)
+            lastFocusedRef.current = event.target;
+        }}
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
         className={cn(
@@ -382,6 +487,6 @@ export function Modal({
         </div>
       </section>
     </div>,
-    document.body,
+    workspace?.portalRoot ?? document.body,
   );
 }

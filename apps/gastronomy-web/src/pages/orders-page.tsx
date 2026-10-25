@@ -25,6 +25,7 @@ import {
   Select,
   Textarea,
   cn,
+  useWorkspaceActive,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { OrderEditor } from "../components/order-editor";
@@ -41,6 +42,7 @@ import {
 } from "../lib";
 
 export function OrdersPage({ data }: { data: BootstrapDto }) {
+  const active = useWorkspaceActive();
   const [params, setParams] = useSearchParams();
   const [filter, setFilter] = useState<
     "ALL" | OrderType | "PENDING" | "PAID" | "OVERDUE" | "READY"
@@ -56,13 +58,16 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
   );
   const searchRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
+    if (!active) return;
     const value = params.get("nuevo");
     const customerId = params.get("cliente");
     const focusSearch = params.get("buscar") === "1";
     if (!value && !focusSearch && !customerId) return;
+    // Returning via a shortcut must resume the pending entry, not replace its data.
+    const hasPendingEntry = Boolean(newType || editingDraftOrderId || selectedOrder);
     const orderType =
       value === "TAKEAWAY" || value === "DELIVERY" ? value : null;
-    if (customerId && orderType)
+    if (customerId && orderType && !hasPendingEntry)
       void window.gastronomy
         .getCustomerProfile({ customerId, page: 1, pageSize: 1 })
         .then((profile) => {
@@ -70,15 +75,15 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
           setNewType(orderType);
         })
         .catch(() => setNewType(orderType));
-    else if (orderType) setNewType(orderType);
-    if (focusSearch)
+    else if (orderType && !hasPendingEntry) setNewType(orderType);
+    if (focusSearch && !hasPendingEntry)
       window.requestAnimationFrame(() => searchRef.current?.focus());
     const next = new URLSearchParams(params);
     next.delete("nuevo");
     next.delete("buscar");
     next.delete("cliente");
     setParams(next, { replace: true });
-  }, [params, setParams]);
+  }, [active, params, setParams, newType, editingDraftOrderId, selectedOrder]);
   const orders = useMemo(() => {
     const now = Date.now();
     const statusPriority: Record<OrderDto["operationalStatus"], number> = {

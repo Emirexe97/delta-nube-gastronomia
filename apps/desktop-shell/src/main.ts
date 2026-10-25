@@ -100,6 +100,9 @@ function orderTicketHtml(
     escapeHtml(value).replaceAll("\n", "<br>");
   const itemRows = order.items
     .map((item) => {
+      const productName = isKitchen && item.halves.length === 2
+        ? "Pizza mitad y mitad"
+        : item.productNameSnapshot;
       const halves = item.halves.length
         ? `<div class="detail halves">½ ${escapeHtml(item.halves[0]?.nameSnapshot)} · ½ ${escapeHtml(item.halves[1]?.nameSnapshot)}</div>`
         : "";
@@ -126,7 +129,7 @@ function orderTicketHtml(
         !isKitchen && template.showItemUnitPrice && item.quantity !== 1
           ? `<span class="unit-price">@ ${escapeHtml(formatMoney(item.unitPriceMinorSnapshot))} c/u</span>`
           : "";
-      return `<div class="item"><div class="item-main"><span class="product">${quantity}<strong>${escapeHtml(item.productNameSnapshot)}</strong>${unitPrice}</span>${price}</div>${halves}${combo}${modifiers ? `<div class="detail">${modifiers}</div>` : ""}${notes}</div>`;
+      return `<div class="item"><div class="item-main"><span class="product">${quantity}<strong>${escapeHtml(productName)}</strong>${unitPrice}</span>${price}</div>${halves}${combo}${modifiers ? `<div class="detail">${modifiers}</div>` : ""}${notes}</div>`;
     })
     .join("");
   const showBreakdown =
@@ -135,7 +138,7 @@ function orderTicketHtml(
     order.depositMinor > 0;
   return `<!doctype html><html><head><meta charset="utf-8"><style>
     @page{size:${paperMm}mm auto;margin:${marginMm}mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;width:${contentMm}mm;margin:0;color:#000;font-size:${fontSizePx}px;line-height:1.16;overflow-wrap:anywhere}h1,h2,p{margin:0}.center{text-align:center}.title{font-size:18px;line-height:1.05;font-weight:900}.subtitle{font-size:11px;margin-top:1px}.meta{border-top:1px solid #000;border-bottom:1px solid #000;margin:3px 0;padding:2px 0}.meta-line,.row,.item-main,.columns{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px;align-items:baseline}.meta-line+.meta-line{margin-top:1px}.columns{font-size:10px;text-transform:uppercase;border-bottom:1px dashed #000;padding:1px 0}.item{padding:2px 0;border-bottom:1px dotted #999}.product{display:flex;min-width:0;gap:3px;align-items:baseline;font-size:calc(${fontSizePx}px + 2pt);font-weight:700;text-transform:uppercase;line-height:1.18}.quantity{flex:0 0 auto;min-width:26px}.amount{white-space:nowrap;font-variant-numeric:tabular-nums;font-size:calc(${fontSizePx}px + 2pt);font-weight:700}.unit-price{font-size:9px;font-weight:400;white-space:nowrap;text-transform:none}.detail{padding-left:26px;font-size:10px;line-height:1.15}.halves{font-size:calc(${fontSizePx}px + 2pt);font-weight:700;text-transform:uppercase;line-height:1.18}.modifier{display:block;font-weight:700;text-transform:uppercase}.info{font-size:11px;padding:2px 0;border-bottom:1px dashed #000}.promised{font-size:15px;font-weight:900;text-align:center;padding:2px 0;border-bottom:1px dashed #000}.scheduled-badge{display:flex;flex-direction:column;align-items:center;text-align:center;border:3px solid #000;background:#fff;color:#000;margin:4px 0;padding:4px 2px;line-height:1.08}.scheduled-heading{font-size:15px;font-weight:900;letter-spacing:.3px}.scheduled-delivery{font-size:11px;font-weight:900;margin-top:2px}.scheduled-datetime{display:flex;flex-wrap:wrap;justify-content:center;align-items:baseline;gap:4px 8px;margin-top:3px;font-variant-numeric:tabular-nums}.scheduled-date{font-size:19px;font-weight:900}.scheduled-time{font-size:25px;font-weight:900}.totals{margin-top:3px}.row{margin:1px 0}.total{border-top:3px double #000;margin-top:2px;padding-top:2px;font-size:19px;font-weight:900}.payments{border-top:1px dashed #000;margin-top:3px;padding-top:2px;font-size:11px}.order-note{font-size:calc(${fontSizePx}px + 2pt);font-weight:700;text-transform:uppercase;padding-top:2px;line-height:1.18}.item-obs{padding-left:14px;margin-top:1px}.footer{border-top:1px dashed #000;margin-top:4px;padding-top:3px;text-align:center;font-size:11px}.reprint{font-weight:900;border:1px solid #000;padding:1px 4px}
-  </style></head><body><header class="center"><h1 class="title">${escapeHtml(isKitchen ? template.kitchenHeader || "COMANDA" : template.title || settings.businessName)}</h1>${!isKitchen && template.subtitle ? `<p class="subtitle">${escapeHtml(template.subtitle)}</p>` : ""}</header><section class="meta"><div class="meta-line">${isKitchen || template.showDate ? `<strong>${dateLabel} · ${timeLabel}</strong>` : "<span></span>"}${template.showOrderNumber || isKitchen ? `<strong>PEDIDO #${order.number}</strong>` : ""}</div><div class="meta-line">${template.showTable || isKitchen ? `<strong>${escapeHtml(typeLabel)}</strong>` : "<span></span>"}${template.showWaiter && order.waiterName ? `<span>Mozo: <strong>${escapeHtml(order.waiterName)}</strong></span>` : `<span>${escapeHtml(settings.printing.terminalLabel)}</span>`}</div>${order.printCount > 0 ? `<div class="center"><span class="reprint">REIMPRESIÓN</span></div>` : ""}</section>
+  </style></head><body><header class="center"><h1 class="title">${escapeHtml(isKitchen ? template.kitchenHeader || "COMANDA" : template.title || settings.businessName)}</h1>${!isKitchen && template.subtitle ? `<p class="subtitle">${escapeHtml(template.subtitle)}</p>` : ""}</header><section class="meta"><div class="meta-line">${isKitchen || template.showDate ? `<strong>${dateLabel} · ${timeLabel}</strong>` : "<span></span>"}${template.showOrderNumber || isKitchen ? `<strong>PEDIDO #${order.number}</strong>` : ""}</div><div class="meta-line">${template.showTable || isKitchen ? `<strong>${escapeHtml(typeLabel)}</strong>` : "<span></span>"}${template.showWaiter && order.waiterName ? `<span>Mozo: <strong>${escapeHtml(order.waiterName)}</strong></span>` : `<span>${escapeHtml(settings.printing.terminalLabel)}</span>`}</div>${isKitchen && order.kitchenPrintScope === "ADDED" ? `<div class="center"><span class="reprint">AGREGADO</span></div>` : order.printCount > 0 ? `<div class="center"><span class="reprint">REIMPRESIÓN</span></div>` : ""}</section>
   ${scheduledOrderBadge(order)}
   ${template.showCustomer && (order.customerNameSnapshot || order.customerPhoneSnapshot || order.deliveryAddressSnapshot) ? `<section class="info">${order.customerNameSnapshot ? `<strong>${escapeHtml(order.customerNameSnapshot)}</strong>` : ""}${order.customerPhoneSnapshot ? ` · ${escapeHtml(order.customerPhoneSnapshot)}` : ""}${order.deliveryAddressSnapshot ? `<br>${escapeHtml(order.deliveryAddressSnapshot)}` : ""}</section>` : ""}
   ${isKitchen && order.type === "DELIVERY" && order.deliveryAddressNotesSnapshot ? `<p class="order-note"><strong>Referencia:</strong> ${escapeHtml(order.deliveryAddressNotesSnapshot)}</p>` : ""}
@@ -267,11 +270,10 @@ function printerTestHtml(
 
 async function executePrintJob(
   jobId: string,
-  orderId: string,
   kind: "KITCHEN_ORDER" | "CUSTOMER_BILL",
 ) {
   const { localRepository } = services();
-  const order = localRepository.getOrder(orderId);
+  const order = localRepository.getPrintOrder(jobId);
   try {
     const outcome = await printOrder(
       order,
@@ -526,11 +528,11 @@ function registerIpcHandlers() {
     "gastronomy:printOrder",
     async (
       _event,
-      payload: { orderId: string; kind: "KITCHEN_ORDER" | "CUSTOMER_BILL" },
+      payload: Parameters<DesktopApi["printOrder"]>[0],
     ) => {
       const { appService } = services();
       const job = appService.queuePrint(payload);
-      return executePrintJob(job.jobId, payload.orderId, payload.kind);
+      return executePrintJob(job.jobId, payload.kind);
     },
   );
   handleData(
@@ -608,7 +610,7 @@ function registerIpcHandlers() {
     async (_event, payload: { jobId: string }) => {
       const { appService } = services();
       const job = appService.preparePrintRetry(payload);
-      return executePrintJob(job.jobId, job.orderId, job.kind);
+      return executePrintJob(job.jobId, job.kind);
     },
   );
   handleData(

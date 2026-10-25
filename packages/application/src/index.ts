@@ -28,6 +28,7 @@ import type {
   DetailedReportDto,
   FloorPlanShapeDto,
   Id,
+  KitchenPrintScope,
   MoneyMinor,
   OpenCashSessionInput,
   OrderDto,
@@ -199,7 +200,9 @@ export interface GastronomyRepository {
   queuePrint(
     orderId: Id,
     kind: "KITCHEN_ORDER" | "CUSTOMER_BILL",
+    kitchenScope?: KitchenPrintScope,
   ): { jobId: Id; status: string };
+  getPrintOrder(jobId: Id): OrderDto;
   preparePrintRetry(jobId: Id): {
     jobId: Id;
     orderId: Id;
@@ -744,8 +747,16 @@ export class GastronomyApplication {
     });
   }
 
-  queuePrint(input: { orderId: Id; kind: "KITCHEN_ORDER" | "CUSTOMER_BILL" }) {
-    return this.repository.queuePrint(input.orderId, input.kind);
+  queuePrint(input: {
+    orderId: Id;
+    kind: "KITCHEN_ORDER" | "CUSTOMER_BILL";
+    kitchenScope?: KitchenPrintScope;
+  }) {
+    return this.repository.queuePrint(
+      input.orderId,
+      input.kind,
+      input.kitchenScope,
+    );
   }
 
   preparePrintRetry(input: { jobId: Id }) {

@@ -74,6 +74,45 @@ async function openHarness(page: Page) {
   await expect(page.getByRole("dialog", { name: /Pedido #/ })).toBeVisible();
 }
 
+test("Ocultar closes the latest print notice without uncovering earlier results", async ({
+  page,
+}) => {
+  await openHarness(page);
+  await page
+    .getByRole("dialog", { name: /Pedido #/ })
+    .getByRole("button", { name: "Cerrar", exact: true })
+    .click();
+  const status = page.getByTestId("global-print-status");
+  for (const number of [801, 802, 803]) {
+    await page.evaluate(async (orderNumber) => {
+      const modulePath = "/src/order-print.ts";
+      const { orderPrintCoordinator } = await import(modulePath);
+      void orderPrintCoordinator.run({
+        orderId: `notice-${orderNumber}`,
+        orderNumber,
+        kind: "CUSTOMER_BILL",
+      });
+    }, number);
+    await expect
+      .poll(() => page.evaluate(() => window.__printControl.calls))
+      .toBe(number - 800);
+    await expect(
+      status.getByRole("button", { name: "Ocultar", exact: true }),
+    ).toHaveCount(number === 802 ? 1 : 0);
+    await page.evaluate(() => window.__printControl.finish());
+    await expect(
+      status.getByRole("status").filter({ hasText: `Pedido #${number}` }),
+    ).toContainText("Enviada a la impresora.");
+    if (number !== 801) {
+      await status
+        .getByRole("button", { name: "Ocultar", exact: true })
+        .click();
+      await expect(status.getByRole("status")).toHaveCount(0);
+      await expect(status.getByRole("alert")).toHaveCount(0);
+    }
+  }
+});
+
 test("native print remains single-flight and its result survives closing and reopening the editor", async ({
   page,
 }) => {

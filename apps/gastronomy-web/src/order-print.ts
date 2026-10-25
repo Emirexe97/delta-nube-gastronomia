@@ -1,10 +1,11 @@
 import { createStore } from "zustand/vanilla";
-import type { DesktopApi } from "@gastronomy/contracts";
+import type { DesktopApi, KitchenPrintScope } from "@gastronomy/contracts";
 
 export type OrderPrintRequest = {
   orderId: string;
   orderNumber: number;
   kind: "KITCHEN_ORDER" | "CUSTOMER_BILL";
+  kitchenScope?: KitchenPrintScope;
   confirmFirst?: boolean;
   retryJobId?: string;
 };
@@ -12,6 +13,7 @@ export type OrderPrintState = OrderPrintRequest & {
   status: "PREPARING" | "PRINTING" | "PRINTED" | "SKIPPED" | "FAILED";
   error?: string;
   resultJobId?: string;
+  notificationDismissed?: boolean;
 };
 export function isOrderPrintActive(job?: OrderPrintState) {
   return job?.status === "PREPARING" || job?.status === "PRINTING";
@@ -38,9 +40,14 @@ export function createOrderPrintCoordinator(
       return {
         jobs: {
           ...Object.fromEntries(
-            Object.entries(jobs).filter(
-              ([id]) => !remove.has(id) && id !== job.orderId,
-            ),
+            Object.entries(jobs)
+              .filter(([id]) => !remove.has(id) && id !== job.orderId)
+              .map(([id, previous]) => [
+                id,
+                !isOrderPrintActive(job) && !isOrderPrintActive(previous)
+                  ? { ...previous, notificationDismissed: true }
+                  : previous,
+              ]),
           ),
           [job.orderId]: job,
         },
@@ -49,12 +56,13 @@ export function createOrderPrintCoordinator(
   return {
     store,
     dismiss(orderId: string) {
-      if (isOrderPrintActive(store.getState().jobs[orderId])) return;
-      store.setState(({ jobs }) => ({
-        jobs: Object.fromEntries(
-          Object.entries(jobs).filter(([id]) => id !== orderId),
-        ),
-      }));
+      store.setState(({ jobs }) => {
+        const job = jobs[orderId];
+        if (!job || isOrderPrintActive(job)) return { jobs };
+        return {
+          jobs: { ...jobs, [orderId]: { ...job, notificationDismissed: true } },
+        };
+      });
     },
     run(input: OrderPrintRequest, afterConfirmation?: () => void) {
       const existing = active.get(input.orderId);
@@ -76,6 +84,9 @@ export function createOrderPrintCoordinator(
             : await api.printOrder({
                 orderId: input.orderId,
                 kind: input.kind,
+                ...(input.kitchenScope
+                  ? { kitchenScope: input.kitchenScope }
+                  : {}),
               });
           setJob({
             ...input,

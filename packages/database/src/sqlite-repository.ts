@@ -40,6 +40,7 @@ import type {
   MoneyMinor,
   OpenCashSessionInput,
   OrderDto,
+  KitchenPrintScope,
   OrderType,
   OrderOperationalStatus,
   PayOrderInput,
@@ -109,6 +110,7 @@ import {
   calculateComboPrice,
   assertComboLineAmount,
   assertIngredientValues, calculateIngredientRecipeCost,
+  getKitchenAdditions,
 } from "@gastronomy/domain";
 import { migrations } from "./migrations";
 import { populateRepeatedOrder } from "./repeat-order";
@@ -1780,6 +1782,18 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               : ("ACTIVE" as const),
       };
     });
+    const kitchenBaseline = this.db.prepare(
+      `SELECT kitchen_snapshot_json FROM print_jobs
+       WHERE order_id = ? AND kind = 'KITCHEN_ORDER' AND status = 'PRINTED'
+       ORDER BY rowid DESC LIMIT 1`,
+    ).get(id) as Row | undefined;
+    let kitchenPrintedQuantities: Record<string, number> | null = {};
+    if (kitchenBaseline) {
+      const snapshotJson = kitchenBaseline.kitchen_snapshot_json;
+      kitchenPrintedQuantities = snapshotJson == null
+        ? null
+        : (JSON.parse(String(snapshotJson)) as { quantities: Record<string, number> }).quantities;
+    }
     return {
       id: String(row.id),
       number: Number(row.number),
@@ -1851,6 +1865,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       printedAt: row.printed_at == null ? null : String(row.printed_at),
       printCount: Number(row.print_count),
       printAttemptCount: Number(row.print_attempt_count ?? 0),
+      kitchenPrintedQuantities,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
       servicePendingSince:
@@ -4694,7 +4709,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return run();
   }
 
-  queuePrint(orderId: Id, kind: "KITCHEN_ORDER" | "CUSTOMER_BILL") {
+  queuePrint(
+    orderId: Id,
+    kind: "KITCHEN_ORDER" | "CUSTOMER_BILL",
+    kitchenScope: KitchenPrintScope = "FULL",
+  ) {
     const run = this.db.transaction(() => {
       const order = this.getOrder(orderId);
       assertOrderAction(
@@ -4713,6 +4732,24 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           "Ya hay una impresión de este tipo en curso. Esperá el resultado o reanudá el trabajo pendiente.",
         );
       const jobId = randomUUID();
+      if (kind === "CUSTOMER_BILL" && kitchenScope !== "FULL")
+        throw new Error("La cuenta del cliente sólo admite impresión completa.");
+      if (kind === "KITCHEN_ORDER" && !["FULL", "ADDED"].includes(kitchenScope))
+        throw new Error("El alcance de impresión de cocina no es válido.");
+      const ticketOrder = { ...order, kitchenPrintScope: kitchenScope };
+      if (kind === "KITCHEN_ORDER" && kitchenScope === "ADDED") {
+        if (order.kitchenPrintedQuantities == null)
+          throw new Error("Imprimí la comanda completa una vez para habilitar la impresión parcial.");
+        ticketOrder.items = getKitchenAdditions(order);
+        if (ticketOrder.items.length === 0)
+          throw new Error("No hay productos nuevos o aumentos de cantidad para imprimir.");
+      }
+      const kitchenSnapshot = kind === "KITCHEN_ORDER"
+        ? JSON.stringify({
+            order: ticketOrder,
+            quantities: Object.fromEntries(order.items.map((item) => [item.id, item.quantity])),
+          })
+        : null;
       const settings = this.getSettings();
       const profile =
         kind === "KITCHEN_ORDER"
@@ -4720,8 +4757,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           : settings.printing.bill;
       this.db
         .prepare(
-          `INSERT INTO print_jobs(id, order_id, kind, status, printer_name, copies, created_at)
-           VALUES (?, ?, ?, 'QUEUED', ?, ?, ?)`,
+          `INSERT INTO print_jobs(id, order_id, kind, status, printer_name, copies, created_at, kitchen_snapshot_json)
+           VALUES (?, ?, ?, 'QUEUED', ?, ?, ?, ?)`,
         )
         .run(
           jobId,
@@ -4730,6 +4767,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           profile.deviceName || null,
           profile.copies,
           nowIso(),
+          kitchenSnapshot,
         );
       this.audit({
         entityType: "ORDER",
@@ -4740,6 +4778,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         after: {
           jobId,
           kind,
+          ...(kind === "KITCHEN_ORDER" ? { kitchenScope } : {}),
           successfulPrintsBefore: order.printCount,
           attemptNumber: (order.printAttemptCount ?? 0) + 1,
           printerName: profile.deviceName || null,
@@ -4749,6 +4788,19 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       return { jobId, status: "QUEUED" };
     });
     return run();
+  }
+
+  getPrintOrder(jobId: Id): OrderDto {
+    const job = requireRow(
+      this.db.prepare("SELECT * FROM print_jobs WHERE id = ?").get(jobId) as Row | undefined,
+      "El trabajo de impresión no existe.",
+    );
+    if (job.kitchen_snapshot_json == null) return this.getOrder(String(job.order_id));
+    const snapshot = JSON.parse(String(job.kitchen_snapshot_json)) as {
+      order: OrderDto;
+      quantities: Record<string, number>;
+    };
+    return snapshot.order;
   }
 
   markPrintJob(jobId: Id, status: "PRINTED" | "FAILED", error?: string) {
@@ -4821,6 +4873,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         throw new Error(
           "Sólo se puede reintentar una impresión fallida o pendiente.",
         );
+      if (job.kind === "KITCHEN_ORDER" && job.kitchen_snapshot_json == null) {
+        const order = this.getOrder(String(job.order_id));
+        this.db.prepare("UPDATE print_jobs SET kitchen_snapshot_json = ? WHERE id = ?")
+          .run(JSON.stringify({
+            order: { ...order, kitchenPrintScope: "FULL" as const },
+            quantities: Object.fromEntries(order.items.map((item) => [item.id, item.quantity])),
+          }), jobId);
+      }
       const claimed = this.db
         .prepare(
           `UPDATE print_jobs SET status = 'RECOVERING', last_error = NULL

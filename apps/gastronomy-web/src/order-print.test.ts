@@ -31,6 +31,21 @@ function fixture() {
 }
 
 describe("printing survives navigation without locking other work", () => {
+  it("forwards the selected kitchen scope and preserves it in the background state", async () => {
+    const { coordinator, api, pending } = fixture();
+    const print = coordinator.run({ ...request, kitchenScope: "ADDED" });
+    await Promise.resolve();
+    expect(api.printOrder).toHaveBeenCalledWith({
+      orderId: request.orderId,
+      kind: "KITCHEN_ORDER",
+      kitchenScope: "ADDED",
+    });
+    pending.resolve(result);
+    await print;
+    expect(
+      coordinator.store.getState().jobs[request.orderId]?.kitchenScope,
+    ).toBe("ADDED");
+  });
   it("keeps the pending request after editor unsubscribe/reopen and suppresses a second dispatch", async () => {
     const { coordinator, api, pending } = fixture();
     const unsubscribe = coordinator.store.subscribe(() => {});
@@ -52,7 +67,41 @@ describe("printing survives navigation without locking other work", () => {
       "PRINTED",
     );
     coordinator.dismiss(request.orderId);
-    expect(coordinator.store.getState().jobs[request.orderId]).toBeUndefined();
+    expect(coordinator.store.getState().jobs[request.orderId]).toMatchObject({
+      status: "PRINTED",
+      notificationDismissed: true,
+    });
+  });
+
+  it("hides an older result when replaced and never resurrects it after dismissal", async () => {
+    const { coordinator, api } = fixture();
+    api.printOrder.mockResolvedValue(result);
+    await coordinator.run(request);
+    await coordinator.run({
+      ...request,
+      orderId: "next-order",
+      orderNumber: 813,
+    });
+    expect(
+      coordinator.store.getState().jobs[request.orderId]?.notificationDismissed,
+    ).toBe(true);
+    coordinator.dismiss("next-order");
+    expect(
+      Object.values(coordinator.store.getState().jobs).filter(
+        (job) => !job.notificationDismissed,
+      ),
+    ).toEqual([]);
+    expect(coordinator.store.getState().jobs["next-order"]?.status).toBe(
+      "PRINTED",
+    );
+    await coordinator.run({
+      ...request,
+      orderId: "next-order",
+      orderNumber: 813,
+    });
+    expect(
+      coordinator.store.getState().jobs["next-order"]?.notificationDismissed,
+    ).toBeUndefined();
   });
 
   it("keeps saving protected until confirmation finishes, then releases the editor while printing", async () => {

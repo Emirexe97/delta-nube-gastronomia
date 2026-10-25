@@ -167,6 +167,98 @@ test("SYSTEM_DIRECT con default válido imprime sin preview", async () => {
   ).toBe(1);
 });
 
+test("la pizza mitad y mitad muestra variedades una sola vez y OBS sólo contiene notas manuales", async () => {
+  await launch([]);
+  const setup = await page.evaluate(async () => {
+    const api = window.gastronomy;
+    const data = await api.bootstrap();
+    await api.openCashSession({ openingAmountMinor: 0 });
+    const table = await api.ensureTable({ number: 63 });
+    const first = data.products.find((product) => product.code === "MUZG")!;
+    const second = data.products.find(
+      (product) => product.name === "Napolitana grande",
+    )!;
+    const order = await api.createOrder({ type: "DINE_IN", tableId: table.id });
+    const updated = await api.addHalfAndHalfItem({
+      orderId: order.id,
+      firstProductId: first.id,
+      secondProductId: second.id,
+    });
+    await api.confirmOrder({ orderId: order.id });
+    await api.saveSettings({
+      ...data.settings,
+      printing: {
+        ...data.settings.printing,
+        kitchen: {
+          ...data.settings.printing.kitchen,
+          mode: "SYSTEM_DIALOG",
+          paperWidth: "58mm",
+        },
+        bill: { ...data.settings.printing.bill, mode: "SYSTEM_DIALOG" },
+      },
+    });
+    return {
+      orderId: order.id,
+      item: updated.items[0]!,
+      firstName: first.name,
+      secondName: second.name,
+    };
+  });
+  expect(setup.item.notes).toBeNull();
+
+  const startPrint = async (kind: "KITCHEN_ORDER" | "CUSTOMER_BILL") => {
+    await page.evaluate(
+      ({ orderId, kind }) => {
+        (window as any).__printResult = null;
+        void window.gastronomy.printOrder({ orderId, kind }).then((value) => {
+          (window as any).__printResult = value;
+        });
+      },
+      { orderId: setup.orderId, kind },
+    );
+    return previewWindow();
+  };
+  let preview = await startPrint("KITCHEN_ORDER");
+  await expect(preview.locator(".product")).toContainText(
+    "Pizza mitad y mitad",
+  );
+  await expect(preview.locator(".halves")).toHaveText(
+    `½ ${setup.firstName} · ½ ${setup.secondName}`,
+  );
+  const line = await preview.locator(".item").textContent();
+  expect(line!.split(setup.firstName)).toHaveLength(2);
+  expect(line!.split(setup.secondName)).toHaveLength(2);
+  await expect(preview.getByText("OBS:")).toHaveCount(0);
+  await preview.screenshot({
+    path: test.info().outputPath("half-and-half-kitchen-58mm.png"),
+  });
+  await preview.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await result();
+
+  const manualNote = `Primera mitad (${setup.firstName}): sin ajo. Segunda mitad: bien cocida.`;
+  await page.evaluate(
+    async ({ orderId, itemId, notes }) => {
+      await window.gastronomy.updateOrderItemNotes({ orderId, itemId, notes });
+    },
+    { orderId: setup.orderId, itemId: setup.item.id, notes: manualNote },
+  );
+  preview = await startPrint("KITCHEN_ORDER");
+  await expect(preview.locator(".halves")).toHaveText(
+    `½ ${setup.firstName} · ½ ${setup.secondName}`,
+  );
+  await expect(preview.locator(".item-obs")).toHaveText(`OBS: ${manualNote}`);
+  await preview.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await result();
+
+  preview = await startPrint("CUSTOMER_BILL");
+  await expect(preview.locator(".product")).toContainText(
+    setup.item.productNameSnapshot,
+  );
+  await expect(preview.locator(".item-obs")).toHaveCount(0);
+  await preview.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await result();
+});
+
 test("la observación del producto sólo aparece en la comanda", async () => {
   await launch([]);
   const setup = await page.evaluate(async () => {
@@ -274,8 +366,12 @@ test("pedido y observaciones en comanda y cuenta tienen negrita, mayúsculas y m
   const kitchenPreview = await previewWindow();
   const kitchenStyles = await kitchenPreview.evaluate(() => {
     const body = window.getComputedStyle(document.body);
-    const product = window.getComputedStyle(document.querySelector(".product")!);
-    const obs = window.getComputedStyle(document.querySelector(".order-note.item-obs")!);
+    const product = window.getComputedStyle(
+      document.querySelector(".product")!,
+    );
+    const obs = window.getComputedStyle(
+      document.querySelector(".order-note.item-obs")!,
+    );
     return {
       bodyFontSize: parseFloat(body.fontSize),
       productWeight: Number(product.fontWeight) || product.fontWeight,
@@ -288,10 +384,14 @@ test("pedido y observaciones en comanda y cuenta tienen negrita, mayúsculas y m
   });
   expect(kitchenStyles.productTransform).toBe("uppercase");
   expect(kitchenStyles.productWeight).toBeGreaterThanOrEqual(700);
-  expect(kitchenStyles.productFontSize).toBeGreaterThan(kitchenStyles.bodyFontSize + 2);
+  expect(kitchenStyles.productFontSize).toBeGreaterThan(
+    kitchenStyles.bodyFontSize + 2,
+  );
   expect(kitchenStyles.obsTransform).toBe("uppercase");
   expect(kitchenStyles.obsWeight).toBeGreaterThanOrEqual(700);
-  expect(kitchenStyles.obsFontSize).toBeGreaterThan(kitchenStyles.bodyFontSize + 2);
+  expect(kitchenStyles.obsFontSize).toBeGreaterThan(
+    kitchenStyles.bodyFontSize + 2,
+  );
   await kitchenPreview.getByRole("button", { name: "Cancelar" }).click();
   await result();
 
@@ -304,7 +404,9 @@ test("pedido y observaciones en comanda y cuenta tienen negrita, mayúsculas y m
   const billPreview = await previewWindow();
   const billStyles = await billPreview.evaluate(() => {
     const body = window.getComputedStyle(document.body);
-    const product = window.getComputedStyle(document.querySelector(".product")!);
+    const product = window.getComputedStyle(
+      document.querySelector(".product")!,
+    );
     return {
       bodyFontSize: parseFloat(body.fontSize),
       productWeight: Number(product.fontWeight) || product.fontWeight,
@@ -314,7 +416,9 @@ test("pedido y observaciones en comanda y cuenta tienen negrita, mayúsculas y m
   });
   expect(billStyles.productTransform).toBe("uppercase");
   expect(billStyles.productWeight).toBeGreaterThanOrEqual(700);
-  expect(billStyles.productFontSize).toBeGreaterThan(billStyles.bodyFontSize + 2);
+  expect(billStyles.productFontSize).toBeGreaterThan(
+    billStyles.bodyFontSize + 2,
+  );
   await billPreview.getByRole("button", { name: "Cancelar" }).click();
   await result();
 });

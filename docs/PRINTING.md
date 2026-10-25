@@ -31,6 +31,30 @@ explícita **Reintentar**. El reintento devuelve ese job a `QUEUED`, incrementa
 sus intentos al ejecutarse y deja auditoría; no crea otro pedido ni aumenta el
 contador de copias de la orden.
 
+## Comanda completa o sólo agregados
+
+Después de imprimir una comanda, **Reimprimir comanda** (también F7) permite elegir:
+
+- **Sólo lo agregado**, seleccionada de forma predeterminada cuando hay pendientes:
+  imprime líneas nuevas y aumentos de cantidad desde la última impresión exitosa.
+  Si una línea pasó de 2 a 3 unidades, envía únicamente 1. El ticket lleva la marca
+  **AGREGADO**, junto al número de pedido y la mesa o canal habituales.
+- **Comanda completa**: imprime todos los productos actuales. Usarla también para
+  comunicar cambios de observaciones o bajas de productos ya enviados.
+
+El diálogo muestra los agregados pendientes y deshabilita la opción parcial si no
+hay ninguno. La cuenta del cliente sigue incluyendo siempre el pedido completo.
+
+Cada trabajo de cocina guarda el contenido y las cantidades al solicitarlo. Los
+reintentos usan ese mismo contenido, aunque el pedido se edite mientras tanto.
+Sólo un éxito actualiza el registro de cantidades enviadas; cancelar la vista
+previa o fallar conserva los agregados pendientes. El registro persiste al cerrar
+y reabrir la aplicación.
+
+Las comandas impresas antes de esta función no tienen historial de cantidades:
+deben imprimirse completas una vez para habilitar la opción parcial. No se
+deducen sus cantidades a partir del pedido actual.
+
 ## Perfiles configurables
 
 - perfiles independientes **Comanda de cocina** y **Cuenta del cliente**;
@@ -41,6 +65,7 @@ contador de copias de la orden.
 - módulo **Textos de impresión** con encabezado y pie independientes para comanda y cuenta;
 - subtítulo, leyenda no fiscal y campos visibles configurables de la cuenta;
 - comanda sin precios;
+- pizza mitad y mitad con título propio y ambas variedades como detalle, sin repetirlas en el nombre ni generar observaciones; **OBS** conserva sólo las notas ingresadas manualmente;
 - cuenta con subtotal, descuento, delivery y total;
 - número, canal/mesa, mozo, hora de entrega, productos, mitades, modificadores con su
   alcance, observaciones y destino;

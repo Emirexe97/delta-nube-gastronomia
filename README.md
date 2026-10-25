@@ -105,6 +105,18 @@ El artefacto se genera en
 `apps/desktop-shell/release/Delta Nube Gastronomía Setup 0.1.11.exe`. El comando
 recompila primero SQLite para la ABI exacta de Electron.
 
+## Cargas pendientes entre secciones
+
+La navegación lateral queda accesible durante la carga de mesas y pedidos.
+Al cambiar de sección desde **Salón** o **Pedidos**, la carga queda pendiente:
+al volver se recuperan el mismo editor, los campos ingresados y los diálogos
+hijos abiertos, con su foco y posición de desplazamiento. Cada sección conserva
+su propia carga durante la sesión de la aplicación.
+
+Navegar no confirma, imprime, cobra ni descarta la carga. Cerrar o cancelar sigue
+siendo una acción explícita; las operaciones de guardado en curso conservan su
+protección y recargar o cerrar la ventana sigue avisando si hay cambios sin guardar.
+
 ## Pedidos con fecha y hora
 
 En un pedido para retirar o envío, elegir **Fecha y hora** conserva el horario seleccionado aunque se refresquen los datos mientras se completa el formulario. La comanda y la cuenta muestran **PEDIDO PROGRAMADO**, fecha completa y hora destacadas en un recuadro de alto contraste, apto para papel térmico de 58/80 mm. La impresión utiliza la hora guardada del pedido, en Buenos Aires; **Demora rápida** mantiene el formato habitual de entrega.

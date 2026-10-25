@@ -13,6 +13,7 @@ import { isOrderPrintActive, orderPrintCoordinator, type OrderPrintRequest } fro
 import type {
   BootstrapDto,
   CustomerDto,
+  KitchenPrintScope,
   OrderDto,
   OrderItemDto,
   OrderOperationalStatus,
@@ -45,11 +46,12 @@ import {
   Select,
   Textarea,
   cn,
+  useWorkspaceActive,
 } from "@gastronomy/ui";
 import { bootstrapKey, useApiMutation } from "../api";
 import { isDemoMode } from "../demo/install-demo";
 import { ComboOrderModal } from "./combo-order-modal";
-import { calculateHalfAndHalfBase, guardOrderAction } from "@gastronomy/domain";
+import { calculateHalfAndHalfBase, getKitchenAdditions, guardOrderAction } from "@gastronomy/domain";
 import {
   formatMoney,
   moneyInputValue,
@@ -76,6 +78,7 @@ export function OrderEditor({
   onClose(): void;
   onEditDraft?(orderId: string): void;
 }) {
+  const workspaceActive = useWorkspaceActive();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const currentOrderId = useRef(orderId);
@@ -117,6 +120,7 @@ export function OrderEditor({
   const [printConfirmKind, setPrintConfirmKind] = useState<
     "KITCHEN_ORDER" | "CUSTOMER_BILL" | null
   >(null);
+  const [kitchenPrintScope, setKitchenPrintScope] = useState<KitchenPrintScope>("FULL");
   const [addingProduct, setAddingProduct] = useState<ProductDto | null>(null);
   const [comboProduct, setComboProduct] = useState<ProductDto | null>(null);
   const [comboAddError, setComboAddError] = useState<string | null>(null);
@@ -496,11 +500,17 @@ export function OrderEditor({
       : [],
   );
   if (orderPrint?.status === "PRINTED") printedKinds.add(orderPrint.kind);
+  if (order && (order.kitchenPrintedQuantities === null ||
+    Object.keys(order.kitchenPrintedQuantities ?? {}).length > 0)) {
+    printedKinds.add("KITCHEN_ORDER");
+  }
+  const kitchenAdditions = order ? getKitchenAdditions(order) : [];
   const requestPrint = (kind: "KITCHEN_ORDER" | "CUSTOMER_BILL") => {
     if (!order || orderPrintBusy || pendingPrint) return;
     setPrintFeedback(null);
     setError(null);
     if (printedKinds.has(kind)) {
+      setKitchenPrintScope(kitchenAdditions.length > 0 ? "ADDED" : "FULL");
       setPrintConfirmKind(kind);
       return;
     }
@@ -514,7 +524,7 @@ export function OrderEditor({
   };
 
   useEffect(() => {
-    if (!orderId || !order) return;
+    if (!workspaceActive || !orderId || !order) return;
     const handler = (event: KeyboardEvent) => {
       if (event.repeat) return;
       const nestedDialogOpen =
@@ -593,6 +603,7 @@ export function OrderEditor({
     orderPrintBusy,
     refundOpen,
     variantPickerProduct,
+    workspaceActive,
   ]);
 
   if (!order) return orderId ? (
@@ -630,10 +641,16 @@ export function OrderEditor({
   const canDeliver = guardOrderAction(order, "DELIVER");
   const confirmReprint = () => {
     if (!printConfirmKind || orderPrintBusy || pendingPrint) return;
+    if (printConfirmKind === "KITCHEN_ORDER" && kitchenPrintScope === "ADDED" && !kitchenAdditions.length) return;
     setPrintFeedback(null);
     setError(null);
     setPrintConfirmKind(null);
-    print.mutate({ orderId: order.id, orderNumber: order.number, kind: printConfirmKind });
+    print.mutate({
+      orderId: order.id,
+      orderNumber: order.number,
+      kind: printConfirmKind,
+      ...(printConfirmKind === "KITCHEN_ORDER" ? { kitchenScope: kitchenPrintScope } : {}),
+    });
   };
   const editorBusy =
     addItem.isPending ||
@@ -1886,11 +1903,52 @@ export function OrderEditor({
         description="Se enviará una nueva impresión"
       >
         <div className="grid gap-4">
-          <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">
-            Ya se imprimió esta{" "}
-            {printConfirmKind === "KITCHEN_ORDER" ? "comanda" : "cuenta"}.
-            ¿Querés crear otra copia?
-          </p>
+          {printConfirmKind === "KITCHEN_ORDER" ? (
+            <>
+              <fieldset className="grid gap-3">
+                <legend className="mb-3 text-sm font-semibold">¿Qué querés imprimir?</legend>
+                <label className={cn("flex items-start gap-3 rounded-xl border p-3", !kitchenAdditions.length && "opacity-60")}>
+                  <input
+                    type="radio"
+                    name="kitchen-print-scope"
+                    aria-label="Sólo lo agregado"
+                    value="ADDED"
+                    checked={kitchenPrintScope === "ADDED"}
+                    disabled={!kitchenAdditions.length || orderPrintBusy}
+                    onChange={() => setKitchenPrintScope("ADDED")}
+                  />
+                  <span className="text-sm"><strong>Sólo lo agregado</strong><span className="mt-1 block text-xs">Productos y cantidades nuevos desde la última comanda impresa.</span></span>
+                </label>
+                <label className="flex items-start gap-3 rounded-xl border p-3">
+                  <input
+                    type="radio"
+                    name="kitchen-print-scope"
+                    aria-label="Comanda completa"
+                    value="FULL"
+                    checked={kitchenPrintScope === "FULL"}
+                    disabled={orderPrintBusy}
+                    onChange={() => setKitchenPrintScope("FULL")}
+                  />
+                  <span className="text-sm"><strong>Comanda completa</strong><span className="mt-1 block text-xs">Todos los productos del pedido actual.</span></span>
+                </label>
+              </fieldset>
+              {kitchenAdditions.length > 0 ? (
+                <div className="rounded-xl bg-slate-50 p-3 text-sm">
+                  <p className="font-semibold">Agregados pendientes</p>
+                  <ul className="mt-2 space-y-1">
+                    {kitchenAdditions.map((item) => <li key={item.id}>{item.quantity} × {item.productNameSnapshot}</li>)}
+                  </ul>
+                </div>
+              ) : <p className="text-sm text-slate-600">{order.kitchenPrintedQuantities == null
+                ? "Esta comanda es anterior al registro de agregados. Imprimí la completa una vez para habilitar la impresión parcial."
+                : "No hay productos nuevos para imprimir."}</p>}
+              <p className="text-xs text-slate-600">Para cambios en observaciones o bajas de productos ya enviados, elegí la comanda completa.</p>
+            </>
+          ) : (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">
+              Ya se imprimió esta cuenta. ¿Querés crear otra copia?
+            </p>
+          )}
           <div className="flex justify-end gap-2">
             <Button
               type="button"
@@ -1903,7 +1961,7 @@ export function OrderEditor({
             <Button
               type="button"
               onClick={confirmReprint}
-              disabled={!printConfirmKind || orderPrintBusy}
+              disabled={!printConfirmKind || orderPrintBusy || (printConfirmKind === "KITCHEN_ORDER" && kitchenPrintScope === "ADDED" && !kitchenAdditions.length)}
             >
               {orderPrintBusy ? "Enviando…" : "Reimprimir"}
             </Button>
@@ -1933,7 +1991,7 @@ function ItemNotesModal({
 
   useEffect(() => {
     if (open) setNotes(item?.notes ?? "");
-  }, [open, item]);
+  }, [open, item?.id]);
 
   return (
     <Modal
@@ -4068,7 +4126,9 @@ function SelectVariantModal({
   onSelect: (product: ProductDto) => void;
   onClose: () => void;
 }) {
+  const workspaceActive = useWorkspaceActive();
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const selectionSessionRef = useRef<string | null>(null);
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const openedAtRef = useRef(0);
 
@@ -4093,6 +4153,13 @@ function SelectVariantModal({
   }, [parentProduct, variants]);
 
   useEffect(() => {
+    if (!open) {
+      selectionSessionRef.current = null;
+      return;
+    }
+    const session = JSON.stringify([parentProduct?.id, channelCode, initialQuery]);
+    if (selectionSessionRef.current === session) return;
+    selectionSessionRef.current = session;
     if (!parentProduct || !allOptions.length) {
       setSelectedIndex(0);
       return;
@@ -4118,21 +4185,23 @@ function SelectVariantModal({
       ),
     );
     setSelectedIndex(firstValidIndex >= 0 ? firstValidIndex : 0);
-  }, [parentProduct, allOptions, initialQuery, channelCode]);
+  }, [open, parentProduct, allOptions, initialQuery, channelCode]);
 
   useEffect(() => {
-    if (!open || !allOptions.length) return;
+    if (!workspaceActive || !open || !allOptions.length) return;
     const timer = window.setTimeout(() => {
       const idx = Math.min(Math.max(0, selectedIndex), allOptions.length - 1);
       buttonRefs.current[idx]?.focus();
       buttonRefs.current[idx]?.scrollIntoView({ block: "nearest" });
     }, 60);
     return () => window.clearTimeout(timer);
-  }, [open]);
+  }, [open, workspaceActive]);
 
   useEffect(() => {
-    if (!open || !allOptions.length) return;
+    if (!workspaceActive || !open || !allOptions.length) return;
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || !(event.target instanceof Node) ||
+        !buttonRefs.current[0]?.closest('[role="dialog"]')?.contains(event.target)) return;
       if (event.repeat) {
         event.preventDefault();
         return;
@@ -4203,7 +4272,7 @@ function SelectVariantModal({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, allOptions, selectedIndex, onSelect, channelCode]);
+  }, [open, allOptions, selectedIndex, onSelect, channelCode, workspaceActive]);
 
   if (!parentProduct) return null;
 

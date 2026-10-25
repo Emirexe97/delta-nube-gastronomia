@@ -27,11 +27,13 @@ import {
   Input,
   Modal,
   Select,
+  useWorkspaceActive,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { OrderEditor } from "../components/order-editor";
 import { TableFloorPlan } from "../components/table-floor-plan";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
+import { getTopVisibleDialog } from "../hooks/use-enter-navigation";
 import {
   formatElapsed,
   formatMoney,
@@ -50,6 +52,7 @@ const waiterRoleLabels = {
 } as const;
 
 export function TablesPage({ data }: { data: BootstrapDto }) {
+  const workspaceActive = useWorkspaceActive();
   const pageRef = useRef<HTMLDivElement>(null);
   const lastScrollTopRef = useRef<number>(0);
   const [onlyOccupied, setOnlyOccupied] = useState(() => {
@@ -117,6 +120,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
   };
 
   useEffect(() => {
+    if (!workspaceActive) return;
     const container = getScrollContainer();
     if (!container) return;
     const handleScroll = () => {
@@ -126,10 +130,10 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
     };
     container.addEventListener("scroll", handleScroll, { passive: true });
     return () => container.removeEventListener("scroll", handleScroll);
-  }, [selectedOrderId]);
+  }, [selectedOrderId, workspaceActive]);
 
   useEffect(() => {
-    if (!selectedOrderId && lastScrollTopRef.current > 0) {
+    if (workspaceActive && !selectedOrderId && lastScrollTopRef.current > 0) {
       const container = getScrollContainer();
       if (container) {
         const targetScroll = lastScrollTopRef.current;
@@ -146,7 +150,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
         };
       }
     }
-  }, [selectedOrderId]);
+  }, [selectedOrderId, workspaceActive]);
 
   const createOrder = useApiMutation(
     (input: OpenTableInput) =>
@@ -582,11 +586,14 @@ function SalonServiceList({
   onOpenTable(table: RestaurantTableDto): void;
   onMarkServed(orderId: string, expectedServiceRevision: number): void;
 }) {
+  const workspaceActive = useWorkspaceActive();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (!workspaceActive) return;
+    setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 15_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [workspaceActive]);
 
   const rows = useMemo(() => {
     const occupied = tables.flatMap((table) => {
@@ -681,6 +688,9 @@ function QuickEntry({
   removedEvent?: { tableId: string; revision: number } | null;
   isEditorOpen?: boolean;
 }) {
+  const workspaceActive = useWorkspaceActive();
+  const workspaceActiveRef = useRef(workspaceActive);
+  workspaceActiveRef.current = workspaceActive;
   const [step, setStep] = useState<QuickStep>("TABLE");
   const [tableNumber, setTableNumber] = useState("");
   const [table, setTable] = useState<RestaurantTableDto | null>(null);
@@ -807,6 +817,7 @@ function QuickEntry({
   }, [data.orders, order?.id]);
 
   const focus = (ref: React.RefObject<HTMLElement | null>, restoreFlow = false) => {
+    if (!workspaceActiveRef.current) return;
     // A stale waiter effect must not cancel the return to table entry.
     if (restoringEditorFocusRef.current && !restoreFlow) return;
     if (focusFrameRef.current !== null) {
@@ -815,10 +826,11 @@ function QuickEntry({
     const captured = document.activeElement;
     focusFrameRef.current = window.requestAnimationFrame(() => {
       focusFrameRef.current = null;
+      if (!workspaceActiveRef.current) return;
       const target = ref.current;
       if (
         target &&
-        ((restoreFlow && !document.querySelector('[role="dialog"]')) ||
+        ((restoreFlow && !getTopVisibleDialog()) ||
           document.activeElement === captured ||
           document.activeElement === document.body ||
           document.activeElement === target)

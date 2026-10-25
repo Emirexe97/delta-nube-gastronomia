@@ -49,6 +49,7 @@ import {
   assertAppSettings,
   assertOperationalTransition,
   assertOrderAction,
+  getKitchenAdditions,
   paymentStatusFor,
   businessDateFromOpening,
   assertComboDefinition,
@@ -115,6 +116,7 @@ export interface DemoStorage {
 interface DemoState {
   version: 12;
   data: BootstrapDto;
+  printSnapshots?: Record<string, { ticket: OrderDto; kitchenQuantities: Record<string, number> }>;
   historicalSessions: CashSessionDto[];
   movements: Array<{
     id: string;
@@ -807,6 +809,12 @@ function normalize(state: DemoState) {
       active: true,
     });
   for (const order of state.data.orders) {
+    const lastKitchenPrint = state.data.printJobs.find((job) =>
+      job.orderId === order.id && job.kind === "KITCHEN_ORDER" && job.status === "PRINTED",
+    );
+    order.kitchenPrintedQuantities = lastKitchenPrint
+      ? state.printSnapshots?.[lastKitchenPrint.id]?.kitchenQuantities ?? null
+      : {};
     if (order.serviceRevision == null) {
       const serviceActive = order.type === "DINE_IN" &&
         order.lifecycleStatus === "CONFIRMED" &&
@@ -3469,6 +3477,13 @@ export function createDemoApi(
         order,
         input.kind === "KITCHEN_ORDER" ? "PRINT_KITCHEN" : "PRINT_BILL",
       );
+      const kitchenScope = input.kitchenScope ?? "FULL";
+      if (!["FULL", "ADDED"].includes(kitchenScope) || (input.kind !== "KITCHEN_ORDER" && kitchenScope !== "FULL"))
+        throw new Error("La impresión parcial sólo está disponible para comandas de cocina.");
+      const items = kitchenScope === "ADDED" ? getKitchenAdditions(order) : order.items;
+      if (kitchenScope === "ADDED" && order.kitchenPrintedQuantities == null)
+        throw new Error("Imprimí la comanda completa una vez para habilitar la impresión parcial.");
+      if (!items.length) throw new Error("No hay productos nuevos para imprimir.");
       const job = {
         id: uid("print", state),
         orderId: order.id,
@@ -3488,9 +3503,14 @@ export function createDemoApi(
         createdAt: now(),
         printedAt: now(),
       };
+      (state.printSnapshots ??= {})[job.id] = {
+        ticket: output({ ...order, items, ...(input.kind === "KITCHEN_ORDER" ? { kitchenPrintScope: kitchenScope } : {}) }),
+        kitchenQuantities: Object.fromEntries(order.items.map((item) => [item.id, item.quantity])),
+      };
       state.data.printJobs.unshift(job);
       order.printCount += 1;
-      order.printedAt = job.printedAt;
+      order.printAttemptCount = (order.printAttemptCount ?? 0) + 1;
+      order.printedAt ??= job.printedAt;
       audit(state, "PRINT_JOB", job.id, "IMPRESION_SIMULADA");
       save();
       return { jobId: job.id, status: job.status };
@@ -3505,10 +3525,18 @@ export function createDemoApi(
         throw new Error(
           "Sólo se puede reintentar una impresión fallida o pendiente.",
         );
+      const order = orderById(job.orderId);
+      (state.printSnapshots ??= {})[job.id] ??= {
+        ticket: output({ ...order, ...(job.kind === "KITCHEN_ORDER" ? { kitchenPrintScope: "FULL" as const } : {}) }),
+        kitchenQuantities: Object.fromEntries(order.items.map((item) => [item.id, item.quantity])),
+      };
       job.status = "PRINTED";
       job.attempts += 1;
       job.lastError = null;
       job.printedAt = now();
+      order.printCount += 1;
+      order.printAttemptCount = (order.printAttemptCount ?? 0) + 1;
+      order.printedAt ??= job.printedAt;
       audit(state, "PRINT_JOB", job.id, "REIMPRESION_SIMULADA");
       save();
       return { jobId: job.id, status: job.status };

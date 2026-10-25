@@ -482,7 +482,13 @@ export interface PaymentDto {
   status: "ACTIVE" | "PARTIALLY_REFUNDED" | "REFUNDED";
 }
 
+export type KitchenPrintScope = "FULL" | "ADDED";
+
 export interface OrderDto {
+  /** Quantities in the last successful kitchen snapshot; null for legacy prints. */
+  kitchenPrintedQuantities?: Record<Id, number> | null;
+  /** Present on an immutable kitchen print ticket. */
+  kitchenPrintScope?: KitchenPrintScope;
   /** Service tracking is independent from payment and closing the table. */
   servicePendingSince?: string | null;
   servedAt?: string | null;
@@ -1396,6 +1402,7 @@ export interface DesktopApi {
   printOrder(input: {
     orderId: Id;
     kind: "KITCHEN_ORDER" | "CUSTOMER_BILL";
+    kitchenScope?: KitchenPrintScope;
   }): Promise<{ jobId: Id; status: string }>;
   retryPrint(input: { jobId: Id }): Promise<{ jobId: Id; status: string }>;
   printCashSessionReport(input: {

@@ -1083,4 +1083,13 @@ CREATE TABLE product_cost_recipes (
  product_id TEXT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), items_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
 );`,
   },
+  {
+    version: 42,
+    name: "immutable_kitchen_print_snapshots",
+    sql: String.raw`
+ALTER TABLE print_jobs ADD COLUMN kitchen_snapshot_json TEXT;
+CREATE INDEX IF NOT EXISTS print_jobs_kitchen_baseline_idx
+  ON print_jobs(order_id, kind, status);
+`,
+  },
 ];

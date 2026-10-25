@@ -4,7 +4,7 @@ import { humanError } from "../lib";
 
 export function OrderPrintStatus() {
   const jobs = useStore(orderPrintCoordinator.store, (state) => state.jobs);
-  const all = Object.values(jobs);
+  const all = Object.values(jobs).filter((job) => !job.notificationDismissed);
   const visible = [
     ...all.filter(isOrderPrintActive),
     ...all.filter((job) => !isOrderPrintActive(job)).slice(-1),

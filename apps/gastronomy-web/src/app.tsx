@@ -26,7 +26,7 @@ import {
   UsersThree,
   WifiSlash,
 } from "@phosphor-icons/react";
-import { Badge, cn } from "@gastronomy/ui";
+import { Badge, cn, PreservedWorkspace } from "@gastronomy/ui";
 import { useBootstrap } from "./api";
 import { OrderPrintStatus } from "./components/order-print-status";
 import { formatMoney } from "./lib";
@@ -111,8 +111,20 @@ export function App() {
   );
   const [clock, setClock] = useState(new Date());
   const [navigationNotice, setNavigationNotice] = useState<string | null>(null);
+  const [visitedSalon, setVisitedSalon] = useState(() =>
+    location.pathname.startsWith("/salon"),
+  );
+  const [visitedOrders, setVisitedOrders] = useState(() =>
+    location.pathname.startsWith("/pedidos"),
+  );
   const contentRef = useRef<HTMLDivElement>(null);
   const routeHeadingRef = useRef<HTMLHeadingElement>(null);
+  const dirtyFormsRef = useRef(new WeakSet<HTMLFormElement>());
+
+  useEffect(() => {
+    if (location.pathname.startsWith("/salon")) setVisitedSalon(true);
+    if (location.pathname.startsWith("/pedidos")) setVisitedOrders(true);
+  }, [location.pathname]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 30_000);
@@ -125,15 +137,41 @@ export function App() {
   }, [location.pathname]);
 
   useEffect(() => {
-    const dirtyForms = new WeakSet<HTMLFormElement>();
+    const dirtyForms = dirtyFormsRef.current;
     let historyGuardArmed = false;
     let bypassNextPop = false;
     let armTimer: number | null = null;
-    const hasPendingFormChanges = () =>
-      document.querySelector('[data-navigation-dirty="true"]') !== null ||
-      [...document.forms].some((form) => dirtyForms.has(form));
+    const isPreservedWorkspaceElement = (element: Element) =>
+      element.closest('[data-preserved-workspace="true"]') !== null;
+    const isInactiveWorkspaceElement = (element: Element) =>
+      element.closest(
+        '[data-preserved-workspace][data-workspace-active="false"]',
+      ) !== null;
+    const hasPendingFormChanges = (includePreserved = false) => {
+      const dirtyMarker = [
+        ...document.querySelectorAll('[data-navigation-dirty="true"]'),
+      ].some(
+        (element) => includePreserved || !isPreservedWorkspaceElement(element),
+      );
+      return (
+        dirtyMarker ||
+        [...document.forms].some(
+          (form) =>
+            dirtyForms.has(form) &&
+            (includePreserved || !isPreservedWorkspaceElement(form)),
+        )
+      );
+    };
     const hasCriticalOperation = () =>
-      document.querySelector('[role="dialog"][aria-busy="true"]') !== null;
+      [...document.querySelectorAll('[role="dialog"][aria-busy="true"]')].some(
+        (element) => !isInactiveWorkspaceElement(element),
+      );
+    const hasOpenModal = () =>
+      [...document.querySelectorAll('[role="dialog"]')].some(
+        (element) =>
+          !isInactiveWorkspaceElement(element) &&
+          element.closest("[hidden], [inert]") === null,
+      );
     const showBlockedNotice = (message: string) => {
       setNavigationNotice(message);
       window.setTimeout(
@@ -182,7 +220,7 @@ export function App() {
       if (!destination) return;
       event.preventDefault();
       if (event.repeat) return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) {
+      if (hasOpenModal()) {
         showBlockedNotice(
           "Cerrá la ventana abierta antes de cambiar de sección.",
         );
@@ -285,7 +323,7 @@ export function App() {
       window.history.back();
     };
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!hasPendingFormChanges() && !hasCriticalOperation()) return;
+      if (!hasPendingFormChanges(true) && !hasCriticalOperation()) return;
       event.preventDefault();
       event.returnValue = "";
     };
@@ -366,7 +404,14 @@ export function App() {
   }
 
   return (
-    <div className="flex h-full min-h-0 bg-slate-50 text-slate-950">
+    <div
+      className={cn(
+        "flex h-full min-h-0 bg-slate-50 text-slate-950 max-sm:[--app-navigation-width:56px]",
+        collapsed
+          ? "[--app-navigation-width:64px]"
+          : "[--app-navigation-width:214px]",
+      )}
+    >
       {navigationNotice ? (
         <div
           role="status"
@@ -377,6 +422,7 @@ export function App() {
         </div>
       ) : null}
       <aside
+        data-app-navigation="true"
         className={cn(
           "relative flex shrink-0 flex-col border-r border-slate-200 bg-white transition-[width] duration-200 max-sm:w-14",
           collapsed ? "w-16" : "w-[214px]",
@@ -572,14 +618,8 @@ export function App() {
               path="/resumen"
               element={<DashboardPage data={bootstrap.data} />}
             />
-            <Route
-              path="/salon"
-              element={<TablesPage data={bootstrap.data} />}
-            />
-            <Route
-              path="/pedidos"
-              element={<OrdersPage data={bootstrap.data} />}
-            />
+            <Route path="/salon" element={null} />
+            <Route path="/pedidos" element={null} />
             <Route
               path="/catalogo"
               element={<CatalogPage data={bootstrap.data} />}
@@ -632,6 +672,18 @@ export function App() {
             />
             <Route path="*" element={<Navigate to="/resumen" replace />} />
           </Routes>
+          {visitedSalon ? (
+            <PreservedWorkspace active={location.pathname.startsWith("/salon")}>
+              <TablesPage data={bootstrap.data} />
+            </PreservedWorkspace>
+          ) : null}
+          {visitedOrders ? (
+            <PreservedWorkspace
+              active={location.pathname.startsWith("/pedidos")}
+            >
+              <OrdersPage data={bootstrap.data} />
+            </PreservedWorkspace>
+          ) : null}
         </div>
       </main>
     </div>
