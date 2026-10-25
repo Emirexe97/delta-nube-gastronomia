@@ -89,11 +89,42 @@ async function previewWindow() {
           .filter((candidate) =>
             candidate.url().includes("print-preview-controls"),
           ).length,
+      { timeout: 30_000 },
     )
     .toBe(1);
   return app
     .windows()
     .find((candidate) => candidate.url().includes("print-preview-controls"))!;
+}
+
+async function cancelPreview(preview: Page) {
+  const cancel = preview.getByRole("button", { name: "Cancelar" });
+  try {
+    await cancel.click();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      !/target page, context or browser has been closed|target closed/i.test(
+        message,
+      )
+    ) {
+      throw error;
+    }
+    // The cancel handler destroys the preview window. Playwright can report
+    // that closure before its click action has completed; accept that only
+    // after Electron confirms the preview window is gone.
+    await expect.poll(() => preview.isClosed()).toBe(true);
+  }
+  await expect
+    .poll(
+      () =>
+        app
+          .windows()
+          .filter((candidate) =>
+            candidate.url().includes("print-preview-controls"),
+          ).length,
+    )
+    .toBe(0);
 }
 
 async function result() {
@@ -116,7 +147,7 @@ test("SYSTEM_DIALOG muestra ticket real y cancelar no imprime", async () => {
   const preview = await previewWindow();
   await expect(preview.getByText("PRUEBA DE IMPRESIÓN")).toBeVisible();
   await preview.screenshot({ path: test.info().outputPath("preview.png") });
-  await preview.getByRole("button", { name: "Cancelar" }).click();
+  await cancelPreview(preview);
   await result();
   expect(await page.evaluate(() => (window as any).__printResult)).toEqual({
     printed: false,
@@ -134,7 +165,7 @@ test("SYSTEM_DIRECT sin destino abre preview y cancelar no imprime", async () =>
   await startTest(await settingsFor("SYSTEM_DIRECT"));
   const preview = await previewWindow();
   await expect(preview.getByText("PRUEBA DE IMPRESIÓN")).toBeVisible();
-  await preview.getByRole("button", { name: "Cancelar" }).click();
+  await cancelPreview(preview);
   await result();
   expect(
     await app.evaluate(
@@ -232,7 +263,7 @@ test("la pizza mitad y mitad muestra variedades una sola vez y OBS sólo contien
   await preview.screenshot({
     path: test.info().outputPath("half-and-half-kitchen-58mm.png"),
   });
-  await preview.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await cancelPreview(preview);
   await result();
 
   const manualNote = `Primera mitad (${setup.firstName}): sin ajo. Segunda mitad: bien cocida.`;
@@ -247,7 +278,7 @@ test("la pizza mitad y mitad muestra variedades una sola vez y OBS sólo contien
     `½ ${setup.firstName} · ½ ${setup.secondName}`,
   );
   await expect(preview.locator(".item-obs")).toHaveText(`OBS: ${manualNote}`);
-  await preview.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await cancelPreview(preview);
   await result();
 
   preview = await startPrint("CUSTOMER_BILL");
@@ -255,7 +286,7 @@ test("la pizza mitad y mitad muestra variedades una sola vez y OBS sólo contien
     setup.item.productNameSnapshot,
   );
   await expect(preview.locator(".item-obs")).toHaveCount(0);
-  await preview.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await cancelPreview(preview);
   await result();
 });
 
@@ -305,7 +336,7 @@ test("la observación del producto sólo aparece en la comanda", async () => {
   const kitchenPreview = await previewWindow();
   await expect(kitchenPreview.getByText("OBS:")).toBeVisible();
   await expect(kitchenPreview.getByText("SIN AJO — ALERGIA")).toBeVisible();
-  await kitchenPreview.getByRole("button", { name: "Cancelar" }).click();
+  await cancelPreview(kitchenPreview);
   await result();
 
   await page.evaluate((orderId) => {
@@ -316,7 +347,7 @@ test("la observación del producto sólo aparece en la comanda", async () => {
   }, setup);
   const billPreview = await previewWindow();
   await expect(billPreview.getByText("SIN AJO — ALERGIA")).toHaveCount(0);
-  await billPreview.getByRole("button", { name: "Cancelar" }).click();
+  await cancelPreview(billPreview);
   await result();
 });
 
@@ -392,7 +423,7 @@ test("pedido y observaciones en comanda y cuenta tienen negrita, mayúsculas y m
   expect(kitchenStyles.obsFontSize).toBeGreaterThan(
     kitchenStyles.bodyFontSize + 2,
   );
-  await kitchenPreview.getByRole("button", { name: "Cancelar" }).click();
+  await cancelPreview(kitchenPreview);
   await result();
 
   await page.evaluate((orderId) => {
@@ -419,7 +450,7 @@ test("pedido y observaciones en comanda y cuenta tienen negrita, mayúsculas y m
   expect(billStyles.productFontSize).toBeGreaterThan(
     billStyles.bodyFontSize + 2,
   );
-  await billPreview.getByRole("button", { name: "Cancelar" }).click();
+  await cancelPreview(billPreview);
   await result();
 });
 
@@ -483,7 +514,7 @@ test("la referencia de la dirección delivery sólo aparece en la comanda", asyn
       "Referencia: Tocar timbre rojo; dejar en recepción",
     ),
   ).toBeVisible();
-  await kitchenPreview.getByRole("button", { name: "Cancelar" }).click();
+  await cancelPreview(kitchenPreview);
   await result();
 
   await page.evaluate((orderId) => {
@@ -496,7 +527,7 @@ test("la referencia de la dirección delivery sólo aparece en la comanda", asyn
   await expect(
     billPreview.getByText("Referencia: Tocar timbre rojo; dejar en recepción"),
   ).toHaveCount(0);
-  await billPreview.getByRole("button", { name: "Cancelar" }).click();
+  await cancelPreview(billPreview);
   await result();
 });
 
@@ -582,7 +613,7 @@ test("cancelar un job real libera la mesa y permite imprimir después", async ()
       setup.orderId,
     ),
   ).toBe(0);
-  await preview.getByRole("button", { name: "Cancelar" }).click();
+  await cancelPreview(preview);
   await expect(
     editor.getByText(
       "Cuenta no impresa. Podés continuar trabajando y volver a imprimirla cuando quieras.",
