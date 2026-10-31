@@ -147,6 +147,7 @@ sesión, roles y permisos en lugar de crear una autenticación paralela.
 
 - [Referencia del POS](docs/REFERENCE_POS_ANALYSIS.md)
 - [Arquitectura](docs/ARCHITECTURE.md)
+- [API común de pedidos web: preparación e integración](docs/WEB_ORDERS_API.md)
 - [Base de datos](docs/DATABASE.md)
 - [Impresión](docs/PRINTING.md)
 - [Atajos](docs/KEYBOARD_SHORTCUTS.md)
