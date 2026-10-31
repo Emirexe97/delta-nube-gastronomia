@@ -296,6 +296,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
 
       <QuickEntry
         data={data}
+        isParentDialogOpen={Boolean(openingTable || deletingTable)}
         onOpenFullOrder={(orderId, snapshot) => {
           setSelectedOrderSnapshot(snapshot ?? null);
           setSelectedOrderId(orderId);
@@ -679,11 +680,13 @@ type QuickStep = "TABLE" | "WAITER" | "ITEM";
 
 function QuickEntry({
   data,
+  isParentDialogOpen,
   onOpenFullOrder,
   removedEvent,
   isEditorOpen,
 }: {
   data: BootstrapDto;
+  isParentDialogOpen?: boolean;
   onOpenFullOrder(orderId: string, snapshot?: OrderDto): void;
   removedEvent?: { tableId: string; revision: number } | null;
   isEditorOpen?: boolean;
@@ -827,10 +830,15 @@ function QuickEntry({
     focusFrameRef.current = window.requestAnimationFrame(() => {
       focusFrameRef.current = null;
       if (!workspaceActiveRef.current) return;
+      const topDialog = getTopVisibleDialog();
+      if (restoreFlow && topDialog) {
+        restoringEditorFocusRef.current = false;
+        return;
+      }
       const target = ref.current;
       if (
         target &&
-        ((restoreFlow && !getTopVisibleDialog()) ||
+        ((restoreFlow && !topDialog) ||
           document.activeElement === captured ||
           document.activeElement === document.body ||
           document.activeElement === target)
@@ -901,6 +909,17 @@ function QuickEntry({
   useEffect(() => {
     if (removedEvent?.tableId === table?.id) resetFlow();
   }, [removedEvent]);
+
+  useEffect(() => {
+    if (
+      workspaceActive &&
+      !isParentDialogOpen &&
+      !isEditorOpen &&
+      !priceAuthorizationOpen
+    ) {
+      focus(tableRef, true);
+    }
+  }, [workspaceActive, isParentDialogOpen, isEditorOpen, priceAuthorizationOpen]);
 
   useEffect(() => {
     if (!table) return;

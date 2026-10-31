@@ -1092,4 +1092,14 @@ CREATE INDEX IF NOT EXISTS print_jobs_kitchen_baseline_idx
   ON print_jobs(order_id, kind, status);
 `,
   },
+  {
+    version: 43,
+    name: "order_numbers_per_cash_session",
+    sql: String.raw`
+ALTER TABLE orders ADD COLUMN shift_number INTEGER;
+CREATE UNIQUE INDEX IF NOT EXISTS orders_cash_session_shift_number_idx
+  ON orders(cash_session_created_id, shift_number)
+  WHERE shift_number IS NOT NULL;
+`,
+  },
 ];

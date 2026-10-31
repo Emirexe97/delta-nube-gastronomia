@@ -9,7 +9,7 @@ import {
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -153,6 +153,7 @@ test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ti
   await report.getByRole("button", { name: "Imprimir informe" }).click();
   const directTicket = await capturedPrintHtml();
   expect(directTicket).toContain("Movimientos de efectivo");
+  expect(directTicket).toContain("Total envíos y rendiciones (1)");
   expect(directTicket).toContain("Esperado sin cambio");
   expect(
     await app.evaluate(({ app }) => (app as any).__capturedPrintCount),
@@ -530,4 +531,183 @@ test("separa el cambio final del efectivo neto en revisión, historial e informe
     await expect(historyReport.getByText(value, { exact: true })).toBeVisible();
   }
   await expect(historyReport.getByText(/-\s*\$\s*100/)).toBeVisible();
+});
+
+test("mantiene listas extensas del informe desplazables y conserva el encabezado fijo", async ({}, info) => {
+  await launch();
+  const seeded = await page.evaluate(async () => {
+    const api = (window as any).gastronomy;
+    const data = await api.bootstrap();
+    const session = await api.openCashSession({
+      openingAmountMinor: 20_000_000,
+    });
+    const product = data.products[0];
+    const orderNumbers: number[] = [];
+    for (let index = 0; index < 31; index += 1) {
+      const order = await api.createOrder({
+        type: "TAKEAWAY",
+        customerName: `Cliente turno ${String(index).padStart(2, "0")}`,
+        customerPhone: "11 4444-1010",
+        deliveryAddress: "Calle Informe 123",
+      });
+      await api.addOrderItem({ orderId: order.id, productId: product.id });
+      const confirmed = await api.confirmOrder({ orderId: order.id });
+      await api.payOrder({
+        orderId: order.id,
+        payments: [{ methodCode: "CASH", amountMinor: confirmed.totalMinor }],
+      });
+      orderNumbers.push(order.number);
+    }
+    await api.registerCashMovement({
+      type: "EXPENSE",
+      amountMinor: 100,
+      reason: "Gasto agrupado E2E",
+    });
+    for (let index = 0; index < 41; index += 1) {
+      await api.registerCashMovement({
+        type: "INCOME",
+        amountMinor: 100,
+        paymentMethodCode: "CASH",
+        reason: `Movimiento extenso ${String(index).padStart(2, "0")}`,
+      });
+    }
+    await api.saveSettings({
+      ...data.settings,
+      printing: {
+        ...data.settings.printing,
+        bill: { ...data.settings.printing.bill, mode: "SYSTEM_DIALOG" },
+      },
+    });
+    return { orderNumbers, sessionNumber: session.number };
+  });
+
+  await page.reload();
+  await page.getByRole("link", { name: "Caja" }).click();
+  await page.getByRole("button", { name: "Cerrar caja" }).click();
+  await page
+    .getByRole("dialog", { name: "Cerrar caja" })
+    .getByRole("button", { name: /Ver informe del turno/ })
+    .click();
+
+  const report = page.getByRole("dialog", { name: "Informe de caja" });
+  const ordersRegion = report.getByRole("region", {
+    name: "Pedidos del turno",
+  });
+  const movementsRegion = report.getByRole("region", {
+    name: "Movimientos del turno",
+  });
+  const orderMetrics = await ordersRegion.evaluate((region) => {
+    const header = region.querySelector("thead th");
+    const box = region.getBoundingClientRect();
+    return {
+      scrollHeight: region.scrollHeight,
+      clientHeight: region.clientHeight,
+      rows: region.querySelectorAll("tbody tr").length,
+      headerTop: header?.getBoundingClientRect().top ?? -1,
+      regionTop: box.top,
+      text: region.textContent ?? "",
+    };
+  });
+  const movementMetrics = await movementsRegion.evaluate((region) => ({
+    scrollHeight: region.scrollHeight,
+    clientHeight: region.clientHeight,
+    rows: region.querySelectorAll("tbody tr").length,
+    text: region.textContent ?? "",
+  }));
+  expect(orderMetrics.rows).toBeGreaterThanOrEqual(31);
+  expect(orderMetrics.clientHeight).toBeGreaterThanOrEqual(120);
+  expect(orderMetrics.clientHeight).toBeLessThanOrEqual(288);
+  expect(orderMetrics.scrollHeight).toBeGreaterThan(orderMetrics.clientHeight);
+  expect(movementMetrics.rows).toBeGreaterThanOrEqual(42);
+  expect(movementMetrics.clientHeight).toBeGreaterThanOrEqual(120);
+  expect(movementMetrics.clientHeight).toBeLessThanOrEqual(288);
+  expect(movementMetrics.scrollHeight).toBeGreaterThan(
+    movementMetrics.clientHeight,
+  );
+  expect(orderMetrics.text).toContain(`#${seeded.orderNumbers[0]}`);
+  expect(orderMetrics.text).toContain(`#${seeded.orderNumbers[30]}`);
+  expect(movementMetrics.text).toContain("Movimiento extenso 00");
+  expect(movementMetrics.text).toContain("Movimiento extenso 40");
+
+  const beforeScroll = await ordersRegion.evaluate(
+    (region) => region.scrollTop,
+  );
+  await ordersRegion.evaluate((region) => {
+    region.scrollTop = region.scrollHeight;
+  });
+  await movementsRegion.evaluate((region) => {
+    region.scrollTop = region.scrollHeight;
+  });
+  const afterScroll = await ordersRegion.evaluate((region) => {
+    const header = region.querySelector("thead th");
+    const box = region.getBoundingClientRect();
+    return {
+      scrollTop: region.scrollTop,
+      headerTop: header?.getBoundingClientRect().top ?? -1,
+      regionTop: box.top,
+    };
+  });
+  const movementScrollTop = await movementsRegion.evaluate(
+    (region) => region.scrollTop,
+  );
+  expect(afterScroll.scrollTop).toBeGreaterThan(beforeScroll);
+  expect(movementScrollTop).toBeGreaterThan(0);
+  expect(Math.abs(afterScroll.headerTop - afterScroll.regionTop)).toBeLessThan(
+    3,
+  );
+  await ordersRegion.scrollIntoViewIfNeeded();
+  await expect(
+    ordersRegion.getByRole("columnheader", { name: "Pedido", exact: true }),
+  ).toBeInViewport();
+  await movementsRegion.scrollIntoViewIfNeeded();
+  await expect(
+    movementsRegion.getByRole("columnheader", {
+      name: "Movimiento",
+      exact: true,
+    }),
+  ).toBeInViewport();
+  const reportImage = await app.evaluate(async ({ BrowserWindow }) =>
+    (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage())
+      .toPNG()
+      .toString("base64"),
+  );
+  const reportImagePath = info.outputPath("cash-report-internal-scroll.png");
+  await writeFile(reportImagePath, Buffer.from(reportImage, "base64"));
+  await info.attach("cash-report-internal-scroll", {
+    path: reportImagePath,
+    contentType: "image/png",
+  });
+
+  await expect(
+    report.getByRole("button", { name: "Personalizar ticket" }),
+  ).toBeVisible();
+  await expect(
+    report.getByRole("button", { name: "Personalizar ticket" }),
+  ).toBeInViewport({ ratio: 1 });
+  await report.getByRole("button", { name: "Personalizar ticket" }).click();
+  const printPreview = page.getByRole("dialog", {
+    name: "Imprimir informe de caja",
+  });
+  await expect(
+    printPreview.getByRole("button", { name: "Imprimir ticket" }),
+  ).toBeVisible();
+  const previewImagePath = info.outputPath("cash-report-compact-preview.png");
+  const previewImage = await app.evaluate(async ({ BrowserWindow }) =>
+    (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage())
+      .toPNG()
+      .toString("base64"),
+  );
+  await writeFile(previewImagePath, Buffer.from(previewImage, "base64"));
+  await info.attach("cash-report-long-lists", {
+    path: previewImagePath,
+    contentType: "image/png",
+  });
+  const previewText = await printPreview.innerText();
+  expect(previewText.indexOf("RESUMEN DE VENTAS")).toBeGreaterThanOrEqual(0);
+  expect(previewText.indexOf("RESULTADO DEL CIERRE")).toBeGreaterThan(
+    previewText.indexOf("RESUMEN DE VENTAS"),
+  );
+  await expect(printPreview.getByText("Gastos", { exact: true })).toBeVisible();
+  expect(seeded.orderNumbers).toHaveLength(31);
+  expect(seeded.sessionNumber).toBeGreaterThan(0);
 });

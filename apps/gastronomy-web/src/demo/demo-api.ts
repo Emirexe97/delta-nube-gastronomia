@@ -115,6 +115,7 @@ export interface DemoStorage {
 
 interface DemoState {
   version: 12;
+  orderNumbersByCashSession?: Record<string, number>;
   data: BootstrapDto;
   printSnapshots?: Record<string, { ticket: OrderDto; kitchenQuantities: Record<string, number> }>;
   historicalSessions: CashSessionDto[];
@@ -617,6 +618,14 @@ function loadState(storage: DemoStorage): DemoState {
         order.servedAt ??= null;
       }
     }
+    parsed.orderNumbersByCashSession ??= {};
+    for (const order of parsed.data.orders) {
+      if (order.cashSessionCreatedId)
+        parsed.orderNumbersByCashSession[order.cashSessionCreatedId] = Math.max(
+          parsed.orderNumbersByCashSession[order.cashSessionCreatedId] ?? 0,
+          order.number,
+        );
+    }
     parsed.version = 12;
     return parsed as DemoState;
   } catch {
@@ -800,6 +809,15 @@ function makeDriverDeliveryActivity(
 }
 
 function normalize(state: DemoState) {
+  const orderNumbers = state.orderNumbersByCashSession ?? {};
+  for (const order of state.data.orders) {
+    if (order.cashSessionCreatedId)
+      orderNumbers[order.cashSessionCreatedId] = Math.max(
+        orderNumbers[order.cashSessionCreatedId] ?? 0,
+        order.number,
+      );
+  }
+  state.orderNumbersByCashSession = orderNumbers;
   if (!state.data.paymentMethods.some((method) => method.code === "ACCOUNT"))
     state.data.paymentMethods.push({
       id: "payment-account",
@@ -1837,13 +1855,16 @@ export function createDemoApi(
         throw new Error(
           "El repartidor no existe, está inactivo o no tiene el rol de repartidor.",
         );
+      const lastNumber = state.orderNumbersByCashSession?.[cash.id] ?? Math.max(
+        0,
+        ...state.data.orders
+          .filter((candidate) => candidate.cashSessionCreatedId === cash.id)
+          .map((candidate) => candidate.number),
+      );
+      const orderNumber = lastNumber + 1;
       const order: OrderDto = {
         id: uid("order", state),
-        number:
-          Math.max(
-            1002,
-            ...state.data.orders.map((candidate) => candidate.number),
-          ) + 1,
+        number: orderNumber,
         type: input.type,
         operationalStatus: "PENDING",
         paymentStatus: "UNPAID",
@@ -1885,6 +1906,7 @@ export function createDemoApi(
         items: [],
         payments: [],
       };
+      (state.orderNumbersByCashSession ??= {})[cash.id] = orderNumber;
       state.data.orders.unshift(order);
       audit(state, "ORDER", order.id, "PEDIDO_CREADO");
       save();
@@ -2855,8 +2877,12 @@ export function createDemoApi(
       try {
         const order = orderById(input.orderId);
         assertOrderAction(order, "PAY");
-        const driverCollected = input.collectedByDriver === true;
         const amountAlreadyPaid = order.paidMinor;
+        const driverCollected = input.collectedByDriver === true;
+        if (input.driverUserId && (order.type !== "DELIVERY" || !state.data.users.some((user) => user.id === input.driverUserId && user.active && user.roleCode === "DELIVERY_DRIVER")))
+          throw new Error("El repartidor no existe o está inactivo.");
+        if (input.driverUserId && input.driverUserId !== order.driverUserId)
+          await this.assignDeliveryDriver({ orderId: order.id, driverUserId: input.driverUserId });
         if (
           amountAlreadyPaid > 0 &&
           driverCollected !== order.collectedByDriver
@@ -2990,11 +3016,11 @@ export function createDemoApi(
           .reduce((sum, payment) => sum + payment.amountMinor, 0);
         const availableCash =
           (state.data.cashSession?.expectedAmountMinor ?? 0) +
-          (input.collectedByDriver ? 0 : cashAmount);
+          (driverCollected ? 0 : cashAmount);
         if (
           changeAmountMinor > 0 &&
           changeMethod?.affectsCash &&
-          !input.collectedByDriver &&
+          !driverCollected &&
           changeAmountMinor > availableCash
         ) {
           throw new Error(
@@ -3002,13 +3028,13 @@ export function createDemoApi(
           );
         }
         if (state.data.cashSession) {
-          if (!input.collectedByDriver) {
+          if (!driverCollected) {
             state.data.cashSession.expectedAmountMinor += cashAmount;
             state.data.cashSession.cashSalesMinor =
               (state.data.cashSession.cashSalesMinor ?? 0) + cashAmount;
           }
           if (changeAmountMinor > 0 && changeMethod) {
-            if (changeMethod.affectsCash && !input.collectedByDriver) {
+            if (changeMethod.affectsCash && !driverCollected) {
               state.data.cashSession.expectedAmountMinor -= changeAmountMinor;
               state.data.cashSession.cashRefundMinor =
                 (state.data.cashSession.cashRefundMinor ?? 0) +
@@ -3019,7 +3045,7 @@ export function createDemoApi(
               sessionId: state.data.cashSession.id,
               type: "REFUND",
               amountMinor: changeAmountMinor,
-              affectsCash: input.collectedByDriver
+              affectsCash: driverCollected
                 ? false
                 : changeMethod.affectsCash,
               paymentMethodCode: changeMethod.code,
@@ -3038,7 +3064,7 @@ export function createDemoApi(
               sessionId: state.data.cashSession.id,
               type: "SALE",
               amountMinor: payment.amountMinor,
-              affectsCash: input.collectedByDriver
+              affectsCash: driverCollected
                 ? false
                 : (method?.affectsCash ?? false),
               paymentMethodCode: payment.methodCode,
@@ -3055,7 +3081,6 @@ export function createDemoApi(
           state.data.settings.deliverySettlementEnabled &&
           (order.deliveryFeeBelongsToDriver || order.collectedByDriver)
         ) {
-          const driverCollected = input.collectedByDriver === true;
           const restaurantAmount = Math.max(
             0,
             order.totalMinor - order.deliveryFeeMinor,
@@ -3368,30 +3393,12 @@ export function createDemoApi(
       try {
         let order = orderById(input.orderId);
         let paymentInput = input;
-        if (order.type === "DELIVERY" && order.paymentStatus !== "PAID") {
-          const cashMinor = input.payments
-            .filter((payment) => payment.methodCode === "CASH")
-            .reduce((sum, payment) => sum + payment.amountMinor, 0);
-          const nonAccountNonCashMinor = input.payments
-            .filter(
-              (payment) =>
-                payment.methodCode !== "CASH" &&
-                payment.methodCode !== "ACCOUNT",
-            )
-            .reduce((sum, payment) => sum + payment.amountMinor, 0);
-          const accountMinor = input.payments
-            .filter((payment) => payment.methodCode === "ACCOUNT")
-            .reduce((sum, payment) => sum + payment.amountMinor, 0);
-          if (cashMinor > 0 && nonAccountNonCashMinor > 0)
-            throw new Error(
-              "Para cobrar y entregar un envío, elegí efectivo contra entrega o un medio anticipado, sin combinarlos.",
-            );
-          paymentInput = {
-            ...input,
-            // La parte en cuenta corriente no la cobra el repartidor ni ingresa a caja.
-            collectedByDriver: cashMinor > 0 && accountMinor === 0,
-          };
-        }
+        if (input.driverUserId && (order.type !== "DELIVERY" || !state.data.users.some((user) => user.id === input.driverUserId && user.active && user.roleCode === "DELIVERY_DRIVER")))
+          throw new Error("El repartidor no existe o está inactivo.");
+        if (input.driverUserId && input.driverUserId !== order.driverUserId)
+          order = await this.assignDeliveryDriver({ orderId: order.id, driverUserId: input.driverUserId });
+        if (order.type === "DELIVERY" && order.paymentStatus !== "PAID")
+          paymentInput = { ...input, collectedByDriver: input.collectedByDriver === true };
         if (order.lifecycleStatus === "DRAFT")
           order = await this.confirmOrder({ orderId: order.id });
         if (order.paymentStatus !== "PAID")
@@ -6010,29 +6017,44 @@ export function createDemoApi(
         if (!ledger) throw new Error("La liquidación ya no está pendiente.");
         return ledger;
       });
+      const methodCode = input.paymentMethodCode ?? "CASH";
+      if (!methodCode.trim())
+        throw new Error("Seleccioná un medio de pago válido.");
+      if (methodCode === "ACCOUNT")
+        throw new Error("Cuenta corriente no puede usarse para liquidar repartos.");
+      const method = state.data.paymentMethods.find((item) => item.code === methodCode && item.active);
+      if (!method)
+        throw new Error(`El medio de pago ${methodCode} no está disponible.`);
       const incomingMinor = selected
         .filter((ledger) => ledger.direction === "DRIVER_OWES_BUSINESS")
         .reduce((total, ledger) => total + ledger.amountDueMinor, 0);
       const outgoingMinor = selected
         .filter((ledger) => ledger.direction === "BUSINESS_OWES_DRIVER")
         .reduce((total, ledger) => total + ledger.amountDueMinor, 0);
-      if (
-        outgoingMinor >
-        state.data.cashSession.expectedAmountMinor + incomingMinor
-      )
+      if (method.affectsCash && outgoingMinor > state.data.cashSession.expectedAmountMinor + incomingMinor)
         throw new Error(
           "La caja no tiene efectivo suficiente para pagar esta rendición.",
         );
-      state.data.cashSession.expectedAmountMinor +=
-        incomingMinor - outgoingMinor;
-      state.data.cashSession.cashIncomeMinor =
-        (state.data.cashSession.cashIncomeMinor ?? 0) + incomingMinor;
-      state.data.cashSession.cashExpenseMinor =
-        (state.data.cashSession.cashExpenseMinor ?? 0) + outgoingMinor;
+      const timestamp = now();
+      if (method.affectsCash) {
+        state.data.cashSession.expectedAmountMinor += incomingMinor - outgoingMinor;
+        state.data.cashSession.cashIncomeMinor = (state.data.cashSession.cashIncomeMinor ?? 0) + incomingMinor;
+        state.data.cashSession.cashExpenseMinor = (state.data.cashSession.cashExpenseMinor ?? 0) + outgoingMinor;
+      }
       for (const ledger of selected) {
+        const movementType = ledger.direction === "DRIVER_OWES_BUSINESS" ? "INCOME" : "EXPENSE";
+        const driverName = state.data.users.find((user) => user.id === ledger.driverUserId)?.fullName;
+        state.movements.push({
+          id: uid("movement", state), sessionId: state.data.cashSession.id,
+          type: movementType, amountMinor: ledger.amountDueMinor,
+          affectsCash: method.affectsCash, paymentMethodCode: method.code,
+          orderId: ledger.orderId, userId: state.data.currentUser.id,
+          reason: driverName ? `Liquidación de reparto (${driverName}): ${input.reason.trim()}` : `Liquidación de reparto: ${input.reason.trim()}`,
+          createdAt: timestamp,
+        });
         ledger.status = "SETTLED";
         ledger.settledAmountMinor = ledger.amountDueMinor;
-        ledger.settledAt = now();
+        ledger.settledAt = timestamp;
       }
       audit(
         state,
@@ -6584,6 +6606,14 @@ export function createDemoApi(
             : original.type === "WITHDRAWAL"
               ? "INCOME"
               : "EXPENSE";
+      const settledDelivery = state.data.deliveryLedger.find((ledger) =>
+        ledger.status === "SETTLED" && ledger.orderId === original.orderId &&
+        ledger.settledAmountMinor === original.amountMinor && ledger.settledAt === original.createdAt &&
+        ((ledger.direction === "DRIVER_OWES_BUSINESS" && original.type === "INCOME") ||
+          (ledger.direction === "BUSINESS_OWES_DRIVER" && original.type === "EXPENSE")),
+      );
+      if (settledDelivery)
+        throw new Error("Este movimiento corresponde a una liquidación de reparto. Revertí la liquidación desde Repartidores.");
       if (original.affectsCash) {
         cash.expectedAmountMinor += ["EXPENSE", "WITHDRAWAL"].includes(
           reversedType,
@@ -6629,28 +6659,36 @@ export function createDemoApi(
         );
         if (!ledger || ledger.status !== "SETTLED")
           throw new Error("La liquidación no está rendida.");
-        const reverseType =
-          ledger.direction === "DRIVER_OWES_BUSINESS" ? "EXPENSE" : "INCOME";
+        const originalType = ledger.direction === "DRIVER_OWES_BUSINESS" ? "INCOME" : "EXPENSE";
+        const reverseType = originalType === "INCOME" ? "EXPENSE" : "INCOME";
         const amount = ledger.settledAmountMinor;
-        if (reverseType === "EXPENSE" && amount > cash.expectedAmountMinor)
+        const original = state.movements.find((movement) => movement.orderId === ledger.orderId && movement.type === originalType && movement.amountMinor === amount && movement.createdAt === ledger.settledAt && !state.movements.some((candidate) => candidate.referenceId === movement.id));
+        // Old demo settlements did not persist movements. Only those rows can use the historical CASH fallback.
+        const legacy = !original && !state.movements.some((movement) => movement.orderId === ledger.orderId && movement.type === originalType && movement.amountMinor === amount && movement.createdAt === ledger.settledAt);
+        const originalAffectsCash = original?.affectsCash ?? legacy;
+        const originalMethodCode = original?.paymentMethodCode ?? (legacy ? "CASH" : null);
+        if (!original && !legacy) throw new Error("No se encontró el movimiento original de la liquidación para anularlo.");
+        if (originalAffectsCash && reverseType === "EXPENSE" && amount > cash.expectedAmountMinor)
           throw new Error(
             "La caja no tiene efectivo suficiente para revertir esta liquidación.",
           );
-        cash.expectedAmountMinor += reverseType === "INCOME" ? amount : -amount;
-        if (reverseType === "INCOME")
-          cash.cashIncomeMinor = (cash.cashIncomeMinor ?? 0) + amount;
-        else cash.cashExpenseMinor = (cash.cashExpenseMinor ?? 0) + amount;
+        if (originalAffectsCash) {
+          cash.expectedAmountMinor += reverseType === "INCOME" ? amount : -amount;
+          if (reverseType === "INCOME") cash.cashIncomeMinor = (cash.cashIncomeMinor ?? 0) + amount;
+          else cash.cashExpenseMinor = (cash.cashExpenseMinor ?? 0) + amount;
+        }
         state.movements.push({
           id: uid("movement", state),
           sessionId: cash.id,
           type: reverseType,
           amountMinor: amount,
-          affectsCash: true,
-          paymentMethodCode: "CASH",
+          affectsCash: originalAffectsCash,
+          paymentMethodCode: originalMethodCode,
           orderId: ledger.orderId,
           userId: state.data.currentUser.id,
           reason: `Anulación de liquidación: ${input.reason.trim()}`,
           createdAt: now(),
+          ...(original ? { referenceId: original.id } : {}),
         });
         ledger.status = "PENDING";
         ledger.settledAmountMinor = 0;

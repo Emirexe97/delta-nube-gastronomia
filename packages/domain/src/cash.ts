@@ -40,6 +40,47 @@ export function cashOutflowDetails(movements: CashMovementDto[]) {
   });
 }
 
+export type CashOutflowGroupKey =
+  | "expense"
+  | "delivery"
+  | "withdrawal"
+  | "refund"
+  | "adjustment";
+
+export interface CashOutflowGroup {
+  key: CashOutflowGroupKey;
+  title: string;
+  items: ReturnType<typeof cashOutflowDetails>;
+  /** Gross informational total; reversals remain visible and are not netted. */
+  totalMinor: number;
+}
+
+/** Organizes informational outflow details without changing ledger values. */
+export function cashOutflowGroups(movements: CashMovementDto[]): CashOutflowGroup[] {
+  const config: Array<{ key: CashOutflowGroupKey; title: string }> = [
+    { key: "expense", title: "Gastos" },
+    { key: "delivery", title: "Envíos y rendiciones" },
+    { key: "withdrawal", title: "Retiros" },
+    { key: "refund", title: "Devoluciones y vueltos" },
+    { key: "adjustment", title: "Ajustes de salida" },
+  ];
+  const details = cashOutflowDetails(movements);
+  return config.flatMap(({ key, title }) => {
+    const items = details.filter((item) => {
+      switch (key) {
+        case "expense": return item.type === "EXPENSE" && item.orderId == null;
+        case "delivery": return item.type === "EXPENSE" && item.orderId != null;
+        case "withdrawal": return item.type === "WITHDRAWAL";
+        case "refund": return item.type === "REFUND";
+        case "adjustment": return item.type === "ADJUSTMENT";
+      }
+    });
+    return items.length
+      ? [{ key, title, items, totalMinor: items.reduce((sum, item) => sum + item.outflowMinor, 0) }]
+      : [];
+  });
+}
+
 /** Totals shown in the close report exclude the float retained in the drawer. */
 export function cashClosingTotals(
   session: Pick<

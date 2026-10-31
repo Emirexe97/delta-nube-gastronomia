@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cashClosingTotals, cashOutflowDetails, cashReportBreakdown } from "./cash";
+import { cashClosingTotals, cashOutflowDetails, cashOutflowGroups, cashReportBreakdown } from "./cash";
 import type { CashMovementDto } from "@gastronomy/contracts";
 
 function movement(overrides: Partial<CashMovementDto>): CashMovementDto {
@@ -54,6 +54,41 @@ test("el detalle conserva egresos anulados y anulaciones sin descontar la compen
   assert.deepEqual(details.map(item => item.id), ["original", "reversal"]);
   assert.equal(details[0]?.reversedById, "compensation");
   assert.equal(details[1]?.referenceId, "incoming");
+});
+
+test("agrupa salidas por tipo en orden, sin netear anulados ni mutar movimientos", () => {
+  const movements = [
+    movement({ id: "refund", type: "REFUND", amountMinor: 200 }),
+    movement({ id: "manual", orderId: null, amountMinor: 100, reason: "Envío por texto" }),
+    movement({ id: "linked", orderId: "order-1", amountMinor: 300, reason: "arbitrario" }),
+    movement({ id: "withdrawal", type: "WITHDRAWAL", amountMinor: 400 }),
+    movement({ id: "adjustment", type: "ADJUSTMENT", amountMinor: -50 }),
+    movement({ id: "annulled", orderId: null, amountMinor: 600, reversedById: "compensation" }),
+    movement({ id: "noncash", type: "EXPENSE", affectsCash: false, amountMinor: 900 }),
+  ];
+  const before = structuredClone(movements);
+  const groups = cashOutflowGroups(movements);
+  assert.deepEqual(groups.map(({ key, title, totalMinor }) => ({ key, title, totalMinor })), [
+    { key: "expense", title: "Gastos", totalMinor: 700 },
+    { key: "delivery", title: "Envíos y rendiciones", totalMinor: 300 },
+    { key: "withdrawal", title: "Retiros", totalMinor: 400 },
+    { key: "refund", title: "Devoluciones y vueltos", totalMinor: 200 },
+    { key: "adjustment", title: "Ajustes de salida", totalMinor: 50 },
+  ]);
+  assert.deepEqual(groups[0]?.items.map(item => item.id), ["manual", "annulled"]);
+  assert.equal(groups[1]?.items[0]?.label, "Envío y rendición");
+  assert.equal(groups[0]?.items[1]?.reversedById, "compensation");
+  assert.deepEqual(movements, before);
+});
+
+test("los grupos omiten categorías vacías y quedan vacíos para importes nulos o no efectivos", () => {
+  assert.deepEqual(cashOutflowGroups([]), []);
+  assert.deepEqual(cashOutflowGroups([
+    movement({ amountMinor: 0 }),
+    movement({ type: "ADJUSTMENT", amountMinor: 50 }),
+    movement({ type: "SALE", amountMinor: 50 }),
+    movement({ type: "REFUND", affectsCash: false }),
+  ]), []);
 });
 
 test("no inventa gastos negativos cuando el detalle de envíos supera el agregado conservado", () => {

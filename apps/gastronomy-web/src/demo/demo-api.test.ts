@@ -1739,6 +1739,7 @@ describe("API de demostración", () => {
     const before = (await api.bootstrap()).cashSession!.expectedAmountMinor;
     const delivered = await api.completeOrder({
       orderId: order.id,
+      collectedByDriver: true,
       finalStatus: "DELIVERED",
       payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
     });
@@ -2043,6 +2044,7 @@ describe("API de demostración", () => {
     await api.confirmOrder({ orderId: order.id });
     const delivered = await api.completeOrder({
       orderId: order.id,
+      collectedByDriver: true,
       finalStatus: "DELIVERED",
       payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
     });
@@ -2523,8 +2525,9 @@ describe("API de demostración", () => {
     );
   });
 
-  it("revierte la acción compuesta si un envío mezcla efectivo y transferencia", async () => {
+  it("permite cobrar desde el negocio un envío con efectivo y transferencia mixtos", async () => {
     const api = createDemoApi(new MemoryStorage());
+    const driver = await api.createDriver({ fullName: "Repartidor mixto demo", authorizerPin: "1234" });
     const draft = await api.createOrder({
       type: "DELIVERY",
       customerName: "Cliente demo",
@@ -2537,9 +2540,10 @@ describe("API de demostración", () => {
     });
     const cashMinor = Math.floor(populated.totalMinor / 2);
 
-    await expect(
-      api.completeOrder({
+    const before = (await api.bootstrap()).cashSession!.expectedAmountMinor;
+    const completed = await api.completeOrder({
         orderId: draft.id,
+        driverUserId: driver.id,
         finalStatus: "DELIVERED",
         payments: [
           {
@@ -2552,17 +2556,14 @@ describe("API de demostración", () => {
             amountMinor: populated.totalMinor - cashMinor,
           },
         ],
-      }),
-    ).rejects.toThrow("sin combinarlos");
+      });
 
-    const unchanged = (await api.bootstrap()).orders.find(
+    const updated = (await api.bootstrap()).orders.find(
       (order) => order.id === draft.id,
     );
-    expect(unchanged).toMatchObject({
-      lifecycleStatus: "DRAFT",
-      paymentStatus: "UNPAID",
-    });
-    expect(unchanged?.payments).toHaveLength(0);
+    expect(completed).toMatchObject({ collectedByDriver: false, operationalStatus: "DELIVERED", paymentStatus: "PAID" });
+    expect(updated?.payments).toHaveLength(2);
+    expect((await api.bootstrap()).cashSession!.expectedAmountMinor).toBe(before + cashMinor);
   });
 
   it("permite cuenta corriente pura o combinada con efectivo al entregar un envío", async () => {

@@ -310,19 +310,19 @@ test("Repartidores vacío y con pendiente: ayudas, card y revisión cancelable l
   const values = [
     ...pageReadings,
     await metric(
-      summary.getByText("Repartidor rinde al negocio · ingresa a caja", {
+      summary.getByText("Repartidor rinde al negocio", {
         exact: true,
       }),
       "settlement driver owes label",
     ),
     await metric(
-      summary.getByText("Negocio paga al repartidor · sale de caja", {
+      summary.getByText("Negocio paga al repartidor", {
         exact: true,
       }),
       "settlement business owes label",
     ),
     await metric(
-      summary.getByText("Efecto neto", { exact: true }),
+      summary.getByText("Saldo neto a favor del repartidor", { exact: true }),
       "settlement net effect label on dark surface",
     ),
   ];

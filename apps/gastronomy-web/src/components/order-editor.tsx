@@ -711,14 +711,26 @@ export function OrderEditor({
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "ArrowDown") {
+                const canNavigateProducts =
+                  !event.nativeEvent.isComposing &&
+                  !event.altKey &&
+                  !event.ctrlKey &&
+                  !event.metaKey &&
+                  !event.shiftKey;
+                if (
+                  canNavigateProducts &&
+                  (event.key === "ArrowDown" || event.key === "ArrowRight")
+                ) {
                   event.preventDefault();
                   setActiveProductIndex((prev) =>
                     products.length ? (prev + 1) % products.length : 0,
                   );
                   return;
                 }
-                if (event.key === "ArrowUp") {
+                if (
+                  canNavigateProducts &&
+                  (event.key === "ArrowUp" || event.key === "ArrowLeft")
+                ) {
                   event.preventDefault();
                   setActiveProductIndex((prev) =>
                     products.length
@@ -754,7 +766,7 @@ export function OrderEditor({
                   }
                 }
               }}
-              placeholder={`Código, nombre, categoría… · Enter agrega${halfAndHalfEnabled ? " · F6 mitad y mitad" : ""} · ↑ ↓ navega`}
+              placeholder={`Código, nombre, categoría… · Enter agrega${halfAndHalfEnabled ? " · F6 mitad y mitad" : ""} · ↑ ↓ ← → navega`}
               className="bg-white pl-9"
               disabled={locked}
             />
@@ -3277,6 +3289,22 @@ function PaymentModal({
   const [customerResults, setCustomerResults] = useState<CustomerDto[]>([]);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const activeDeliveryDrivers = data.users.filter(
+    (user) => user.roleCode === "DELIVERY_DRIVER" && user.active,
+  );
+  const currentDriverIsActive = activeDeliveryDrivers.some(
+    (driver) => driver.id === order.driverUserId,
+  );
+  const initialDriverUserId =
+    order.driverUserId && (currentDriverIsActive || order.paidMinor > 0)
+      ? order.driverUserId
+      : "";
+  const initialCollectedByDriver =
+    order.paidMinor > 0 && order.collectedByDriver;
+  const [driverUserId, setDriverUserId] = useState(initialDriverUserId);
+  const [collectedByDriver, setCollectedByDriver] = useState(
+    initialCollectedByDriver,
+  );
   const defaultCashUntouched = useRef(true);
   const [localError, setLocalError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
@@ -3293,14 +3321,18 @@ function PaymentModal({
     order.deliveryFeeBelongsToDriver ??
     data.settings.deliveryFeeBelongsToDriver ??
     true;
-  const canSettleDriverFee =
+  const completionDriverUserId =
+    completeOnPay && order.type === "DELIVERY"
+      ? driverUserId
+      : order.driverUserId;
+  const initialCanSettleDriverFee =
     order.type === "DELIVERY" &&
-    Boolean(order.driverUserId) &&
+    Boolean(initialDriverUserId) &&
     data.settings.deliverySettlementEnabled &&
     deliveryFeeBelongsToDriver &&
     order.deliveryFeeMinor > 0;
   const [payDriverNow, setPayDriverNow] = useState(
-    canSettleDriverFee &&
+    initialCanSettleDriverFee &&
       data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
   );
   const firstPaymentInputRef = useRef<HTMLInputElement>(null);
@@ -3320,10 +3352,12 @@ function PaymentModal({
     setCustomerResults([]);
     setCustomerName(order.customerNameSnapshot ?? "");
     setCustomerPhone(order.customerPhoneSnapshot ?? "");
+    setDriverUserId(initialDriverUserId);
+    setCollectedByDriver(initialCollectedByDriver);
     setReferences({});
     setChangeMethodCode(defaultChangeMethod);
     setPayDriverNow(
-      canSettleDriverFee &&
+      initialCanSettleDriverFee &&
         data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
     );
     setLocalError(null);
@@ -3336,25 +3370,25 @@ function PaymentModal({
     open,
     remaining,
     defaultChangeMethod,
+    order.id,
+    initialDriverUserId,
+    initialCollectedByDriver,
+    initialCanSettleDriverFee,
+    deliveryFeeBelongsToDriver,
+    order.deliveryFeeMinor,
+    data.settings.deliverySettlementEnabled,
     data.settings.deliveryDriverPaymentMode,
-    canSettleDriverFee,
   ]);
 
   const mutation = useApiMutation(
     (input: Parameters<typeof window.gastronomy.payOrder>[0]) => {
-      const cashMinor = input.payments
-        .filter((payment) => payment.methodCode === "CASH")
-        .reduce((sum, payment) => sum + payment.amountMinor, 0);
-      const nonCashMinor = input.payments
-        .filter((payment) => payment.methodCode !== "CASH")
-        .reduce((sum, payment) => sum + payment.amountMinor, 0);
-      const collectedByDriver =
-        order.type === "DELIVERY" && cashMinor > 0 && nonCashMinor === 0;
       return completeOnPay
         ? window.gastronomy.completeOrder({
             ...input,
             finalStatus: "DELIVERED",
-            collectedByDriver,
+            ...(order.type === "DELIVERY"
+              ? { driverUserId, collectedByDriver }
+              : {}),
           })
         : window.gastronomy.payOrder(input);
     },
@@ -3391,30 +3425,57 @@ function PaymentModal({
   );
   const incomingCashMinor =
     payments.find((item) => item.methodCode === "CASH")?.amountMinor ?? 0;
-  const drawerCashAvailable =
-    (data.cashSession?.expectedAmountMinor ?? 0) + incomingCashMinor;
-  const isCashChangeInsufficient =
-    changeDue > 0 &&
-    Boolean(selectedChangeMethod?.affectsCash) &&
-    changeDue > drawerCashAvailable;
-
   const isDeliveryWithDriver =
     order.type === "DELIVERY" &&
-    Boolean(order.driverUserId) &&
+    Boolean(completionDriverUserId) &&
     data.settings.deliverySettlementEnabled &&
     deliveryFeeBelongsToDriver &&
     order.deliveryFeeMinor > 0;
 
-  const deliveryCashTotal = payments.filter((payment) => payment.methodCode === "CASH").reduce((sum, payment) => sum + payment.amountMinor, 0);
-  const deliveryPrepaidTotal = payments.filter((payment) => payment.methodCode !== "CASH" && payment.methodCode !== "ACCOUNT").reduce((sum, payment) => sum + payment.amountMinor, 0);
-  const atDoorCash = completeOnPay && order.type === "DELIVERY" && deliveryCashTotal > 0 && accountAmount === 0 && deliveryPrepaidTotal === 0;
-  const mixedDeliveryMethods = completeOnPay && order.type === "DELIVERY" && deliveryCashTotal > 0 && deliveryPrepaidTotal > 0;
-  const collectionDriver = data.users.find((user) => user.id === order.driverUserId)?.fullName;
-  const invalidDriverChange = atDoorCash && changeDue > 0 && changeMethodCode !== "CASH";
+  const deliveryCashTotal = payments
+    .filter((payment) => payment.methodCode === "CASH")
+    .reduce((sum, payment) => sum + payment.amountMinor, 0);
+  const deliveryPrepaidTotal = payments
+    .filter(
+      (payment) =>
+        payment.methodCode !== "CASH" && payment.methodCode !== "ACCOUNT",
+    )
+    .reduce((sum, payment) => sum + payment.amountMinor, 0);
+  const atDoorCash =
+    order.type === "DELIVERY" &&
+    collectedByDriver &&
+    deliveryCashTotal > 0 &&
+    accountAmount === 0 &&
+    deliveryPrepaidTotal === 0 &&
+    payments.every((payment) => payment.methodCode === "CASH");
+  const invalidDriverCollection = collectedByDriver && !atDoorCash;
+  const drawerCashAvailable =
+    (data.cashSession?.expectedAmountMinor ?? 0) +
+    (collectedByDriver ? 0 : incomingCashMinor);
+  const isCashChangeInsufficient =
+    changeDue > 0 &&
+    Boolean(selectedChangeMethod?.affectsCash) &&
+    !collectedByDriver &&
+    changeDue > drawerCashAvailable;
+  const collectionDriver = data.users.find(
+    (user) => user.id === completionDriverUserId,
+  )?.fullName;
+  const invalidDriverChange =
+    atDoorCash && changeDue > 0 && changeMethodCode !== "CASH";
+  const driverRequired =
+    completeOnPay && order.type === "DELIVERY" && !driverUserId;
+  const hasNonCashPayment = payments.some(
+    (payment) => payment.methodCode !== "CASH",
+  );
+  const driverSelectionLocked =
+    order.paidMinor > 0 && Boolean(order.driverUserId);
+  const collectorLocked = order.paidMinor > 0;
+  const assignedDriver = data.users.find((user) => user.id === driverUserId);
 
   const canSubmit =
-    !mixedDeliveryMethods &&
+    !invalidDriverCollection &&
     !invalidDriverChange &&
+    !driverRequired &&
     initialized &&
     allocated >= remaining &&
     (!accountAmount || (Boolean(customerId) && allocated === remaining)) &&
@@ -3423,6 +3484,7 @@ function PaymentModal({
 
   const loadToAccount = () => {
     defaultCashUntouched.current = false;
+    if (!collectorLocked) setCollectedByDriver(false);
     setValues({ ACCOUNT: moneyInputValue(remaining) });
     setLocalError(null);
   };
@@ -3432,12 +3494,14 @@ function PaymentModal({
     mutation.mutate({
       orderId: order.id,
       customerId: accountAmount ? customerId : undefined,
+      ...(order.type === "DELIVERY" ? { collectedByDriver } : {}),
       payments,
       change:
         changeDue > 0
           ? { methodCode: changeMethodCode, amountMinor: changeDue }
           : null,
-      payDriverNow: isDeliveryWithDriver ? payDriverNow : false,
+      payDriverNow:
+        isDeliveryWithDriver && !collectedByDriver ? payDriverNow : false,
     });
   };
 
@@ -3505,6 +3569,11 @@ function PaymentModal({
                       setLocalError(null);
                       if (method.code === "CASH")
                         defaultCashUntouched.current = false;
+                      else if (
+                        !collectorLocked &&
+                        (parseMoneyInput(event.target.value) ?? 0) > 0
+                      )
+                        setCollectedByDriver(false);
                       if (
                         method.code === "ACCOUNT" &&
                         defaultCashUntouched.current &&
@@ -3545,17 +3614,108 @@ function PaymentModal({
             ))}
         </div>
 
-        {completeOnPay && order.type === "DELIVERY" && remaining > 0 && allocated > 0 ? (
-          <div className="mt-3 space-y-1 text-xs text-slate-600" aria-label="Quién recibe el cobro">
-            {mixedDeliveryMethods ? (
-              <p>Elegí efectivo contra entrega o un medio anticipado, sin combinarlos.</p>
-            ) : atDoorCash ? (
-              <>
-                <p>El efectivo lo recibe el repartidor{collectionDriver ? `: ${collectionDriver}` : " asignado"}. No ingresa efectivo a esta caja.</p>
-                {isDeliveryWithDriver ? <p>El repartidor retiene el importe de su envío; el resto queda pendiente de rendición. No se paga el envío desde caja.</p> : null}
-              </>
-            ) : accountAmount === 0 ? (
-              <p>Cobro recibido por el negocio. Transferencia y tarjeta no aumentan el efectivo de caja.</p>
+        {completeOnPay && order.type === "DELIVERY" ? (
+          <div className="mt-3 grid gap-3">
+            <Field
+              label="Repartidor"
+              hint={
+                driverSelectionLocked
+                  ? "Se mantiene el repartidor asignado porque el pedido ya tiene un pago parcial."
+                  : "Elegí quién realizará la entrega; no se asignará automáticamente."
+              }
+            >
+              <Select
+                value={driverUserId}
+                onChange={(event) => {
+                  setDriverUserId(event.target.value);
+                  setLocalError(null);
+                }}
+                disabled={driverSelectionLocked || mutation.isPending}
+              >
+                <option value="">Elegir repartidor…</option>
+                {activeDeliveryDrivers.map((driver) => (
+                  <option key={driver.id} value={driver.id}>
+                    {driver.fullName}
+                  </option>
+                ))}
+                {driverSelectionLocked &&
+                driverUserId &&
+                !activeDeliveryDrivers.some(
+                  (driver) => driver.id === driverUserId,
+                ) ? (
+                  <option value={driverUserId}>
+                    {assignedDriver?.fullName ?? "Repartidor asignado"}{" "}
+                    (inactivo)
+                  </option>
+                ) : null}
+              </Select>
+            </Field>
+            {driverRequired ? (
+              <p role="alert" className="text-xs font-semibold text-rose-700">
+                Elegí un repartidor para entregar el pedido.
+              </p>
+            ) : null}
+            {!activeDeliveryDrivers.length && !driverSelectionLocked ? (
+              <p role="alert" className="text-xs font-semibold text-rose-700">
+                No hay repartidores activos. Activá o creá uno antes de
+                entregar.
+              </p>
+            ) : null}
+            <label className="flex cursor-pointer select-none items-start gap-3 rounded-xl border border-slate-200 p-3 text-xs">
+              <input
+                type="checkbox"
+                aria-label="Cobró el repartidor"
+                checked={collectedByDriver}
+                onChange={(event) => setCollectedByDriver(event.target.checked)}
+                disabled={
+                  collectorLocked ||
+                  !driverUserId ||
+                  hasNonCashPayment ||
+                  mutation.isPending
+                }
+                className="mt-0.5 h-4 w-4 rounded accent-brand-600"
+              />
+              <span>
+                <strong>Cobró el repartidor</strong>
+                <span className="mt-0.5 block text-slate-600">
+                  {collectorLocked
+                    ? "Se conserva el responsable de los pagos ya registrados."
+                    : hasNonCashPayment
+                      ? "Sólo se permite para cobro exclusivamente en efectivo. Al volver a efectivo, no se marcará automáticamente."
+                      : "Marcá sólo si el repartidor recibe el efectivo del cliente contra entrega."}
+                </span>
+              </span>
+            </label>
+            {allocated > 0 ? (
+              <div
+                className="space-y-1 text-xs text-slate-600"
+                aria-label="Quién recibe el cobro"
+              >
+                {atDoorCash ? (
+                  <>
+                    <p>
+                      El efectivo lo recibe el repartidor
+                      {collectionDriver ? `: ${collectionDriver}` : " elegido"};
+                      no ingresa efectivo a esta caja.
+                    </p>
+                    {isDeliveryWithDriver ? (
+                      <p>
+                        El repartidor retiene el importe de su envío; el resto
+                        queda pendiente de rendición. No se paga el envío desde
+                        caja.
+                      </p>
+                    ) : null}
+                  </>
+                ) : (
+                  <p>
+                    {accountAmount > 0
+                      ? "El importe en cuenta corriente queda como deuda del cliente al negocio; no es efectivo ni una deuda del repartidor."
+                      : incomingCashMinor > 0
+                        ? "El cobro lo recibe el negocio. La parte en efectivo ingresa a esta caja; elegir efectivo no crea por sí solo una deuda del repartidor. Los otros medios no aumentan el efectivo."
+                        : "El cobro lo recibe el negocio mediante medios no efectivos; no aumenta el efectivo de caja."}
+                  </p>
+                )}
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -3736,7 +3896,10 @@ function PaymentModal({
               </Select>
             </Field>
             {invalidDriverChange ? (
-              <p role="alert" className="text-xs font-semibold text-rose-700">Cuando cobra el repartidor, el vuelto debe ser en efectivo. Elegí Efectivo para el vuelto.</p>
+              <p role="alert" className="text-xs font-semibold text-rose-700">
+                Cuando cobra el repartidor, el vuelto debe ser en efectivo.
+                Elegí Efectivo para el vuelto.
+              </p>
             ) : null}
             {isCashChangeInsufficient ? (
               <p
@@ -4157,7 +4320,11 @@ function SelectVariantModal({
       selectionSessionRef.current = null;
       return;
     }
-    const session = JSON.stringify([parentProduct?.id, channelCode, initialQuery]);
+    const session = JSON.stringify([
+      parentProduct?.id,
+      channelCode,
+      initialQuery,
+    ]);
     if (selectionSessionRef.current === session) return;
     selectionSessionRef.current = session;
     if (!parentProduct || !allOptions.length) {
@@ -4200,8 +4367,14 @@ function SelectVariantModal({
   useEffect(() => {
     if (!workspaceActive || !open || !allOptions.length) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || !(event.target instanceof Node) ||
-        !buttonRefs.current[0]?.closest('[role="dialog"]')?.contains(event.target)) return;
+      if (
+        event.defaultPrevented ||
+        !(event.target instanceof Node) ||
+        !buttonRefs.current[0]
+          ?.closest('[role="dialog"]')
+          ?.contains(event.target)
+      )
+        return;
       if (event.repeat) {
         event.preventDefault();
         return;

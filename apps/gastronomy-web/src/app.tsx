@@ -120,6 +120,14 @@ export function App() {
   const contentRef = useRef<HTMLDivElement>(null);
   const routeHeadingRef = useRef<HTMLHeadingElement>(null);
   const dirtyFormsRef = useRef(new WeakSet<HTMLFormElement>());
+  const navigationNoticeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (navigationNoticeTimerRef.current !== null)
+        window.clearTimeout(navigationNoticeTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (location.pathname.startsWith("/salon")) setVisitedSalon(true);
@@ -173,14 +181,13 @@ export function App() {
           element.closest("[hidden], [inert]") === null,
       );
     const showBlockedNotice = (message: string) => {
+      if (navigationNoticeTimerRef.current !== null)
+        window.clearTimeout(navigationNoticeTimerRef.current);
       setNavigationNotice(message);
-      window.setTimeout(
-        () =>
-          setNavigationNotice((current) =>
-            current === message ? null : current,
-          ),
-        3_500,
-      );
+      navigationNoticeTimerRef.current = window.setTimeout(() => {
+        navigationNoticeTimerRef.current = null;
+        setNavigationNotice(null);
+      }, 6_000);
     };
     const armHistoryGuard = () => {
       if (historyGuardArmed || !hasPendingFormChanges()) return;

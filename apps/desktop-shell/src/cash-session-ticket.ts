@@ -6,7 +6,7 @@ import type {
 } from "@gastronomy/contracts";
 import {
   cashClosingTotals,
-  cashOutflowDetails,
+  cashOutflowGroups,
   cashReportBreakdown,
   formatMoney,
 } from "@gastronomy/domain";
@@ -41,6 +41,17 @@ export function cashSessionReportHtml(
           }),
         )
       : "—";
+  const shortDate = (value: string) =>
+    escapeHtml(
+      new Date(value).toLocaleString("es-AR", {
+        timeZone: "America/Buenos_Aires",
+        hourCycle: "h23",
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    );
   const filterLabels: Record<string, string> = {
     tableId: "Mesa",
     waiterUserId: "Mozo",
@@ -127,10 +138,7 @@ export function cashSessionReportHtml(
   };
 
   // Secciones obligatorias que se imprimen SIEMPRE:
-  // 1. Resumen
-  // 2. Arqueo
-  // 3. Por tipo (canales de venta)
-  // 4. Por medio de pago
+  // Ventas y su composición preceden al arqueo del turno completo.
   const alwaysSections = `${aggregate("Por medio de pago", report.byPaymentMethod)}${aggregate(
     "Por tipo",
     report.byType.map((row) => ({
@@ -207,26 +215,40 @@ export function cashSessionReportHtml(
   </section>`;
 
   const cashMovements = session.movements ?? report.movements;
-  const outflows = report.detailAvailable
-    ? cashOutflowDetails(cashMovements)
+  const outflowGroups = report.detailAvailable
+    ? cashOutflowGroups(cashMovements)
     : [];
   const hasSummarizedOutflows = Boolean(
     (session.cashExpenseMinor ?? 0) > 0 ||
-      (session.cashWithdrawalMinor ?? 0) > 0 ||
-      (session.cashRefundMinor ?? 0) > 0,
+    (session.cashWithdrawalMinor ?? 0) > 0 ||
+    (session.cashRefundMinor ?? 0) > 0,
   );
   const outflowSection = !report.detailAvailable
     ? `<p class="notice">Detalle de egresos no disponible.</p>`
-    : outflows.length
-      ? `${outflows
-          .map(
-            (movement) => `<div class="outflow-item">
-              <div class="row"><strong>${escapeHtml(movement.label)}</strong><strong>${money(movement.outflowMinor)}</strong></div>
-              <p class="outflow-reason">${escapeHtml(movement.reason?.trim() || "Sin concepto registrado")}</p>
-              <p class="hint">${date(movement.createdAt)}${movement.reversedById ? " · Anulado · Compensado en el arqueo" : ""}${movement.referenceId ? " · Anulación" : ""}</p>
-            </div>`,
-          )
-          .join("")}<p class="hint">Detalle informativo; estos importes ya están incluidos en el arqueo.</p>`
+    : outflowGroups.length
+      ? `${outflowGroups
+          .map((group) => {
+            if (group.key === "delivery") {
+              const annulled = group.items.filter(
+                (item) => item.reversedById,
+              ).length;
+              const reversals = group.items.filter(
+                (item) => item.referenceId,
+              ).length;
+              return `<div class="outflow-group delivery-summary">${heading(escapeHtml(group.title))}${row(`Total envíos y rendiciones (${group.items.length})`, money(group.totalMinor))}${annulled || reversals ? `<p class="hint">${annulled} anulados · ${reversals} anulaciones. Importe bruto; las compensaciones están incluidas en el arqueo.</p>` : ""}</div>`;
+            }
+            return `<div class="outflow-group">${heading(escapeHtml(group.title))}${group.items
+              .map(
+                (movement) => `<div class="outflow-item">
+                  <div class="row"><span class="outflow-reason">${escapeHtml(movement.reason?.trim() || "Sin concepto registrado")}</span><strong>${money(movement.outflowMinor)}</strong></div>
+                  <p class="outflow-meta">${shortDate(movement.createdAt)}${movement.reversedById ? " · Anulado · Compensado en el arqueo" : ""}${movement.referenceId ? " · Anulación" : ""}</p>
+                </div>`,
+              )
+              .join("")}</div>`;
+          })
+          .join(
+            "",
+          )}<p class="hint">Detalle informativo; estos importes ya están incluidos en el arqueo.</p>`
       : hasSummarizedOutflows
         ? `<p class="notice">Detalle de egresos no disponible.</p>`
         : `<p class="hint">Sin egresos en efectivo registrados.</p>`;
@@ -237,15 +259,15 @@ export function cashSessionReportHtml(
     h1,h2,h3,p{margin:0}.center{text-align:center}.title{font-size:18px;font-weight:900;line-height:1.15;text-transform:uppercase}.subtitle{font-size:14px;font-weight:700;margin:5px 0 3px}.terminal{font-size:12px}.state{display:inline-block;border:1px solid #000;padding:2px 6px;margin:7px 0;font-size:12px;font-weight:700;text-transform:uppercase}
     .metadata{padding:7px 0;border-top:1px solid #000}.meta-line{margin:3px 0;font-size:12px}.meta-line strong{font-weight:700}.section-title{font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.5px;margin:12px 0 5px;padding-top:7px;border-top:1px solid #000;break-after:avoid}
     .row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:8px;margin:5px 0;line-height:1.3;break-inside:avoid}.row>span:first-child{min-width:0;overflow-wrap:anywhere}.row strong,.row>span:last-child:not(:first-child){font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}.total,.key-total{font-size:${profile.paperWidth === "58mm" ? 14 : 16}px;font-weight:900;border-top:1px solid #000;padding-top:6px;margin-top:7px}.difference{border-top:1px dashed #000;padding-top:5px;font-weight:700}
-    .outflow-item{margin:6px 0;padding-bottom:5px;border-bottom:1px dotted #777;break-inside:avoid}.outflow-reason{overflow-wrap:anywhere;word-break:break-word;margin:3px 0}.outflow-item .row{gap:4px}.outflow-item .row>strong:first-child{min-width:0;white-space:normal;overflow-wrap:anywhere}
+    .outflow-group .section-title{border:0;margin:7px 0 3px;padding:0;text-transform:none;letter-spacing:0}.outflow-item{margin:4px 0;break-inside:avoid}.outflow-reason{overflow-wrap:anywhere;word-break:break-word}.outflow-item .row{gap:4px;margin:0}.outflow-meta{font-size:11px;line-height:1.2;margin-top:1px}.delivery-summary{break-inside:avoid}
     .closing-result{border:2px solid #000;padding:8px 6px;margin:6px 0 10px}.closing-result .section-title{border:0;padding:0;margin:0 0 5px}.result-status{font-size:13px;text-transform:uppercase;font-weight:900;margin-bottom:6px}.hint{font-size:12px;margin-top:6px;line-height:1.3}.divider{border-top:1px dashed #000;margin:8px 0}.notice{border:1px dashed #000;padding:6px;font-size:12px;margin:6px 0}.printed-footer{font-size:12px;margin:10px 0 4px}.waiter-group{margin:8px 0;break-inside:avoid}.waiter-name-row{font-weight:900}.waiter-table-row{padding-left:8px}.waiter-total-row{border-top:1px dashed #000;padding-top:4px}
   </style></head><body>
-    <header class="center"><h1 class="title">${escapeHtml(settings.businessName)}</h1><h2 class="subtitle">INFORME DE CAJA #${escapeHtml(session.number)}</h2><p class="terminal">${escapeHtml(settings.printing.terminalLabel)}</p><p class="state">${closed ? "Cierre definitivo" : "Informe provisorio"}</p></header>
+    <header class="center"><h1 class="title">${escapeHtml(settings.businessName)}</h1><h2 class="subtitle">INFORME DE CAJA #${escapeHtml(session.number)}</h2><p class="terminal">${escapeHtml(settings.printing.terminalLabel)}</p><p class="state">${closed ? "Cierre de caja" : "Informe provisorio"}</p></header>
     <section class="metadata"><p class="meta-line"><strong>Día comercial:</strong> ${escapeHtml(session.businessDate)}</p><p class="meta-line"><strong>Apertura:</strong> ${date(session.openedAt)}</p><p class="meta-line"><strong>Cierre:</strong> ${closed ? date(session.closedAt) : "En curso"}</p><p class="meta-line"><strong>Responsable:</strong> ${escapeHtml(session.openedByName)}</p></section>
-    ${result}
     ${filters ? `<section class="notice"><strong>Ventas filtradas</strong>${filters}<p class="hint">Los filtros sólo afectan el detalle de ventas. El arqueo corresponde al turno completo.</p></section>` : ""}
-    <section>${heading("Resumen")}${row("Ventas", money(report.totals.salesMinor), "total")}${row("Pedidos", escapeHtml(report.totals.orderCount))}${row("Ticket promedio", money(report.totals.averageTicketMinor))}${row("Descuentos", money(report.totals.discountsMinor))}${row("Devoluciones", money(report.totals.refundsMinor))}<p class="hint">Ventas de todos los medios; no equivalen al efectivo disponible.</p></section>
+    <section class="sales-summary">${heading("Resumen de ventas")}${row(filters ? "Ventas filtradas" : "Ventas totales", money(report.totals.salesMinor), "total")}${row("Pedidos", escapeHtml(report.totals.orderCount))}${row("Ticket promedio", money(report.totals.averageTicketMinor))}${row("Descuentos", money(report.totals.discountsMinor))}${row("Devoluciones", money(report.totals.refundsMinor))}<p class="hint">Ventas de todos los medios; no equivalen al efectivo disponible.</p></section>
     ${alwaysSections}
+    ${result}
     <section>${heading("Movimientos de efectivo")}${cashRows}<p class="hint">Arqueo del turno completo. Los envíos y rendiciones se descuentan una sola vez.</p></section>
     <section>${heading("Detalle de egresos en efectivo")}${outflowSection}</section>
     ${optionalSections}

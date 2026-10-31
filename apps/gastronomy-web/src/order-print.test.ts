@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createOrderPrintCoordinator,
   isOrderPrintActive,
@@ -29,6 +29,76 @@ function fixture() {
   };
   return { pending, api, coordinator: createOrderPrintCoordinator(api) };
 }
+
+describe("print notification timeout", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it.each(["PRINTED", "SKIPPED", "FAILED"])(
+    "hides %s after six seconds without deleting the print result",
+    async (status) => {
+      const { coordinator, api } = fixture();
+      if (status === "FAILED") {
+        api.printOrder.mockRejectedValue(new Error("Impresora sin respuesta"));
+        await expect(coordinator.run(request)).rejects.toThrow();
+      } else {
+        api.printOrder.mockResolvedValue({ ...result, status });
+        await coordinator.run(request);
+      }
+      vi.advanceTimersByTime(5_999);
+      expect(
+        coordinator.store.getState().jobs[request.orderId]
+          ?.notificationDismissed,
+      ).not.toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(coordinator.store.getState().jobs[request.orderId]).toMatchObject({
+        status,
+        notificationDismissed: true,
+      });
+    },
+  );
+
+  it("gives a repeated notice a fresh six seconds and preserves active printing", async () => {
+    const { coordinator, api, pending } = fixture();
+    api.printOrder.mockResolvedValueOnce(result);
+    await coordinator.run(request);
+    vi.advanceTimersByTime(4_000);
+    const repeat = coordinator.run(request);
+    vi.advanceTimersByTime(10_000);
+    expect(coordinator.store.getState().jobs[request.orderId]).toMatchObject({
+      status: "PRINTING",
+    });
+    expect(
+      coordinator.store.getState().jobs[request.orderId]?.notificationDismissed,
+    ).not.toBe(true);
+    pending.resolve(result);
+    await repeat;
+    vi.advanceTimersByTime(5_999);
+    expect(
+      coordinator.store.getState().jobs[request.orderId]?.notificationDismissed,
+    ).not.toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(
+      coordinator.store.getState().jobs[request.orderId]?.notificationDismissed,
+    ).toBe(true);
+  });
+
+  it("restarts the timer even when the same result is printed again", async () => {
+    const { coordinator, api } = fixture();
+    api.printOrder.mockResolvedValue(result);
+    await coordinator.run(request);
+    vi.advanceTimersByTime(4_000);
+    await coordinator.run(request);
+    vi.advanceTimersByTime(2_000);
+    expect(
+      coordinator.store.getState().jobs[request.orderId]?.notificationDismissed,
+    ).not.toBe(true);
+    vi.advanceTimersByTime(4_000);
+    expect(
+      coordinator.store.getState().jobs[request.orderId]?.notificationDismissed,
+    ).toBe(true);
+  });
+});
 
 describe("printing survives navigation without locking other work", () => {
   it("forwards the selected kitchen scope and preserves it in the background state", async () => {

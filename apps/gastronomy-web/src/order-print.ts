@@ -27,7 +27,23 @@ export function createOrderPrintCoordinator(
     jobs: {},
   }));
   const active = new Map<string, Promise<{ jobId: string; status: string }>>();
-  const setJob = (job: OrderPrintState) =>
+  const notificationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const clearNotificationTimer = (orderId: string) => {
+    clearTimeout(notificationTimers.get(orderId));
+    notificationTimers.delete(orderId);
+  };
+  const dismiss = (orderId: string) => {
+    clearNotificationTimer(orderId);
+    store.setState(({ jobs }) => {
+      const job = jobs[orderId];
+      if (!job || isOrderPrintActive(job)) return { jobs };
+      return {
+        jobs: { ...jobs, [orderId]: { ...job, notificationDismissed: true } },
+      };
+    });
+  };
+  const setJob = (job: OrderPrintState) => {
+    clearNotificationTimer(job.orderId);
     store.setState(({ jobs }) => {
       const completed = Object.values(jobs).filter(
         (item) => !isOrderPrintActive(item) && item.orderId !== job.orderId,
@@ -53,17 +69,16 @@ export function createOrderPrintCoordinator(
         },
       };
     });
+    if (!isOrderPrintActive(job)) {
+      notificationTimers.set(
+        job.orderId,
+        setTimeout(() => dismiss(job.orderId), 6_000),
+      );
+    }
+  };
   return {
     store,
-    dismiss(orderId: string) {
-      store.setState(({ jobs }) => {
-        const job = jobs[orderId];
-        if (!job || isOrderPrintActive(job)) return { jobs };
-        return {
-          jobs: { ...jobs, [orderId]: { ...job, notificationDismissed: true } },
-        };
-      });
-    },
+    dismiss,
     run(input: OrderPrintRequest, afterConfirmation?: () => void) {
       const existing = active.get(input.orderId);
       if (existing) return existing;

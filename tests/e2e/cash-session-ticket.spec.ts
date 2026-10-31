@@ -61,20 +61,21 @@ function report(): CashSessionReportDto {
   };
 }
 
-test("ticket jerarquiza arqueo y separa ventas, medios y movimientos", () => {
+test("ticket prioriza ventas totales y separa medios, arqueo y movimientos", () => {
   const html = cashSessionReportHtml(report(), settings, {});
   const sequence = [
-    "Resultado del cierre",
-    "Resumen",
+    "Resumen de ventas",
     "Por medio de pago",
     "Por tipo",
+    "Resultado del cierre",
     "Movimientos de efectivo",
   ];
   const indexes = sequence.map((title) => html.indexOf(`>${title}</h3>`));
   expect(indexes.every((index) => index >= 0)).toBe(true);
   expect(indexes).toEqual([...indexes].sort((a, b) => a - b));
   for (const text of [
-    "Cierre definitivo",
+    "Cierre de caja",
+    "Ventas totales",
     "Faltante",
     "Esperado sin cambio",
     "$ 4.500",
@@ -111,7 +112,7 @@ test("turno abierto no inventa cierre, conteo ni diferencia", () => {
     ">Cambio final</span>",
     ">Diferencia</span>",
     ">Cuadra</p>",
-    "Cierre definitivo",
+    "Cierre de caja",
   ])
     expect(html).not.toContain(text);
 });
@@ -136,6 +137,7 @@ test("filtros se distinguen del arqueo completo y se escapan; detalle retenido n
   data.filters.categoryName = '<script>alert("x")</script>';
   const html = cashSessionReportHtml(data, settings, { byProduct: true });
   expect(html).toContain("Ventas filtradas");
+  expect(html).not.toContain(">Ventas totales</span>");
   expect(html).toContain("El arqueo corresponde al turno completo.");
   expect(html).toContain("&lt;script&gt;");
   expect(html).not.toContain("<script>");
@@ -215,12 +217,15 @@ test("detalle informativo lista egresos del turno completo con anulaciones", () 
   const html = cashSessionReportHtml(data, settings, {});
   expect(html).toContain("Detalle de egresos en efectivo");
   expect(html).toContain("Gasto");
-  expect(html).toContain("Ajuste de salida");
+  expect(html).toContain("Ajustes de salida");
   expect(html).toContain("&lt;compra&gt; &amp; &quot;urgente&quot;");
-  expect(html).toContain("13/10/2026, 00:15:00");
+  expect(html).toContain("13/10, 00:15");
+  expect(html).not.toContain("13/10/2026, 00:15:00");
   expect(html).toContain("Anulado · Compensado en el arqueo");
   expect(html).toContain("Anulación");
-  expect(html).toContain("Detalle informativo; estos importes ya están incluidos en el arqueo.");
+  expect(html).toContain(
+    "Detalle informativo; estos importes ya están incluidos en el arqueo.",
+  );
   expect(html.replaceAll("\u00a0", " ")).toContain("$ 123,45");
   expect(html).not.toContain("No efectivo");
   expect(html).not.toContain("Sin egresos en efectivo registrados.");
@@ -232,6 +237,114 @@ test("detalle informativo lista egresos del turno completo con anulaciones", () 
     "Sin egresos en efectivo registrados.",
   );
 });
+
+test("gastos compactos y delivery agrupado conservan importes, conceptos y anulaciones", async ({
+  page,
+}) => {
+  const data = report();
+  data.session.movements = Array.from({ length: 60 }, (_, index) => ({
+    id: `delivery-${index}`,
+    type: "EXPENSE" as const,
+    amountMinor: 1_000,
+    affectsCash: true,
+    paymentMethodCode: null,
+    orderId: `order-${index}`,
+    userId: "admin",
+    reason: `Rendición individual ${index}`,
+    createdAt: "2026-10-13T00:15:00-03:00",
+    ...(index === 0 ? { reversedById: "compensation" } : {}),
+    ...(index === 1 ? { referenceId: "original-income" } : {}),
+  }));
+  data.session.movements.push(
+    ...["Compra de harina", "Pago de envío sin vínculo"].map(
+      (reason, index) => ({
+        id: `expense-${index}`,
+        type: "EXPENSE" as const,
+        amountMinor: 2_000,
+        affectsCash: true,
+        paymentMethodCode: "CASH",
+        orderId: null,
+        userId: "admin",
+        reason,
+        createdAt: "2026-10-13T00:05:59-03:00",
+      }),
+    ),
+  );
+  data.session.cashExpenseMinor = 64_000;
+  const before = structuredClone(data);
+  const html = cashSessionReportHtml(data, settings, {});
+  expect(data).toEqual(before);
+  await page.setContent(html);
+  const groups = page.locator(".outflow-group");
+  await expect(groups).toHaveCount(2);
+  await expect(groups.first().locator("h3")).toHaveText("Gastos");
+  await expect(groups.first().locator(".outflow-item")).toHaveCount(2);
+  await expect(
+    groups.first().locator(".outflow-item .row").first(),
+  ).toContainText("Compra de harina");
+  await expect(groups.first().locator(".outflow-meta").first()).toHaveText(
+    "13/10, 00:05",
+  );
+  const delivery = page.locator(".delivery-summary");
+  await expect(delivery.locator(".row")).toHaveCount(1);
+  await expect(delivery).toContainText("Total envíos y rendiciones (60)");
+  await expect(delivery.locator(".row strong")).toHaveText(/\$\s*600/);
+  await expect(delivery).toContainText("1 anulados · 1 anulaciones");
+  await expect(delivery).toContainText(
+    "Importe bruto; las compensaciones están incluidas en el arqueo.",
+  );
+  expect(html).not.toContain("Rendición individual");
+  // No duplicated generic labels per expense, nor timestamps with seconds.
+  expect(html).not.toContain(">Gasto</");
+  expect(html).not.toContain("00:05:59");
+  await expect(
+    page.locator("body > section.sales-summary .total span"),
+  ).toHaveText("Ventas totales");
+});
+
+for (const paperWidth of ["58mm", "80mm"] as const) {
+  test(`muchas rendiciones no alargan ni desbordan el ticket de ${paperWidth}`, async ({
+    page,
+  }) => {
+    const data = report();
+    const profile = {
+      ...settings,
+      printing: {
+        ...settings.printing,
+        bill: { ...settings.printing.bill, paperWidth },
+      },
+    };
+    const heights: number[] = [];
+    for (const count of [2, 100]) {
+      data.session.movements = Array.from({ length: count }, (_, index) => ({
+        id: `delivery-${index}`,
+        type: "EXPENSE",
+        amountMinor: 100,
+        affectsCash: true,
+        paymentMethodCode: null,
+        orderId: `order-${index}`,
+        userId: "admin",
+        reason: "Detalle innecesariamente extenso ".repeat(10),
+        createdAt: "2026-10-13T00:15:00-03:00",
+      }));
+      data.session.cashExpenseMinor = count * 100;
+      await page.setContent(cashSessionReportHtml(data, profile, {}));
+      await expect(page.locator(".delivery-summary .row")).toHaveCount(1);
+      const bounds = await page.locator("body").evaluate((body) => ({
+        client: body.clientWidth,
+        scroll: body.scrollWidth,
+        height: body.scrollHeight,
+      }));
+      expect(bounds.scroll).toBeLessThanOrEqual(bounds.client + 1);
+      heights.push(bounds.height);
+    }
+    expect(heights[1]! - heights[0]!).toBeLessThanOrEqual(20);
+    await page.screenshot({
+      path: test.info().outputPath(`compacto-${paperWidth}.png`),
+      fullPage: true,
+    });
+  });
+}
 
 test("histórico sin detalle no revela motivos y los resúmenes no inventan filas", () => {
   const data = report();
@@ -257,10 +370,14 @@ test("histórico sin detalle no revela motivos y los resúmenes no inventan fila
 
   data.detailAvailable = true;
   data.session.movements = [];
-  expect(cashSessionReportHtml(data, settings, {})).toContain("Detalle de egresos no disponible.");
+  expect(cashSessionReportHtml(data, settings, {})).toContain(
+    "Detalle de egresos no disponible.",
+  );
 });
 
-test("conceptos largos no desbordan el ancho del ticket de 58 ni 80 mm", async ({ page }) => {
+test("conceptos largos no desbordan el ancho del ticket de 58 ni 80 mm", async ({
+  page,
+}) => {
   const data = report();
   data.session.movements = [
     {
@@ -271,7 +388,9 @@ test("conceptos largos no desbordan el ancho del ticket de 58 ni 80 mm", async (
       paymentMethodCode: "CASH",
       orderId: null,
       userId: "admin",
-      reason: "Concepto extenso de una devolución ".repeat(24) + "SinEspacios".repeat(24),
+      reason:
+        "Concepto extenso de una devolución ".repeat(24) +
+        "SinEspacios".repeat(24),
       createdAt: data.session.closedAt!,
     },
   ];
@@ -294,10 +413,15 @@ test("conceptos largos no desbordan el ancho del ticket de 58 ni 80 mm", async (
     }));
     expect(width.scroll).toBeLessThanOrEqual(width.client + 1);
     const bounds = await page.locator(".outflow-item .row").evaluate((row) => {
-      const [label, amount] = [...row.children].map(child => child.getBoundingClientRect());
+      const [label, amount] = [...row.children].map((child) =>
+        child.getBoundingClientRect(),
+      );
       return { labelRight: label.right, amountLeft: amount.left };
     });
     expect(bounds.labelRight).toBeLessThanOrEqual(bounds.amountLeft);
-    await page.screenshot({ path: test.info().outputPath(`egresos-${paperWidth}.png`), fullPage: true });
+    await page.screenshot({
+      path: test.info().outputPath(`egresos-${paperWidth}.png`),
+      fullPage: true,
+    });
   }
 });

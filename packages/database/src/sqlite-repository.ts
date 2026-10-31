@@ -373,6 +373,21 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           .prepare("INSERT OR IGNORE INTO sequences(name, value) VALUES (?, 0)")
           .run(sequence);
       }
+      const orderSequences = this.db
+        .prepare(
+          `SELECT cs.id, COALESCE(MAX(COALESCE(o.shift_number, o.number)), 0) AS last_shift_number
+           FROM cash_sessions cs LEFT JOIN orders o ON o.cash_session_created_id = cs.id
+           GROUP BY cs.id`,
+        )
+        .all() as Row[];
+      const insertOrderSequence = this.db.prepare(
+        "INSERT OR IGNORE INTO sequences(name, value) VALUES (?, ?)",
+      );
+      for (const session of orderSequences)
+        insertOrderSequence.run(
+          `order:${String(session.id)}`,
+          Number(session.last_shift_number),
+        );
 
       for (const permission of SYSTEM_PERMISSIONS) {
         this.db
@@ -584,7 +599,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return run();
   }
 
-  private nextSequence(name: "cash_session" | "order") {
+  private nextSequence(name: string) {
     this.db
       .prepare("UPDATE sequences SET value = value + 1 WHERE name = ?")
       .run(name);
@@ -1179,7 +1194,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             : null;
           const pending = this.db
             .prepare(
-              `SELECT id, number FROM orders
+              `SELECT id, COALESCE(shift_number, number) AS display_number FROM orders
            WHERE operational_status NOT IN ('DELIVERED','CANCELLED')
              AND (cash_session_created_id = ? OR cash_session_paid_id = ?)
            ORDER BY number`,
@@ -1203,7 +1218,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             .prepare(
               `SELECT dl.id,
              dl.order_id,
-             o.number AS order_number,
+             COALESCE(o.shift_number, o.number) AS order_number,
              dl.driver_user_id,
              u.full_name AS driver_name,
              dl.direction,
@@ -1223,7 +1238,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             !input.force
           ) {
             const pendingNumbers = pending.slice(0, 10)
-              .map((order) => `#${order.number}`).join(", ");
+              .map((order) => `#${order.display_number}`).join(", ");
             throw new Error(
               `No se puede cerrar la caja: hay ${pending.length} pedido(s) pendiente(s) del turno actual. Revisá ${pendingNumbers}${pending.length > 10 ? "…" : ""}.`,
             );
@@ -1297,7 +1312,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               pending: pending.length,
               pendingOrders: pending.map((order) => ({
                 id: String(order.id),
-                number: Number(order.number),
+                number: Number(order.display_number),
               })),
               pendingDeliverySettlements: Number(pendingDeliveryLedger.count),
               pendingDeliveryDetails: pendingDeliveryDetails.map((entry) => ({
@@ -1482,7 +1497,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return (
       this.db
         .prepare(
-          `SELECT dl.*, o.number AS order_number,
+          `SELECT dl.*, COALESCE(o.shift_number, o.number) AS order_number,
                   COALESCE(o.cash_session_paid_id, o.cash_session_created_id) AS cash_session_id,
                   cs.business_date, u.full_name AS driver_name
       FROM delivery_ledger dl JOIN orders o ON o.id = dl.order_id
@@ -1549,7 +1564,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
              WHERE status = 'PRINTED'
              ORDER BY created_at DESC LIMIT 100
            )
-           SELECT pj.*, o.number AS order_number FROM print_jobs pj
+           SELECT pj.*, COALESCE(o.shift_number, o.number) AS order_number FROM print_jobs pj
            JOIN orders o ON o.id = pj.order_id
             WHERE pj.status IN ('QUEUED', 'RECOVERING', 'FAILED')
               OR pj.id IN (SELECT id FROM recent_printed)
@@ -1796,7 +1811,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }
     return {
       id: String(row.id),
-      number: Number(row.number),
+      number: Number(row.shift_number ?? row.number),
       type: String(row.type) as OrderDto["type"],
       operationalStatus: String(
         row.operational_status,
@@ -2299,6 +2314,22 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const id = randomUUID();
           const timestamp = nowIso();
           const number = this.nextSequence("order");
+          const orderSequenceName = `order:${String(session.id)}`;
+          const hasShiftSequence = this.db
+            .prepare("SELECT 1 FROM sequences WHERE name = ?")
+            .get(orderSequenceName);
+          if (!hasShiftSequence) {
+            const existingShiftNumber = this.db
+              .prepare(
+                `SELECT COALESCE(MAX(COALESCE(shift_number, number)), 0) AS last_shift_number
+                 FROM orders WHERE cash_session_created_id = ?`,
+              )
+              .get(session.id) as Row;
+            this.db
+              .prepare("INSERT OR IGNORE INTO sequences(name, value) VALUES (?, ?)")
+              .run(orderSequenceName, Number(existingShiftNumber.last_shift_number));
+          }
+          const shiftNumber = this.nextSequence(orderSequenceName);
           let waiterUserId: string | null = null;
           let driverUserId: string | null = null;
           if (input.type === "DINE_IN") {
@@ -2322,14 +2353,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           }
           this.db
             .prepare(
-              `INSERT INTO orders(id, number, type, operational_status, payment_status, lifecycle_status, cash_session_created_id,
+              `INSERT INTO orders(id, number, shift_number, type, operational_status, payment_status, lifecycle_status, cash_session_created_id,
             table_id, customer_id, customer_name_snapshot, customer_phone_snapshot, delivery_address_snapshot, delivery_address_notes_snapshot,
             delivery_fee_minor, promised_at, scheduled, waiter_user_id, driver_user_id, notes, created_at, updated_at)
-           VALUES (?, ?, ?, 'PENDING', 'UNPAID', 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, 'PENDING', 'UNPAID', 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             )
             .run(
               id,
               number,
+              shiftNumber,
               input.type,
               session.id,
               input.tableId ?? null,
@@ -2351,9 +2383,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             entityType: "ORDER",
             entityId: id,
             action: "ORDER_DRAFT_CREATED",
-            after: { number, type: input.type, waiterUserId },
+            after: { number: shiftNumber, type: input.type, waiterUserId },
           });
-          this.event("Order", id, "OrderCreated", { number, type: input.type });
+          this.event("Order", id, "OrderCreated", { number: shiftNumber, type: input.type });
           return this.getOrder(id);
         });
         return run();
@@ -3787,12 +3819,27 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       () => {
         const run = this.db.transaction(() => {
           const session = this.requireOpenCashSessionRow();
-          const order = requireRow(
+          let order = requireRow(
             this.db
               .prepare("SELECT * FROM orders WHERE id = ?")
               .get(input.orderId) as Row | undefined,
             "El pedido no existe.",
           );
+          const requestedDriverUserId = input.driverUserId;
+          if (requestedDriverUserId !== undefined) {
+            if (!requestedDriverUserId)
+              throw new Error("Seleccioná un repartidor activo.");
+            this.assignDeliveryDriver({
+              orderId: input.orderId,
+              driverUserId: requestedDriverUserId,
+            });
+            order = requireRow(
+              this.db
+                .prepare("SELECT * FROM orders WHERE id = ?")
+                .get(input.orderId) as Row | undefined,
+              "El pedido no existe.",
+            );
+          }
           assertOrderAction(this.getOrder(input.orderId), "PAY");
           const collectedByDriver = input.collectedByDriver === true;
           if (
@@ -3977,8 +4024,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               input.orderId,
               this.adminUserId,
               payment.methodCode === "ACCOUNT"
-                ? `Venta a cuenta corriente pedido #${String(order.number)}`
-                : `Cobro pedido #${String(order.number)}`,
+                ? `Venta a cuenta corriente pedido #${String(order.shift_number ?? order.number)}`
+                : `Cobro pedido #${String(order.shift_number ?? order.number)}`,
               timestamp,
             );
           }
@@ -3992,7 +4039,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               changeMethod.id,
               input.orderId,
               this.adminUserId,
-              `Vuelto cobro pedido #${String(order.number)} (${String(changeMethod.name)})`,
+              `Vuelto cobro pedido #${String(order.shift_number ?? order.number)} (${String(changeMethod.name)})`,
               timestamp,
             );
           }
@@ -4063,7 +4110,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
                 null,
                 input.orderId,
                 this.adminUserId,
-                `Pago de envío a repartidor: Pedido #${String(order.number)}`,
+                `Pago de envío a repartidor: Pedido #${String(order.shift_number ?? order.number)}`,
                 timestamp,
               );
               const ledgerId = randomUUID();
@@ -4092,13 +4139,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
                   timestamp,
                   timestamp,
                   this.adminUserId,
-                  `Pagado al cobrar pedido #${String(order.number)}`,
+                  `Pagado al cobrar pedido #${String(order.shift_number ?? order.number)}`,
                 );
               this.audit({
                 entityType: "DELIVERY_LEDGER",
                 entityId: ledgerId,
                 action: "DELIVERY_SETTLED_ON_PAYMENT",
-                reason: `Pagado al cobrar pedido #${String(order.number)}`,
+                reason: `Pagado al cobrar pedido #${String(order.shift_number ?? order.number)}`,
                 after: { amountMinor: Number(order.delivery_fee_minor) },
               });
               this.event("DeliveryLedger", ledgerId, "DeliverySettled", {
@@ -4171,21 +4218,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const authorizer = this.authorizePin(authorizerPin, "cash.expense");
     const movementType =
       String(row.direction) === "DRIVER_OWES_BUSINESS" ? "EXPENSE" : "INCOME";
-    if (
-      movementType === "EXPENSE" &&
-      Number(row.settled_amount_minor) >
-        this.cashSessionDto(session).expectedAmountMinor
-    )
-      throw new Error(
-        "La caja no tiene efectivo suficiente para revertir esta liquidación.",
-      );
     const timestamp = nowIso();
     const reversalId = randomUUID();
     const originalType = movementType === "EXPENSE" ? "INCOME" : "EXPENSE";
     let originalMovement = this.db
       .prepare(
-        `SELECT cm.id FROM cash_movements cm WHERE cm.order_id = ? AND cm.type = ?
-      AND cm.amount_minor = ? AND cm.affects_cash = 1 AND cm.created_at = ? AND COALESCE(cm.reason,'') NOT LIKE 'Anulación:%'
+        `SELECT cm.id, cm.affects_cash, cm.payment_method_id FROM cash_movements cm WHERE cm.order_id = ? AND cm.type = ?
+      AND cm.amount_minor = ? AND cm.created_at = ? AND COALESCE(cm.reason,'') NOT LIKE 'Anulación:%'
       AND NOT EXISTS (SELECT 1 FROM cash_movements reversal WHERE reversal.reference_id = cm.id)
       ORDER BY created_at DESC LIMIT 1`,
       )
@@ -4204,8 +4243,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         : `Liquidación de reparto: ${String(row.settlement_reason)}`;
       const legacyCandidates = this.db
         .prepare(
-          `SELECT cm.id FROM cash_movements cm WHERE cm.order_id IS NULL AND cm.type = ?
-        AND cm.amount_minor = ? AND cm.affects_cash = 1 AND cm.created_at = ? AND cm.reason = ?
+          `SELECT cm.id, cm.affects_cash, cm.payment_method_id FROM cash_movements cm WHERE cm.order_id IS NULL AND cm.type = ?
+        AND cm.amount_minor = ? AND cm.created_at = ? AND cm.reason = ?
         AND NOT EXISTS (SELECT 1 FROM cash_movements reversal WHERE reversal.reference_id = cm.id)`,
         )
         .all(
@@ -4221,16 +4260,28 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       throw new Error(
         "No se encontró el movimiento original de la liquidación para anularlo.",
       );
+    const affectsCash = flag(originalMovement.affects_cash);
+    if (
+      movementType === "EXPENSE" &&
+      affectsCash &&
+      Number(row.settled_amount_minor) >
+        this.cashSessionDto(session).expectedAmountMinor
+    )
+      throw new Error(
+        "La caja no tiene efectivo suficiente para revertir esta liquidación.",
+      );
     this.db
       .prepare(
-        `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, order_id, user_id, reason, created_at, reference_id)
-      VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+        `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, payment_method_id, order_id, user_id, reason, created_at, reference_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         reversalId,
         session.id,
         movementType,
         row.settled_amount_minor,
+        affectsCash ? 1 : 0,
+        originalMovement.payment_method_id ?? null,
         row.order_id,
         authorizer.id,
         `Anulación de liquidación: ${reason}`,
@@ -4361,7 +4412,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         payment.payment_method_id,
         input.orderId,
         this.adminUserId,
-        `Devolución pedido #${String(order.number)}: ${input.reason}`,
+        `Devolución pedido #${String(order.shift_number ?? order.number)}: ${input.reason}`,
         timestamp,
       );
     const paidMinor = Math.max(0, Number(order.paid_minor) - amountMinor);
@@ -4520,7 +4571,20 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   completeOrder(input: PayOrderInput & { finalStatus: "DELIVERED" }): OrderDto {
     const run = this.db.transaction(() => {
       let order = this.getOrder(input.orderId);
-      let paymentInput = input;
+      const requestedDriverUserId = input.driverUserId;
+      if (requestedDriverUserId !== undefined) {
+        if (!requestedDriverUserId)
+          throw new Error("Seleccioná un repartidor activo.");
+        order = this.assignDeliveryDriver({
+          orderId: input.orderId,
+          driverUserId: requestedDriverUserId,
+        });
+      }
+      if (order.type === "DELIVERY" && !order.driverUserId)
+        throw new Error(
+          "Asigná un repartidor al envío antes de completar la entrega.",
+        );
+      const paymentInput = input;
       if (order.type === "DELIVERY" && order.paymentStatus !== "PAID") {
         const cashMinor = input.payments
           .filter((payment) => payment.methodCode === "CASH")
@@ -4529,21 +4593,17 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           (payment) =>
             payment.methodCode !== "CASH" && payment.methodCode !== "ACCOUNT",
         );
-        const hasAccountCharge = input.payments.some(
-          (payment) => payment.methodCode === "ACCOUNT",
-        );
-        if (cashMinor > 0 && hasNonAccountPrepayment) {
+        if (
+          input.collectedByDriver === true &&
+          cashMinor > 0 &&
+          hasNonAccountPrepayment
+        ) {
           throw new Error(
             "Para cobrar y entregar un envío, elegí efectivo contra entrega o un medio anticipado, sin combinarlos.",
           );
         }
-        // A mixed cash/account order is collected by the business: cash is
-        // recorded in its register and the ACCOUNT portion remains receivable.
-        // Only an all-cash-at-door payment is collected by the driver.
-        paymentInput = {
-          ...input,
-          collectedByDriver: cashMinor > 0 && !hasAccountCharge,
-        };
+        // Cash collection by the driver is explicit. Missing/false means the
+        // business receives each tender and records cash normally.
       }
       if (order.lifecycleStatus === "DRAFT")
         order = this.confirmOrder({ orderId: input.orderId });
@@ -5552,7 +5612,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     );
     const accountCharges = this.db
       .prepare(
-        `SELECT c.order_id, o.number AS order_number, c.created_at, c.amount_minor,
+        `SELECT c.order_id, COALESCE(o.shift_number, o.number) AS order_number, c.created_at, c.amount_minor,
       COALESCE(SUM(a.amount_minor), 0) AS settled_minor
       FROM customer_account_charges c JOIN orders o ON o.id = c.order_id
       LEFT JOIN customer_account_allocations a ON a.order_id = c.order_id
@@ -5675,7 +5735,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         allocations: (
           this.db
             .prepare(
-              `SELECT a.order_id, o.number AS order_number, a.amount_minor FROM customer_account_allocations a
+              `SELECT a.order_id, COALESCE(o.shift_number, o.number) AS order_number, a.amount_minor FROM customer_account_allocations a
           JOIN orders o ON o.id = a.order_id WHERE a.receipt_id = ? ORDER BY o.number`,
             )
             .all(receipt.id) as Row[]
@@ -5757,14 +5817,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           );
         const pending = this.db
           .prepare(
-            `SELECT number FROM orders WHERE customer_id = ?
+            `SELECT COALESCE(shift_number, number) AS display_number FROM orders WHERE customer_id = ?
              AND (lifecycle_status = 'DRAFT' OR operational_status NOT IN ('DELIVERED','CANCELLED'))
              LIMIT 1`,
           )
           .get(input.customerId) as Row | undefined;
         if (pending)
           throw new Error(
-            `El cliente tiene el pedido #${Number(pending.number)} pendiente. Cerralo antes de archivar.`,
+            `El cliente tiene el pedido #${Number(pending.display_number)} pendiente. Cerralo antes de archivar.`,
           );
       }
       const before = this.customerDto(row);
@@ -8292,7 +8352,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       ) {
         const activeDeliveries = this.db
           .prepare(
-            `SELECT o.number FROM orders o
+            `SELECT COALESCE(o.shift_number, o.number) AS display_number FROM orders o
              JOIN cash_sessions cs ON cs.id = o.cash_session_created_id
              WHERE o.driver_user_id = ? AND o.type = 'DELIVERY'
                AND o.lifecycle_status = 'CONFIRMED'
@@ -8303,7 +8363,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           .all(input.userId) as Row[];
         if (activeDeliveries.length)
           throw new Error(
-            `El repartidor tiene ${activeDeliveries.length} envío(s) activo(s): ${activeDeliveries.map((order) => `#${String(order.number)}`).join(", ")}. Reasignalos antes de desactivarlo o cambiar su rol.`,
+            `El repartidor tiene ${activeDeliveries.length} envío(s) activo(s): ${activeDeliveries.map((order) => `#${String(order.display_number)}`).join(", ")}. Reasignalos antes de desactivarlo o cambiar su rol.`,
           );
       }
       const role = requireRow(
@@ -8466,9 +8526,24 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const outgoingMinor = rows
             .filter((row) => String(row.direction) === "BUSINESS_OWES_DRIVER")
             .reduce((total, row) => total + Number(row.amount_due_minor), 0);
+          const paymentMethodCode = input.paymentMethodCode ?? "CASH";
+          if (paymentMethodCode === "ACCOUNT")
+            throw new Error(
+              "Cuenta corriente no es un medio para liquidar repartidores.",
+            );
+          const method = requireRow(
+            this.db
+              .prepare(
+                "SELECT * FROM payment_methods WHERE code = ? AND active = 1",
+              )
+              .get(paymentMethodCode) as Row | undefined,
+            `El medio de pago ${paymentMethodCode} no está disponible.`,
+          );
+          const affectsCash = flag(method.affects_cash);
           if (
+            affectsCash &&
             outgoingMinor >
-            this.cashSessionDto(session).expectedAmountMinor + incomingMinor
+              this.cashSessionDto(session).expectedAmountMinor + incomingMinor
           )
             throw new Error(
               "La caja no tiene efectivo suficiente para pagar esta rendición.",
@@ -8490,14 +8565,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               : `Liquidación de reparto: ${reason}`;
             this.db
               .prepare(
-                `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, order_id, user_id, reason, created_at)
-          VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+                `INSERT INTO cash_movements(id, cash_session_id, type, amount_minor, affects_cash, payment_method_id, order_id, user_id, reason, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               )
               .run(
                 randomUUID(),
                 session.id,
                 movementType,
                 row.amount_due_minor,
+                affectsCash ? 1 : 0,
+                method.id,
                 row.order_id,
                 this.adminUserId,
                 movementReason,
@@ -8514,11 +8591,18 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               action: "DELIVERY_SETTLED",
               permission: "cash.expense",
               reason,
-              after: { amountMinor: row.amount_due_minor },
+              after: {
+                amountMinor: row.amount_due_minor,
+                paymentMethodCode,
+                paymentMethodName: String(method.name),
+                affectsCash,
+              },
               authorizerUserId: String(authorizer.id),
             });
             this.event("DeliveryLedger", id, "DeliverySettled", {
               amountMinor: row.amount_due_minor,
+              paymentMethodCode,
+              affectsCash,
             });
           }
           return this.listDeliveryLedger().filter((row) =>
@@ -8550,6 +8634,36 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               .get(input.movementId) as Row | undefined,
             "El movimiento no existe.",
           );
+          if (original.reference_id == null) {
+            const settlementRows = this.db
+              .prepare(
+                `SELECT dl.*, u.full_name AS driver_name FROM delivery_ledger dl
+                 LEFT JOIN users u ON u.id = dl.driver_user_id
+                 WHERE dl.status = 'SETTLED' AND dl.settled_at = ?
+                   AND dl.settled_amount_minor = ?
+                   AND ((dl.direction = 'DRIVER_OWES_BUSINESS' AND ? = 'INCOME')
+                     OR (dl.direction = 'BUSINESS_OWES_DRIVER' AND ? = 'EXPENSE'))`,
+              )
+              .all(
+                original.created_at,
+                original.amount_minor,
+                original.type,
+                original.type,
+              ) as Row[];
+            const matchingSettlements = settlementRows.filter((ledger) => {
+              if (original.order_id != null)
+                return String(ledger.order_id) === String(original.order_id);
+              if (!ledger.settlement_reason) return false;
+              const expectedReason = ledger.driver_name
+                ? `Liquidación de reparto (${String(ledger.driver_name)}): ${String(ledger.settlement_reason)}`
+                : `Liquidación de reparto: ${String(ledger.settlement_reason)}`;
+              return String(original.reason ?? "") === expectedReason;
+            });
+            if (matchingSettlements.length === 1)
+              throw new Error(
+                "Este movimiento corresponde a una liquidación de reparto. Revertí la liquidación desde Repartidores.",
+              );
+          }
           if (this.db.prepare("SELECT 1 FROM finance_expense_payment_corrections WHERE compensation_movement_id=?")
             .get(input.movementId))
             throw new Error("Este movimiento es una compensación de corrección de pago y no puede anularse como movimiento suelto.");
@@ -9196,7 +9310,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }
     const rows = this.db
       .prepare(
-        `SELECT o.number, cs.business_date, o.created_at, o.type, o.operational_status,
+        `SELECT COALESCE(o.shift_number, o.number) AS number, cs.business_date, o.created_at, o.type, o.operational_status,
       o.payment_status, o.customer_name_snapshot, o.customer_phone_snapshot, o.subtotal_minor,
       o.discount_minor, o.delivery_fee_minor, o.total_minor, o.paid_minor
       FROM orders o JOIN cash_sessions cs ON cs.id = o.cash_session_created_id WHERE ${where.join(" AND ")} ORDER BY o.created_at, o.id`,

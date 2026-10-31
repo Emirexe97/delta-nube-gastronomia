@@ -1075,6 +1075,8 @@ export interface ChangeOutput {
 export interface PayOrderInput extends IdempotentRequest {
   orderId: Id;
   customerId?: Id | null;
+  /** Explicit delivery driver selection, committed atomically with the payment. */
+  driverUserId?: Id;
   collectedByDriver?: boolean;
   payDriverNow?: boolean;
   payments: Array<{
@@ -1309,6 +1311,8 @@ export interface SettleDeliveryInput extends IdempotentRequest {
   ledgerIds: Id[];
   reason: string;
   authorizerPin: string;
+  /** One active payment method for the selected batch; legacy callers use CASH. */
+  paymentMethodCode?: string;
 }
 
 export interface AppUpdateStatusDto {

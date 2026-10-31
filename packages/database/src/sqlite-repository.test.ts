@@ -4743,11 +4743,18 @@ test("cobrar y entregar delivery en puerta es atómico e idempotente", () => {
 test("cobrar y entregar un envío rechaza mezclar efectivo en puerta con pago anticipado", () => {
   withRepository((repository) => {
     repository.openCashSession({ openingAmountMinor: 0 });
+    const driver = repository.createUser({
+      fullName: "Repartidor cobro mixto",
+      roleCode: "DELIVERY_DRIVER",
+      pin: "3579",
+      authorizerPin: "2468",
+    });
     const draft = repository.createOrder({
       type: "DELIVERY",
       customerName: "Cliente",
       customerPhone: "11 4000-4000",
       deliveryAddress: "Calle 456",
+      driverUserId: driver.id,
     });
     const populated = repository.addOrderItem({
       orderId: draft.id,
@@ -4759,6 +4766,7 @@ test("cobrar y entregar un envío rechaza mezclar efectivo en puerta con pago an
         repository.completeOrder({
           orderId: draft.id,
           finalStatus: "DELIVERED",
+          collectedByDriver: true,
           payments: [
             {
               methodCode: "CASH",

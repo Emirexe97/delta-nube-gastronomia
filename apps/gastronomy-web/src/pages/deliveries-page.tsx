@@ -298,6 +298,14 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
           tone="green"
         />
       </section>
+      <p className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs leading-5 text-sky-950">
+        <strong>Ganancia y saldo pendiente son conceptos distintos.</strong> La
+        ganancia suma los envíos registrados; el pendiente indica cuánto debe
+        rendir el repartidor al negocio o cuánto debe pagarle el negocio. Si el
+        repartidor cobró el pedido al cliente, puede retener el importe del
+        envío y rendir solo el resto. Lo que rinde al negocio no es
+        necesariamente su ganancia ni coincide con el total liquidado.
+      </p>
 
       <Card className="overflow-hidden">
         <div className="border-b border-slate-100 px-4 py-3">
@@ -486,6 +494,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
       <SettlementModal
         open={settleOpen}
         rows={selectedRows}
+        paymentMethods={data.paymentMethods}
         onClose={() => setSettleOpen(false)}
       />
     </div>
@@ -707,14 +716,24 @@ function DriverModal({ open, onClose }: { open: boolean; onClose(): void }) {
 function SettlementModal({
   open,
   rows,
+  paymentMethods,
   onClose,
 }: {
   open: boolean;
   rows: DeliveryLedgerDto[];
+  paymentMethods: BootstrapDto["paymentMethods"];
   onClose(): void;
 }) {
+  const allowedMethods = paymentMethods.filter(
+    (method) => method.active && method.code !== "ACCOUNT",
+  );
+  const defaultMethodCode =
+    allowedMethods.find((method) => method.code === "CASH")?.code ??
+    allowedMethods[0]?.code ??
+    "";
   const [reason, setReason] = useState("Cierre de turno");
   const [pin, setPin] = useState("");
+  const [paymentMethodCode, setPaymentMethodCode] = useState(defaultMethodCode);
   const [error, setError] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const driverOwes = rows
@@ -745,9 +764,14 @@ function SettlementModal({
     if (!open) return;
     setReason("Cierre de turno");
     setPin("");
+    setPaymentMethodCode(defaultMethodCode);
     setError(null);
     setReviewing(false);
-  }, [open, rowKey]);
+  }, [open, rowKey, defaultMethodCode]);
+
+  const selectedPaymentMethod = allowedMethods.find(
+    (method) => method.code === paymentMethodCode,
+  );
 
   const close = () => {
     if (!mutation.isPending) onClose();
@@ -757,6 +781,7 @@ function SettlementModal({
       ledgerIds: rows.map((row) => row.id),
       reason: reason.trim(),
       authorizerPin: pin,
+      paymentMethodCode,
     });
 
   const distinctDrivers = Array.from(
@@ -774,26 +799,36 @@ function SettlementModal({
       title={
         reviewing ? "Confirmar movimiento de caja" : "Revisar pago o rendición"
       }
-      description={`${rows.length} movimiento(s) de ${driverDescription}; diferenciá los pagos del negocio al repartidor de las rendiciones que ingresan a caja.`}
+      description={`${rows.length} movimiento(s) de ${driverDescription}; diferenciá los pagos al repartidor de las rendiciones que recibe el negocio.`}
     >
       {reviewing ? (
         <div className="grid gap-4">
           <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
             <WarningCircle size={22} className="shrink-0 text-amber-700" />
             <p className="text-xs leading-5 text-amber-900">
-              Se crearán movimientos de caja: los pagos salen de caja hacia el
-              repartidor y las rendiciones ingresan a caja. Las filas
-              seleccionadas quedarán liquidadas. Verificá repartidor, importes y
-              sentido antes de confirmar.
+              Se registrarán los movimientos seleccionados con el medio indicado
+              y quedarán liquidados. Verificá repartidor, importes y sentido
+              antes de confirmar.
             </p>
           </div>
           <SettlementSummary
             driverOwes={driverOwes}
             businessOwes={businessOwes}
             net={net}
+            paymentMethodName={selectedPaymentMethod?.name}
+            affectsCash={selectedPaymentMethod?.affectsCash ?? false}
           />
           <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
             <strong>Motivo:</strong> {reason.trim()}
+          </p>
+          <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+            <strong>Medio:</strong>{" "}
+            {selectedPaymentMethod?.name ?? "No disponible"}.{" "}
+            {selectedPaymentMethod?.affectsCash
+              ? net === 0
+                ? "Sin variación neta de efectivo."
+                : `Impacto neto en efectivo: ${net > 0 ? "ingresa" : "sale"} ${formatMoney(Math.abs(net))}.`
+              : "Este medio no modifica el efectivo de caja."}
           </p>
           {error ? (
             <p className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700">
@@ -808,7 +843,10 @@ function SettlementModal({
             >
               <ArrowLeft /> Volver a revisar
             </Button>
-            <Button disabled={mutation.isPending} onClick={confirm}>
+            <Button
+              disabled={mutation.isPending || !selectedPaymentMethod}
+              onClick={confirm}
+            >
               <CheckCircle />
               {mutation.isPending ? "Registrando…" : "Confirmar movimiento"}
             </Button>
@@ -819,7 +857,12 @@ function SettlementModal({
           className="grid gap-4"
           onSubmit={(event) => {
             event.preventDefault();
-            if (rows.length && reason.trim() && pin.length >= 4)
+            if (
+              rows.length &&
+              selectedPaymentMethod &&
+              reason.trim() &&
+              pin.length >= 4
+            )
               setReviewing(true);
           }}
         >
@@ -827,6 +870,8 @@ function SettlementModal({
             driverOwes={driverOwes}
             businessOwes={businessOwes}
             net={net}
+            paymentMethodName={selectedPaymentMethod?.name}
+            affectsCash={selectedPaymentMethod?.affectsCash ?? false}
           />
           <div className="max-h-52 overflow-auto rounded-xl border border-slate-200">
             <table className="dn-table min-w-[640px]">
@@ -847,8 +892,8 @@ function SettlementModal({
                     </td>
                     <td>
                       {row.direction === "DRIVER_OWES_BUSINESS"
-                        ? "Ingresa a caja"
-                        : "Sale de caja"}
+                        ? "Recibe el negocio"
+                        : "Paga el negocio"}
                     </td>
                     <td className="text-right font-bold">
                       {formatMoney(row.amountDueMinor)}
@@ -858,6 +903,34 @@ function SettlementModal({
               </tbody>
             </table>
           </div>
+          <Field
+            label="Medio de pago de la liquidación"
+            hint="Se aplicará a todos los movimientos seleccionados."
+          >
+            <Select
+              value={paymentMethodCode}
+              onChange={(event) => setPaymentMethodCode(event.target.value)}
+              disabled={!allowedMethods.length || mutation.isPending}
+            >
+              {!allowedMethods.length ? (
+                <option value="">Sin medios permitidos</option>
+              ) : null}
+              {allowedMethods.map((method) => (
+                <option key={method.code} value={method.code}>
+                  {method.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          {!allowedMethods.length ? (
+            <p
+              role="alert"
+              className="rounded-lg bg-amber-50 p-2 text-xs text-amber-900"
+            >
+              No hay medios de pago activos permitidos para registrar la
+              liquidación. Activá un medio distinto de cuenta corriente.
+            </p>
+          ) : null}
           <Field label="Motivo">
             <Input
               value={reason}
@@ -889,6 +962,7 @@ function SettlementModal({
               type="submit"
               disabled={
                 !rows.length ||
+                !selectedPaymentMethod ||
                 !reason.trim() ||
                 pin.length < 4 ||
                 mutation.isPending
@@ -907,38 +981,53 @@ function SettlementSummary({
   driverOwes,
   businessOwes,
   net,
+  paymentMethodName,
+  affectsCash,
 }: {
   driverOwes: number;
   businessOwes: number;
   net: number;
+  paymentMethodName?: string;
+  affectsCash: boolean;
 }) {
   return (
-    <div className="grid gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 sm:grid-cols-3">
-      <div className="bg-white p-3">
-        <p className="text-xs font-bold uppercase text-slate-600">
-          Repartidor rinde al negocio · ingresa a caja
-        </p>
-        <p className="text-lg font-extrabold text-emerald-700">
-          {formatMoney(driverOwes)}
-        </p>
+    <div>
+      <div className="grid gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 sm:grid-cols-3">
+        <div className="bg-white p-3">
+          <p className="text-xs font-bold uppercase text-slate-600">
+            Repartidor rinde al negocio
+          </p>
+          <p className="text-lg font-extrabold text-emerald-700">
+            {formatMoney(driverOwes)}
+          </p>
+        </div>
+        <div className="bg-white p-3">
+          <p className="text-xs font-bold uppercase text-slate-600">
+            Negocio paga al repartidor
+          </p>
+          <p className="text-lg font-extrabold text-rose-700">
+            {formatMoney(businessOwes)}
+          </p>
+        </div>
+        <div className="bg-slate-950 p-3 text-white">
+          <p className="text-xs font-bold uppercase text-slate-400">
+            {net === 0
+              ? "Saldo neto equilibrado"
+              : net > 0
+                ? "Saldo neto a favor del negocio"
+                : "Saldo neto a favor del repartidor"}
+          </p>
+          <p className="text-lg font-extrabold">
+            {net >= 0 ? "+" : "−"}
+            {formatMoney(Math.abs(net))}
+          </p>
+        </div>
       </div>
-      <div className="bg-white p-3">
-        <p className="text-xs font-bold uppercase text-slate-600">
-          Negocio paga al repartidor · sale de caja
-        </p>
-        <p className="text-lg font-extrabold text-rose-700">
-          {formatMoney(businessOwes)}
-        </p>
-      </div>
-      <div className="bg-slate-950 p-3 text-white">
-        <p className="text-xs font-bold uppercase text-slate-400">
-          Efecto neto
-        </p>
-        <p className="text-lg font-extrabold">
-          {net >= 0 ? "+" : "−"}
-          {formatMoney(Math.abs(net))}
-        </p>
-      </div>
+      <p className="mt-2 text-xs text-slate-600">
+        {paymentMethodName
+          ? `Medio elegido: ${paymentMethodName}. ${affectsCash ? (net === 0 ? "Sin variación neta de efectivo." : `Impacto neto en efectivo: ${net > 0 ? "ingresa" : "sale"} ${formatMoney(Math.abs(net))}.`) : "No modifica el efectivo de caja."}`
+          : "Seleccioná un medio para ver el impacto en efectivo."}
+      </p>
     </div>
   );
 }

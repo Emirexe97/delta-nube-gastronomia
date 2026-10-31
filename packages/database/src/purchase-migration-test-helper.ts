@@ -10,6 +10,15 @@ export function rewindPurchaseTestSchema(
   db: InstanceType<typeof Database>,
   targetVersion: number,
 ) {
+  if (targetVersion < 43) {
+    db.exec("DROP INDEX IF EXISTS orders_cash_session_shift_number_idx");
+    const orders = db.prepare("PRAGMA table_info(orders)").all() as Array<{
+      name: string;
+    }>;
+    if (orders.some((column) => column.name === "shift_number"))
+      db.exec("ALTER TABLE orders DROP COLUMN shift_number");
+    db.prepare("DELETE FROM sequences WHERE name LIKE 'order:%'").run();
+  }
   if (targetVersion < 41)
     db.exec("DROP TABLE IF EXISTS product_cost_recipes; DROP TABLE IF EXISTS ingredients;");
   if (targetVersion < 40) {
