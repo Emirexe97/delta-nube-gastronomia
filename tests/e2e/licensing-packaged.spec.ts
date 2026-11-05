@@ -223,7 +223,8 @@ test.afterAll(async () => {
       )
     )
       throw new Error("Unsafe disposable fixture path");
-    await rm(profile, { recursive: true, force: true });
+    // Electron helpers and Windows Defender may hold the disposable runtime for a moment after app.close().
+    await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 });
 
@@ -480,6 +481,9 @@ test("owner panel approves a packaged device without codes, suspends it and pres
   const client = page.locator("#settings-license");
   await expect(client.getByPlaceholder("Código de activación")).toHaveCount(0);
   await client.getByPlaceholder("Nombre del negocio").fill("E2E Panel Café");
+  await client
+    .getByRole("checkbox", { name: "Crear mi página de pedidos al habilitar el negocio" })
+    .uncheck();
   await client
     .getByRole("button", { name: "Solicitar habilitación", exact: true })
     .click();

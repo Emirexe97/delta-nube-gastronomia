@@ -5,6 +5,28 @@ const invoke = <T>(method: keyof DesktopApi, payload?: unknown) =>
   ipcRenderer.invoke(`gastronomy:${method}`, payload) as Promise<T>;
 
 const api: DesktopApi = {
+  listDelayedWaiterBatches: () => invoke("listDelayedWaiterBatches"),
+  confirmDelayedWaiterBatch: (input) => invoke("confirmDelayedWaiterBatch", input),
+  rejectDelayedWaiterBatch: (input) => invoke("rejectDelayedWaiterBatch", input),
+  getWaiterDeskStatus: () => invoke("getWaiterDeskStatus"),
+  issueWaiterQr: (input) => invoke("issueWaiterQr", input),
+  revokeWaiterDevice: (input) => invoke("revokeWaiterDevice", input),
+  onWaiterOrderChanged: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, notice?: string) => callback(notice);
+    ipcRenderer.on("gastronomy:waiterOrderChanged", listener);
+    return () => { ipcRenderer.off("gastronomy:waiterOrderChanged", listener); };
+  },
+  setWebPublication: (input) => invoke("setWebPublication", input),
+  getWebSyncStatus: () => invoke("getWebSyncStatus"),
+  getWebSiteStatus: () => invoke("getWebSiteStatus"),
+  shareWebSite: (action) => invoke("shareWebSite", action),
+  registerWebSite: (input) => invoke("registerWebSite", input),
+  updateWebSiteBranding: (input) => invoke("updateWebSiteBranding", input),
+  retryWebSync: () => invoke("retryWebSync"),
+  listWebOrders: () => invoke("listWebOrders"),
+  saveWebOrderDraft: (input) => invoke("saveWebOrderDraft", input),
+  rejectWebOrder: (input) => invoke("rejectWebOrder", input),
+  confirmWebOrder: (input) => invoke("confirmWebOrder", input),
   listIngredients: () => invoke("listIngredients"),
   saveIngredient: (input) => invoke("saveIngredient", input),
   getProductCostConfiguration: (input) => invoke("getProductCostConfiguration", input),

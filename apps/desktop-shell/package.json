@@ -22,17 +22,23 @@
     "@gastronomy/database": "workspace:*",
     "@gastronomy/domain": "workspace:*",
     "@gastronomy/licensing": "workspace:*",
+    "@gastronomy/web-orders": "workspace:*",
     "better-sqlite3-multiple-ciphers": "12.11.1",
     "electron-updater": "6.8.9",
-    "js-yaml": "4.3.2"
+    "js-yaml": "4.3.2",
+    "qrcode": "1.5.4"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
     "@gastronomy/web": "workspace:*",
     "@types/node": "^22.8.1",
+    "@types/pngjs": "6.0.5",
+    "@types/qrcode": "1.5.5",
     "cross-env": "^7.0.3",
     "electron": "^39.8.1",
     "electron-builder": "^26.8.1",
+    "jsqr": "1.4.0",
+    "pngjs": "7.0.0",
     "tsup": "^8.3.5",
     "typescript": "^5.6.3",
     "wait-on": "^8.0.1"
@@ -49,7 +55,14 @@
       "package.json",
       "licensing-config.json",
       "updates-config.json",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "!**/.turbo{,/**/*}",
+      "!**/*.{sqlite,sqlite-shm,sqlite-wal,dnbak}",
+      "!**/.env{,.*}",
+      "!**/licensing-secrets{,/**/*}"
+    ],
+    "extraResources": [
+      { "from": "build/icons/app-icon.png", "to": "icons/app-icon.png" }
     ],
     "asar": true,
     "npmRebuild": true,
@@ -58,6 +71,7 @@
       "node_modules/better-sqlite3-multiple-ciphers/build/Release/*.dll"
     ],
     "win": {
+      "icon": "build/icons/app-icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -68,6 +82,7 @@
       ]
     },
     "mac": {
+      "icon": "build/icons/app-icon.icns",
       "extendInfo": {
         "CFBundleName": "Delta Nube Gastronomía"
       },
@@ -104,6 +119,8 @@
       ]
     },
     "nsis": {
+      "installerIcon": "build/icons/app-icon.ico",
+      "uninstallerIcon": "build/icons/app-icon.ico",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

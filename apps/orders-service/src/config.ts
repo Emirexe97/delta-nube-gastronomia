@@ -6,6 +6,7 @@ export type StoreConfig = {
   id: string;
   whatsappNumber: string;
   receiveTokenHash: string;
+  receiveInstallationId?: string;
   sites: SiteConfig[];
 };
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -36,6 +37,7 @@ export function validateStores(value: unknown): StoreConfig[] {
       ids.has(store.id) ||
       typeof store.whatsappNumber !== "string" ||
       !/^\d{8,15}$/.test(store.whatsappNumber) ||
+      (store.receiveInstallationId !== undefined && (typeof store.receiveInstallationId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(store.receiveInstallationId))) ||
       !Array.isArray(store.sites) ||
       store.sites.length < 1 ||
       store.sites.length > 1_000
@@ -63,6 +65,7 @@ export function validateStores(value: unknown): StoreConfig[] {
     id: store.id,
     whatsappNumber: store.whatsappNumber,
     receiveTokenHash: store.receiveTokenHash.toLowerCase(),
+    ...(store.receiveInstallationId !== undefined ? { receiveInstallationId: store.receiveInstallationId } : {}),
     sites: store.sites.map((site) => ({
       id: site.id,
       submitTokenHash: site.submitTokenHash.toLowerCase(),

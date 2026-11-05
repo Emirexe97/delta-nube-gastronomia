@@ -4,6 +4,8 @@ ENV NODE_ENV=production PORT=8097 DB_PATH=/data/licenses.sqlite
 WORKDIR /app
 COPY packages/licensing/package.json ./node_modules/@gastronomy/licensing/package.json
 COPY packages/licensing/dist ./node_modules/@gastronomy/licensing/dist
+COPY packages/web-orders/package.json ./node_modules/@gastronomy/web-orders/package.json
+COPY packages/web-orders/dist ./node_modules/@gastronomy/web-orders/dist
 COPY apps/licensing-service/package.json ./apps/licensing-service/package.json
 COPY apps/licensing-service/dist ./apps/licensing-service/dist
 RUN mkdir -p /data && chown node:node /data

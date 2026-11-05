@@ -6550,8 +6550,8 @@ export function createDemoApi(
           ? settings.printing.kitchen
           : settings.printing.bill;
       return {
-        printed: true,
-        message: `Prueba simulada enviada a ${profile.deviceName || "el diálogo del sistema"}.`,
+        printed: false,
+        message: `Modo demostración: no se envió una prueba física a ${profile.deviceName || "ninguna impresora"}.`,
       };
     },
 
@@ -6717,9 +6717,67 @@ export function createDemoApi(
     async activateLicense() {
       return this.getLicenseStatus();
     },
-    async requestLicenseAccess() { return this.getLicenseStatus(); },
+    async requestLicenseAccess(_input) { return this.getLicenseStatus(); },
     async refreshLicense() {
       return this.getLicenseStatus();
+    },
+    async setWebPublication({ productId, enabled }) {
+      const product = state.data.products.find((item) => item.id === productId);
+      if (!product) throw new Error("No se encontró el producto.");
+      product.webPublished = enabled;
+      storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(state));
+    },
+    async getWebSiteStatus() {
+      return {
+        state: "UNCONFIGURED" as const,
+        slug: null,
+        url: null,
+        displayName: "",
+        tagline: "",
+        accent: "#15803d",
+        designMode: "STANDARD" as const,
+        message:
+          "Modo demostración: el servicio de páginas web no está conectado. No se publica ningún sitio.",
+      };
+    },
+    async shareWebSite() {
+      // Demo mode has no public site: never pretend to open, copy, or download.
+      return { completed: false };
+    },
+    async registerWebSite() {
+      return this.getWebSiteStatus();
+    },
+    async updateWebSiteBranding() {
+      return this.getWebSiteStatus();
+    },
+    async listDelayedWaiterBatches() { return []; },
+    async confirmDelayedWaiterBatch() { throw new Error("Disponible en la caja de escritorio."); },
+    async rejectDelayedWaiterBatch() { throw new Error("Disponible en la caja de escritorio."); },
+    async getWaiterDeskStatus() { return { configured: false, printerReady: false, sessions: [], connectionError: "La demostración no conecta teléfonos ni impresoras reales." }; },
+    async issueWaiterQr() { throw new Error("Disponible en la caja de escritorio."); },
+    async revokeWaiterDevice() { throw new Error("Disponible en la caja de escritorio."); },
+    onWaiterOrderChanged() { return () => {}; },
+    async getWebSyncStatus() {
+      return {
+        state: "UNCONFIGURED" as const,
+        lastSyncedAt: null,
+        message: "Modo demostración: no está conectado a una carta web.",
+      };
+    },
+    async retryWebSync() {
+      return this.getWebSyncStatus();
+    },
+    async listWebOrders() {
+      return [];
+    },
+    async saveWebOrderDraft() {
+      throw new Error("No hay pedidos web en la demostración.");
+    },
+    async rejectWebOrder() {
+      throw new Error("No hay pedidos web en la demostración.");
+    },
+    async confirmWebOrder() {
+      throw new Error("No hay pedidos web en la demostración.");
     },
     async getAppUpdateStatus() {
       return {

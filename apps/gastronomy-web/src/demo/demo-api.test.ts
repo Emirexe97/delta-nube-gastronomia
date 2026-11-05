@@ -2875,8 +2875,8 @@ describe("API de demostración", () => {
     await expect(
       api.testPrinter({ kind: "KITCHEN_ORDER", settings: draftSettings }),
     ).resolves.toMatchObject({
-      printed: true,
-      message: expect.stringContaining("Impresora sólo para prueba"),
+      printed: false,
+      message: expect.stringContaining("no se envió una prueba física"),
     });
     const afterTest = await api.bootstrap();
     expect(afterTest.settings.businessName).toBe(

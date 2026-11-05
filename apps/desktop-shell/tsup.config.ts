@@ -8,6 +8,6 @@ export default defineConfig({
   outDir: "dist",
   sourcemap: true,
   clean: true,
-  noExternal: [/^@gastronomy\//],
+  noExternal: [/^@gastronomy\//, /^qrcode(?:\/.*)?$/],
   external: ["electron", "better-sqlite3-multiple-ciphers"],
 });

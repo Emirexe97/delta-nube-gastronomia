@@ -6,7 +6,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "tenant:design": "node dist/tenant-registry.js",
+    "start:storefront": "node dist/storefront.js"
   },
   "dependencies": {
     "@gastronomy/web-orders": "workspace:*"

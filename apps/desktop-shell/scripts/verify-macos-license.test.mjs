@@ -47,18 +47,7 @@ async function fixture(
         main = main.replaceAll("requestLicenseAccess", "removedAccessHandler");
       }
       if (omitSafeStorageWiring) {
-        main = main.replace(
-          "safeStorage.isEncryptionAvailable()",
-          "safeStorage.isEncryptionAvailable_REMOVED()",
-        );
-        main = main.replace(
-          "safeStorage.encryptString(value)",
-          "safeStorage.encryptString_REMOVED(value)",
-        );
-        main = main.replace(
-          "safeStorage.decryptString(value)",
-          "safeStorage.decryptString_REMOVED(value)",
-        );
+        main = main.replace("safeStorage: electronSafeStorage", "safeStorage: undefined");
       }
       await writeFile(mainPath, main);
     }
@@ -150,7 +139,7 @@ test("packaged licensing check rejects incomplete safeStorage encryption wiring"
       assert.notEqual(status, 0);
       assert.match(
         stderr,
-        /safeStorage availability, encryption, and decryption/,
+        /safeStorage adapter into DesktopLicensing/,
       );
     },
     { omitSafeStorageWiring: true },

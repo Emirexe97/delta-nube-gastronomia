@@ -1,0 +1,16 @@
+# Optional READ-ONLY mounts for the edge; never add these to the licensing service.
+services:
+  caddy:
+    volumes:
+      - type: bind
+        source: ${GASTRONOMY_PORTAL_PUBLIC_DIR:?Absolute path of apps/gastronomy-portal/public}
+        target: /srv/gastronomy-portal
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${GASTRONOMY_PORTAL_ROUTE_FILE:?Absolute path of docker/gastronomy-portal/portal.caddy}
+        target: /etc/caddy/snippets/gastronomy-portal.caddy
+        read_only: true
+        bind:
+          create_host_path: false

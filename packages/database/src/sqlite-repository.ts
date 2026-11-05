@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import Database from "better-sqlite3-multiple-ciphers";
@@ -85,6 +85,10 @@ import type {
   ReverseCashMovementInput,
   ReverseDeliverySettlementInput,
   UserDto,
+  WebOrderRecord,
+  WebOrderDraft,
+  WebInboxEntry,
+  WebCatalogSnapshot,
 } from "@gastronomy/contracts";
 import {
   csvCell,
@@ -117,8 +121,17 @@ import { populateRepeatedOrder } from "./repeat-order";
 
 type SqliteDatabase = InstanceType<typeof Database>;
 type Row = Record<string, unknown>;
+function webInboxEntry(row: Row): WebInboxEntry {
+  return {
+    original: JSON.parse(String(row.original_json)),
+    draft: JSON.parse(String(row.draft_json)),
+    revision: Number(row.revision),
+    status: row.status as WebInboxEntry["status"],
+    orderId: row.order_id == null ? null : String(row.order_id),
+  };
+}
 
-const SENSITIVE_AUDIT_ACTIONS = new Set<string>(AUDIT_FILTER_ACTIONS);
+const SENSITIVE_AUDIT_ACTIONS = new Set<string>([...AUDIT_FILTER_ACTIONS, "WAITER_BATCH_CONFIRMED", "WAITER_BATCH_REJECTED"]);
 
 const ROLE_LABELS: Record<string, string> = {
   ADMIN: "Administrador",
@@ -246,6 +259,291 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   readonly db: SqliteDatabase;
   private readonly adminUserId = "user-admin";
 
+  /** Create a short-lived, single-use QR pairing challenge on the POS. */
+  createWaiterChallenge(waiterUserId: string) {
+    assertPermission(this.currentUser().permissions, "settings.manage");
+    const settings = this.getSettings();
+    if (!settings.modules.diningRoom) throw new Error("El módulo Salón está desactivado.");
+    const cashSession = this.requireOpenCashSessionRow();
+    const waiter = requireRow(this.db.prepare(`SELECT u.id FROM users u JOIN roles r ON r.id=u.role_id
+      WHERE u.id=? AND u.active=1 AND u.must_change_pin=0 AND r.code='WAITER'`).get(waiterUserId) as Row | undefined,
+      "Elegí un mozo activo con PIN propio antes de generar el QR.");
+    const challengeId = randomBytes(32).toString("base64url");
+    const createdAt = nowIso();
+    const expiresAt = new Date(Date.now() + 2 * 60_000).toISOString();
+    this.db.prepare("DELETE FROM waiter_challenges WHERE expires_at <= ?").run(createdAt);
+    this.db.prepare("INSERT INTO waiter_challenges(id,waiter_user_id,cash_session_id,expires_at,created_at) VALUES(?,?,?,?,?)")
+      .run(createHash("sha256").update(challengeId).digest("hex"), waiter.id, cashSession.id, expiresAt, createdAt);
+    return { challengeId, expiresAt, qrPayload: JSON.stringify({ type: "waiter-pair", challengeId }) };
+  }
+
+  /** Pair an active waiter by their own PIN; only a hash of the bearer token is persisted. */
+  pairWaiterSession(input: { challengeId: string; pin: string }) {
+    const run = this.db.transaction(() => {
+      const challengeHash = createHash("sha256").update(input.challengeId).digest("hex");
+      const challenge = this.db.prepare("SELECT * FROM waiter_challenges WHERE id=?")
+        .get(challengeHash) as Row | undefined;
+      if (!challenge || String(challenge.expires_at) <= nowIso() || Number(challenge.attempts) >= 5)
+        throw new Error("El QR venció o fue bloqueado. Generá uno nuevo en la caja.");
+      const openShift = this.requireOpenCashSessionRow();
+      if (String(openShift.id) !== String(challenge.cash_session_id)) throw new Error("El QR pertenece a otro turno.");
+      const waiter = this.db.prepare(`SELECT u.id,u.full_name,u.pin_hash FROM users u JOIN roles r ON r.id=u.role_id
+        WHERE u.id=? AND u.active=1 AND u.must_change_pin=0 AND r.code='WAITER'`).get(challenge.waiter_user_id) as Row | undefined;
+      if (!waiter || !bcrypt.compareSync(input.pin, String(waiter.pin_hash))) {
+        throw new Error("PIN de mozo incorrecto.");
+      }
+      const cashSession = this.requireOpenCashSessionRow();
+      const token = randomUUID() + randomUUID();
+      const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+      this.db.prepare("DELETE FROM waiter_challenges WHERE id=?").run(challengeHash);
+      this.db.prepare("INSERT INTO waiter_sessions(token_hash,user_id,cash_session_id,expires_at,created_at) VALUES(?,?,?,?,?)")
+        .run(createHash("sha256").update(token).digest("hex"), waiter.id, cashSession.id, expiresAt, nowIso());
+      return { sessionToken: token, expiresAt, waiter: { id: String(waiter.id), name: String(waiter.full_name) } };
+    });
+    try { return run(); } catch (error) {
+      if (error instanceof Error && error.message === "PIN de mozo incorrecto.")
+        this.db.prepare("UPDATE waiter_challenges SET attempts=attempts+1 WHERE id=?")
+          .run(createHash("sha256").update(input.challengeId).digest("hex"));
+      throw error;
+    }
+  }
+
+  private requireWaiterSession(token: string) {
+    if (!token || token.length > 256) throw new Error("Sesión de mozo inválida.");
+    const hash = createHash("sha256").update(token).digest("hex");
+    const row = this.db.prepare(`SELECT s.*,u.full_name,u.active,r.code AS role_code FROM waiter_sessions s
+      JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.token_hash=?`).get(hash) as Row | undefined;
+    if (!row || row.revoked_at || String(row.expires_at) <= nowIso() || !Number(row.active) || row.role_code !== "WAITER")
+      throw new Error("La sesión de mozo venció o fue revocada.");
+    const openShift = this.requireOpenCashSessionRow();
+    if (String(openShift.id) !== String(row.cash_session_id)) throw new Error("La sesión de mozo pertenece a otro turno.");
+    return { ...row, tokenHash: hash } as Row & { tokenHash: string };
+  }
+
+  getWaiterSessionState(token: string) {
+    const session = this.requireWaiterSession(token);
+    const categories = this.db.prepare("SELECT id,name,sort_order FROM categories WHERE active=1 ORDER BY sort_order,name").all() as Row[];
+    const products = this.db.prepare(`SELECT p.id,p.category_id,p.name,p.print_destination,pp.amount_minor FROM products p
+      JOIN product_prices pp ON pp.product_id=p.id JOIN price_lists pl ON pl.id=pp.price_list_id
+      JOIN categories c ON c.id=p.category_id WHERE p.active=1 AND p.combo_definition_json IS NULL AND c.active=1 AND pl.code='SALON' AND pl.active=1
+      ORDER BY c.sort_order,p.sort_order,p.name`).all() as Row[];
+    const tables = this.db.prepare(`SELECT t.id,t.number,t.name,
+      CASE WHEN o.id IS NULL THEN 'AVAILABLE' ELSE 'OCCUPIED' END AS status,o.id AS open_order_id
+      FROM restaurant_tables t LEFT JOIN orders o ON o.table_id=t.id AND o.operational_status NOT IN ('DELIVERED','CANCELLED')
+      WHERE t.active=1 ORDER BY t.number`).all() as Row[];
+    return {
+      waiter: { id: String(session.user_id), name: String(session.full_name) }, expiresAt: String(session.expires_at), cashSessionId: String(session.cash_session_id),
+      menu: { categories: categories.map((c) => ({ id: String(c.id), name: String(c.name), sortOrder: Number(c.sort_order) })),
+        products: products.map((p) => ({ id: String(p.id), categoryId: String(p.category_id), name: String(p.name), priceMinor: Number(p.amount_minor), printDestination: p.print_destination == null ? null : String(p.print_destination) })) },
+      tables: tables.map((t) => ({ id: String(t.id), number: Number(t.number), name: t.name == null ? `Mesa ${Number(t.number)}` : String(t.name), status: String(t.status), ...(t.open_order_id ? { openOrderId: String(t.open_order_id) } : {}) })),
+    };
+  }
+
+  revokeWaiterSession(token: string) {
+    const hash = createHash("sha256").update(token).digest("hex");
+    this.db.prepare("UPDATE waiter_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL")
+      .run(nowIso(), hash);
+  }
+
+  listWaiterDevices() {
+    assertPermission(this.currentUser().permissions, "settings.manage");
+    assertPermission(this.currentUser().permissions, "settings.manage");
+    return (this.db.prepare(`SELECT s.token_hash AS id,u.full_name AS name,s.expires_at AS expiresAt FROM waiter_sessions s
+      JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id JOIN cash_sessions cs ON cs.id=s.cash_session_id
+      WHERE s.revoked_at IS NULL AND s.expires_at>? AND u.active=1 AND r.code='WAITER' AND cs.status='OPEN' ORDER BY s.created_at DESC`).all(nowIso()) as Row[])
+      .map((row) => ({ id: String(row.id), name: String(row.name), expiresAt: String(row.expiresAt) }));
+  }
+
+  revokeWaiterDevice(sessionId: string) {
+    assertPermission(this.currentUser().permissions, "settings.manage");
+    this.db.prepare("UPDATE waiter_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL").run(nowIso(), sessionId);
+  }
+
+  resetWaiterAccess() {
+    assertPermission(this.currentUser().permissions, "settings.manage");
+    const timestamp = nowIso();
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE waiter_sessions SET revoked_at=? WHERE revoked_at IS NULL").run(timestamp);
+      this.db.prepare("DELETE FROM waiter_challenges").run();
+    })();
+  }
+
+  isWaiterPrintJob(jobId: string) {
+    return Boolean(this.db.prepare("SELECT 1 FROM waiter_batches WHERE print_job_id=?").get(jobId));
+  }
+
+  private assertWaiterBatchReviewAccess() {
+    const actor = this.currentUser();
+    if (!("ADMIN|MANAGER|CASHIER".split("|").includes(actor.roleCode))) throw new Error("Sólo administración o caja puede revisar tandas tardías.");
+    assertPermission(actor.permissions, "orders.create");
+    return actor;
+  }
+
+  listDelayedWaiterBatches() {
+    this.assertWaiterBatchReviewAccess();
+    const rows = this.db.prepare("SELECT * FROM waiter_pending_batches WHERE status='PENDING_REVIEW' ORDER BY received_at,request_id").all() as Row[];
+    return rows.map((row) => ({ requestId: String(row.request_id), tableId: String(row.table_id), tableNumber: Number(row.table_number), waiterName: String(row.waiter_name), submittedAt: row.submitted_at == null ? null : String(row.submitted_at), receivedAt: String(row.received_at), status: String(row.status), lines: (JSON.parse(String(row.lines_json)) as Array<{ productId: string; name: string; quantity: number; note?: string; lineId: string }>).map(({productId,name,quantity,note})=>({productId,name,quantity,...(note ? {note} : {})})) }));
+  }
+
+  confirmDelayedWaiterBatch(input: { requestId: string }) {
+    const actor = this.assertWaiterBatchReviewAccess();
+    const run = this.db.transaction(() => {
+      const cashier = this.requireOpenCashSessionRow();
+      const prior = this.db.prepare(`SELECT b.*,s.user_id,s.cash_session_id FROM waiter_batches b JOIN waiter_sessions s ON s.token_hash=b.session_token_hash WHERE b.request_id=?`).get(input.requestId) as Row | undefined;
+      if (prior) {
+        if (String(prior.cash_session_id) !== String(cashier.id)) throw new Error("La tanda pertenece a otro turno de caja.");
+        return { requestId: String(prior.request_id), orderId: prior.order_id == null ? null : String(prior.order_id), acceptedLineIds: JSON.parse(String(prior.accepted_line_ids_json)) as string[], printJobId: prior.print_job_id == null ? null : String(prior.print_job_id), status: String(prior.status), created: false };
+      }
+      const pending = requireRow(this.db.prepare("SELECT * FROM waiter_pending_batches WHERE request_id=?").get(input.requestId) as Row | undefined, "La tanda pendiente ya no existe.");
+      if (String(pending.status) === "REJECTED") throw new Error("La tanda fue rechazada.");
+      if (String(pending.cash_session_id) !== String(cashier.id)) throw new Error("La tanda pertenece a otro turno de caja.");
+      const waiter = this.db.prepare(`SELECT 1 FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=? AND u.active=1 AND r.code='WAITER'`).get(pending.user_id);
+      requireRow(waiter, "El mozo asociado ya no está activo.");
+      const lines = (JSON.parse(String(pending.lines_json)) as Array<{lineId:string;productId:string;quantity:number;note?:string|null}>).map((line) => ({...line, ...(line.note ? {note:line.note} : {note:undefined})}));
+      this.db.prepare("DELETE FROM waiter_pending_batch_lines WHERE request_id=?").run(input.requestId);
+      this.db.prepare("DELETE FROM waiter_pending_batches WHERE request_id=?").run(input.requestId);
+      const token = randomUUID() + randomUUID();
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      this.db.prepare("INSERT INTO waiter_sessions(token_hash,user_id,cash_session_id,expires_at,created_at) VALUES(?,?,?,?,?)").run(tokenHash,pending.user_id,cashier.id,new Date(Date.now()+60_000).toISOString(),nowIso());
+      try {
+        const result = this.submitWaiterBatch(token, { requestId: String(pending.request_id), tableId: String(pending.table_id), expectedOrderId: pending.expected_order_id == null ? null : String(pending.expected_order_id), submittedAt: nowIso(), lines });
+        // The mobile retry's payload hash is the original receipt hash; confirmation must not
+        // mutate expectedCashSessionId (or otherwise make a lost-ACK retry look like a conflict).
+        this.db.prepare("UPDATE waiter_batches SET payload_hash=? WHERE request_id=?").run(pending.payload_hash,input.requestId);
+        this.audit({ entityType:"WAITER_BATCH", entityId:input.requestId, action:"WAITER_BATCH_CONFIRMED", permission:"orders.create", before:pending, after:{...result, reviewedBy:actor.id, reviewedAt:nowIso()} });
+        return result;
+      } finally { this.db.prepare("UPDATE waiter_sessions SET revoked_at=? WHERE token_hash=?").run(nowIso(),tokenHash); }
+    });
+    return run();
+  }
+
+  rejectDelayedWaiterBatch(input: { requestId: string }) {
+    const actor = this.assertWaiterBatchReviewAccess();
+    this.db.transaction(() => {
+      const pending = requireRow(this.db.prepare("SELECT * FROM waiter_pending_batches WHERE request_id=?").get(input.requestId) as Row | undefined, "La tanda pendiente ya no existe.");
+      const changed = this.db.prepare("UPDATE waiter_pending_batches SET status='REJECTED' WHERE request_id=? AND status='PENDING_REVIEW'").run(input.requestId);
+      if (Number(changed.changes)) this.audit({ entityType:"WAITER_BATCH", entityId:input.requestId, action:"WAITER_BATCH_REJECTED", permission:"orders.create", before:pending, after:{status:"REJECTED",reviewedBy:actor.id,reviewedAt:nowIso()} });
+    })();
+  }
+
+  getWaiterBatch(token: string, requestId: string) {
+    const session = this.requireWaiterSession(token);
+    const pending = this.db.prepare(`SELECT * FROM waiter_pending_batches WHERE request_id=? AND user_id=?`)
+      .get(requestId, session.user_id) as Row | undefined;
+    if (pending) return { requestId: String(pending.request_id), orderId: null, status: String(pending.status), acceptedLineIds: [], printJobId: null };
+    const row = this.db.prepare(`SELECT b.* FROM waiter_batches b JOIN waiter_sessions owner ON owner.token_hash=b.session_token_hash
+      WHERE b.request_id=? AND owner.user_id=?`)
+      .get(requestId, session.user_id) as Row | undefined;
+    if (!row) return null;
+    const printJob = row.print_job_id ? this.db.prepare("SELECT status,last_error FROM print_jobs WHERE id=?").get(row.print_job_id) as Row | undefined : undefined;
+    return { requestId: String(row.request_id), orderId: row.order_id == null ? null : String(row.order_id), status: String(printJob?.status ?? row.status),
+      acceptedLineIds: JSON.parse(String(row.accepted_line_ids_json)) as string[],
+      printJobId: row.print_job_id == null ? null : String(row.print_job_id), ...((printJob?.last_error ?? row.error) ? { error: String(printJob?.last_error ?? row.error) } : {}) };
+  }
+
+  submitWaiterBatch(token: string, input: { requestId: string; tableId: string; expectedOrderId?: string | null; expectedCashSessionId?: string; submittedAt?: number | string; lines: Array<{ lineId: string; productId: string; quantity: number; note?: string }> }) {
+    const session = this.requireWaiterSession(token);
+    if (input.expectedCashSessionId && input.expectedCashSessionId !== String(session.cash_session_id)) throw new Error("El turno cambió. Actualizá la aplicación antes de enviar.");
+    if (!input.requestId || input.requestId.length > 128 || !input.lines.length || input.lines.length > 80)
+      throw new Error("La tanda no es válida.");
+    const submittedRaw = input.submittedAt;
+    const submittedDate = typeof submittedRaw === "number" ? new Date(submittedRaw) : typeof submittedRaw === "string" ? new Date(submittedRaw) : null;
+    const validSubmittedAt = submittedDate && Number.isFinite(submittedDate.getTime()) && submittedDate.getTime() <= Date.now() ? submittedDate.toISOString() : null;
+    const submittedAt = validSubmittedAt;
+    // Keep the established receipt hash stable: submittedAt is a transport safety signal,
+    // not part of the order content, so changing it cannot bypass requestId idempotency.
+    const payloadHash = createHash("sha256").update(JSON.stringify({ tableId: input.tableId, expectedOrderId: input.expectedOrderId ?? null, expectedCashSessionId: input.expectedCashSessionId ?? null, lines: input.lines.map((line) => ({ lineId: line.lineId, productId: line.productId, quantity: line.quantity, note: line.note?.trim() || null })) })).digest("hex");
+    const run = this.db.transaction(() => {
+      const existing = this.db.prepare("SELECT * FROM waiter_batches WHERE request_id=?").get(input.requestId) as Row | undefined;
+      if (existing) {
+        const owner = this.db.prepare("SELECT user_id,cash_session_id FROM waiter_sessions WHERE token_hash=?").get(existing.session_token_hash) as Row | undefined;
+        if (!owner || String(owner.user_id) !== String(session.user_id) || String(owner.cash_session_id) !== String(session.cash_session_id)) throw new Error("El identificador de tanda ya fue usado.");
+        if (String(existing.payload_hash) !== payloadHash) throw new Error("El identificador de tanda ya existe con otro contenido.");
+        return { requestId: String(existing.request_id), orderId: existing.order_id == null ? null : String(existing.order_id), acceptedLineIds: JSON.parse(String(existing.accepted_line_ids_json)) as string[], printJobId: existing.print_job_id == null ? null : String(existing.print_job_id), status: String(existing.status), created: false };
+      }
+      const pendingExisting = this.db.prepare("SELECT * FROM waiter_pending_batches WHERE request_id=?").get(input.requestId) as Row | undefined;
+      if (pendingExisting) {
+        if (String(pendingExisting.user_id) !== String(session.user_id) || String(pendingExisting.cash_session_id) !== String(session.cash_session_id) || String(pendingExisting.payload_hash) !== payloadHash)
+          throw new Error("El identificador de tanda ya existe con otro contenido.");
+        return { requestId: String(pendingExisting.request_id), orderId: null, acceptedLineIds: [], printJobId: null, status: String(pendingExisting.status), created: false };
+      }
+      const delayMs = submittedAt ? Date.now() - new Date(submittedAt).getTime() : Number.POSITIVE_INFINITY;
+      if (delayMs > 60_000) {
+        const tableSnapshot = requireRow(this.db.prepare("SELECT number,name FROM restaurant_tables WHERE id=? AND active=1").get(input.tableId) as Row | undefined, "La mesa no existe o está inactiva.");
+        const lineIds = [...new Set(input.lines.map((line) => line.lineId))];
+        if (lineIds.length !== input.lines.length || input.lines.some((line) => !line.lineId || !Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > 99)) throw new Error("Hay líneas repetidas o cantidades inválidas.");
+        if (this.db.prepare(`SELECT 1 FROM waiter_batch_lines WHERE line_id IN (${lineIds.map(() => "?").join(",")})`).get(...lineIds) || this.db.prepare(`SELECT 1 FROM waiter_pending_batch_lines WHERE line_id IN (${lineIds.map(() => "?").join(",")})`).get(...lineIds)) throw new Error("Una o más líneas ya fueron recibidas.");
+        const lines = input.lines.map((line) => {
+          const product = this.db.prepare("SELECT name FROM products WHERE id=?").get(line.productId) as Row | undefined;
+          return { ...line, name: String(product?.name ?? line.productId), note: line.note?.trim() || null };
+        });
+        this.db.prepare(`INSERT INTO waiter_pending_batches(request_id,user_id,cash_session_id,table_id,table_number,waiter_name,expected_order_id,submitted_at,received_at,payload_hash,status,lines_json)
+          VALUES(?,?,?,?,?,?,?,?,?,?,'PENDING_REVIEW',?)`).run(input.requestId, session.user_id, session.cash_session_id, input.tableId, tableSnapshot.number, session.full_name, input.expectedOrderId ?? null, submittedAt, nowIso(), payloadHash, JSON.stringify(lines));
+        for (const line of lines) this.db.prepare("INSERT INTO waiter_pending_batch_lines(line_id,request_id,product_id,name,quantity,note) VALUES(?,?,?,?,?,?)").run(line.lineId,input.requestId,line.productId,line.name,line.quantity,line.note);
+        return { requestId: input.requestId, orderId: null, acceptedLineIds: [], printJobId: null, status: "PENDING_REVIEW", created: true };
+      }
+      const table = this.db.prepare("SELECT id FROM restaurant_tables WHERE id=? AND active=1").get(input.tableId);
+      requireRow(table, "La mesa no existe o está inactiva.");
+      if (!this.getSettings().modules.diningRoom) throw new Error("El módulo Salón está desactivado.");
+      const lineIds = [...new Set(input.lines.map((line) => line.lineId))];
+      if (lineIds.length !== input.lines.length || input.lines.some((line) => !line.lineId || !Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > 99))
+        throw new Error("Hay líneas repetidas o cantidades inválidas.");
+      const duplicate = this.db.prepare(`SELECT line_id FROM waiter_batch_lines WHERE line_id IN (${lineIds.map(() => "?").join(",")})
+        UNION ALL SELECT line_id FROM waiter_pending_batch_lines WHERE line_id IN (${lineIds.map(() => "?").join(",")}) LIMIT 1`).get(...lineIds, ...lineIds);
+      if (duplicate) throw new Error("Una o más líneas ya fueron recibidas.");
+      for (const line of input.lines) {
+        const product = this.db.prepare(`SELECT p.id FROM products p JOIN categories c ON c.id=p.category_id
+          JOIN product_prices pp ON pp.product_id=p.id JOIN price_lists pl ON pl.id=pp.price_list_id
+          WHERE p.id=? AND p.active=1 AND p.combo_definition_json IS NULL AND c.active=1 AND pl.code='SALON' AND pl.active=1`).get(line.productId);
+        requireRow(product, "Un producto ya no está disponible en el menú del salón. Actualizá y revisá la tanda.");
+      }
+      const openOrders = this.db.prepare("SELECT id,waiter_user_id,lifecycle_status,operational_status FROM orders WHERE table_id=? AND operational_status NOT IN ('DELIVERED','CANCELLED') ORDER BY created_at")
+        .all(input.tableId) as Row[];
+      if (openOrders.length > 1) throw new Error("La mesa tiene varios pedidos abiertos; resolvelo desde la caja.");
+      const existingOrder = openOrders[0];
+      if (existingOrder && (String(existingOrder.id) !== String(input.expectedOrderId ?? "") || String(existingOrder.waiter_user_id) !== String(session.user_id)))
+        throw new Error("La mesa cambió desde que la abriste. Actualizá las mesas antes de enviar.");
+      if (!existingOrder && input.expectedOrderId) throw new Error("El pedido de la mesa ya se cerró o cambió. Actualizá las mesas.");
+      if (existingOrder && String(existingOrder.lifecycle_status) !== "CONFIRMED") throw new Error("El pedido de la mesa todavía no está confirmado en la caja.");
+      const unresolvedMobilePrint = existingOrder && this.db.prepare(`SELECT 1 FROM waiter_batches b JOIN print_jobs j ON j.id=b.print_job_id
+        WHERE b.order_id=? AND j.status='FAILED' LIMIT 1`).get(existingOrder.id);
+      if (unresolvedMobilePrint) throw new Error("Hay una comanda móvil fallida. Reintentala o resolvela desde la caja antes de enviar otra tanda.");
+      const pendingPrint = existingOrder ? this.db.prepare("SELECT id FROM print_jobs WHERE order_id=? AND kind='KITCHEN_ORDER' AND status IN ('QUEUED','RECOVERING') LIMIT 1").get(existingOrder.id) : undefined;
+      if (pendingPrint) throw new Error("La comanda anterior todavía se está imprimiendo. Esperá y volvé a enviar la tanda.");
+      this.db.prepare(`INSERT INTO waiter_batches(request_id,session_token_hash,expected_order_id,payload_hash,accepted_line_ids_json,status,created_at) VALUES(?,?,?,?,?,'RECEIVING',?)`)
+        .run(input.requestId, session.tokenHash, input.expectedOrderId ?? null, payloadHash, JSON.stringify(lineIds), nowIso());
+      const orderId = existingOrder ? String(existingOrder.id) : this.createOrder({ idempotencyKey: input.requestId, terminalId: `waiter-session:${String(session.user_id)}`, type: "DINE_IN", tableId: input.tableId, waiterUserId: String(session.user_id) }).id;
+      const before = existingOrder ? this.getOrder(orderId) : null;
+      for (const line of input.lines) {
+        this.addOrderItem({ orderId, productId: line.productId, quantity: line.quantity, notes: line.note ?? null });
+        this.db.prepare("INSERT INTO waiter_batch_lines(line_id,request_id,product_id,quantity,note) VALUES(?,?,?,?,?)")
+          .run(line.lineId, input.requestId, line.productId, line.quantity, line.note?.trim() || null);
+      }
+      if (!existingOrder) this.confirmOrder({ orderId, idempotencyKey: `${input.requestId}:confirm`, terminalId: `waiter-session:${String(session.user_id)}` });
+      // Snapshot is immutable and scoped to this batch, not the whole table's prior kitchen history.
+      const jobId = randomUUID();
+      const orderNow = this.getOrder(orderId);
+      const oldItems = new Map((before?.items ?? []).map((item) => [item.id, item]));
+      const additions = orderNow.items.flatMap((item) => {
+        const previous = oldItems.get(item.id);
+        const quantity = item.quantity - (previous?.quantity ?? 0);
+        if (quantity <= 0) return [];
+        return [{ ...item, quantity, lineTotalMinor: Math.round(item.lineTotalMinor * quantity / item.quantity) }];
+      });
+      if (!additions.length) throw new Error("No se detectaron líneas nuevas para imprimir.");
+      const settings = this.getSettings();
+      if (settings.printing.kitchen.mode !== "SYSTEM_DIRECT" || !settings.printing.kitchen.deviceName?.trim()) throw new Error("Configurá una impresora de cocina en modo directo explícito en la caja antes de recibir tandas.");
+      const quantities = { ...(orderNow.kitchenPrintedQuantities ?? {}) };
+      for (const addition of additions) quantities[addition.id] = (quantities[addition.id] ?? 0) + addition.quantity;
+      const snapshot = JSON.stringify({ order: { ...orderNow, items: additions, kitchenPrintScope: existingOrder ? "ADDED" : "FULL" }, quantities });
+      this.db.prepare(`INSERT INTO print_jobs(id,order_id,kind,status,printer_name,copies,created_at,kitchen_snapshot_json)
+        VALUES(?,?,'KITCHEN_ORDER','QUEUED',?,?,?,?)`).run(jobId, orderId, settings.printing.kitchen.deviceName || null, settings.printing.kitchen.copies, nowIso(), snapshot);
+      this.db.prepare("UPDATE waiter_batches SET order_id=?,print_job_id=?,status='QUEUED' WHERE request_id=?").run(orderId, jobId, input.requestId);
+      return { requestId: input.requestId, orderId, acceptedLineIds: lineIds, printJobId: jobId, status: "QUEUED", created: true };
+    });
+    return run();
+  }
+
   constructor(path: string, options: SqliteRepositoryOptions = {}) {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path);
@@ -270,6 +568,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           ),
       );
       this.migrate();
+      this.db.prepare("UPDATE waiter_sessions SET revoked_at=? WHERE revoked_at IS NULL").run(nowIso());
       this.recoverInterruptedPrintClaims();
       this.seed(options);
     } catch (error) {
@@ -958,6 +1257,134 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     };
   }
 
+  setWebPublication(input: { productId: string; enabled: boolean }): void {
+    assertPermission(this.currentUser().permissions, "prices.bulk_update");
+    if (typeof input.enabled !== "boolean" || typeof input.productId !== "string" || !input.productId.trim()) throw new Error("La publicación no es válida.");
+    const result = this.db.prepare("UPDATE products SET web_published=?, updated_at=? WHERE id=?")
+      .run(input.enabled ? 1 : 0, nowIso(), input.productId);
+    if (!result.changes) throw new Error("El producto no existe.");
+  }
+
+  getWebCommerceCatalogSnapshot(): WebCatalogSnapshot {
+    const rows = this.db.prepare(`SELECT p.id,p.name,c.name AS category_name,c.active AS category_active,c.stock_control_enabled,
+      MAX(CASE WHEN pl.code='TAKEAWAY' THEN pp.amount_minor END) AS takeaway,
+      MAX(CASE WHEN pl.code='DELIVERY' THEN pp.amount_minor END) AS delivery,
+      p.combo_definition_json,p.parent_product_id,p.stock_minor
+      FROM products p JOIN categories c ON c.id=p.category_id
+      LEFT JOIN product_prices pp ON pp.product_id=p.id
+      LEFT JOIN price_lists pl ON pl.id=pp.price_list_id
+      WHERE p.active=1 AND c.active=1 AND p.web_published=1
+      GROUP BY p.id ORDER BY c.sort_order, p.sort_order, p.name, p.id`).all() as Row[];
+    const { stockEnabled } = this.getSettings();
+    const result = [] as WebCatalogSnapshot["products"];
+    for (const row of rows) {
+      // Required combo composition/options are not represented by the strict web catalog contract.
+      if (row.combo_definition_json != null) continue;
+      if (stockEnabled && flag(row.stock_control_enabled) && row.stock_minor != null && Number(row.stock_minor) < 1000) continue;
+      if (row.takeaway == null || row.delivery == null) continue;
+      result.push({ productRef: String(row.id), name: String(row.name), category: String(row.category_name), takeawayPriceMinor: Number(row.takeaway), deliveryPriceMinor: Number(row.delivery) });
+    }
+    return { products: result };
+  }
+
+  getWebOrderCursor(storeId: string): number {
+    return Number((this.db.prepare("SELECT cursor FROM web_order_cursors WHERE store_id=?").get(storeId) as Row | undefined)?.cursor ?? 0);
+  }
+
+  ingestWebOrder(storeId: string, record: WebOrderRecord): void {
+    if (!storeId || record.storeId !== storeId || typeof record.id !== "string" || !record.id || !Number.isSafeInteger(record.sequence) || record.sequence < 1 || record.paymentStatus !== "UNVERIFIED" || record.status !== "PENDING_CONFIRMATION" || !Array.isArray(record.submission?.items) || record.submission.items.length < 1 || record.submission.items.some(item => !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 100 || !Number.isSafeInteger(item.unitPriceMinor) || item.unitPriceMinor < 0)) throw new Error("El pedido web recibido no es válido o pertenece a otra tienda.");
+    const run = this.db.transaction(() => {
+      const current = this.db.prepare("SELECT id FROM web_order_inbox WHERE store_id=? AND id=?").get(storeId, record.id);
+      const cursor = Math.max(this.getWebOrderCursor(storeId), record.sequence);
+      this.db.prepare("INSERT INTO web_order_cursors(store_id,cursor) VALUES (?,?) ON CONFLICT(store_id) DO UPDATE SET cursor=MAX(cursor,excluded.cursor)").run(storeId, cursor);
+      if (current) return; // Never replace the immutable original or an operator's draft.
+      // A restored backup may lack already processed requests. Preserve the
+      // evidence for reconciliation; never offer these as new work to confirm.
+      const status = record.receivedAt === null ? "PENDING" : "REVIEW_RESTORE";
+      const draft: WebOrderDraft = {
+        customerName: record.submission.customer.name,
+        customerPhone: record.submission.customer.phone,
+        type: record.submission.fulfillment.type,
+        deliveryAddress: record.submission.fulfillment.address ?? "",
+        deliveryFeeMinor: record.submission.deliveryFeeMinor,
+        notes: record.submission.notes ?? "",
+        items: record.submission.items.map(item => ({ productRef: item.options?.length ? "" : item.productRef, quantity: item.quantity, notes: [item.notes, ...(item.options ?? []).map(option => `${option.group}: ${option.name}`)].filter(Boolean).join("; ") })),
+      };
+      this.db.prepare(`INSERT INTO web_order_inbox(store_id,id,sequence,original_json,draft_json,received_at,status)
+        VALUES (?,?,?,?,?,?,?)`).run(storeId, record.id, record.sequence, json(record), json(draft), nowIso(), status);
+      if (status === "PENDING") this.db.prepare("INSERT OR IGNORE INTO web_order_acks(store_id,id) VALUES (?,?)").run(storeId, record.id);
+    });
+    run();
+  }
+
+  listWebPendingAcks(storeId: string): string[] {
+    return (this.db.prepare("SELECT id FROM web_order_acks WHERE store_id=? AND acked_at IS NULL ORDER BY id LIMIT 50").all(storeId) as Row[]).map(row => String(row.id));
+  }
+  markWebOrderAcked(storeId: string, id: string): void {
+    this.db.prepare("UPDATE web_order_acks SET acked_at=? WHERE store_id=? AND id=?").run(nowIso(), storeId, id);
+  }
+  listWebOrders(storeId: string): WebInboxEntry[] {
+    assertPermission(this.currentUser().permissions, "orders.edit");
+    return (this.db.prepare(`SELECT * FROM web_order_inbox WHERE store_id=? AND status='PENDING'
+      UNION ALL SELECT * FROM (SELECT * FROM web_order_inbox WHERE store_id=? AND status!='PENDING' ORDER BY sequence DESC LIMIT 100)
+      ORDER BY sequence DESC`).all(storeId, storeId) as Row[]).map(webInboxEntry);
+  }
+  saveWebOrderDraft(storeId: string, input: { id: string; revision: number; draft: WebOrderDraft }): WebInboxEntry {
+    assertPermission(this.currentUser().permissions, "orders.edit");
+    const draft = input.draft;
+    if (!Number.isSafeInteger(input.revision) || input.revision < 1 || typeof draft.customerName !== "string" || !draft.customerName.trim() || draft.customerName.length > 120 || typeof draft.customerPhone !== "string" || !/^\+?[\d ()-]{8,30}$/.test(draft.customerPhone) || !["TAKEAWAY", "DELIVERY"].includes(draft.type) || typeof draft.deliveryAddress !== "string" || draft.deliveryAddress.length > 500 || (draft.type === "DELIVERY" && !draft.deliveryAddress.trim()) || !Number.isSafeInteger(draft.deliveryFeeMinor) || draft.deliveryFeeMinor < 0 || typeof draft.notes !== "string" || draft.notes.length > 1000 || !Array.isArray(draft.items) || draft.items.length < 1 || draft.items.length > 50 || draft.items.some(item => typeof item.productRef !== "string" || item.productRef.length > 128 || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 100 || typeof item.notes !== "string" || item.notes.length > 500)) throw new Error("El borrador del pedido no es válido.");
+    const run = this.db.transaction(() => {
+      const changed = this.db.prepare("UPDATE web_order_inbox SET draft_json=?,revision=revision+1 WHERE store_id=? AND id=? AND status='PENDING' AND revision=?")
+        .run(json(input.draft), storeId, input.id, input.revision);
+      if (!changed.changes) throw new Error("El pedido cambió o ya fue procesado; actualizá la bandeja.");
+      return webInboxEntry(this.db.prepare("SELECT * FROM web_order_inbox WHERE store_id=? AND id=?").get(storeId, input.id) as Row);
+    });
+    return run();
+  }
+  rejectWebOrder(storeId: string, input: { id: string; revision: number; reason: string }): void {
+    assertPermission(this.currentUser().permissions, "orders.edit");
+    if (!Number.isSafeInteger(input.revision) || input.revision < 1 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 500) throw new Error("Indicá un motivo válido para rechazar el pedido.");
+    const changed = this.db.prepare("UPDATE web_order_inbox SET status='REJECTED',rejection_reason=?,revision=revision+1 WHERE store_id=? AND id=? AND status='PENDING' AND revision=?")
+      .run(input.reason.trim(), storeId, input.id, input.revision);
+    if (!changed.changes) throw new Error("El pedido cambió o ya fue procesado.");
+  }
+
+  confirmWebOrder(storeId: string, input: { id: string; revision: number; expectedTotalMinor: number }): { created: boolean; order: OrderDto } {
+    assertPermission(this.currentUser().permissions, "orders.create");
+    if (!Number.isSafeInteger(input.revision) || input.revision < 1 || !Number.isSafeInteger(input.expectedTotalMinor) || input.expectedTotalMinor < 0) throw new Error("La confirmación no es válida.");
+    const run = this.db.transaction(() => {
+      const row = this.db.prepare("SELECT * FROM web_order_inbox WHERE store_id=? AND id=?").get(storeId, input.id) as Row | undefined;
+      if (!row) throw new Error("No se encontró el pedido web.");
+      if (row.status === "CONFIRMED" && row.order_id) return { created: false, order: this.getOrder(String(row.order_id)) };
+      if (row.status !== "PENDING" || Number(row.revision) !== input.revision) throw new Error("El pedido cambió o ya fue procesado.");
+      const draft = JSON.parse(String(row.draft_json)) as WebOrderDraft;
+      if (!draft.items.length || draft.items.some(item => !item.productRef)) throw new Error("Resolvé todas las opciones del pedido antes de confirmarlo.");
+      if (draft.type === "DELIVERY" && !draft.deliveryAddress.trim()) throw new Error("El pedido necesita una dirección de entrega.");
+      const priceCode = draft.type === "DELIVERY" ? "DELIVERY" : "TAKEAWAY";
+      let total = draft.type === "DELIVERY" ? draft.deliveryFeeMinor : 0;
+      for (const item of draft.items) {
+        const product = this.db.prepare(`SELECT p.id, p.active, pp.amount_minor FROM products p JOIN product_prices pp ON pp.product_id=p.id JOIN price_lists pl ON pl.id=pp.price_list_id WHERE p.id=? AND p.active=1 AND pl.code=?`)
+          .get(item.productRef, priceCode) as Row | undefined;
+        if (!product) throw new Error("Un producto fue desactivado o no tiene precio vigente.");
+        total += Number(product.amount_minor) * item.quantity;
+      }
+      if (!Number.isSafeInteger(total) || total !== input.expectedTotalMinor) throw new Error("El total cambió; revisá el importe actualizado antes de confirmar.");
+      const original = JSON.parse(String(row.original_json)) as WebOrderRecord;
+      const order = this.createOrder({ type: draft.type, customerName: draft.customerName, customerPhone: draft.customerPhone,
+        deliveryAddress: draft.type === "DELIVERY" ? draft.deliveryAddress : undefined,
+        deliveryFeeMinor: draft.deliveryFeeMinor, notes: draft.notes, promisedAt: original.submission.requestedFor ?? null,
+        idempotencyKey: `web-${input.id}`, terminalId: "web-inbox" });
+      for (const item of draft.items) this.addOrderItem({ orderId: order.id, productId: item.productRef, quantity: item.quantity, notes: item.notes });
+      const confirmed = this.confirmOrder({ orderId: order.id, idempotencyKey: `web-confirm-${input.id}`, terminalId: "web-inbox" });
+      if (confirmed.totalMinor !== input.expectedTotalMinor) throw new Error("El total final del POS no coincide con el importe revisado; no se confirmó el pedido.");
+      const changed = this.db.prepare("UPDATE web_order_inbox SET status='CONFIRMED',order_id=?,revision=revision+1 WHERE store_id=? AND id=? AND status='PENDING' AND revision=?")
+        .run(order.id, storeId, input.id, input.revision);
+      if (!changed.changes) throw new Error("El pedido fue procesado en paralelo; actualizá la bandeja.");
+      return { created: true, order: confirmed };
+    });
+    return run();
+  }
+
   ensureTable(number: number): RestaurantTableDto {
     const run = this.db.transaction(() => {
       const existing = this.listTables().find(
@@ -1391,6 +1818,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         row.parent_product_id == null ? null : String(row.parent_product_id),
       sortOrder: Number(row.sort_order),
       active: flag(row.active),
+      webPublished: flag(row.web_published ?? 0),
       stockMinor: row.stock_minor == null ? null : Number(row.stock_minor),
       stockTargetMinor:
         row.stock_target_minor == null ? null : Number(row.stock_target_minor),
@@ -4791,6 +5219,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         throw new Error(
           "Ya hay una impresión de este tipo en curso. Esperá el resultado o reanudá el trabajo pendiente.",
         );
+      if (kind === "KITCHEN_ORDER" && this.db.prepare(`SELECT 1 FROM waiter_batches b JOIN print_jobs j ON j.id=b.print_job_id
+        WHERE b.order_id=? AND j.status='FAILED' LIMIT 1`).get(orderId))
+        throw new Error("Hay una comanda móvil fallida. Reintentala o resolvela antes de emitir otra impresión.");
       const jobId = randomUUID();
       if (kind === "CUSTOMER_BILL" && kitchenScope !== "FULL")
         throw new Error("La cuenta del cliente sólo admite impresión completa.");
@@ -8451,6 +8882,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         ["cash_movements", "user_id"],
         ["orders", "waiter_user_id"],
         ["orders", "driver_user_id"],
+        ["waiter_sessions", "user_id"],
+        ["waiter_challenges", "waiter_user_id"],
         ["payments", "created_by_user_id"],
         ["audit_log", "operator_user_id"],
         ["audit_log", "authorizer_user_id"],

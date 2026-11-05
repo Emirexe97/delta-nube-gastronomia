@@ -9,7 +9,8 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@gastronomy/licensing": "workspace:*"
+    "@gastronomy/licensing": "workspace:*",
+    "@gastronomy/web-orders": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.8.1",

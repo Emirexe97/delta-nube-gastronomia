@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   NavLink,
@@ -14,7 +15,6 @@ import {
   CashRegister,
   ChartPieSlice,
   Clock,
-  ForkKnife,
   GearSix,
   List,
   Package,
@@ -27,6 +27,8 @@ import {
   WifiSlash,
 } from "@phosphor-icons/react";
 import { Badge, cn, PreservedWorkspace } from "@gastronomy/ui";
+import brandSymbol from "./assets/brand/simbolo.png";
+import brandWordmark from "./assets/brand/marca.png";
 import { useBootstrap } from "./api";
 import { OrderPrintStatus } from "./components/order-print-status";
 import { formatMoney } from "./lib";
@@ -100,6 +102,13 @@ const navigation = [
 ] as const;
 
 export function App() {
+  const waiterQueryClient = useQueryClient();
+  const [waiterNotice,setWaiterNotice] = useState("");
+  useEffect(() => window.gastronomy?.onWaiterOrderChanged?.((notice) => {
+    if (notice) setWaiterNotice(notice);
+    void waiterQueryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+    void waiterQueryClient.invalidateQueries({ queryKey: ["delayed-waiter-batches"] });
+  }), [waiterQueryClient]);
   useEnterNavigation();
   const bootstrap = useBootstrap();
   const license = useLicenseStatus();
@@ -435,20 +444,29 @@ export function App() {
           collapsed ? "w-16" : "w-[214px]",
         )}
       >
-        <div className="flex h-16 items-center gap-3 border-b border-slate-100 px-4">
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-800 via-brand-600 to-amber-400 text-white shadow-lg shadow-brand-200">
-            <ForkKnife size={20} weight="bold" />
+        <div className={cn("flex h-16 shrink-0 items-center border-b border-slate-100", collapsed ? "justify-center px-2" : "justify-center gap-2 px-3")}>
+          <div
+            role="img"
+            aria-labelledby="gastronomy-brand-name"
+            title="Delta Nube Gastronomía"
+            className="flex min-w-0 items-center justify-center gap-2"
+          >
+            <span id="gastronomy-brand-name" className="sr-only"><span>Delta Nube</span> Gastronomía</span>
+            <img
+              src={brandSymbol}
+              alt=""
+              aria-hidden="true"
+              className="h-10 w-10 shrink-0 object-contain"
+            />
+            {!collapsed ? (
+              <img
+                src={brandWordmark}
+                alt=""
+                aria-hidden="true"
+                className="h-auto w-[126px] min-w-0 object-contain max-sm:hidden"
+              />
+            ) : null}
           </div>
-          {!collapsed ? (
-            <div className="min-w-0 max-sm:hidden">
-              <p className="truncate text-sm font-extrabold tracking-tight">
-                Delta Nube
-              </p>
-              <p className="truncate text-xs font-bold uppercase tracking-[.17em] text-brand-700">
-                Gastronomía
-              </p>
-            </div>
-          ) : null}
         </div>
         <nav className="flex-1 overflow-y-auto px-2 py-3">
           {groups.map((group) => (
@@ -488,6 +506,9 @@ export function App() {
           ))}
         </nav>
         <button
+          type="button"
+          aria-label={collapsed ? "Expandir barra lateral" : "Contraer barra lateral"}
+          aria-expanded={!collapsed}
           onClick={() => {
             const next = !collapsed;
             setCollapsed(next);
@@ -567,6 +588,7 @@ export function App() {
           </div>
         </header>
         <OrderPrintStatus />
+          {waiterNotice && <div role="alert" className="flex justify-between gap-2 bg-amber-100 px-4 py-2 text-sm"><span>{waiterNotice}</span><button onClick={() => setWaiterNotice("")}>Ocultar</button></div>}
         {licenseNotice ? (
           <div
             className={`flex shrink-0 items-center justify-between gap-3 border-b px-5 py-2.5 text-xs ${licenseNotice.canOperate ? "border-amber-200 bg-amber-50 text-amber-950" : "border-rose-200 bg-rose-50 text-rose-950"}`}

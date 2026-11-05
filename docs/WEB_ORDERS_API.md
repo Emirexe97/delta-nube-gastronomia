@@ -2,7 +2,7 @@
 
 Guía para integrar un checkout web con el servicio común de pedidos. La web crea una solicitud pendiente, recibe un enlace de WhatsApp precompletado y el cliente decide si lo abre. **No hay envío automático de mensajes ni aceptación/venta**.
 
-> Alcance actual: API backend-to-backend y cliente reutilizable. No incluye bandeja en POS, polling/bandeja de aplicación, conector automático, pago, aceptación/rechazo ni despliegue/configuración productiva.
+> La API conserva la solicitud original. La [bandeja del POS](WEB_COMMERCE_POS.md) permite editar una copia y confirmar o rechazar localmente. El acuse de recepción no notifica aceptación al cliente. No hay pago online ni despliegue productivo incluido.
 
 ## Requisitos y puesta en marcha
 
@@ -65,6 +65,7 @@ pnpm --filter @gastronomy/orders-service test
 - `Origin` presente se rechaza con **403** y no se emiten cabeceras CORS; no es una API browser-facing. En proxy, limitar tráfico y tamaño; el servicio limita cuerpos a 64 KiB, requests/timeouts y frecuencia en memoria. `X-Forwarded-For` no se usa como IP confiable por defecto; no habilitar confianza implícita en ese encabezado.
 - La identidad de tienda (y sitio para submit) se deriva del bearer autenticado, nunca del JSON. El token de submit está limitado a un sitio; el de receive está limitado a listar/acuse de toda su tienda. Son credenciales separadas.
 - Los pedidos contienen PII (nombre, teléfono, dirección y notas). Restringir permisos del sistema operativo sobre configuración y DB/WAL, limitar acceso operativo, definir retención/borrado y proteger backups. Usar TLS externo si se expone fuera de loopback.
+- Opcionalmente, un comercio puede configurar `receiveInstallationId` (1–128 caracteres `[A-Za-z0-9_-]`). En ese caso, todas las operaciones del bearer receive requieren `X-POS-Installation` coincidente, incluyendo catálogo, listar y acuse; el valor no reemplaza el token. `WebOrdersClient(url, receiveToken, installationId?)` añade ese header. Comercios sin el campo conservan compatibilidad v1.
 - SQLite está pensado para una sola instancia y almacenamiento local fiable; no colocar DB/WAL en filesystem de red ni arrancar varias réplicas contra el mismo archivo.
 
 ## Crear solicitud: `POST /v1/web-orders`
@@ -137,15 +138,32 @@ Autenticación: token receive. `:id` es UUID. No requiere body. Ejemplo cliente:
 
 Devuelve `200 { "order": ... }` y fija `receivedAt` una sola vez (acuse idempotente), o `404` si el pedido no existe en la tienda autenticada. **Sólo confirma recepción técnica**: no acepta ni rechaza el pedido, no cobra/verifica pago, no mueve stock/caja ni cambia `PENDING_CONFIRMATION`/`UNVERIFIED`. Listar tampoco requiere acuse para que el pedido siga disponible.
 
+## Sincronización de catálogo: `PUT/GET /v1/web-catalog`
+
+El catálogo es un único snapshot por comercio (compartido por sus sitios), persistido completo dentro de una transacción SQLite. `PUT` usa token receive y requiere `X-Expected-Store-Id` idéntico al comercio del bearer; el argumento previene publicar por error en otro comercio y no reemplaza autorización. `GET` usa token submit, restringido a un sitio del comercio. No se exponen secretos ni campos internos.
+
+El body PUT y el campo `snapshot` GET tienen forma exacta: `{ "products": [{ "productRef": "burger:1", "name": "Hamburguesa", "category": "Comida", "takeawayPriceMinor": 12000, "deliveryPriceMinor": 12500 }] }`. Máximo 5000 productos; referencias estables únicas; ambos precios son enteros de centavos ARS. PUT responde `{ "revision": 1 }`; GET devuelve `{ "snapshot": ..., "revision": 1, "updatedAt": "..." }`. Catálogo no publicado: GET responde 404 `catalog_not_published`.
+
+Al publicarse un catálogo, checkout compara cada `productRef` y precio unitario con el producto vigente según canal (DELIVERY / TAKEAWAY) dentro de la transacción de creación. Producto ausente o precio cambiado responde `409 {"error":"catalog_changed"}`; el backend web debe refrescar el snapshot y pedir revisión explícita del carrito. No hay autoaceptación: el pedido sigue pendiente de confirmación. En comercios sin catálogo publicado se conserva compatibilidad v1: cotización no autoritativa y confirmación manual. Opciones v1 siguen siendo texto informativo; no se interpretan ni suman precios.
+
+El SDK backend expone `client.publishCatalog(snapshot, expectedStoreId)` con token receive y `client.getCatalog()` con token submit. Nunca usar receive token en la web pública.
+
+### Web piloto same-origin (sin despliegue)
+
+`apps/orders-service/src/storefront.ts` sirve un checkout piloto en `/` y rutas same-origin `/api/catalog` y `/api/checkout`. El token submit permanece sólo en el proceso servidor; la tienda/sitio se fijan en variables de proceso. Las rutas aplican límite de 16 KiB, presupuesto de frecuencia por IP de socket (no confía X-Forwarded-For), Origin exacto obligatorio al POST, Content-Type JSON, y no registran PII. El piloto admite sólo `paymentMethod: OTHER` y envío `0`; requiere HTTPS al exponerse mediante reverse proxy y protecciones adicionales antia abuso antes de producción. Ante cambio de carta el checkout se rechaza; el usuario debe revisar productos/precios y no se actualiza el precio ni se reenvía automáticamente.
+
+Para probar localmente, ejecutar primero `pnpm --filter @gastronomy/web-orders build`, `pnpm --filter @gastronomy/orders-service build` y orders-service en `127.0.0.1:8098`; luego iniciar con una credencial submit del sitio: `$env:WEB_STOREFRONT_ORDERS_URL='http://127.0.0.1:8098'; $env:WEB_STOREFRONT_SUBMIT_TOKEN='<token-submit>'; $env:WEB_STOREFRONT_SITE_ID='sitio-principal'; $env:WEB_STOREFRONT_STORE_ID='bonis'; $env:WEB_STOREFRONT_ORIGIN='http://127.0.0.1:8099'; $env:WEB_STOREFRONT_PORT='8099'; pnpm --filter @gastronomy/orders-service start:storefront` y navegar a `http://127.0.0.1:8099/`. Dominio futuro bajo proxy: `bonis.deltanubeweb.com`; no hay DNS/despliegue configurado.
+
 ## Salud
 
 `GET /health` devuelve `200 { "ok": true }`. No requiere bearer; comprobar sólo disponibilidad HTTP, no sustituye una verificación operativa de DB/configuración.
 
 ## Operación, limitaciones y reversión
 
-- El servicio mantiene solicitudes en su SQLite aunque el POS esté offline o apagado; mientras la PC/servicio que aloja la DB esté cerrada, no hay acceso remoto a esa bandeja. No hay polling ni bandeja POS/aplicación implementados en este alcance.
+- El servicio mantiene solicitudes en su SQLite aunque el POS esté offline o apagado; mientras la PC/servicio que aloja la DB esté cerrada, no hay acceso remoto a esa bandeja. La sincronización y la bandeja POS se implementan en el alcance integrado; el storefront piloto de esta guía sólo crea solicitudes pendientes y no equivale a despliegue/producción.
 - Antes de producción: configurar proxy/TLS y firewall, allowlist/validación/CAPTCHA/rate limits del backend web, permisos mínimos, secretos protegidos, monitoreo y backups consistentes incluyendo DB y WAL (usar mecanismo SQLite consistente, no copiar sólo el archivo activo), y política de retención de PII. Probar restauración antes de depender de backups.
 - `WEB_ORDERS_RATE_LIMIT` permite 10..10000 solicitudes por minuto (predeterminado 120): presupuesto independiente por sitio emisor o receptor de comercio; tráfico no autenticado por IP de conexión. Las solicitudes limitadas devuelven `429` con `Retry-After: 60`. Detrás de un proxy, aplicar también límites de abuso por cliente en ese proxy. Los límites en memoria se reinician con el proceso.
+- El storefront piloto limita 20 requests/minuto por IP de socket (configurable sólo vía `createStorefrontServer`), con mapa acotado/expirable. Detrás de proxy todos los visitantes pueden compartir la IP del proxy; configurar rate limits por cliente y controles antiabuso en el reverse proxy/WAF. No se confía `X-Forwarded-For`.
 - `close()` de `createOrdersServer` es asíncrono: esperar `await service.close()` para drenar HTTP y cerrar SQLite. SIGTERM/SIGINT usa ese cierre, con plazo máximo de 15 segundos para conexiones persistentes.
 - **No desplegado ni validado en producción.** No afirmar disponibilidad productiva hasta completar configuración y prueba extremo a extremo.
-- Reversión de esta función debe retirar los archivos/packages del servicio y cliente web-orders y sus entradas de workspace/lockfile asociados a esta feature, además de esta guía; no tocar POS ni licencias. Conservar/exportar la DB antes de retirar si contiene solicitudes que deban retenerse.
+- Reversión de esta función debe retirar los archivos/packages del servicio y cliente web-orders y sus entradas de workspace/lockfile asociados a esta feature, además de esta guía y los cambios POS/persistencia asociados a la integración; no retirar licencias ni datos ajenos. Conservar/exportar la DB antes de retirar si contiene solicitudes que deban retenerse.

@@ -1102,4 +1102,67 @@ CREATE UNIQUE INDEX IF NOT EXISTS orders_cash_session_shift_number_idx
   WHERE shift_number IS NOT NULL;
 `,
   },
+  {
+    version: 44,
+    name: "web_commerce_publication_and_inbox",
+    sql: String.raw`
+ALTER TABLE products ADD COLUMN web_published INTEGER NOT NULL DEFAULT 0 CHECK(web_published IN (0,1));
+CREATE TABLE web_order_inbox (
+  store_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  original_json TEXT NOT NULL,
+  draft_json TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','CONFIRMED','REJECTED','REVIEW_RESTORE')),
+  order_id TEXT REFERENCES orders(id),
+  received_at TEXT NOT NULL,
+  rejection_reason TEXT,
+  PRIMARY KEY(store_id,id),
+  UNIQUE(store_id,sequence)
+);
+CREATE TABLE web_order_cursors (store_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE web_order_acks (store_id TEXT NOT NULL, id TEXT NOT NULL, acked_at TEXT, PRIMARY KEY(store_id,id));
+CREATE INDEX web_order_inbox_pending_idx ON web_order_inbox(store_id,status,sequence);`
+  },
+  {
+    version: 45,
+    name: "waiter_mobile_sessions_and_batches",
+    sql: String.raw`
+CREATE TABLE waiter_challenges (id TEXT PRIMARY KEY, waiter_user_id TEXT NOT NULL REFERENCES users(id), cash_session_id TEXT NOT NULL REFERENCES cash_sessions(id), expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+CREATE TABLE waiter_sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), cash_session_id TEXT NOT NULL REFERENCES cash_sessions(id), expires_at TEXT NOT NULL, revoked_at TEXT, created_at TEXT NOT NULL);
+CREATE INDEX waiter_sessions_user_idx ON waiter_sessions(user_id, expires_at);
+CREATE TABLE waiter_batches (request_id TEXT PRIMARY KEY, session_token_hash TEXT NOT NULL REFERENCES waiter_sessions(token_hash), order_id TEXT REFERENCES orders(id), print_job_id TEXT, expected_order_id TEXT, payload_hash TEXT NOT NULL, accepted_line_ids_json TEXT NOT NULL, status TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL);
+CREATE TABLE waiter_batch_lines (line_id TEXT PRIMARY KEY, request_id TEXT NOT NULL REFERENCES waiter_batches(request_id), product_id TEXT NOT NULL, quantity INTEGER NOT NULL, note TEXT);
+CREATE INDEX waiter_batch_session_idx ON waiter_batches(session_token_hash, created_at);
+CREATE UNIQUE INDEX waiter_batches_print_job_unique ON waiter_batches(print_job_id) WHERE print_job_id IS NOT NULL;`
+  },
+  {
+    version: 46,
+    name: "waiter_delayed_batch_review",
+    sql: String.raw`
+CREATE TABLE waiter_pending_batches (
+  request_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  cash_session_id TEXT NOT NULL REFERENCES cash_sessions(id),
+  table_id TEXT NOT NULL,
+  table_number INTEGER NOT NULL,
+  waiter_name TEXT NOT NULL,
+  expected_order_id TEXT,
+  submitted_at TEXT,
+  received_at TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('PENDING_REVIEW','REJECTED')),
+  lines_json TEXT NOT NULL
+);
+CREATE INDEX waiter_pending_batches_status_idx ON waiter_pending_batches(status,received_at);
+CREATE TABLE waiter_pending_batch_lines (
+  line_id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL REFERENCES waiter_pending_batches(request_id),
+  product_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  quantity INTEGER NOT NULL,
+  note TEXT
+);`
+  },
 ];

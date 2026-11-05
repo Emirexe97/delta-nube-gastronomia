@@ -377,11 +377,12 @@ test("no-code request persists only encrypted device key and leaves pending devi
         if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-1", nonce: "n".repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString() }));
         const body = JSON.parse(String(init?.body));
         assert.equal(typeof body.signature, "string");
+        assert.equal("webSite" in body, false, "signup URL and phone must never be sent to licensing");
         return new Response(JSON.stringify({ request: { id: "request-123", installationId: body.installationId, businessName: "Cafe Norte", keyFingerprint: devicePublicKeyFingerprint(body.publicKey), status: "PENDING", licenseId: null, createdAt: new Date().toISOString() }, token: responseToken(body.installationId, Date.now(), privateKey) }));
       },
     });
     await license.initialize();
-    const status = await license.requestLicenseAccess({ businessName: "Cafe Norte" });
+    const status = await license.requestLicenseAccess({ businessName: "Cafe Norte", webSite: { slug: "cafe-norte", whatsappNumber: "+54 (11) 1234-5678" } });
     assert.equal(status.state, "UNACTIVATED");
     assert.equal(status.canOperate, false);
     assert.equal(status.enrollment?.status, "PENDING");
@@ -389,6 +390,7 @@ test("no-code request persists only encrypted device key and leaves pending devi
     const identity = await readFile(join(dir, "device-identity.json"), "utf8");
     assert.match(identity, /encryptedPrivateKey/);
     assert.doesNotMatch(identity, /BEGIN PRIVATE KEY/);
+    assert.doesNotMatch(identity, /541112345678|cafe-norte|webSiteTicket/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -404,10 +406,11 @@ test("approved signed enrollment persists across restart, stays active offline, 
       if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-123", nonce: "x".repeat(43), expiresAt: new Date(now + 60_000).toISOString() }));
       if (path.endsWith("request") || path.endsWith("lease")) {
         const purpose = path.endsWith("request") ? "request" as const : "lease" as const;
+        assert.equal("webSite" in body, false, "site signup data must not be included in licensing requests");
         const proof = { purpose, challengeId: body.challengeId, nonce: "x".repeat(43), installationId: body.installationId, keyFingerprint: devicePublicKeyFingerprint(body.publicKey), ...(purpose === "request" ? { businessName: body.businessName } : {}) };
         assert.equal(verifyDeviceProof(proof, body.signature, body.publicKey), true);
         const token = responseToken(body.installationId, issue, privateKey, { revision, status: leaseStatus, businessName: "Cafe Norte", paidThrough: future(20, now) });
-        return new Response(JSON.stringify({ request: { id: "request-123", installationId: body.installationId, businessName: "Cafe Norte", keyFingerprint: proof.keyFingerprint, status: "APPROVED", licenseId: "license_123", createdAt: new Date(now).toISOString() }, token }));
+        return new Response(JSON.stringify({ request: { id: "request-123", installationId: body.installationId, businessName: "Cafe Norte", keyFingerprint: proof.keyFingerprint, status: "APPROVED", licenseId: "license_123", createdAt: new Date(now).toISOString() }, token, ...(purpose === "lease" ? { webSiteTicket: "fresh-ticket-1234567890123456789" } : {}) }));
       }
       throw new Error(`unexpected ${path}`);
     };
@@ -416,8 +419,15 @@ test("approved signed enrollment persists across restart, stays active offline, 
       await value.initialize(); return value;
     };
     const first = await make();
+    let selected: { slug: string; whatsappNumber: string } | null = null;
+    let provisions = 0;
+    let websiteActive = false;
+    first.setWebSiteProvisioner({ getChoice: () => selected, getStatus: () => ({ state: websiteActive ? "ACTIVE" : selected ? "PENDING" : "NOT_REGISTERED" }), selectChoice: async (choice) => { selected = choice; }, provision: async (ticket, choice) => { provisions++; assert.equal(ticket, "fresh-ticket-1234567890123456789"); assert.deepEqual(choice, { slug: "cafe-norte", whatsappNumber: "541112345678" }); selected = null; websiteActive = true; return { state: "ACTIVE" }; } });
     const active = await first.requestLicenseAccess({ businessName: "Cafe Norte" });
     assert.equal(active.state, "ACTIVE"); assert.equal(active.canOperate, true);
+    issue = now + 1;
+    assert.equal((await first.registerWebSite({ slug: "cafe-norte", whatsappNumber: "+54 11 1234-5678" })).state, "ACTIVE");
+    assert.equal(provisions, 1, "approved existing identity receives a fresh lease ticket on later signup");
     goOffline = true; now += 8 * 86_400_000;
     const restarted = await make();
     assert.equal((await restarted.getStatus()).canOperate, true);

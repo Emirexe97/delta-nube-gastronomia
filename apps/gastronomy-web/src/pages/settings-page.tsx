@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import type {
   AppSettingsDto,
   BootstrapDto,
@@ -26,6 +27,8 @@ import { useApiMutation } from "../api";
 import { humanError } from "../lib";
 import { LicensePanel } from "../components/license-panel";
 import { AppUpdatePanel } from "../components/app-update-panel";
+import { WaiterDeskPanel } from "../components/waiter-desk-panel";
+import { WebSitePanel } from "../components/web-site-panel";
 
 export function SettingsPage({ data }: { data: BootstrapDto }) {
   const [settings, setSettings] = useState<AppSettingsDto>(data.settings);
@@ -82,9 +85,11 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             [
               ["settings-general", "General"],
               ["settings-printing", "Impresión"],
+              ["settings-waiter", "Modo Mozo"],
               ["settings-print-texts", "Textos"],
               ["settings-backup", "Copias de seguridad"],
               ["settings-license", "Licencia"],
+              ["settings-website", "Página web"],
               ["settings-updates", "Actualizaciones"],
             ] as const
           ).map(([id, label]) => (
@@ -383,6 +388,8 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
       />
       <PrintTextSettingsCard settings={settings} onChange={setSettings} />
       <LicensePanel />
+      <WaiterDeskPanel data={data} />
+      <WebSitePanel />
       <AppUpdatePanel />
       <Card id="settings-backup" className="scroll-mt-20 p-4">
         <SectionTitle
@@ -422,6 +429,7 @@ function PrintingSettingsCard({
   onChange(value: AppSettingsDto): void;
   onMessage(value: string): void;
 }) {
+  const [scan, rescan] = useState(0);
   const [printers, setPrinters] = useState<PrinterDeviceDto[]>([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -441,19 +449,17 @@ function PrintingSettingsCard({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [scan]);
   const updatePrinting = (patch: Partial<AppSettingsDto["printing"]>) =>
     onChange({ ...settings, printing: { ...settings.printing, ...patch } });
   const updateProfile = (key: "kitchen" | "bill", profile: PrinterProfileDto) =>
     updatePrinting({ [key]: profile });
-  const test = useApiMutation(
-    async (kind: "KITCHEN_ORDER" | "CUSTOMER_BILL") =>
-      window.gastronomy.testPrinter({ kind, settings }),
-    {
-      onSuccess: (result) => onMessage(result.message),
-      onError: (error) => onMessage(humanError(error)),
-    },
-  );
+  // A test print uses the previewed form, but must never save/reset its unsaved choices.
+  const test = useMutation({
+    mutationFn: (kind: "KITCHEN_ORDER" | "CUSTOMER_BILL") => window.gastronomy.testPrinter({ kind, settings }),
+    onSuccess: (result) => onMessage(result.message),
+    onError: (error) => onMessage(humanError(error)),
+  });
   return (
     <Card id="settings-printing" className="scroll-mt-20 p-4">
       <SectionTitle
@@ -461,6 +467,9 @@ function PrintingSettingsCard({
         title="Impresión"
         detail="Configurá por separado la impresión de comandas y cuentas"
       />
+      <Button variant="secondary" disabled={loading} onClick={() => rescan(n=>n+1)}>
+        {loading ? "Buscando impresoras…" : "Actualizar lista de impresoras"}
+      </Button>
       <div className="mt-4 grid gap-4">
         <Field
           label="Nombre de la terminal"
@@ -479,6 +488,7 @@ function PrintingSettingsCard({
             profile={settings.printing.kitchen}
             printers={printers}
             loading={loading}
+            requireExplicitDevice
             onChange={(profile) => updateProfile("kitchen", profile)}
             onTest={() => test.mutate("KITCHEN_ORDER")}
             testing={test.isPending}
@@ -494,8 +504,12 @@ function PrintingSettingsCard({
           />
         </div>
         <p className="text-xs leading-5 text-slate-600">
-          El corte depende de la impresora y su controlador. El perfil conserva
-          las opciones de corte y avance para la integración térmica.
+          La comanda del mozo sale por una sola impresora de cocina: no se divide ni se
+          filtra por categoría. En el pedido podés elegir comanda completa,
+          sólo agregados desde la última impresión exitosa o reimpresión. La
+          cuenta del cliente es un documento aparte. La prueba confirma que el
+          sistema aceptó el trabajo; verificá que haya salido en papel. El corte
+          depende de la impresora y su controlador.
         </p>
       </div>
     </Card>
@@ -658,6 +672,7 @@ function PrinterProfileEditor({
   onChange,
   onTest,
   testing,
+  requireExplicitDevice = false,
 }: {
   title: string;
   profile: PrinterProfileDto;
@@ -666,6 +681,7 @@ function PrinterProfileEditor({
   onChange(value: PrinterProfileDto): void;
   onTest(): void;
   testing: boolean;
+  requireExplicitDevice?: boolean;
 }) {
   const update = <K extends keyof PrinterProfileDto>(
     key: K,
@@ -699,7 +715,11 @@ function PrinterProfileEditor({
         </Field>
         <Field
           label="Modo"
-          hint="Sin impresora disponible se abrirá una vista previa."
+          hint={profile.mode === "SYSTEM_DIRECT"
+            ? requireExplicitDevice
+              ? "Para Modo Mozo tenés que elegir el comandero por nombre. Los pedidos desde escritorio también admiten la predeterminada."
+              : "Si no elegís una impresora, se usará la predeterminada del sistema."
+            : "Este modo permite elegir una impresora al imprimir."}
         >
           <Select
             value={profile.mode}
@@ -710,9 +730,16 @@ function PrinterProfileEditor({
             <option value="SYSTEM_DIALOG">
               Vista previa y diálogo del sistema
             </option>
-            <option value="SYSTEM_DIRECT">Impresión directa</option>
+            <option value="SYSTEM_DIRECT">
+              Impresión directa
+            </option>
           </Select>
         </Field>
+        {requireExplicitDevice && !loading && profile.deviceName && !printers.some((printer) => printer.name === profile.deviceName) ? (
+          <p role="status" className="text-xs font-semibold text-amber-800 sm:col-span-2">
+            La impresora seleccionada no está disponible. Conectala o elegí otro dispositivo; no se reemplazará por la predeterminada.
+          </p>
+        ) : null}
         <Field
           label="Impresora"
           hint={loading ? "Buscando dispositivos…" : " "}
@@ -722,7 +749,7 @@ function PrinterProfileEditor({
             disabled={profile.mode === "SYSTEM_DIALOG"}
             onChange={(event) => update("deviceName", event.target.value)}
           >
-            <option value="">Predeterminada de Windows</option>
+            <option value="">Predeterminada del sistema</option>
             {profile.deviceName &&
             !printers.some((printer) => printer.name === profile.deviceName) ? (
               <option value={profile.deviceName}>

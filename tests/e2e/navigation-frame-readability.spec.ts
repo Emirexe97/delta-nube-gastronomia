@@ -219,11 +219,36 @@ test("Navegación y cabecera: marca, cinco grupos, estados de links y caja abier
   await page.reload();
   await settle();
   const initial = await baseline();
+  const logo = page
+    .locator("aside")
+    .getByRole("img", { name: "Delta Nube Gastronomía" });
+  await expect(logo).toBeVisible();
+  const parts = logo.locator("img");
+  await expect(parts).toHaveCount(2);
+  const [symbol, wordmark] = await parts.evaluateAll((nodes) =>
+    (nodes as HTMLImageElement[]).map((image) => {
+      const box = image.getBoundingClientRect();
+      return {
+        src: image.currentSrc,
+        loaded: image.complete && image.naturalWidth > 0,
+        left: box.left,
+        right: box.right,
+        width: box.width,
+        centerY: box.top + box.height / 2,
+      };
+    }),
+  );
+  expect(symbol.loaded && wordmark.loaded).toBe(true);
+  expect(wordmark.width).toBeGreaterThan(symbol.width);
+  expect(symbol.right).toBeLessThan(wordmark.left);
+  expect(Math.abs(symbol.centerY - wordmark.centerY)).toBeLessThan(2);
+  expect(new URL(symbol.src).protocol).toBe("file:");
+  expect(
+    await page
+      .locator('link[rel="icon"]')
+      .evaluate((link: HTMLLinkElement) => link.href),
+  ).toBe(symbol.src);
   const readings = [
-    await metrics(
-      page.getByText("Gastronomía", { exact: true }).first(),
-      "brand Gastronomía",
-    ),
     ...["General", "Operación", "Gestión", "Control", "Sistema"].map(
       async (group) =>
         metrics(
@@ -243,7 +268,7 @@ test("Navegación y cabecera: marca, cinco grupos, estados de links y caja abier
   const settled = await Promise.all(readings);
   settled.push(
     await metrics(
-      page.getByRole("button", { name: "Contraer", exact: true }),
+      page.getByRole("button", { name: "Contraer barra lateral", exact: true }),
       "collapse control",
     ),
   );
@@ -274,6 +299,10 @@ test("Navegación y cabecera: marca, cinco grupos, estados de links y caja abier
   await nativeCapture("navigation-open-cash.png");
   await page.getByRole("button", { name: "Contraer" }).click();
   await settle();
+  await expect(parts).toHaveCount(1);
+  expect(await parts.evaluate((img: HTMLImageElement) => img.currentSrc)).toBe(
+    symbol.src,
+  );
   await expect(page.getByRole("link", { name: "Pedidos" })).toBeVisible();
   expect(await baseline()).toEqual(initial);
   await saveAndAssertReadability(settled);
@@ -346,8 +375,7 @@ test("Menú: trece rutas, grupos ordenados, colapsar/reexpandir persiste tras re
   await page.reload();
   await expect(page.locator("aside")).toHaveCSS("width", "64px");
   await expect(page.locator("aside nav a")).toHaveCount(13);
-  // Collapsed button has no accessible name by design today; use the existing aside>button, don't alter product.
-  await page.locator("aside > button").click();
+  await page.getByRole("button", { name: "Expandir barra lateral" }).click();
   await expect(page.locator("aside")).toHaveCSS("width", "214px");
   await page.reload();
   await expect(page.locator("aside")).toHaveCSS("width", "214px");

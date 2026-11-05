@@ -11,6 +11,8 @@ import {
   verifyLease,
 } from "@gastronomy/licensing";
 import { hashPanelPassword } from "../dist/panel-auth.js";
+import { verifyWebSiteTicket } from "@gastronomy/web-orders/provision";
+const webSiteProvisionSecret = randomBytes(32).toString("hex");
 
 const origin = "https://owner.example.test";
 const password = "private-owner-password-2026";
@@ -160,6 +162,7 @@ before(async () => {
     adminToken: admin,
     privateKey,
     rateLimit: 500,
+    webSiteProvisionSecret,
     panelAuth: { username: "owner", passwordHash, origin, secureCookies: true },
   });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
@@ -255,6 +258,7 @@ test("v2 challenge is purpose/key/id bound, one-use, and pending requests never 
     devicePublicKeyFingerprint(pem(pair.publicKey)),
   );
   assert.equal("token" in data, false);
+  assert.equal("webSiteTicket" in data, false);
 
   const replay = await api("/v2/devices/request", {
     method: "POST",
@@ -334,6 +338,9 @@ test("owner explicitly approves a matching existing license; signed lease works 
   assert.equal(lease.request.id, pending.request.id);
   assert.equal(lease.request.status, "APPROVED");
   assert.equal(lease.request.keyFingerprint, keyFingerprint);
+  assert.deepEqual(verifyWebSiteTicket(lease.webSiteTicket, webSiteProvisionSecret), {
+    licenseId: existingLicense.id, installationId: "install-existing-001", businessName: "Existing paid business",
+  });
   assert.equal(
     verifyLease(lease.token, publicKey, "install-existing-001").licenseId,
     existingLicense.id,
@@ -370,6 +377,16 @@ test("owner explicitly approves a matching existing license; signed lease works 
   );
   assert.equal(repeated.status, 200);
   assert.equal((await repeated.json()).idempotent, true);
+  // Approval of the device is not sufficient to provision a storefront after suspension.
+  const suspend = await api(`/manage/api/licenses/${existingLicense.id}/status`, {
+    method: "POST", data: { expectedRevision: approval.license.revision, status: "SUSPENDED", reason: "Pause approved test installation" },
+    cookie: `dng_owner=${ownerCookie}`, csrf: csrfToken,
+  });
+  assert.equal(suspend.status, 200);
+  const paused = await api("/v2/devices/lease", { method: "POST", data: await deviceLeaseProof(pair, "install-existing-001") });
+  const pausedBody = await paused.json();
+  assert.equal(verifyLease(pausedBody.token, publicKey, "install-existing-001").status, "SUSPENDED");
+  assert.equal("webSiteTicket" in pausedBody, false);
 });
 
 test("owner rejects pending device; requests cannot transfer a key or bypass one-approved-device policy", async () => {

@@ -1,0 +1,11 @@
+# BEGIN gastronomy waiter (staff only)
+pedidos.deltanubeweb.com {
+    @waiter path /waiter /waiter/ /v1/waiter/*
+    handle @waiter {
+        reverse_proxy gastronomy-waiter-api:8098
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
+# END gastronomy waiter

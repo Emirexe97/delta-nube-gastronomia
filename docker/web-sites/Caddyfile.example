@@ -1,0 +1,18 @@
+# Example for a host-based edge with an externally renewed wildcard certificate.
+# Keep existing explicit virtual hosts (especially the licensing service).
+# A containerized proxy needs a private network/service alias instead of loopback.
+*.deltanubeweb.com {
+    tls /run/tls/wildcard-fullchain.pem /run/tls/wildcard-key.pem
+    @api host pedidos.deltanubeweb.com
+    handle @api {
+        reverse_proxy 127.0.0.1:8098
+    }
+    # Never expose POS/provisioning endpoints or health on a merchant domain.
+    @private path /v1 /v1/* /health
+    handle @private {
+        respond 404
+    }
+    handle {
+        reverse_proxy 127.0.0.1:8098
+    }
+}

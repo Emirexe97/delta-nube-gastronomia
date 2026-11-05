@@ -38,6 +38,7 @@ type Options = {
   safeStorage?: { isAvailable?: () => boolean; encryptString(value: string): Buffer; decryptString(value: Buffer): string };
 };
 type DeviceIdentity = { schema: 1; publicKey: string; encryptedPrivateKey: string; enrollment?: NonNullable<LicenseStatusDto["enrollment"]> };
+type WebSiteChoice = { slug: string; whatsappNumber: string };
 
 export class DesktopLicensing {
   private readonly now: () => number;
@@ -62,6 +63,12 @@ export class DesktopLicensing {
   private lastFailure: "offline" | "code" | "installation" | "invalid" | null =
     null;
   private enrollmentError: string | null = null;
+  private webSiteProvisioner: ((ticket: string, signup: WebSiteChoice) => Promise<{ state?: string }>) | null = null;
+  private getWebSiteChoice: (() => WebSiteChoice | null) | null = null;
+  private selectWebSiteChoice: ((signup: WebSiteChoice) => Promise<unknown>) | null = null;
+  private getWebSiteStatus: (() => { state?: string }) | null = null;
+  private webSiteRetryAt = 0;
+  private webSiteFailures = 0;
   private readonly options: Options;
   constructor(options: Options) {
     this.options = options;
@@ -121,8 +128,10 @@ export class DesktopLicensing {
       const privateKey = decrypt(Buffer.from(identity.encryptedPrivateKey, "base64"));
       const derived = createPublicKey(privateKey).export({ type: "spki", format: "pem" }).toString();
       if (derived !== identity.publicKey) throw new Error("key mismatch");
-      this.identity = identity; this.identityPrivateKey = privateKey;
+      // Drop legacy website tickets/choices: approval leases mint fresh tickets and the phone is stored encrypted by the provisioner.
+      this.identity = { schema: 1, publicKey: identity.publicKey, encryptedPrivateKey: identity.encryptedPrivateKey, ...(identity.enrollment ? { enrollment: identity.enrollment } : {}) }; this.identityPrivateKey = privateKey;
       if (identity.enrollment) this.enrollment = identity.enrollment;
+      await this.persistIdentity();
     } catch (error) {
       try { await readFile(this.identityFile); this.identityLoadError = "No se pudo recuperar de forma segura la identidad de este equipo. Contactá a soporte."; } catch { /* first run */ }
       this.identity = null; this.identityPrivateKey = null;
@@ -300,14 +309,35 @@ export class DesktopLicensing {
   activate(code: string) {
     return this.enqueue(() => { this.lastFailure = null; return this.online("/v1/activate", { code }); });
   }
-  requestLicenseAccess(input: { businessName: string }) {
+  setWebSiteProvisioner(handlers: { provision: (ticket: string, signup: WebSiteChoice) => Promise<{ state?: string }>; getChoice: () => WebSiteChoice | null; selectChoice: (signup: WebSiteChoice) => Promise<unknown>; getStatus: () => { state?: string } }) {
+    this.webSiteProvisioner = handlers.provision; this.getWebSiteChoice = handlers.getChoice; this.selectWebSiteChoice = handlers.selectChoice; this.getWebSiteStatus = handlers.getStatus;
+  }
+  hasEnrollmentIdentity() { return !!(this.identity && this.identityPrivateKey); }
+  async registerWebSite(signup: WebSiteChoice) {
+    if (!this.identity || !this.selectWebSiteChoice || !this.getWebSiteStatus) throw new Error("Para habilitar una tienda, andá a Configuración → Licencia → Solicitar habilitación y esperá la aprobación sobre tu licencia existente.");
+    if (this.getWebSiteStatus().state === "ACTIVE") throw new Error("Ya hay una tienda registrada; no se puede registrar otra.");
+    const normalized = { slug: signup.slug.trim().toLowerCase(), whatsappNumber: signup.whatsappNumber.replace(/\D/g, "") };
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(normalized.slug) || !/^\d{8,15}$/.test(normalized.whatsappNumber)) throw new Error("Revisá el enlace y WhatsApp (8 a 15 dígitos con código de país).");
+    await this.selectWebSiteChoice(normalized);
+    // The fresh authenticated v2 lease mints a new, short-lived ticket; never reuse or persist one.
+    await this.refresh();
+    return this.getWebSiteStatus();
+  }
+  retryWebSiteProvisioning() {
+    if (!this.identity || this.enrollment.status !== "APPROVED" || !this.getWebSiteChoice?.() || this.getWebSiteStatus?.().state === "ACTIVE" || this.now() < this.webSiteRetryAt) return Promise.resolve(this.getWebSiteStatus?.());
+    return this.refresh();
+  }
+  requestLicenseAccess(input: { businessName: string; webSite?: WebSiteChoice }) {
     return this.enqueue(() => this.performLicenseAccessRequest(input));
   }
-  private async performLicenseAccessRequest(input: { businessName: string }) {
+  private async performLicenseAccessRequest(input: { businessName: string; webSite?: WebSiteChoice }) {
     this.lastFailure = null;
     this.enrollmentError = null;
     const businessName = input.businessName.trim();
     if (!businessName || businessName.length > 120) return this.getStatus();
+    const phone = input.webSite?.whatsappNumber.replace(/\D/g, "") ?? "";
+    const webSite = input.webSite && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(input.webSite.slug.trim().toLowerCase()) && /^\d{8,15}$/.test(phone) ? { slug: input.webSite.slug.trim().toLowerCase(), whatsappNumber: phone } : undefined;
+    if (input.webSite && !webSite) throw new Error("Revisá el enlace y WhatsApp (8 a 15 dígitos con código de país).");
     try {
       if (this.identityLoadError) throw new Error(this.identityLoadError);
       if (!this.identity) {
@@ -319,6 +349,7 @@ export class DesktopLicensing {
         this.identity = { schema: 1, publicKey, encryptedPrivateKey }; this.identityPrivateKey = privateKey;
         await mkdir(dirname(this.identityFile), { recursive: true }); await this.persistIdentity();
       }
+      if (webSite) await this.selectWebSiteChoice?.(webSite);
       const keyFingerprint = devicePublicKeyFingerprint(this.identity.publicKey);
       const challenge = await this.postEnrollment("/v2/devices/challenge", { installationId: this.state.installationId, publicKey: this.identity.publicKey, purpose: "request" });
       this.validateChallenge(challenge);
@@ -329,13 +360,14 @@ export class DesktopLicensing {
       this.identity.enrollment = this.enrollment; await this.persistIdentity();
       if (result.request.status === "APPROVED" && typeof result.token === "string") await this.acceptToken(result.token);
       else if (result.token !== undefined) throw new ResponseProblem("invalid");
+      if (typeof result.webSiteTicket === "string") await this.acceptWebSiteTicket(result.webSiteTicket);
     } catch (error) {
       this.lastFailure = "offline";
       if (error instanceof Error && (error.message.includes("almacenamiento seguro") || error.message.includes("identidad de este equipo"))) { this.enrollment = { ...this.enrollment, status: null }; this.enrollmentError = error.message; }
     }
     return this.getStatus();
   }
-  private async postEnrollment(path: string, body: Record<string, string>) {
+  private async postEnrollment(path: string, body: Record<string, unknown>) {
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
       const response = await this.fetcher(new URL(path, this.config.serverUrl), { method: "POST", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: controller.signal });
@@ -380,9 +412,22 @@ export class DesktopLicensing {
       this.identity!.enrollment = this.enrollment; await this.persistIdentity();
       if (result.request.status === "APPROVED" && typeof result.token === "string") await this.acceptToken(result.token);
       else if (result.token !== undefined) throw new ResponseProblem("invalid");
-    } catch (error) { this.lastFailure = error instanceof ResponseProblem && error.kind === "invalid" ? "invalid" : "offline"; }
+      if (typeof result.webSiteTicket === "string") await this.acceptWebSiteTicket(result.webSiteTicket);
+      else if (this.getWebSiteChoice?.()) this.scheduleWebSiteRetry();
+    } catch (error) { this.lastFailure = error instanceof ResponseProblem && error.kind === "invalid" ? "invalid" : "offline"; if (this.enrollment.status === "APPROVED" && this.getWebSiteChoice?.()) this.scheduleWebSiteRetry(); }
     return this.getStatus();
   }
+  private async acceptWebSiteTicket(ticket: string) {
+    if (!/^[A-Za-z0-9._~+\/-]{20,4096}={0,2}$/.test(ticket)) throw new ResponseProblem("invalid");
+    if (!this.webSiteProvisioner || !this.getWebSiteChoice || this.now() < this.webSiteRetryAt) return;
+    const choice = this.getWebSiteChoice(); if (!choice || this.getWebSiteStatus?.().state === "ACTIVE") return;
+    try {
+      const status = await this.webSiteProvisioner(ticket, choice);
+      if (status.state === "ACTIVE") { this.webSiteFailures = 0; this.webSiteRetryAt = 0; }
+      else this.scheduleWebSiteRetry();
+    } catch { this.scheduleWebSiteRetry(); }
+  }
+  private scheduleWebSiteRetry() { this.webSiteFailures++; this.webSiteRetryAt = this.now() + Math.min(15_000 * 2 ** Math.min(this.webSiteFailures - 1, 5), 5 * 60_000); }
   private async acceptToken(token: string) {
     const lease = verifyLease(token, this.config.publicKey!, this.state.installationId);
     const currentLease = this.safeLease();

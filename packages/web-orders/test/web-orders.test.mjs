@@ -5,6 +5,7 @@ import {
   parseWebOrderSubmission,
   quotedTotalMinor,
   WebOrdersClient,
+  parseWebCatalogSnapshot,
 } from "../dist/index.js";
 
 const payload = () => ({
@@ -186,4 +187,29 @@ test("client refuses insecure remote endpoints, embedded credentials and malform
   assert.throws(() => new WebOrdersClient("https://api.example", "short"));
   assert.ok(new WebOrdersClient("http://127.0.0.1:8098", token));
   assert.ok(new WebOrdersClient("https://api.example/orders", token));
+});
+
+test("catalog contract is a public-field whitelist with stable unique refs and integer channel prices", () => {
+  const snapshot = { products: [{ productRef: "pizza-1", name: "Pizza", category: "Clásicos", takeawayPriceMinor: 100, deliveryPriceMinor: 120 }] };
+  assert.deepEqual(parseWebCatalogSnapshot(snapshot), snapshot);
+  for (const invalid of [
+    { products: [{ ...snapshot.products[0], cost: 20 }] },
+    { products: [snapshot.products[0], snapshot.products[0]] },
+    { products: [{ ...snapshot.products[0], takeawayPriceMinor: 1.2 }] },
+    { products: Array(5001).fill(snapshot.products[0]) },
+  ]) assert.throws(() => parseWebCatalogSnapshot(invalid));
+});
+
+test("client sends expected commerce and optional installation pin only as headers", async () => {
+  const prior=globalThis.fetch;let captured;
+  globalThis.fetch=async (url,init)=>{captured={url:String(url),init};return new Response(JSON.stringify({revision:1}),{status:200,headers:{"content-type":"application/json"}})};
+  try {
+    const client=new WebOrdersClient("https://api.example", "a".repeat(43), "terminal-1");
+    await client.publishCatalog({products:[]},"shop-1");
+    const headers=new Headers(captured.init.headers);
+    assert.equal(headers.get("x-expected-store-id"),"shop-1");
+    assert.equal(headers.get("x-pos-installation"),"terminal-1");
+    assert.equal(JSON.parse(captured.init.body).expectedStoreId,undefined);
+    assert.throws(()=>new WebOrdersClient("https://api.example", "a".repeat(43), "invalid pin!"));
+  } finally { globalThis.fetch=prior; }
 });

@@ -1,0 +1,9 @@
+# OPTIONAL: enable ticket issuance for v2 device enrollment, not public DNS.
+services:
+  api:
+    environment:
+      WEB_SITE_PROVISION_SECRET_FILE: /run/secrets/site-provision
+    secrets: [site-provision]
+secrets:
+  site-provision:
+    file: ${WEB_SITE_SECRET_PATH:?Elegir el mismo secreto privado que en Pedidos}

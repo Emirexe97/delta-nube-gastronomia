@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LicenseStatusDto } from "@gastronomy/contracts";
 import { Button, Card, Field, Input } from "@gastronomy/ui";
 import { humanError } from "../lib";
+import { normalizeSiteSlug, siteChoice } from "./web-site-input";
 
 export const licenseQueryKey = ["license-status"] as const;
 
@@ -53,6 +54,10 @@ export function LicensePanel() {
   const queryClient = useQueryClient();
   const statusQuery = useLicenseStatus();
   const [businessName, setBusinessName] = useState("");
+  const [includeSite, setIncludeSite] = useState(true);
+  const [chosenSlug, setSiteSlug] = useState<string | null>(null);
+  const siteSlug = chosenSlug ?? normalizeSiteSlug(businessName);
+  const [whatsappNumber, setWhatsappNumber] = useState("");
   const [error, setError] = useState<string | null>(null);
   const refresh = useMutation({
     mutationFn: () => window.gastronomy.refreshLicense(),
@@ -63,7 +68,11 @@ export function LicensePanel() {
     onError: (value) => setError(humanError(value)),
   });
   const request = useMutation({
-    mutationFn: () => window.gastronomy.requestLicenseAccess({ businessName: businessName.trim() }),
+    mutationFn: () =>
+      window.gastronomy.requestLicenseAccess({
+        businessName: businessName.trim(),
+        webSite: includeSite ? siteChoice(siteSlug, whatsappNumber) : undefined,
+      }),
     onSuccess: (status) => {
       queryClient.setQueryData(licenseQueryKey, status);
       if (status.canOperate) setBusinessName("");
@@ -76,9 +85,10 @@ export function LicensePanel() {
   const canRequest =
     status &&
     status.enrollment?.status !== "PENDING" &&
-    ["NOT_CONFIGURED", "UNACTIVATED", "INVALID", "EXPIRED"].includes(
+    (["NOT_CONFIGURED", "UNACTIVATED", "INVALID", "EXPIRED"].includes(
       status.state,
-    );
+    ) ||
+      (status.state === "ACTIVE" && status.enrollment?.status !== "APPROVED"));
 
   return (
     <Card id="settings-license" className="scroll-mt-20 overflow-hidden p-0">
@@ -157,19 +167,95 @@ export function LicensePanel() {
                 prioridad.
               </p>
             ) : null}
-            {status.enrollment?.keyFingerprint ? <Info label="Huella de clave del equipo" value={status.enrollment.keyFingerprint} mono /> : null}
+            {status.enrollment?.keyFingerprint ? (
+              <Info
+                label="Huella de clave del equipo"
+                value={status.enrollment.keyFingerprint}
+                mono
+              />
+            ) : null}
             {canRequest ? (
-              <Field
-                label="Nombre del negocio"
-                hint="Solicitaremos la habilitación segura para este equipo."
-              >
-                <Input
-                  value={businessName}
-                  onChange={(event) => setBusinessName(event.target.value)}
-                  autoComplete="off"
-                  placeholder="Nombre del negocio"
-                />
-              </Field>
+              <div className="grid gap-3 rounded-xl border border-slate-200 bg-white p-3">
+                <Field
+                  label="Nombre del negocio"
+                  hint="Solicitaremos la habilitación segura para este equipo."
+                >
+                  <Input
+                    value={businessName}
+                    onChange={(event) => setBusinessName(event.target.value)}
+                    autoComplete="organization"
+                    placeholder="Nombre del negocio"
+                  />
+                </Field>
+                <div className="border-t border-slate-100 pt-3">
+                  <label className="flex items-center gap-2 text-xs font-bold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={includeSite}
+                      onChange={(e) => setIncludeSite(e.target.checked)}
+                    />
+                    Crear mi página de pedidos al habilitar el negocio
+                  </label>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">
+                    Te proponemos un subdominio a partir del nombre del negocio.
+                    Podés cambiarlo o desmarcar esta opción para configurar la
+                    web más adelante.
+                  </p>
+                  {includeSite && (
+                    <>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <Field label="Subdominio">
+                          <div className="flex min-w-0 items-center rounded-lg border border-slate-200 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">
+                            <Input
+                              aria-label="Subdominio"
+                              className="min-w-0 border-0 focus:ring-0"
+                              value={siteSlug}
+                              onChange={(event) =>
+                                setSiteSlug(event.target.value)
+                              }
+                              autoComplete="off"
+                              placeholder="mi-negocio"
+                            />
+                            <span className="shrink-0 pr-3 text-xs text-slate-500">
+                              .deltanubeweb.com
+                            </span>
+                          </div>
+                        </Field>
+                        <Field
+                          label="WhatsApp de pedidos"
+                          hint="Con código de país, por ejemplo +54 9 11 1234-5678."
+                        >
+                          <Input
+                            type="tel"
+                            value={whatsappNumber}
+                            onChange={(event) =>
+                              setWhatsappNumber(event.target.value)
+                            }
+                            autoComplete="tel"
+                            placeholder="+54 9 11 1234-5678"
+                          />
+                        </Field>
+                      </div>
+                      {siteSlug ? (
+                        <p className="mt-2 break-all text-xs text-brand-700">
+                          Vista previa:{" "}
+                          <strong>
+                            {normalizeSiteSlug(siteSlug) || "tu-negocio"}
+                            .deltanubeweb.com
+                          </strong>
+                        </p>
+                      ) : null}
+                      {(siteSlug.trim() || whatsappNumber.trim()) &&
+                      !siteChoice(siteSlug, whatsappNumber) ? (
+                        <p className="mt-2 text-xs font-medium text-amber-800">
+                          Completá un subdominio y un WhatsApp con código de
+                          país (8 a 15 dígitos).
+                        </p>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              </div>
             ) : null}
           </>
         ) : (
@@ -191,9 +277,15 @@ export function LicensePanel() {
           {canRequest ? (
             <Button
               onClick={() => request.mutate()}
-              disabled={busy || businessName.trim().length < 2}
+              disabled={
+                busy ||
+                businessName.trim().length < 2 ||
+                (includeSite && !siteChoice(siteSlug, whatsappNumber))
+              }
             >
-              {request.isPending ? "Enviando solicitud…" : "Solicitar habilitación"}
+              {request.isPending
+                ? "Enviando solicitud…"
+                : "Solicitar habilitación"}
             </Button>
           ) : null}
           <Button
@@ -204,7 +296,9 @@ export function LicensePanel() {
             {refresh.isPending
               ? "Verificando…"
               : status
-                ? status.enrollment?.status === "PENDING" ? "Verificar habilitación" : "Verificar licencia"
+                ? status.enrollment?.status === "PENDING"
+                  ? "Verificar habilitación"
+                  : "Verificar licencia"
                 : "Reintentar"}
           </Button>
         </div>

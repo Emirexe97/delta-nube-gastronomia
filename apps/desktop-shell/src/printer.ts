@@ -8,6 +8,8 @@ import {
   type PrintTimingOutcome,
 } from "./print-timing";
 import type { PrinterProfileDto } from "@gastronomy/contracts";
+import { resolvePrinterTarget } from "./printer-routing";
+export { resolvePrinterTarget } from "./printer-routing";
 
 type PrinterInfo = { name: string; isDefault?: boolean };
 type PrintOptions = {
@@ -15,6 +17,8 @@ type PrintOptions = {
   parent?: BrowserWindow | null;
   forcePreview?: boolean;
   skipPreview?: boolean;
+  /** Require a specifically selected device instead of using the system default. */
+  requireExplicitDevice?: boolean;
   onTiming?: PrintTimingObserver;
 };
 
@@ -66,17 +70,6 @@ function nativePrint(
     }),
     (result): PrintTimingOutcome => (result.success ? "success" : "error"),
   );
-}
-
-export function resolvePrinterTarget(
-  profile: PrinterProfileDto,
-  printers: PrinterInfo[],
-) {
-  if (profile.deviceName) {
-    const printer = printers.find((item) => item.name === profile.deviceName);
-    return printer ? printer.name : null;
-  }
-  return printers.find((item) => item.isDefault === true)?.name ?? null;
 }
 
 function escapeText(value: string) {
@@ -286,6 +279,9 @@ export async function printHtml(
       ? dispatchWithoutPreview(html, profile, undefined, options.onTiming)
       : showPreview(html, profile, options.parent);
   }
+  if (options.requireExplicitDevice && !profile.deviceName.trim()) {
+    throw new Error("Seleccioná una impresora específica para la comanda antes de usar impresión directa.");
+  }
   let target: string | null = null;
   try {
     const printers = await measurePrintStage(
@@ -293,11 +289,19 @@ export async function printHtml(
       options.onTiming,
       getPrinters,
     );
-    target = resolvePrinterTarget(profile, printers);
-  } catch {
+    target = resolvePrinterTarget(profile, printers, options.requireExplicitDevice);
+  } catch (error) {
+    if (options.requireExplicitDevice) {
+      throw new Error(`No se pudo consultar la lista de impresoras. Verificá la conexión del dispositivo e intentá nuevamente${error instanceof Error && error.message ? ` (${error.message})` : ""}.`);
+    }
     target = null;
   }
   if (!target) {
+    if (options.requireExplicitDevice) {
+      throw new Error(profile.deviceName
+        ? `La impresora seleccionada no está disponible: ${profile.deviceName}. Conectala o elegí otro dispositivo en Configuración > Impresión.`
+        : "No hay una impresora específica seleccionada. Elegí el comandero en Configuración > Impresión.");
+    }
     if (profile.deviceName) {
       throw new Error(
         `No se encontró la impresora configurada: ${profile.deviceName}.`,

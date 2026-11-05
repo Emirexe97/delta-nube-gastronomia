@@ -1,0 +1,26 @@
+name: gastronomy_web_sites
+services:
+  orders:
+    build:
+      context: ../..
+      dockerfile: docker/web-sites/Dockerfile.runtime
+    restart: unless-stopped
+    environment:
+      WEB_SITE_BASE_DOMAIN: ${WEB_SITE_BASE_DOMAIN:?Definir el dominio base}
+      WEB_SITE_PROVISION_SECRET_FILE: /run/secrets/site-provision
+      WEB_SITE_RESERVED_SLUGS: ${WEB_SITE_RESERVED_SLUGS:-}
+    volumes:
+      - orders-data:/data
+    secrets: [site-provision]
+    ports:
+      - "127.0.0.1:8098:8098"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    tmpfs: [/tmp]
+secrets:
+  site-provision:
+    file: ${WEB_SITE_SECRET_PATH:?Elegir un archivo privado fuera del repositorio}
+volumes:
+  orders-data:

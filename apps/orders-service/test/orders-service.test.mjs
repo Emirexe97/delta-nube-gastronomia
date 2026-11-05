@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { request as httpRequest } from "node:http";
 import { createOrdersServer } from "../dist/server.js";
 import { WebOrdersClient } from "@gastronomy/web-orders";
+import { issueWebSiteTicket } from "@gastronomy/web-orders/provision";
 
 const token = () => randomBytes(32).toString("base64url");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -29,6 +30,178 @@ const makePayload = (overrides = {}) => ({
 });
 const key = () => randomBytes(18).toString("base64url");
 
+test("licensed tenant provisioning is idempotent and receiver token survives restart", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "orders-provision-")),
+    dbPath = resolve(dir, "orders.sqlite"),
+    secret = "0123456789abcdef0123456789abcdef";
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const opts = {
+    dbPath,
+    stores: [
+      {
+        id: "manual",
+        whatsappNumber: "5491111111111",
+        receiveTokenHash: hash(token()),
+        sites: [{ id: "site", submitTokenHash: hash(token()) }],
+      },
+    ],
+    provisioning: { secret, baseDomain: "example.com" },
+  };
+  let service = createOrdersServer(opts);
+  await new Promise((r) => service.server.listen(0, "127.0.0.1", r));
+  let base = `http://127.0.0.1:${service.server.address().port}`;
+  const ticket = issueWebSiteTicket(
+    { licenseId: "lic1", installationId: "inst1", businessName: "Café Azul" },
+    secret,
+  );
+  const register = () =>
+    fetch(base + "/v1/web-sites", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ticket}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ slug: "bonis", whatsappNumber: "5491112345678" }),
+    });
+  let response = await register();
+  assert.equal(response.status, 201);
+  const first = await response.json();
+  response = await register();
+  assert.equal(response.status, 201);
+  const retry = await response.json();
+  assert.equal(retry.storeId, first.storeId);
+  assert.equal(retry.receiveToken, first.receiveToken);
+  assert.equal(retry.url, "https://bonis.example.com");
+  for (const [licenseId, installationId, slug] of [
+    ["other-license", "other-pos", "bonis"],
+    ["other-license", "inst1", "different-slug"],
+    ["lic1", "other-pos", "different-slug"],
+    ["other-license", "other-pos", "gastronomia"],
+  ]) {
+    const otherTicket = issueWebSiteTicket(
+      { licenseId, installationId, businessName: "Otro negocio" },
+      secret,
+    );
+    const denied = await fetch(base + "/v1/web-sites", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + otherTicket,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ slug, whatsappNumber: "5491112345679" }),
+    });
+    assert.equal(denied.status, 409);
+    assert.ok(!(await denied.text()).includes(first.receiveToken));
+  }
+  response = await fetch(base + "/v1/web-sites/branding", {
+    headers: {
+      authorization: `Bearer ${first.receiveToken}`,
+      "x-pos-installation": "inst1",
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).designMode, "STANDARD");
+  response = await fetch(base + "/v1/web-sites/branding", {
+    method: "PATCH",
+    headers: {
+      authorization: `Bearer ${first.receiveToken}`,
+      "x-pos-installation": "inst1",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      displayName: "Café Nuevo",
+      tagline: "Hecho en casa",
+      accent: "#112233",
+    }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    displayName: "Café Nuevo",
+    tagline: "Hecho en casa",
+    accent: "#112233",
+    designMode: "STANDARD",
+  });
+  response = await fetch(base + "/v1/web-sites/branding", {
+    method: "PATCH",
+    headers: {
+      authorization: `Bearer ${first.receiveToken}`,
+      "x-pos-installation": "wrong",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      displayName: "bad",
+      tagline: "",
+      accent: "#112233",
+    }),
+  });
+  assert.equal(response.status, 401);
+  await service.close();
+  service = createOrdersServer(opts);
+  await new Promise((r) => service.server.listen(0, "127.0.0.1", r));
+  base = `http://127.0.0.1:${service.server.address().port}`;
+  response = await fetch(base + "/v1/web-orders", {
+    headers: {
+      authorization: `Bearer ${first.receiveToken}`,
+      "x-pos-installation": "inst1",
+    },
+  });
+  assert.equal(response.status, 200);
+  const bad = await fetch(base + "/v1/web-sites", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${ticket}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ slug: "other", whatsappNumber: "5491112345678" }),
+  });
+  assert.equal(bad.status, 201);
+  const collide = await fetch(base + "/v1/web-sites", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${ticket}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ slug: "manual", whatsappNumber: "5491112345678" }),
+  });
+  assert.equal(collide.status, 409);
+  await service.close();
+  const rotated = "abcdef0123456789abcdef0123456789";
+  opts.provisioning.secret = rotated;
+  service = createOrdersServer(opts);
+  await new Promise((r) => service.server.listen(0, "127.0.0.1", r));
+  base = `http://127.0.0.1:${service.server.address().port}`;
+  const rotatedTicket = issueWebSiteTicket(
+    { licenseId: "lic1", installationId: "inst1", businessName: "Café Azul" },
+    rotated,
+  );
+  response = await fetch(base + "/v1/web-sites", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${rotatedTicket}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ slug: "bonis", whatsappNumber: "5491112345678" }),
+  });
+  assert.equal(response.status, 201);
+  const rotatedTenant = await response.json();
+  assert.notEqual(rotatedTenant.receiveToken, first.receiveToken);
+  response = await fetch(base + "/v1/web-orders", {
+    headers: {
+      authorization: `Bearer ${rotatedTenant.receiveToken}`,
+      "x-pos-installation": "inst1",
+    },
+  });
+  assert.equal(response.status, 200);
+  response = await fetch(base + "/v1/web-orders", {
+    headers: {
+      authorization: `Bearer ${first.receiveToken}`,
+      "x-pos-installation": "inst1",
+    },
+  });
+  assert.equal(response.status, 401);
+  await service.close();
+});
+
 async function fixture(options = {}) {
   const dir = await mkdtemp(join(tmpdir(), "orders-service-"));
   const credentials = {
@@ -40,6 +213,9 @@ async function fixture(options = {}) {
       id: "merchant",
       whatsappNumber: "5491111111111",
       receiveTokenHash: hash(credentials.merchant.receive),
+      ...(options.receiveInstallationId
+        ? { receiveInstallationId: options.receiveInstallationId }
+        : {}),
       sites: [
         { id: "site-a", submitTokenHash: hash(credentials.merchant.siteA) },
         { id: "site-b", submitTokenHash: hash(credentials.merchant.siteB) },
@@ -148,6 +324,173 @@ test("close drains an in-flight submission before closing SQLite", async (t) => 
     bearer: f.credentials.merchant.receive,
   });
   assert.equal(recovered.body.orders[0].id, result.body.order.id);
+});
+
+test("configured receive installation pin is enforced on read, ack and catalog publish", async (t) => {
+  const f = await fixture({ receiveInstallationId: "terminal-7" });
+  t.after(f.close);
+  for (const headers of [{}, { "x-pos-installation": "wrong" }]) {
+    assert.equal(
+      (
+        await f.api("GET", "/v1/web-orders", {
+          bearer: f.credentials.merchant.receive,
+          headers,
+        })
+      ).status,
+      401,
+    );
+    assert.equal(
+      (
+        await f.api("PUT", "/v1/web-catalog", {
+          bearer: f.credentials.merchant.receive,
+          headers: { ...headers, "x-expected-store-id": "merchant" },
+          body: { products: [] },
+        })
+      ).status,
+      401,
+    );
+  }
+  assert.equal(
+    (
+      await f.api("GET", "/v1/web-orders", {
+        bearer: f.credentials.merchant.receive,
+        headers: {
+          "x-pos-installation": "terminal-7",
+          "x-expected-store-id": "merchant",
+        },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await f.api("PUT", "/v1/web-catalog", {
+        bearer: f.credentials.merchant.receive,
+        headers: {
+          "x-pos-installation": "terminal-7",
+          "x-expected-store-id": "merchant",
+        },
+        body: { products: [] },
+      })
+    ).status,
+    200,
+  );
+});
+
+test("catalog PUT is receive-authenticated and atomic; submit GET is scoped and checkout rejects stale prices", async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const snapshot = {
+    products: [
+      {
+        productRef: "burger:1",
+        name: "Hamburguesa",
+        category: "Comida",
+        takeawayPriceMinor: 12000,
+        deliveryPriceMinor: 13000,
+      },
+    ],
+  };
+  assert.equal(
+    (
+      await f.api("PUT", "/v1/web-catalog", {
+        bearer: f.credentials.merchant.receive,
+        body: snapshot,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.api("PUT", "/v1/web-catalog", {
+        bearer: f.credentials.other.receive,
+        headers: { "x-expected-store-id": "merchant" },
+        body: snapshot,
+      })
+    ).status,
+    403,
+  );
+  const withoutCatalog = await f.api("POST", "/v1/web-orders", {
+    bearer: f.credentials.merchant.siteA,
+    headers: {
+      "idempotency-key": key(),
+      "x-require-published-catalog": "true",
+    },
+    body: makePayload(),
+  });
+  assert.equal(withoutCatalog.status, 409);
+  assert.equal(withoutCatalog.body.error, "catalog_not_published");
+  const published = await f.api("PUT", "/v1/web-catalog", {
+    bearer: f.credentials.merchant.receive,
+    headers: { "x-expected-store-id": "merchant" },
+    body: snapshot,
+  });
+  assert.equal(published.status, 200);
+  assert.equal(published.body.revision, 1);
+  const fetched = await f.api("GET", "/v1/web-catalog", {
+    bearer: f.credentials.merchant.siteA,
+  });
+  assert.deepEqual(fetched.body.snapshot, snapshot);
+  assert.equal(
+    (
+      await f.api("GET", "/v1/web-catalog", {
+        bearer: f.credentials.other.siteA,
+      })
+    ).status,
+    404,
+  );
+  const stale = await f.api("POST", "/v1/web-orders", {
+    bearer: f.credentials.merchant.siteA,
+    headers: { "idempotency-key": key() },
+    body: makePayload(),
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error, "catalog_changed");
+  const current = await f.api("POST", "/v1/web-orders", {
+    bearer: f.credentials.merchant.siteA,
+    headers: { "idempotency-key": key() },
+    body: makePayload({
+      items: [{ ...makePayload().items[0], unitPriceMinor: 13000 }],
+    }),
+  });
+  assert.equal(current.status, 201);
+  const replay = await f.api("POST", "/v1/web-orders", {
+    bearer: f.credentials.merchant.siteA,
+    headers: { "idempotency-key": "catalog-replay-key-001" },
+    body: makePayload({
+      items: [{ ...makePayload().items[0], unitPriceMinor: 13000 }],
+    }),
+  });
+  assert.equal(replay.status, 201);
+  const next = await f.api("PUT", "/v1/web-catalog", {
+    bearer: f.credentials.merchant.receive,
+    headers: { "x-expected-store-id": "merchant" },
+    body: { products: [] },
+  });
+  assert.equal(next.body.revision, 2);
+  const replayAfterChange = await f.api("POST", "/v1/web-orders", {
+    bearer: f.credentials.merchant.siteA,
+    headers: { "idempotency-key": "catalog-replay-key-001" },
+    body: makePayload({
+      items: [{ ...makePayload().items[0], unitPriceMinor: 13000 }],
+    }),
+  });
+  assert.equal(replayAfterChange.status, 200);
+  const large = {
+    products: Array.from({ length: 700 }, (_, i) => ({
+      productRef: `large-${i}`,
+      name: `Producto ${i}`,
+      category: "Carta",
+      takeawayPriceMinor: 100,
+      deliveryPriceMinor: 100,
+    })),
+  };
+  const largePut = await f.api("PUT", "/v1/web-catalog", {
+    bearer: f.credentials.merchant.receive,
+    headers: { "x-expected-store-id": "merchant" },
+    body: large,
+  });
+  assert.equal(largePut.status, 200);
 });
 
 test("health and submit create pending unverified quote with merchant WhatsApp", async (t) => {

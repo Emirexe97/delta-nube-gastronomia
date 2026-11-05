@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
-import { app, autoUpdater as nativeUpdater, BrowserWindow, dialog, ipcMain, safeStorage, session } from "electron";
+import { app, autoUpdater as nativeUpdater, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, session, shell } from "electron";
 import { writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { GastronomyApplication } from "@gastronomy/application";
 import type {
@@ -9,7 +10,12 @@ import type {
   CashSessionReportPrintSections,
   DesktopApi,
   OrderDto,
+  WebCommerceApi,
 } from "@gastronomy/contracts";
+import type { WaiterDeskApi } from "@gastronomy/contracts";
+import { createWaiterRelay, waiterRelayConfig, WaiterRequestError } from "./waiter-relay";
+import { handleWaiterRequest } from "./waiter-rpc";
+import { createWebCommerceSync } from "./web-commerce-sync";
 import { formatMoney } from "@gastronomy/domain";
 import { SqliteGastronomyRepository } from "@gastronomy/database";
 import { printHtml } from "./printer";
@@ -21,12 +27,19 @@ import { comboComponentsHtml } from "./combo-ticket";
 import { restoreValidatedCopy } from "./safe-restore.cjs";
 import { isBackgroundTest } from "./e2e-background.cjs";
 import { DesktopLicensing } from "./licensing";
+import { WebSiteProvisioning } from "./web-site-provisioning";
+import QRCode from "qrcode";
+import { shareWebSite as performWebSiteShare, type WebSiteShareAction } from "./web-site-sharing";
 import { licenseAllowsMethod } from "@gastronomy/licensing";
 import { UpdateInstallGate } from "./update-install-gate";
 import { createUpdateRuntime } from "./update-runtime";
 import type { DesktopUpdater } from "./app-updater";
 
 let mainWindow: BrowserWindow | null = null;
+// The packaged PNG is a native resource, not a renderer URL or an asar entry.
+const appIconPath = app.isPackaged
+  ? join(process.resourcesPath, "icons", "app-icon.png")
+  : resolve(__dirname, "../build/icons/app-icon.png");
 let repository: SqliteGastronomyRepository | null = null;
 let application: GastronomyApplication | null = null;
 let databasePath = "";
@@ -35,6 +48,51 @@ let licensing: DesktopLicensing | null = null;
 let licensingTimer: ReturnType<typeof setInterval> | null = null;
 let licensingPollInFlight = false;
 const operationGate = new UpdateInstallGate();
+const electronSafeStorage = { isAvailable: () => safeStorage.isEncryptionAvailable(), encryptString: (value: string) => safeStorage.encryptString(value), decryptString: (value: Buffer) => safeStorage.decryptString(value) };
+function createDesktopLicensing(options: Omit<ConstructorParameters<typeof DesktopLicensing>[0], "safeStorage">) {
+  return new DesktopLicensing({ ...options, safeStorage: electronSafeStorage });
+}
+let webInstallationId: string | undefined;
+const webCommerceEnv: NodeJS.ProcessEnv = { ...process.env };
+const webCommerce = createWebCommerceSync({
+  getRepository: () => services().localRepository,
+  getInstallationId: () => webInstallationId,
+  env: webCommerceEnv,
+});
+const waiterRelay = createWaiterRelay({
+  config: () => waiterRelayConfig(webCommerceEnv, webInstallationId),
+  process: async (request) => {
+    const release = operationGate.enterOperation();
+    try {
+      if (!(await licensing?.getStatus())?.canOperate) throw new WaiterRequestError("pos_unavailable","La caja no está operativa.");
+      const result = handleWaiterRequest(services().localRepository, request, dispatchWaiterPrint);
+      if (request.method === "waiter.submitBatch" && result && typeof result === "object" && "status" in result && result.status === "PENDING_REVIEW")
+        mainWindow?.webContents.send("gastronomy:waiterOrderChanged", "Pedido de mozo demorado: revisalo en Pedidos → Mozos demorados. No se imprimió.");
+      return result;
+    } finally { release(); }
+  },
+});
+let waiterTimer: ReturnType<typeof setInterval> | undefined;
+let webSyncTimer: ReturnType<typeof setInterval> | undefined;
+let webSiteTimer: ReturnType<typeof setInterval> | undefined;
+let webSite: WebSiteProvisioning | null = null;
+
+// Scheduled work uses the same admission gate and license as an IPC write.
+// An unconfigured installation does not start network or database work.
+async function pollWebCommerce() {
+  if (!webCommerce.getStoreId() || !repository || !licensing) return;
+  let release: (() => void) | undefined;
+  try {
+    release = operationGate.enterOperation();
+    if ((await licensing.getStatus()).canOperate && repository)
+      await webCommerce.run();
+  } catch { /* restore/install/quit may temporarily close the gate */ }
+  finally { release?.(); }
+}
+function catalogChanged() {
+  webCommerce.invalidate();
+  void pollWebCommerce();
+}
 let updater: DesktopUpdater | null = null;
 let updateTimer: ReturnType<typeof setInterval> | null = null;
 let updateStartupTimer: ReturnType<typeof setTimeout> | null = null;
@@ -52,6 +110,13 @@ async function pollLicensing() {
   licensingPollInFlight = true;
   try { await licensing.refresh(); } catch { /* retain the last locally verified lease */ }
   finally { licensingPollInFlight = false; release(); }
+}
+async function pollWebSiteProvisioning() {
+  if (!licensing || !webSite) return;
+  let release: (() => void) | undefined;
+  try { release = operationGate.enterOperation(); await licensing.retryWebSiteProvisioning(); }
+  catch { /* installer/restore admission or offline provisioning is retried later */ }
+  finally { release?.(); }
 }
 
 function services() {
@@ -167,12 +232,15 @@ async function printOrder(
   order: OrderDto,
   kind: "KITCHEN_ORDER" | "CUSTOMER_BILL",
   settings: AppSettingsDto,
+  requireExplicitDevice = false,
 ) {
   const profile =
     kind === "KITCHEN_ORDER"
       ? settings.printing.kitchen
       : settings.printing.bill;
+  if (requireExplicitDevice && (profile.mode !== "SYSTEM_DIRECT" || !profile.deviceName.trim())) throw new Error("Seleccioná impresión directa y el comandero de cocina en Configuración.");
   return printHtml(orderTicketHtml(order, kind, settings), profile, {
+    requireExplicitDevice,
     parent: mainWindow,
     onTiming: printTiming(),
   });
@@ -268,17 +336,33 @@ function printerTestHtml(
   );
 }
 
+const activePrints = new Set<string>();
+function notifyWaiterChange(notice?:string) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("gastronomy:waiterOrderChanged", notice);
+}
+function dispatchWaiterPrint(jobId:string) {
+  // The saved SQLite receipt is authoritative. Printing runs separately; a timeout never resubmits a sale.
+  const number=services().localRepository.getPrintOrder(jobId).number;
+  const release=operationGate.enterOperation();
+  void executePrintJob(jobId,"KITCHEN_ORDER").then(()=>notifyWaiterChange(),()=>{
+    notifyWaiterChange("Pedido #" + number + " guardado desde Modo Mozo. Revisá el comandero y, si no salió, reintentá desde el pedido.");
+  }).finally(release);
+  notifyWaiterChange();
+}
 async function executePrintJob(
   jobId: string,
   kind: "KITCHEN_ORDER" | "CUSTOMER_BILL",
 ) {
   const { localRepository } = services();
   const order = localRepository.getPrintOrder(jobId);
+  if (activePrints.has(jobId)) throw new Error("La comanda se está imprimiendo.");
+  activePrints.add(jobId);
   try {
     const outcome = await printOrder(
       order,
       kind,
       localRepository.getSettings(),
+      localRepository.isWaiterPrintJob(jobId),
     );
     if (outcome === "SKIPPED") {
       localRepository.discardPrintJob(jobId);
@@ -293,7 +377,7 @@ async function executePrintJob(
     throw new Error(
       `El pedido quedó guardado, pero no se pudo imprimir: ${message}`,
     );
-  }
+  } finally { activePrints.delete(jobId); }
 }
 
 function registerIpcHandlers() {
@@ -315,6 +399,8 @@ function registerIpcHandlers() {
   };
   type ForwardedDesktopMethod = Exclude<
     keyof DesktopApi,
+    | keyof WaiterDeskApi
+    | keyof WebCommerceApi
     | "printOrder"
     | "printCashSessionReport"
     | "retryPrint"
@@ -475,10 +561,110 @@ function registerIpcHandlers() {
     },
   );
   handleOperation("gastronomy:refreshLicense", () => licensing!.refresh());
-  handleOperation("gastronomy:requestLicenseAccess", (_event, input: { businessName?: unknown }) => {
+  handleOperation("gastronomy:requestLicenseAccess", (_event, input: { businessName?: unknown; webSite?: { slug?: unknown; whatsappNumber?: unknown } }) => {
     if (typeof input?.businessName !== "string" || input.businessName.trim().length < 2 || input.businessName.trim().length > 120) throw new Error("Ingresá el nombre del negocio.");
-    return licensing!.requestLicenseAccess({ businessName: input.businessName.trim() });
+    const businessName = input.businessName.trim();
+    const signup = input.webSite;
+    const web = signup && typeof signup.slug === "string" && typeof signup.whatsappNumber === "string" ? { slug: signup.slug, whatsappNumber: signup.whatsappNumber } : undefined;
+    return (async () => {
+      if (web && (await licensing!.getStatus()).canOperate && !services().appService.bootstrap().currentUser.permissions.includes("settings.manage")) throw new Error("No tenés permiso para configurar la tienda web.");
+      return licensing!.requestLicenseAccess({ businessName, ...(web ? { webSite: web } : {}) });
+    })();
   });
+  handleOperation("gastronomy:getWebSiteStatus", async () => {
+    const website = await webSite!.getStatus();
+    const license = await licensing!.getStatus();
+    if (license.canOperate && !licensing!.hasEnrollmentIdentity() && website.state !== "ACTIVE") return { ...website, state: "NOT_REGISTERED" as const, message: "Para habilitar la tienda, andá a Configuración → Licencia → Solicitar habilitación y esperá la aprobación sobre tu licencia existente." };
+    return website;
+  });
+  handleOperation("gastronomy:shareWebSite", async (_event, action: WebSiteShareAction) => {
+    if (!services().appService.bootstrap().currentUser.permissions.includes("settings.manage")) throw new Error("No tenés permiso para compartir la tienda web.");
+    return performWebSiteShare(action, {
+      // Sharing an already-provisioned public URL needs no online request.
+      getStatus: () => webSite!.status(),
+      openExternal: async (url) => { await shell.openExternal(url); },
+      writeClipboard: (text) => clipboard.writeText(text),
+      showSaveDialog: async () => {
+        const result = await dialog.showSaveDialog({ title: "Descargar código QR", defaultPath: "carta-web.png", buttonLabel: "Guardar QR", filters: [{ name: "Imagen PNG", extensions: ["png"] }] });
+        return { canceled: result.canceled, filePath: result.filePath };
+      },
+      toBuffer: (url) => QRCode.toBuffer(url, { type: "png", errorCorrectionLevel: "H", margin: 4, scale: 12 }),
+    });
+  });
+  handleOperation("gastronomy:registerWebSite", async (_event, input: { slug?: unknown; whatsappNumber?: unknown }) => {
+    const status = await licensing!.getStatus();
+    if (!status.canOperate) throw new Error(status.message);
+    if (!services().appService.bootstrap().currentUser.permissions.includes("settings.manage")) throw new Error("No tenés permiso para configurar la tienda web.");
+    if (typeof input?.slug !== "string" || typeof input?.whatsappNumber !== "string") throw new Error("Completá el enlace y WhatsApp de la tienda.");
+    return licensing!.registerWebSite({ slug: input.slug, whatsappNumber: input.whatsappNumber });
+  });
+  handleOperation("gastronomy:updateWebSiteBranding", async (_event, input: { displayName?: unknown; tagline?: unknown; accent?: unknown }) => {
+    const status = await licensing!.getStatus();
+    if (!status.canOperate) throw new Error(status.message);
+    const state = services().appService.bootstrap();
+    if (!state.currentUser.permissions.includes("settings.manage")) throw new Error("No tenés permiso para editar la tienda web.");
+    if (typeof input?.displayName !== "string" || typeof input?.tagline !== "string" || typeof input?.accent !== "string") throw new Error("Completá los datos de identidad de la tienda.");
+    return webSite!.updateBranding({ displayName: input.displayName, tagline: input.tagline, accent: input.accent });
+  });
+  const requireWebStore = () => {
+    const storeId = webCommerce.getStoreId();
+    if (!storeId) throw new Error("Configurá la conexión del comercio web primero.");
+    return storeId;
+  };
+  handleData("gastronomy:getWebSyncStatus", () => webCommerce.status());
+  handleData("gastronomy:retryWebSync", () => webCommerce.run(true));
+  handleData("gastronomy:setWebPublication", (_event, input) => {
+    services().localRepository.setWebPublication(input);
+    catalogChanged();
+  });
+  handleData("gastronomy:listWebOrders", () => {
+    const storeId = webCommerce.getStoreId();
+    return storeId ? services().localRepository.listWebOrders(storeId) : [];
+  });
+  for (const method of ["saveWebOrderDraft", "rejectWebOrder", "confirmWebOrder"] as const) {
+    handleData(`gastronomy:${method}`, (_event, input) =>
+      services().localRepository[method](requireWebStore(), input));
+  }
+  handleData("gastronomy:listDelayedWaiterBatches", () => services().localRepository.listDelayedWaiterBatches());
+  const checkBatchId = (input: { requestId?: unknown }) => {
+    if (!input || typeof input.requestId !== "string" || !/^[\w-]{16,128}$/.test(input.requestId))
+      throw new Error("Seleccioná una tanda válida.");
+    return { requestId: input.requestId };
+  };
+  handleData("gastronomy:confirmDelayedWaiterBatch", (_event, input) => {
+    const result = services().localRepository.confirmDelayedWaiterBatch(checkBatchId(input));
+    if (result.created && result.printJobId) dispatchWaiterPrint(result.printJobId);
+    mainWindow?.webContents.send("gastronomy:waiterOrderChanged");
+    return result;
+  });
+  handleData("gastronomy:rejectDelayedWaiterBatch", (_event, input) => {
+    services().localRepository.rejectDelayedWaiterBatch(checkBatchId(input));
+    mainWindow?.webContents.send("gastronomy:waiterOrderChanged");
+  });
+  handleData("gastronomy:getWaiterDeskStatus",()=>{
+    const repo=services().localRepository;
+    const kitchen=repo.getSettings().printing.kitchen;
+    return {configured:waiterRelay.configured(), printerReady:kitchen.mode==="SYSTEM_DIRECT" && !!kitchen.deviceName.trim(), sessions:repo.listWaiterDevices(),connectionError:waiterRelay.connectionError()};
+  });
+  handleData("gastronomy:issueWaiterQr",async(_event,input:{waiterId:string})=>{
+    const repo=services().localRepository;
+    const settings=repo.getSettings();
+    if (!settings.modules.diningRoom) throw new Error("Activá el módulo Salón.");
+    if (settings.printing.kitchen.mode!=="SYSTEM_DIRECT" || !settings.printing.kitchen.deviceName.trim()) throw new Error("Configurá impresión directa y elegí el comandero antes de vincular teléfonos.");
+    if (!input || typeof input.waiterId!=="string" || input.waiterId.length>128) throw new Error("Elegí un mozo activo.");
+    const challenge=repo.createWaiterChallenge(input.waiterId);
+    const invite=await waiterRelay.invite(challenge.challengeId);
+    const expiresAt=new Date(Math.min(Date.parse(invite.expiresAt),Date.parse(challenge.expiresAt))).toISOString();
+    return {image:await QRCode.toDataURL(invite.url,{errorCorrectionLevel:"M",margin:4,width:320}), expiresAt};
+  });
+  handleData("gastronomy:revokeWaiterDevice",(_event,input:{sessionId:string})=>{
+    if (!input || typeof input.sessionId!=="string" || input.sessionId.length>128) throw new Error("Elegí una sesión.");
+    services().localRepository.revokeWaiterDevice(input.sessionId);
+  });
+  const catalogWrites = new Set<string>([
+    "createProduct", "updateProduct", "deleteProduct", "bulkUpdateProducts",
+    "updateCategory", "deleteCategory", "configureProductCombo", "adjustStock",
+  ]);
   for (const method of methods) {
     handleData(`gastronomy:${method}`, async (_event, payload) => {
       const { appService } = services();
@@ -521,7 +707,9 @@ function registerIpcHandlers() {
       ) {
         payload.terminalId = require("node:os").hostname();
       }
-      return target.call(appService, payload);
+      const result = await target.call(appService, payload);
+      if (catalogWrites.has(method)) catalogChanged();
+      return result;
     });
   }
   handleData(
@@ -600,7 +788,7 @@ function registerIpcHandlers() {
         printed: outcome === "PRINTED",
         message:
           outcome === "PRINTED"
-            ? "Impresión completada."
+            ? "Prueba enviada al sistema de impresión. Verificá el papel en la impresora elegida."
             : "Impresión cancelada. No se imprimió nada.",
       };
     },
@@ -609,6 +797,7 @@ function registerIpcHandlers() {
     "gastronomy:retryPrint",
     async (_event, payload: { jobId: string }) => {
       const { appService } = services();
+      if (activePrints.has(payload.jobId)) throw new Error("La comanda se está imprimiendo.");
       const job = appService.preparePrintRetry(payload);
       return executePrintJob(job.jobId, job.kind);
     },
@@ -697,6 +886,8 @@ function registerIpcHandlers() {
             seedStarterCatalog: !app.isPackaged,
           });
           application = new GastronomyApplication(repository);
+          waiterRelay.reset();
+          webCommerce.invalidate();
         },
       });
       if (!result.restored) return { path: null, restored: false };
@@ -732,6 +923,7 @@ async function createWindow() {
     minWidth: 1100,
     minHeight: 680,
     show: false,
+    ...(existsSync(appIconPath) ? { icon: appIconPath } : {}),
     backgroundColor: "#F5F7FA",
     autoHideMenuBar: true,
     webPreferences: {
@@ -773,6 +965,10 @@ app.on("before-quit", (event) => {
     return;
   }
   if (updateTimer) clearInterval(updateTimer);
+  if (waiterTimer) clearInterval(waiterTimer);
+  waiterRelay.reset();
+  if (webSyncTimer) clearInterval(webSyncTimer);
+  if (webSiteTimer) clearInterval(webSiteTimer);
   if (updateStartupTimer) clearTimeout(updateStartupTimer);
   updater?.dispose();
   if (licensingTimer) clearInterval(licensingTimer);
@@ -784,6 +980,9 @@ app.on("before-quit", (event) => {
 app
   .whenReady()
   .then(async () => {
+    // A packaged Mac app already has its multi-resolution ICNS in the app bundle.
+    if (process.platform === "darwin" && !app.isPackaged && app.dock && existsSync(appIconPath))
+      app.dock.setIcon(appIconPath);
     backgroundE2e = isBackgroundTest({
       flag: process.env.GASTRONOMY_E2E_BACKGROUND,
       isPackaged: app.isPackaged,
@@ -809,13 +1008,16 @@ app
       seedStarterCatalog: !app.isPackaged,
     });
     application = new GastronomyApplication(repository);
-    licensing = new DesktopLicensing({
+    licensing = createDesktopLicensing({
       userDataPath: app.getPath("userData"),
       isPackaged: app.isPackaged,
       configPath: resolve(__dirname, "../licensing-config.json"),
-      safeStorage: { isAvailable: () => safeStorage.isEncryptionAvailable(), encryptString: (value) => safeStorage.encryptString(value), decryptString: (value) => safeStorage.decryptString(value) },
     });
     await licensing.initialize();
+    webSite = new WebSiteProvisioning({ userDataPath: app.getPath("userData"), baseUrl: process.env.GASTRONOMY_WEB_PROVISION_URL ?? "https://pedidos.deltanubeweb.com", env: webCommerceEnv, safeStorage: electronSafeStorage, installationId: () => webInstallationId, onConfigured: () => { webCommerce.invalidate(); void pollWebCommerce(); } });
+    await webSite.initialize();
+    licensing.setWebSiteProvisioner({ provision: (ticket, signup) => webSite!.provision(ticket, signup), getChoice: () => webSite!.selectedSignup(), selectChoice: (signup) => webSite!.select(signup), getStatus: () => webSite!.status() });
+    webInstallationId = (await licensing.getStatus()).installationId;
     updater = await createUpdateRuntime({
       isPackaged: app.isPackaged,
       platform: process.platform,
@@ -828,7 +1030,13 @@ app
         if (status.state === "ERROR") operationGate.cancelInstall();
       },
     });
+    // SQLite startup invalidates previous mobile sessions and unredeemed challenges.
+    waiterTimer = setInterval(() => { void waiterRelay.tick(); }, 1000);
     registerIpcHandlers();
+    // Always run the lightweight scheduler: provisioned credentials can arrive after approval.
+    webSyncTimer = setInterval(() => { void pollWebCommerce(); }, 15_000);
+    void pollWebCommerce();
+    webSiteTimer = setInterval(() => { void pollWebSiteProvisioning(); }, 15_000);
     if (app.isPackaged) {
       void pollLicensing();
       licensingTimer = setInterval(() => { void pollLicensing(); }, 60_000);

@@ -204,6 +204,7 @@ export interface ProductPriceDto {
 }
 
 export interface ProductDto {
+  webPublished?: boolean;
   id: Id;
   categoryId: Id;
   categoryName: string;
@@ -1323,7 +1324,12 @@ export interface AppUpdateStatusDto {
   message: string;
 }
 
-export interface DesktopApi {
+export * from "./web-commerce";
+import type { WebCommerceApi } from "./web-commerce";
+
+export * from "./waiter-desk";
+import type { WaiterDeskApi } from "./waiter-desk";
+export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   listIngredients(): Promise<IngredientDto[]>;
   saveIngredient(input: SaveIngredientInput): Promise<IngredientDto>;
   getProductCostConfiguration(input: { productId: string }): Promise<ProductCostConfigurationDto>;
@@ -1334,6 +1340,7 @@ export interface DesktopApi {
   getLicenseStatus(): Promise<LicenseStatusDto>;
   requestLicenseAccess(input: {
     businessName: string;
+    webSite?: { slug: string; whatsappNumber: string };
   }): Promise<LicenseStatusDto>;
   activateLicense(input: { code: string }): Promise<LicenseStatusDto>;
   refreshLicense(): Promise<LicenseStatusDto>;

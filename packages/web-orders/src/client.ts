@@ -6,11 +6,16 @@ import {
   type WebOrderPage,
   type WebOrderRecord,
   type WebOrderSubmission,
+  parseWebCatalogSnapshot,
+  type WebCatalogSnapshot,
 } from "./index.js";
 
 export class WebOrdersHttpError extends Error {
-  constructor(readonly status: number) {
-    super(`Web orders HTTP ${status}`);
+  constructor(
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(`Web orders HTTP ${status}${code ? `: ${code}` : ""}`);
     this.name = "WebOrdersHttpError";
   }
 }
@@ -21,6 +26,7 @@ export class WebOrdersClient {
   constructor(
     baseUrl: string,
     private readonly token: string,
+    private readonly installationId?: string,
   ) {
     const url = new URL(baseUrl);
     const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
@@ -36,6 +42,11 @@ export class WebOrdersClient {
       );
     if (!/^[A-Za-z0-9_-]{43,128}$/.test(token))
       throw new WebOrderValidationError("Token inválido");
+    if (
+      installationId !== undefined &&
+      !/^[A-Za-z0-9_-]{1,128}$/.test(installationId)
+    )
+      throw new WebOrderValidationError("ID de instalación inválido");
     url.pathname = url.pathname.replace(/\/$/, "") + "/";
     this.baseUrl = url;
   }
@@ -45,6 +56,9 @@ export class WebOrdersClient {
     method = "GET",
     body?: unknown,
     idempotencyKey?: string,
+    expectedStoreId?: string,
+    requirePublishedCatalog = false,
+    expectedSiteId?: string,
   ): Promise<unknown> {
     const response = await fetch(new URL(path, this.baseUrl), {
       method,
@@ -52,14 +66,38 @@ export class WebOrdersClient {
         authorization: `Bearer ${this.token}`,
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
         ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
+        ...(expectedStoreId ? { "x-expected-store-id": expectedStoreId } : {}),
+        ...(this.installationId
+          ? { "x-pos-installation": this.installationId }
+          : {}),
+        ...(requirePublishedCatalog
+          ? { "x-require-published-catalog": "true" }
+          : {}),
+        ...(expectedSiteId ? { "x-expected-site-id": expectedSiteId } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) {
-      await response.body?.cancel();
-      throw new WebOrdersHttpError(response.status);
+      let errorText = "";
+      try {
+        const reader = response.body?.getReader();
+        if (reader) {
+          const part = await reader.read();
+          if (part.value && part.value.byteLength <= 4096)
+            errorText = new TextDecoder().decode(part.value);
+          await reader.cancel();
+        }
+      } catch {}
+      let code: string | undefined;
+      if (errorText.length <= 4096) {
+        try {
+          const parsed = JSON.parse(errorText) as { error?: unknown };
+          if (typeof parsed.error === "string") code = parsed.error;
+        } catch {}
+      }
+      throw new WebOrdersHttpError(response.status, code);
     }
     // Consume under a hard bound, including chunked responses from a bad proxy.
     const reader = response.body?.getReader();
@@ -88,14 +126,32 @@ export class WebOrdersClient {
   async submit(
     submission: WebOrderSubmission,
     idempotencyKey: string,
+    options: {
+      requirePublishedCatalog?: boolean;
+      expectedStoreId?: string;
+      expectedSiteId?: string;
+    } = {},
   ): Promise<CreateWebOrderResult> {
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(idempotencyKey))
       throw new WebOrderValidationError("Idempotency-Key inválida");
+    if (
+      options.expectedStoreId !== undefined &&
+      !/^[A-Za-z0-9_-]{1,64}$/.test(options.expectedStoreId)
+    )
+      throw new WebOrderValidationError("Store ID inválido");
+    if (
+      options.expectedSiteId !== undefined &&
+      !/^[A-Za-z0-9_-]{1,64}$/.test(options.expectedSiteId)
+    )
+      throw new WebOrderValidationError("Site ID inválido");
     const data = (await this.request(
       "v1/web-orders",
       "POST",
       parseWebOrderSubmission(submission),
       idempotencyKey,
+      options.expectedStoreId,
+      options.requirePublishedCatalog === true,
+      options.expectedSiteId,
     )) as Record<string, unknown>;
     const order = parseWebOrderRecord(data?.order);
     const url = new URL(String(data?.whatsappUrl));
@@ -110,8 +166,73 @@ export class WebOrdersClient {
     return { order, whatsappUrl: url.toString() };
   }
 
+  /** Publish from a trusted backend/POS using the commerce receive token. */
+  async publishCatalog(
+    snapshot: WebCatalogSnapshot,
+    expectedStoreId: string,
+  ): Promise<{ revision: number }> {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(expectedStoreId))
+      throw new WebOrderValidationError("Store ID inválido");
+    const data = (await this.request(
+      "v1/web-catalog",
+      "PUT",
+      parseWebCatalogSnapshot(snapshot),
+      undefined,
+      expectedStoreId,
+    )) as Record<string, unknown>;
+    if (!Number.isSafeInteger(data?.revision) || Number(data.revision) < 1)
+      throw new WebOrderValidationError("Versión de catálogo inválida");
+    return { revision: Number(data.revision) };
+  }
+
+  /** Fetch the current commerce snapshot from a site backend using its submit token. */
+  async getCatalog(expected?: {
+    storeId?: string;
+    siteId?: string;
+  }): Promise<{
+    snapshot: WebCatalogSnapshot;
+    revision: number;
+    updatedAt: string;
+  }> {
+    if (
+      expected?.storeId !== undefined &&
+      !/^[A-Za-z0-9_-]{1,64}$/.test(expected.storeId)
+    )
+      throw new WebOrderValidationError("Store ID inválido");
+    if (
+      expected?.siteId !== undefined &&
+      !/^[A-Za-z0-9_-]{1,64}$/.test(expected.siteId)
+    )
+      throw new WebOrderValidationError("Site ID inválido");
+    const data = (await this.request(
+      "v1/web-catalog",
+      "GET",
+      undefined,
+      undefined,
+      expected?.storeId,
+      false,
+      expected?.siteId,
+    )) as Record<string, unknown>;
+    if (
+      !Number.isSafeInteger(data?.revision) ||
+      Number(data.revision) < 1 ||
+      typeof data?.updatedAt !== "string" ||
+      !Number.isFinite(Date.parse(data.updatedAt))
+    )
+      throw new WebOrderValidationError("Respuesta de catálogo inválida");
+    return {
+      snapshot: parseWebCatalogSnapshot(data.snapshot),
+      revision: Number(data.revision),
+      updatedAt: data.updatedAt,
+    };
+  }
+
   /** Persist each returned order and its cursor locally BEFORE acknowledging it. */
-  async list(after = 0, limit = 50): Promise<WebOrderPage> {
+  async list(
+    after = 0,
+    limit = 50,
+    expectedStoreId?: string,
+  ): Promise<WebOrderPage> {
     if (
       !Number.isSafeInteger(after) ||
       after < 0 ||
@@ -122,6 +243,10 @@ export class WebOrdersClient {
       throw new WebOrderValidationError("Cursor/límite inválido");
     const data = (await this.request(
       `v1/web-orders?after=${after}&limit=${limit}`,
+      "GET",
+      undefined,
+      undefined,
+      expectedStoreId,
     )) as Record<string, unknown>;
     if (
       !data ||
@@ -142,12 +267,18 @@ export class WebOrdersClient {
     return { orders, nextCursor: previous, hasMore: data.hasMore };
   }
 
-  async acknowledgeReceived(id: string): Promise<WebOrderRecord> {
+  async acknowledgeReceived(
+    id: string,
+    expectedStoreId?: string,
+  ): Promise<WebOrderRecord> {
     if (!/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(id))
       throw new WebOrderValidationError("ID inválido");
     const data = (await this.request(
       `v1/web-orders/${id}/received`,
       "POST",
+      undefined,
+      undefined,
+      expectedStoreId,
     )) as Record<string, unknown>;
     const order = parseWebOrderRecord(data?.order);
     if (order.id !== id || order.receivedAt === null)

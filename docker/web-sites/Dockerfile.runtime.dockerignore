@@ -1,0 +1,11 @@
+**
+!apps/
+!apps/orders-service/
+!apps/orders-service/package.json
+!apps/orders-service/dist/
+!apps/orders-service/dist/**
+!packages/
+!packages/web-orders/
+!packages/web-orders/package.json
+!packages/web-orders/dist/
+!packages/web-orders/dist/**

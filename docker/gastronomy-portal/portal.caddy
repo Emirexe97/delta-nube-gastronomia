@@ -1,0 +1,20 @@
+# Import INSIDE the existing gastronomia.deltanubeweb.com site block.
+# All other paths and HTTP methods fall through to the existing handlers.
+@gastronomyPublic {
+    method GET HEAD
+    path / /ayuda /ayuda/ /carta-de-ejemplo /carta-de-ejemplo/ /portal-assets/*
+}
+handle @gastronomyPublic {
+    root * "{$GASTRONOMY_PORTAL_ROOT:/srv/gastronomy-portal}"
+    @portalWebp path /portal-assets/*.webp
+    header @portalWebp Content-Type image/webp
+    @portalFont path /portal-assets/*.woff2
+    header @portalFont Content-Type font/woff2
+    header {
+        Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        Cache-Control "no-cache"
+    }
+    file_server
+}

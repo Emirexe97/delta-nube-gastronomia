@@ -55,11 +55,17 @@ assert.ok(
     preload.includes('invoke("requestLicenseAccess"'),
   "Packaged preload must expose the license access request API",
 );
+const licensingFactoryAt = main.indexOf("function createDesktopLicensing");
+const licensingConstructorAt = main.indexOf("new DesktopLicensing", licensingFactoryAt);
+const licensingFactory = main.slice(licensingFactoryAt, main.indexOf("}", licensingConstructorAt) + 1);
 assert.ok(
-  main.includes("safeStorage.isEncryptionAvailable()") &&
+  licensingFactoryAt >= 0 && licensingConstructorAt > licensingFactoryAt &&
+    licensingFactory.includes("safeStorage: electronSafeStorage") &&
+    main.includes("electronSafeStorage = {") &&
+    main.includes("safeStorage.isEncryptionAvailable()") &&
     main.includes("safeStorage.encryptString(value)") &&
     main.includes("safeStorage.decryptString(value)"),
-  "Packaged main must wire Electron safeStorage availability, encryption, and decryption",
+  "Packaged main must pass the Electron safeStorage adapter into DesktopLicensing",
 );
 console.log(
   "Verified packaged public licensing configuration and main/preload handlers (not a physical Mac runtime test).",

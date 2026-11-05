@@ -1,0 +1,13 @@
+# Runtime for already built (and tested) workspace artifacts. No POS data or keys.
+FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+WORKDIR /app
+COPY packages/web-orders/package.json ./node_modules/@gastronomy/web-orders/package.json
+COPY packages/web-orders/dist ./node_modules/@gastronomy/web-orders/dist
+COPY apps/orders-service/package.json ./apps/orders-service/package.json
+COPY apps/orders-service/dist ./apps/orders-service/dist
+# Build contexts transferred from Windows may have owner-only modes. Keep code root-owned and readable by USER node.
+RUN chmod -R a+rX /app/apps /app/node_modules && mkdir -p /data && chown node:node /data
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=8098 WEB_ORDERS_DB_PATH=/data/orders.sqlite
+USER node
+HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:8098/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "apps/orders-service/dist/server.js"]

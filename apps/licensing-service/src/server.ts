@@ -24,9 +24,11 @@ import {
   type DeviceProof,
 } from "@gastronomy/licensing";
 import { verifyPanelPassword } from "./panel-auth.js";
+import { issueWebSiteTicket } from "@gastronomy/web-orders/provision";
 
 const MAX_BODY = 16 * 1024;
 type Env = {
+  webSiteProvisionSecret?: string;
   dbPath: string;
   adminToken: string;
   privateKey: string;
@@ -147,6 +149,9 @@ export function createLicenseServer(
 ): { server: Server; close: () => void } {
   if (Buffer.byteLength(env.adminToken) < 32)
     throw new Error("ADMIN_TOKEN must be at least 32 bytes");
+  if (env.webSiteProvisionSecret !== undefined &&
+      (Buffer.byteLength(env.webSiteProvisionSecret) < 32 || env.webSiteProvisionSecret === env.adminToken))
+    throw new Error("Use a dedicated WEB_SITE_PROVISION_SECRET of at least 32 bytes");
   if (!env.dbPath || !env.dbPath.match(/^(?:[A-Za-z]:\\|\\\\|\/)/))
     throw new Error("DB_PATH must be absolute");
   if (env.panelAuth) {
@@ -258,6 +263,13 @@ export function createLicenseServer(
       status: row.status,
     };
     return signLease(lease, privateKey);
+  };
+  // Only call after a fresh, verified v2 proof from the approved installation.
+  const deviceCredentials = (row: LicenseRow, installationId: string) => {
+    const token = issueToken(row, installationId);
+    if (!env.webSiteProvisionSecret || row.status !== "ACTIVE" || Date.parse(row.paid_through) <= Date.now())
+      return { token };
+    return { token, webSiteTicket: issueWebSiteTicket({ licenseId: row.id, installationId, businessName: row.business_name }, env.webSiteProvisionSecret) };
   };
   const rowById = (id: string): LicenseRow | undefined =>
     db.prepare("SELECT * FROM licenses WHERE id = ?").get(id) as
@@ -1072,7 +1084,7 @@ export function createLicenseServer(
             return json(res, 401, { error: "device_not_approved" });
           return json(res, 200, {
             request: panelRequestShape(device),
-            token: issueToken(license, device.installation_id),
+            ...deviceCredentials(license, device.installation_id),
           });
         }
         const businessName = (b.businessName as string).trim();
@@ -1133,7 +1145,7 @@ export function createLicenseServer(
         if (requestRow.status === "APPROVED" && requestRow.license_id) {
           const license = rowById(requestRow.license_id);
           if (license?.installation_id === requestRow.installation_id)
-            response.token = issueToken(license, requestRow.installation_id);
+            Object.assign(response, deviceCredentials(license, requestRow.installation_id));
         }
         return json(res, 200, response);
       }
@@ -1266,6 +1278,9 @@ if (
     dbPath,
     adminToken: readFileSync(adminFile, "utf8").trim(),
     privateKey: readFileSync(privateFile, "utf8"),
+    webSiteProvisionSecret: process.env.WEB_SITE_PROVISION_SECRET_FILE
+      ? readFileSync(process.env.WEB_SITE_PROVISION_SECRET_FILE, "utf8").trim()
+      : process.env.WEB_SITE_PROVISION_SECRET,
     ...(panelEnvCount === 3
       ? {
           panelAuth: {

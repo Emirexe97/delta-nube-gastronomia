@@ -3,6 +3,8 @@
 Aplicación gastronómica desktop, local-first e independiente, diseñada para
 integrarse más adelante como módulo de Delta Nube POS.
 
+**Modo Mozo:** carga desde teléfonos con QR presencial y PIN, Wi-Fi o datos y un comandero. Ver [configuración y prueba en el local](docs/MODO_MOZO.md).
+
 ## Estado actual
 
 Candidato funcional local:
@@ -148,6 +150,9 @@ sesión, roles y permisos en lugar de crear una autenticación paralela.
 - [Referencia del POS](docs/REFERENCE_POS_ANALYSIS.md)
 - [Arquitectura](docs/ARCHITECTURE.md)
 - [API común de pedidos web: preparación e integración](docs/WEB_ORDERS_API.md)
+- [Carta sincronizada y bandeja de pedidos: emparejar un POS con una web](docs/WEB_COMMERCE_POS.md)
+- [Alta automática por comercio: subdominios, diseño y preparación del servidor](docs/WEB_SITES_REGISTRATION.md)
+- [Portada, carta de ejemplo, ayuda y QR de la carta del comercio](docs/GASTRONOMIA_PORTADA.md)
 - [Base de datos](docs/DATABASE.md)
 - [Impresión](docs/PRINTING.md)
 - [Atajos](docs/KEYBOARD_SHORTCUTS.md)

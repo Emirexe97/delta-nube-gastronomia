@@ -1,0 +1,12 @@
+# Deploy on top of compose.yml for the waiter-only public edge. No host port is needed.
+services:
+  orders:
+    image: gastronomy-orders:${WAITER_RELEASE:?Set WAITER_RELEASE}
+    ports: !reset []
+    networks:
+      waiter-private:
+        aliases: [gastronomy-waiter-api]
+networks:
+  waiter-private:
+    name: gastronomy_waiter_private
+    internal: true

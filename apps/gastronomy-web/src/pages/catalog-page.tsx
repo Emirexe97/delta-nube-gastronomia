@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import type {
   AuditEntryDto,
   BootstrapDto,
@@ -226,6 +227,44 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [comboOpen, setComboOpen] = useState(false);
   const [ingredientOpen, setIngredientOpen] = useState(false);
   const [costProduct, setCostProduct] = useState<ProductDto | null>(null);
+  const queryClient = useQueryClient();
+  const [webSync, setWebSync] = useState<{ state: string; lastSyncedAt: string | null; message: string } | null>(null);
+  const [webSyncError, setWebSyncError] = useState<string | null>(null);
+  const [publicationBusy, setPublicationBusy] = useState<string | null>(null);
+  const [webRetryBusy, setWebRetryBusy] = useState(false);
+  const canManageWebCatalog = data.currentUser.permissions.includes("*") || data.currentUser.permissions.includes("prices.bulk_update");
+  useEffect(() => {
+    let live = true;
+    window.gastronomy.getWebSyncStatus().then((status) => { if (live) setWebSync(status); }).catch((error) => { if (live) setWebSyncError(humanError(error)); });
+    const timer = window.setInterval(() => {
+      window.gastronomy.getWebSyncStatus().then((status) => { if (live) setWebSync(status); }).catch((error) => { if (live) setWebSyncError(humanError(error)); });
+    }, 15_000);
+    return () => { live = false; window.clearInterval(timer); };
+  }, []);
+  const toggleWebPublication = async (product: ProductDto) => {
+    if (!canManageWebCatalog || publicationBusy) return;
+    setPublicationBusy(product.id);
+    try {
+      await window.gastronomy.setWebPublication({ productId: product.id, enabled: !product.webPublished });
+      await queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+      setWebSync(await window.gastronomy.getWebSyncStatus());
+      setWebSyncError(null);
+    } catch (error) { setWebSyncError(humanError(error)); }
+    finally { setPublicationBusy(null); }
+  };
+  const webPublicationControl = (product: ProductDto) => {
+    if (product.comboDefinition) return <span className="text-xs text-slate-500">Combo no disponible en web</span>;
+    return (
+      <button type="button" disabled={!canManageWebCatalog || publicationBusy !== null}
+        aria-label={`${product.webPublished ? "Ocultar" : "Mostrar"} ${product.name} en la web`}
+        aria-pressed={Boolean(product.webPublished)}
+        title="La carta muestra productos habilitados, activos, disponibles y sincronizados."
+        onClick={() => void toggleWebPublication(product)}
+        className="focus-ring rounded-lg border border-slate-200 px-2 py-1 text-xs font-bold disabled:opacity-50">
+        {product.webPublished ? "Habilitado" : "Oculto"}
+      </button>
+    );
+  };
   useEffect(() => {
     if (
       searchParams.get("tab") === "ingredients" &&
@@ -489,6 +528,11 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       ) : null}
 
       {tab === "PRODUCTS" ? (
+        <>
+        <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm" aria-label="Sincronización de catálogo web">
+          <div><strong>Tienda web</strong><span className="ml-2 text-slate-700" role="status" aria-live="polite">{webSyncError || (!webSync || webSync.state === "UNCONFIGURED" ? "Sin configurar" : webSync.state === "ERROR" ? webSync.message || "Error de sincronización" : webSync.state === "SYNCED" ? "Sincronizado" : "Sincronización pendiente")}</span></div>
+          {webSync && webSync.state !== "UNCONFIGURED" && webSync.state !== "SYNCED" ? <Button variant="secondary" className="h-8 px-3 text-xs" disabled={webRetryBusy} onClick={() => { setWebRetryBusy(true); void window.gastronomy.retryWebSync().then((status) => { setWebSync(status); setWebSyncError(null); }).catch((error) => setWebSyncError(humanError(error))).finally(() => setWebRetryBusy(false)); }}>{webRetryBusy ? "Reintentando…" : "Reintentar sincronización"}</Button> : null}
+        </section>
         <Card className="overflow-hidden">
           <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 p-3">
             <div className="relative min-w-0 flex-1 sm:min-w-64">
@@ -760,6 +804,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                     <th className="text-right">Delivery / Para retirar</th>
                     <th>Stock</th>
                     <th>Estado</th>
+                    <th>Web</th>
                     <th className="text-right">Acciones</th>
                   </tr>
                 </thead>
@@ -877,6 +922,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                               {parent.active ? "Activo" : "Inactivo"}
                             </Badge>
                           </td>
+                          <td>{webPublicationControl(parent)}</td>
                           <td className="text-right">
                             <div className="flex justify-end gap-1.5">
                               {canManageCosts && !parent.comboDefinition ? (
@@ -992,6 +1038,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                     {variant.active ? "Activo" : "Inactivo"}
                                   </Badge>
                                 </td>
+                                <td>{webPublicationControl(variant)}</td>
                                 <td className="text-right">
                                   <div className="flex justify-end gap-1.5">
                                     {canManageCosts &&
@@ -1065,6 +1112,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             <EmptyProducts onCreate={() => openNewProduct()} />
           )}
         </Card>
+        </>
       ) : tab === "INGREDIENTS" ? (
         <IngredientsPanel
           canManage={canManageCosts}

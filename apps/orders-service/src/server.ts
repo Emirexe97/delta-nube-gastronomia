@@ -8,13 +8,26 @@ import { fileURLToPath } from "node:url";
 import { resolve, isAbsolute } from "node:path";
 import { OrdersStore } from "./store.js";
 import { loadStores, validateStores, type StoreConfig } from "./config.js";
+import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { verifyWebSiteTicket } from "@gastronomy/web-orders/provision";
+import { createTenantStorefront } from "./tenant-storefront.js";
+import { WaiterRelay } from "./waiter-relay.js";
+import { waiterHtml } from "./waiter-page.js";
 
 const MAX_BODY = 64 * 1024;
+const MAX_CATALOG_BODY = 2 * 1024 * 1024;
 type Rate = { count: number; reset: number };
 export type OrdersServerOptions = {
   dbPath: string;
   stores: StoreConfig[];
   rateLimit?: number;
+  provisioning?: {
+    secret: string;
+    baseDomain: string;
+    reservedSlugs?: string[];
+  };
+  waiterPublicBaseUrl?: string;
 };
 function json(res: ServerResponse, status: number, payload: unknown): void {
   const data = JSON.stringify(payload);
@@ -36,8 +49,11 @@ function isJson(req: IncomingMessage): boolean {
     req.headers["content-type"] ?? "",
   );
 }
-async function readJson(req: IncomingMessage): Promise<unknown> {
-  if (Number(req.headers["content-length"]) > MAX_BODY) {
+async function readJson(
+  req: IncomingMessage,
+  maxBytes = MAX_BODY,
+): Promise<unknown> {
+  if (Number(req.headers["content-length"]) > maxBytes) {
     req.resume();
     error(413, "too_large");
   }
@@ -59,7 +75,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
     const onAbort = () => onError();
     const onData = (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
+      if (size > maxBytes) {
         cleanup();
         req.resume();
         reject(
@@ -115,12 +131,55 @@ export function createOrdersServer(options: OrdersServerOptions): {
 } {
   if (typeof options.dbPath !== "string" || !isAbsolute(options.dbPath))
     throw new Error("dbPath must be absolute");
-  const stores = validateStores(options.stores);
+  const stores =
+    options.provisioning &&
+    Array.isArray(options.stores) &&
+    options.stores.length === 0
+      ? []
+      : validateStores(options.stores);
   const rateLimit = options.rateLimit ?? 120;
   if (!Number.isSafeInteger(rateLimit) || rateLimit < 10 || rateLimit > 10_000)
     throw new Error("Invalid rateLimit");
+  if (
+    options.provisioning &&
+    (Buffer.byteLength(options.provisioning.secret) < 32 ||
+      options.provisioning.baseDomain.length > 188 ||
+      !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(
+        options.provisioning.baseDomain,
+      ))
+  )
+    throw new Error("Invalid provisioning configuration");
   const store = new OrdersStore(options.dbPath, stores);
   const limits = new Map<string, Rate>();
+  const reservedSlugs = [
+    ...new Set(
+      [
+        "www",
+        "api",
+        "admin",
+        "app",
+        "mail",
+        "ftp",
+        "localhost",
+        "gastronomia",
+        "pedidos",
+        ...(options.provisioning?.reservedSlugs ?? []),
+        ...stores.flatMap((s) => [s.id, ...s.sites.map((site) => site.id)]),
+      ].map((s) => s.toLowerCase()),
+    ),
+  ];
+  const tenantStorefront = options.provisioning
+    ? createTenantStorefront({
+        store,
+        dbPath: options.dbPath,
+        hostSuffix: options.provisioning.baseDomain,
+        reservedHosts: reservedSlugs,
+      })
+    : undefined;
+  const waiterPublicBaseUrl = options.waiterPublicBaseUrl ?? (options.provisioning ? `https://pedidos.${options.provisioning.baseDomain}/` : undefined);
+  const waiterRelay = waiterPublicBaseUrl
+    ? new WaiterRelay((credential) => store.authenticate(credential), waiterPublicBaseUrl, waiterHtml)
+    : undefined;
   // Periodic work, not an O(n) sweep on every request at capacity.
   const rateSweep = setInterval(() => {
     const now = Date.now();
@@ -131,9 +190,49 @@ export function createOrdersServer(options: OrdersServerOptions): {
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const url = new URL(req.url ?? "/", "http://orders.local");
+      if (
+        !req.url?.startsWith("/") ||
+        req.url.startsWith("//") ||
+        url.origin !== "http://orders.local"
+      )
+        error(400, "bad_request");
+      if (waiterRelay && await waiterRelay.handle(req, res, url.pathname, req.method ?? "GET")) return;
+      if (tenantStorefront && options.provisioning) {
+        const handled = await tenantStorefront.handle(
+          req,
+          res,
+          req.headers.host,
+        );
+        if (handled) return;
+        // Never fall through from unknown/invalid shop names into private API routes.
+        const base = options.provisioning.baseDomain.toLowerCase();
+        const apiHosts = [
+          "localhost",
+          "127.0.0.1",
+          "[::1]",
+          `api.${base}`,
+          `pedidos.${base}`,
+        ];
+        const raw = (req.headers.host ?? "").toLowerCase();
+        if (
+          !apiHosts.some(
+            (host) =>
+              raw === host ||
+              (raw.startsWith(host + ":") &&
+                /^\d{1,5}$/.test(raw.slice(host.length + 1))),
+          )
+        )
+          error(404, "not_found");
+      }
       const ip = req.socket.remoteAddress ?? "unknown";
       const token = bearer(req);
       const scope = token ? store.authenticate(token) : undefined;
+      if (
+        scope?.role === "receive" &&
+        scope.receiveInstallationId &&
+        req.headers["x-pos-installation"] !== scope.receiveInstallationId
+      )
+        error(401, "unauthorized");
       // Authenticated stores do not share an IP budget behind the same proxy.
       // Keep raw credentials out of rate-limit keys and cap the map cardinality.
       const rateKey = scope
@@ -141,8 +240,140 @@ export function createOrdersServer(options: OrdersServerOptions): {
         : `ip:${ip}`;
       if (boundedRate(limits, rateKey, rateLimit)) error(429, "rate_limited");
       if (req.headers.origin !== undefined) error(403, "forbidden");
+      if (
+        scope &&
+        req.headers["x-expected-store-id"] !== undefined &&
+        req.headers["x-expected-store-id"] !== scope.storeId
+      )
+        error(403, "forbidden");
+      if (
+        scope &&
+        req.headers["x-expected-site-id"] !== undefined &&
+        req.headers["x-expected-site-id"] !== scope.siteId
+      )
+        error(403, "forbidden");
+      if (req.method === "POST" && url.pathname === "/v1/web-sites") {
+        if (!options.provisioning) error(404, "not_found");
+        if (!isJson(req)) error(415, "unsupported_media_type");
+        const auth = req.headers.authorization;
+        if (
+          typeof auth !== "string" ||
+          !/^Bearer [A-Za-z0-9_.-]{20,4096}$/.test(auth)
+        )
+          error(401, "unauthorized");
+        let claims;
+        try {
+          claims = verifyWebSiteTicket(
+            auth.slice(7),
+            options.provisioning.secret,
+          );
+        } catch {
+          error(401, "unauthorized");
+        }
+        const body = (await readJson(req)) as Record<string, unknown>;
+        if (
+          !body ||
+          Object.keys(body).some(
+            (k) => !["slug", "whatsappNumber"].includes(k),
+          ) ||
+          typeof body.slug !== "string" ||
+          typeof body.whatsappNumber !== "string" ||
+          !/^\d{8,15}$/.test(body.whatsappNumber)
+        )
+          error(400, "bad_request");
+        const slug = body.slug.toLowerCase();
+        if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug))
+          error(400, "bad_request");
+        if (
+          reservedSlugs.includes(slug) ||
+          stores.some((s) => s.receiveInstallationId === claims.installationId)
+        )
+          error(409, "idempotency_conflict");
+        const receiveToken = createHmac("sha256", options.provisioning.secret)
+          .update(`gastronomy:web-site:receive:v1:${claims.installationId}`)
+          .digest("base64url");
+        const tenant = store.provisionTenant({
+          ...claims,
+          slug,
+          whatsappNumber: body.whatsappNumber,
+          receiveToken,
+        });
+        return json(res, 201, {
+          ...tenant,
+          url: `https://${tenant.slug}.${options.provisioning.baseDomain}`,
+          receiveToken,
+        });
+      }
+      if (
+        (req.method === "GET" || req.method === "PATCH") &&
+        url.pathname === "/v1/web-sites/branding"
+      ) {
+        if (
+          !scope ||
+          scope.role !== "receive" ||
+          !scope.receiveInstallationId ||
+          req.headers["x-pos-installation"] !== scope.receiveInstallationId
+        )
+          error(401, "unauthorized");
+        if (req.method === "GET") {
+          const branding = store.getTenantBranding(scope.storeId);
+          if (!branding) error(404, "not_found");
+          return json(res, 200, branding);
+        }
+        if (!isJson(req)) error(415, "unsupported_media_type");
+        const body = (await readJson(req)) as Record<string, unknown>;
+        if (
+          !body ||
+          Object.keys(body).some(
+            (k) => !["displayName", "tagline", "accent"].includes(k),
+          ) ||
+          typeof body.displayName !== "string" ||
+          !body.displayName.trim() ||
+          body.displayName.length > 80 ||
+          typeof body.tagline !== "string" ||
+          body.tagline.length > 160 ||
+          typeof body.accent !== "string" ||
+          !/^#[0-9a-f]{6}$/i.test(body.accent)
+        )
+          error(400, "bad_request");
+        if (
+          !store.updateTenantBranding(scope.storeId, {
+            displayName: body.displayName.trim(),
+            tagline: body.tagline,
+            accent: body.accent,
+          })
+        )
+          error(403, "forbidden");
+        return json(res, 200, store.getTenantBranding(scope.storeId));
+      }
       if (req.method === "GET" && url.pathname === "/health")
         return json(res, 200, { ok: true });
+      if (url.pathname === "/v1/web-catalog" && req.method === "PUT") {
+        if (!scope || scope.role !== "receive") error(401, "unauthorized");
+        const expectedStoreId = req.headers["x-expected-store-id"];
+        if (
+          typeof expectedStoreId !== "string" ||
+          expectedStoreId !== scope.storeId
+        )
+          error(403, "forbidden");
+        if (!isJson(req)) error(415, "unsupported_media_type");
+        return json(
+          res,
+          200,
+          store.publishCatalog(
+            scope.storeId,
+            await readJson(req, MAX_CATALOG_BODY),
+          ),
+        );
+      }
+      if (url.pathname === "/v1/web-catalog" && req.method === "GET") {
+        if (!scope || scope.role !== "submit" || !scope.siteId)
+          error(401, "unauthorized");
+        const catalog = store.getCatalog(scope.storeId);
+        return catalog
+          ? json(res, 200, catalog)
+          : json(res, 404, { error: "catalog_not_published" });
+      }
       if (req.method === "POST" && url.pathname === "/v1/web-orders") {
         if (!isJson(req)) error(415, "unsupported_media_type");
         const key = req.headers["idempotency-key"];
@@ -155,6 +386,7 @@ export function createOrdersServer(options: OrdersServerOptions): {
           scope.siteId,
           key,
           await readJson(req),
+          req.headers["x-require-published-catalog"] === "true",
         );
         return json(res, result.status, result.result);
       }
@@ -207,7 +439,18 @@ export function createOrdersServer(options: OrdersServerOptions): {
         415: "unsupported_media_type",
         429: "rate_limited",
       };
-      return json(res, status, { error: codes[status] ?? "internal_error" });
+      return json(res, status, {
+        error:
+          typeof candidate.code === "string" &&
+          ["pairing_expired", "queue_full"].includes(candidate.code)
+            ? candidate.code
+            :
+          status === 409 &&
+          (candidate.code === "catalog_changed" ||
+            candidate.code === "catalog_not_published")
+            ? candidate.code
+            : (codes[status] ?? "internal_error"),
+      });
     }
   };
   const server = createServer((req, res) => {
@@ -233,6 +476,8 @@ export function createOrdersServer(options: OrdersServerOptions): {
       server.close(() => {
         clearTimeout(deadline);
         try {
+          tenantStorefront?.close();
+          waiterRelay?.close();
           store.close();
           resolveClose();
         } catch (error) {
@@ -251,15 +496,47 @@ if (
 ) {
   const dbPath = process.env.WEB_ORDERS_DB_PATH;
   const configFile = process.env.WEB_ORDERS_CONFIG_FILE;
-  if (!dbPath || !configFile)
-    throw new Error("Set WEB_ORDERS_DB_PATH and WEB_ORDERS_CONFIG_FILE");
+  if (
+    process.env.WEB_SITE_PROVISION_SECRET &&
+    process.env.WEB_SITE_PROVISION_SECRET_FILE
+  )
+    throw new Error("Set only one provisioning secret source");
+  if (
+    process.env.WEB_SITE_PROVISION_SECRET_FILE &&
+    !isAbsolute(process.env.WEB_SITE_PROVISION_SECRET_FILE)
+  )
+    throw new Error("WEB_SITE_PROVISION_SECRET_FILE must be absolute");
+  const provisionSecret = process.env.WEB_SITE_PROVISION_SECRET_FILE
+    ? readFileSync(process.env.WEB_SITE_PROVISION_SECRET_FILE, "utf8").trim()
+    : process.env.WEB_SITE_PROVISION_SECRET;
+  if (Boolean(provisionSecret) !== Boolean(process.env.WEB_SITE_BASE_DOMAIN))
+    throw new Error("Set a provisioning secret and WEB_SITE_BASE_DOMAIN");
+  if (process.env.WAITER_PUBLIC_BASE_URL && !/^https:\/\//i.test(process.env.WAITER_PUBLIC_BASE_URL))
+    throw new Error("WAITER_PUBLIC_BASE_URL must use HTTPS");
+  if (!dbPath || (!configFile && !provisionSecret))
+    throw new Error(
+      "Set WEB_ORDERS_DB_PATH and WEB_ORDERS_CONFIG_FILE (or enable provisioning)",
+    );
   const port = Number(process.env.PORT ?? 8098);
   const host = process.env.HOST ?? "127.0.0.1";
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535 || !host)
     throw new Error("Invalid listen configuration");
   const service = createOrdersServer({
     dbPath,
-    stores: loadStores(configFile),
+    stores: configFile ? loadStores(configFile) : [],
+    ...(provisionSecret && process.env.WEB_SITE_BASE_DOMAIN
+      ? {
+          provisioning: {
+            secret: provisionSecret,
+            baseDomain: process.env.WEB_SITE_BASE_DOMAIN,
+            reservedSlugs: (process.env.WEB_SITE_RESERVED_SLUGS ?? "")
+              .split(",")
+              .map((x) => x.trim())
+              .filter(Boolean),
+          },
+        }
+      : {}),
+    ...(process.env.WAITER_PUBLIC_BASE_URL ? { waiterPublicBaseUrl: process.env.WAITER_PUBLIC_BASE_URL } : {}),
     rateLimit: process.env.WEB_ORDERS_RATE_LIMIT
       ? Number(process.env.WEB_ORDERS_RATE_LIMIT)
       : undefined,

@@ -44,6 +44,29 @@ export interface WebOrderPage {
   hasMore: boolean;
 }
 
+export interface WebCatalogProduct {
+  productRef: string;
+  name: string;
+  category: string;
+  takeawayPriceMinor: number;
+  deliveryPriceMinor: number;
+}
+export interface WebCatalogSnapshot { products: WebCatalogProduct[] }
+
+/** Strict public catalog contract. Only these five fields may be published. */
+export function parseWebCatalogSnapshot(value: unknown): WebCatalogSnapshot {
+  const row = object(value, ["products"], [], "catalog");
+  if (!Array.isArray(row.products) || row.products.length > 5000) return fail("catalog.products");
+  const seen = new Set<string>();
+  return { products: row.products.map((value, index) => {
+    const product = object(value, ["productRef", "name", "category", "takeawayPriceMinor", "deliveryPriceMinor"], [], `catalog.products[${index}]`);
+    const productRef = text(product.productRef, 128, "catalog.productRef");
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(productRef) || seen.has(productRef)) return fail("catalog.productRef");
+    seen.add(productRef);
+    return { productRef, name: text(product.name, 120, "catalog.name"), category: text(product.category, 80, "catalog.category"), takeawayPriceMinor: integer(product.takeawayPriceMinor, 0, MAX_MONEY, "catalog.takeawayPriceMinor"), deliveryPriceMinor: integer(product.deliveryPriceMinor, 0, MAX_MONEY, "catalog.deliveryPriceMinor") };
+  }) };
+}
+
 export class WebOrderValidationError extends Error {
   constructor(message: string) {
     super(message);
