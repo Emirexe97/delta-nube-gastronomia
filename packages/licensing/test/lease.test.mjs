@@ -88,6 +88,9 @@ test("active paid term wins while offline; paidThrough and grace end are exclusi
 
 test("expired mode allows explicit read-only methods and rejects unknown or money-moving methods", () => {
   assert.equal(licenseAllowsMethod("bootstrap", false), true);
+  assert.equal(licenseAllowsMethod("getPriceBooks", false), true);
+  assert.equal(licenseAllowsMethod("savePriceBook", false), false);
+  assert.equal(licenseAllowsMethod("assignPriceBooks", false), false);
   assert.equal(licenseAllowsMethod("getLicenseStatus", false), true);
   assert.equal(licenseAllowsMethod("createBackup", false), true);
   assert.equal(licenseAllowsMethod("newUnreviewedMethod", false), false);

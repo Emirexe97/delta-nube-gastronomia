@@ -79,3 +79,78 @@ export function calculateDiscountMinor(
     throw new Error("El descuento no puede superar el total.");
   return discount;
 }
+
+/** One rule directly against the principal price. Basis points allow two decimal places of percent. */
+export function calculateBookPrice(
+  baseMinor: number,
+  adjustmentBps: number,
+  overrideMinor?: number,
+): number {
+  if (
+    !Number.isSafeInteger(baseMinor) ||
+    baseMinor < 0 ||
+    !Number.isSafeInteger(adjustmentBps) ||
+    adjustmentBps < -10000 ||
+    adjustmentBps > 100000
+  )
+    throw new Error("El precio o el porcentaje de lista no es válido.");
+  if (overrideMinor !== undefined) {
+    if (!Number.isSafeInteger(overrideMinor) || overrideMinor < 0)
+      throw new Error("El precio propio no es válido.");
+    return overrideMinor;
+  }
+  const cents =
+    (BigInt(baseMinor) * BigInt(10000 + adjustmentBps) + 5000n) / 10000n;
+  if (cents > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error("El precio calculado es demasiado alto.");
+  return Number(cents);
+}
+/** Bulk preview and persistence both evaluate selected lists from the pre-change prices. */
+export function applyBookAdjustment(
+  current: import("@gastronomy/contracts").ProductPriceBookDto,
+  books: readonly import("@gastronomy/contracts").PriceBookDto[],
+  selected: readonly string[],
+  mode: "FIXED" | "PERCENTAGE",
+  value: number,
+): import("@gastronomy/contracts").ProductPriceBookDto {
+  const ids = new Set(selected);
+  if (mode !== "FIXED" && mode !== "PERCENTAGE")
+    throw new Error("El tipo de ajuste no es válido.");
+  if (!ids.size || [...ids].some((id) => !books.some((b) => b.id === id)))
+    throw new Error("Elegí una lista válida.");
+  const bps = Math.round(value * 100);
+  if (
+    mode === "PERCENTAGE" &&
+    (!Number.isFinite(value) || Math.abs(value * 100 - bps) > 1e-8)
+  )
+    throw new Error("El porcentaje admite hasta dos decimales.");
+  if (mode === "FIXED" && !Number.isSafeInteger(value))
+    throw new Error("El importe no es válido.");
+  const result = {
+    baseMinor: current.baseMinor,
+    overrides: { ...current.overrides },
+  };
+  for (const book of books) {
+    if (!ids.has(book.id)) continue;
+    const before = book.isBase
+      ? current.baseMinor
+      : calculateBookPrice(
+          current.baseMinor,
+          book.adjustmentBps,
+          current.overrides[book.id],
+        );
+    const after =
+      mode === "PERCENTAGE" ? calculateBookPrice(before, bps) : before + value;
+    if (!Number.isSafeInteger(after) || after < 0)
+      throw new Error("El ajuste deja precios fuera de rango.");
+    if (book.isBase) result.baseMinor = after;
+    else result.overrides[book.id] = after;
+  }
+  for (const book of books)
+    calculateBookPrice(
+      result.baseMinor,
+      book.adjustmentBps,
+      result.overrides[book.id],
+    );
+  return result;
+}

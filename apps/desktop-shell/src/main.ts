@@ -475,6 +475,7 @@ function registerIpcHandlers() {
     "createCategory",
     "updateCategory",
     "deleteCategory",
+    "getPriceBooks", "savePriceBook", "assignPriceBooks",
     "createProduct",
     "updateProduct",
     "deleteProduct",
@@ -672,7 +673,7 @@ function registerIpcHandlers() {
     services().localRepository.revokeWaiterDevice(input.sessionId);
   });
   const catalogWrites = new Set<string>([
-    "createProduct", "updateProduct", "deleteProduct", "bulkUpdateProducts",
+    "savePriceBook", "assignPriceBooks", "createProduct", "updateProduct", "deleteProduct", "bulkUpdateProducts",
     "updateCategory", "deleteCategory", "configureProductCombo", "adjustStock",
   ]);
   for (const method of methods) {

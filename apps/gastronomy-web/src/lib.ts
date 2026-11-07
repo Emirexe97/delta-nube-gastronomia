@@ -233,6 +233,17 @@ export function parseMoneyInput(value: string) {
   return Number.isSafeInteger(amountMinor) ? amountMinor : null;
 }
 
+/** Money editor for the catalog. Never turns a blank price into a free product. */
+export function parsePriceInput(value: string): number | null {
+  const raw = value.trim();
+  // In es-AR, 1.000 means one thousand; 10.50 is also accepted as 10,50.
+  const normalized = /^\d+\.\d{1,2}$/.test(raw) ? raw.replace(".", ",") : raw;
+  if (!/^(?:\d+|\d{1,3}(?:\.\d{3})+)(?:,\d{1,2})?$/.test(normalized)) return null;
+  const [whole, fraction = ""] = normalized.replace(/\./g, "").split(",");
+  const cents = Number(whole + fraction.padEnd(2, "0"));
+  return Number.isSafeInteger(cents) ? cents : null;
+}
+
 export function parseStockInput(value: string) {
   const normalized = value.trim().replace(",", ".");
   if (!/^\d+(?:\.\d{0,3})?$/.test(normalized)) return null;

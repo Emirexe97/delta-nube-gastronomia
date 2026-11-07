@@ -203,7 +203,9 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   await customerDialog
     .getByLabel("Dirección", { exact: true })
     .fill("Belgrano 100");
-  await customerDialog.getByLabel("Valor del envío", { exact: true }).fill("2500");
+  await customerDialog
+    .getByLabel("Valor del envío", { exact: true })
+    .fill("2500");
   await customerDialog
     .getByRole("button", { name: "Guardar y seleccionar" })
     .click();
@@ -260,7 +262,10 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
     .getByLabel("Dirección", { exact: true })
     .nth(1)
     .fill("Mitre 900");
-  await editCustomerDialog.getByLabel("Valor del envío", { exact: true }).nth(1).fill("3500");
+  await editCustomerDialog
+    .getByLabel("Valor del envío", { exact: true })
+    .nth(1)
+    .fill("3500");
   await editCustomerDialog
     .getByRole("button", { name: "Guardar cambios" })
     .click();
@@ -280,7 +285,10 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   });
   await expect(deliveryCustomerOption).toBeVisible();
   await deliveryCustomerOption.click();
-  const addressSelector = page.getByRole("combobox", { name: "Dirección guardada", exact: true });
+  const addressSelector = page.getByRole("combobox", {
+    name: "Dirección guardada",
+    exact: true,
+  });
   await expect(addressSelector).toBeVisible();
   await expect(addressSelector.locator("option")).toContainText([
     "Otra dirección para este pedido",
@@ -296,10 +304,12 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
     "Mitre 900",
   );
   const newDeliveryDialog = page.getByRole("dialog", { name: "Nuevo Envío" });
-  await expect(newDeliveryDialog.getByLabel("Costo de envío", { exact: true })).toHaveValue(
-    "3500",
-  );
-  await newDeliveryDialog.getByLabel("Costo de envío", { exact: true }).fill("4200");
+  await expect(
+    newDeliveryDialog.getByLabel("Costo de envío", { exact: true }),
+  ).toHaveValue("3500");
+  await newDeliveryDialog
+    .getByLabel("Costo de envío", { exact: true })
+    .fill("4200");
   await newDeliveryDialog.getByRole("button", { name: "Crear pedido" }).click();
 
   const draftDialog = page.getByRole("dialog", { name: /Pedido #\d+ · Envío/ });
@@ -309,10 +319,12 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   const editDraftDialog = page.getByRole("dialog", {
     name: "Editar datos · Envío",
   });
-  await expect(editDraftDialog.getByLabel("Costo de envío", { exact: true })).toHaveValue(
-    "4200",
-  );
-  await editDraftDialog.getByLabel("Costo de envío", { exact: true }).fill("4600");
+  await expect(
+    editDraftDialog.getByLabel("Costo de envío", { exact: true }),
+  ).toHaveValue("4200");
+  await editDraftDialog
+    .getByLabel("Costo de envío", { exact: true })
+    .fill("4600");
   await editDraftDialog
     .getByRole("button", { name: "Guardar y volver al pedido" })
     .click();
@@ -387,13 +399,27 @@ test("edita precios de producto con autorización e historial", async () => {
   const originalRow = page
     .getByRole("row")
     .filter({ hasText: "Muzzarella grande" });
-  await originalRow
-    .getByRole("button", { name: "Editar Muzzarella grande" })
-    .click();
+  const editButton = originalRow.getByRole("button", {
+    name: "Editar Muzzarella grande",
+  });
+  await editButton.hover();
+  await expect(
+    editButton.getByText("Editar producto", { exact: true }),
+  ).toBeVisible();
+  await page.mouse.move(0, 0);
+  await editButton.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(editButton).toBeFocused();
+  await expect(
+    editButton.getByText("Editar producto", { exact: true }),
+  ).toBeVisible();
+  await editButton.click();
   const dialog = page.getByRole("dialog", {
     name: /Editar ·/,
   });
   await expect(dialog.getByLabel("Nombre")).toHaveValue("Muzzarella grande");
+  await dialog.getByRole("tab", { name: "Inventario", exact: true }).click();
   await dialog.getByLabel("Controlar stock de este producto").check();
   await expect(
     dialog.getByLabel("Controlar stock de este producto"),
@@ -407,8 +433,11 @@ test("edita precios de producto con autorización e historial", async () => {
   await expect(dialog.getByLabel("Mínimo")).toHaveValue("20");
   await dialog.getByLabel("Crítico").fill("10");
   await expect(dialog.getByLabel("Crítico")).toHaveValue("10");
+  await dialog.getByRole("tab", { name: "General", exact: true }).click();
   await dialog.getByLabel("Nombre").fill("Muzzarella E2E");
-  await dialog.getByLabel("Delivery / Para retirar").fill("16500");
+  await dialog.getByRole("tab", { name: "Precios", exact: true }).click();
+  await dialog.getByLabel("Precio Principal").fill("15000");
+  await dialog.getByRole("tab", { name: "General", exact: true }).click();
   await dialog.locator('input[type="file"]').setInputFiles({
     name: "producto.png",
     mimeType: "image/png",
@@ -431,13 +460,22 @@ test("edita precios de producto con autorización e historial", async () => {
   const reopenedDialog = page.getByRole("dialog", {
     name: /Editar · Muzzarella E2E/,
   });
+  await reopenedDialog
+    .getByRole("tab", { name: "Historial", exact: true })
+    .click();
   await expect(
     reopenedDialog.getByText("Actualización E2E", { exact: true }),
   ).toBeVisible();
+  await reopenedDialog
+    .getByRole("tab", { name: "Inventario", exact: true })
+    .click();
   await expect(reopenedDialog.getByLabel("Stock actual")).toHaveValue("40");
   await expect(reopenedDialog.getByLabel("Objetivo")).toHaveValue("60");
   await expect(reopenedDialog.getByLabel("Mínimo")).toHaveValue("20");
   await expect(reopenedDialog.getByLabel("Crítico")).toHaveValue("10");
+  await reopenedDialog
+    .getByRole("tab", { name: "General", exact: true })
+    .click();
   await expect(
     reopenedDialog.getByAltText("Vista previa del producto"),
   ).toHaveAttribute("src", /^data:image\/webp;base64,/);
@@ -451,7 +489,6 @@ test("edita precios de producto con autorización e historial", async () => {
   });
   await bulkDialog.getByLabel("Ajustar precios").check();
   await bulkDialog.getByLabel("Variación (%)", { exact: true }).fill("10");
-  await bulkDialog.getByLabel("Delivery / Para retirar").uncheck();
   await bulkDialog.getByLabel("Motivo").fill("Aumento masivo E2E");
   await bulkDialog.getByLabel("PIN de autorización").fill("1234");
   await bulkDialog

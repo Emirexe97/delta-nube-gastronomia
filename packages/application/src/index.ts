@@ -1,5 +1,6 @@
 import type {
   AddComboItemInput,
+  AssignPriceBooksInput, PriceBooksDto, ProductPriceBookDto, SavePriceBookInput,
   ConfigureProductComboInput,
   CreateComboInput,
   RepeatOrderInput,
@@ -134,7 +135,38 @@ function validateProductInventory(input: ProductInventoryInput) {
   }
 }
 
+function validateBookCommand(input: { reason: string; authorizerPin: string }) {
+  if (!input.reason?.trim() || input.reason.length > 500)
+    throw new Error("Indicá un motivo de hasta 500 caracteres.");
+  if (!/^\d{4,8}$/.test(input.authorizerPin))
+    throw new Error("El PIN de autorización no es válido.");
+}
+
+function productWritePrices(input: {
+  priceBook?: ProductPriceBookDto;
+  prices: ChannelPrice[];
+}) {
+  if (!input.priceBook) return normalizeProductPrices(input.prices);
+  const book = input.priceBook;
+  if (
+    !Number.isSafeInteger(book.baseMinor) ||
+    book.baseMinor < 0 ||
+    !book.overrides ||
+    typeof book.overrides !== "object" ||
+    Array.isArray(book.overrides) ||
+    Object.entries(book.overrides).some(
+      ([id, p]) => !id.trim() || !Number.isSafeInteger(p) || p < 0,
+    )
+  )
+    throw new Error("Revisá el precio principal y los precios propios.");
+  // New writes carry the book data; the repository resolves the actual channels in its transaction.
+  return [];
+}
+
 export interface GastronomyRepository {
+  getPriceBooks(): PriceBooksDto;
+  savePriceBook(input: SavePriceBookInput): PriceBooksDto;
+  assignPriceBooks(input: AssignPriceBooksInput): PriceBooksDto;
   listIngredients(): IngredientDto[];
   saveIngredient(input: SaveIngredientInput): IngredientDto;
   getProductCostConfiguration(input: { productId: Id }): ProductCostConfigurationDto;
@@ -261,6 +293,7 @@ export interface GastronomyRepository {
     authorizerPin: string;
   }): { deleted: true };
   createProduct(input: {
+    priceBook?: ProductPriceBookDto;
     categoryId: Id;
     name: string;
     code?: string | null;
@@ -923,10 +956,43 @@ export class GastronomyApplication {
     });
   }
 
+  getPriceBooks() {
+    return this.repository.getPriceBooks();
+  }
+  savePriceBook(input: SavePriceBookInput) {
+    validateBookCommand(input);
+    if (!input.name?.trim() || input.name.trim().length > 80)
+      throw new Error("Ingresá un nombre de hasta 80 caracteres.");
+    if (
+      !Number.isInteger(input.adjustmentBps) ||
+      input.adjustmentBps < -10000 ||
+      input.adjustmentBps > 100000
+    )
+      throw new Error("La variación debe estar entre -100% y 1000%.");
+    return this.repository.savePriceBook({
+      ...input,
+      name: input.name.trim(),
+      reason: input.reason.trim(),
+    });
+  }
+  assignPriceBooks(input: AssignPriceBooksInput) {
+    validateBookCommand(input);
+    if (
+      !input.assignments ||
+      !(["SALON", "TAKEAWAY", "DELIVERY"] as const).every(
+        (k) =>
+          typeof input.assignments[k] === "string" &&
+          input.assignments[k].trim(),
+      )
+    )
+      throw new Error("Elegí una lista para cada modo de venta.");
+    return this.repository.assignPriceBooks(input);
+  }
+
   createProduct(input: Parameters<GastronomyRepository["createProduct"]>[0]) {
     if (!input.name.trim()) throw new Error("Ingresá el nombre del producto.");
     validateProductInventory(input);
-    const prices = normalizeProductPrices(input.prices);
+    const prices = productWritePrices(input);
     for (const price of prices) nonNegativeMoney(price.amountMinor, "precio");
     return this.repository.createProduct({ ...input, prices });
   }
@@ -936,7 +1002,7 @@ export class GastronomyApplication {
     if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
     if (!/^\d{4,8}$/.test(input.authorizerPin))
       throw new Error("El PIN de autorización no es válido.");
-    const prices = normalizeProductPrices(input.prices);
+    const prices = productWritePrices(input);
     for (const price of prices) nonNegativeMoney(price.amountMinor, "precio");
     return this.repository.createCombo({ ...input, prices });
   }
@@ -948,7 +1014,7 @@ export class GastronomyApplication {
     if (!/^\d{4,8}$/.test(input.authorizerPin))
       throw new Error("El PIN de autorización no es válido.");
     validateProductInventory(input);
-    const prices = normalizeProductPrices(input.prices);
+    const prices = productWritePrices(input);
     for (const price of prices) nonNegativeMoney(price.amountMinor, "precio");
     return this.repository.updateProduct({
       ...input,
@@ -987,7 +1053,12 @@ export class GastronomyApplication {
     }
     const adjustment = input.priceAdjustment;
     if (adjustment) {
-      if (!adjustment.priceListCodes.length)
+      if (!Array.isArray(adjustment.priceListCodes) ||
+          adjustment.bookIds != null && !Array.isArray(adjustment.bookIds) ||
+          adjustment.bookIds?.length && adjustment.priceListCodes.length ||
+          adjustment.mode !== "FIXED" && adjustment.mode !== "PERCENTAGE")
+        throw new Error("Elegí un tipo de ajuste y un solo sistema de listas.");
+      if (!(adjustment.bookIds?.length || adjustment.priceListCodes.length))
         throw new Error("Elegí al menos una lista de precios.");
       if (!Number.isFinite(adjustment.value))
         throw new Error("El ajuste de precio no es válido.");

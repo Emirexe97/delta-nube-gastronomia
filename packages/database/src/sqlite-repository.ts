@@ -1,3 +1,4 @@
+import { reconcileLegacyPrices } from "./legacy-product-prices";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
@@ -49,6 +50,10 @@ import type {
   ModifierDto,
   MarkOrderServedInput,
   ProductDto,
+  PriceChannel,
+  PriceBooksDto,
+  SavePriceBookInput,
+  AssignPriceBooksInput,
   RefundPaymentInput,
   RepeatOrderInput,
   CreatePurchaseInput,
@@ -115,6 +120,8 @@ import {
   assertComboLineAmount,
   assertIngredientValues, calculateIngredientRecipeCost,
   getKitchenAdditions,
+  applyBookAdjustment,
+  calculateBookPrice,
 } from "@gastronomy/domain";
 import { migrations } from "./migrations";
 import { populateRepeatedOrder } from "./repeat-order";
@@ -586,6 +593,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       this.db.prepare("DELETE FROM waiter_challenges").run();
       this.recoverInterruptedPrintClaims();
       this.seed(options);
+      this.initializePriceBooks();
     } catch (error) {
       // Failed construction never reaches the caller's repository reference.
       // Release its SQLite handle so restoration can remove sidecars and roll back.
@@ -1815,6 +1823,316 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }));
   }
 
+  private initializePriceBooks(): void {
+    const run = this.db.transaction(() => {
+      const assigned = Number(
+        (
+          this.db
+            .prepare("SELECT COUNT(*) n FROM price_book_assignments")
+            .get() as Row
+        ).n,
+      );
+      if (assigned) return;
+      this.db
+        .prepare(
+          "INSERT OR IGNORE INTO price_books(id,name,adjustment_bps,is_base,sort_order) VALUES('price-book-base','Principal',0,1,0)",
+        )
+        .run();
+      const products = this.db
+        .prepare("SELECT id FROM products")
+        .all() as Row[];
+      const read = this.db.prepare(
+        `SELECT pl.code,pp.amount_minor FROM product_prices pp JOIN price_lists pl ON pl.id=pp.price_list_id WHERE pp.product_id=?`,
+      );
+      const baseInsert = this.db.prepare(
+        "INSERT OR IGNORE INTO product_price_book_bases(product_id,amount_minor) VALUES(?,?)",
+      );
+      const baseValues = new Map<string, number>();
+      const override = this.db.prepare(
+        "INSERT OR IGNORE INTO product_price_book_overrides(product_id,book_id,amount_minor) VALUES(?,?,?)",
+      );
+      const byChannel: Record<PriceChannel, Map<string, number>> = {
+        SALON: new Map(),
+        TAKEAWAY: new Map(),
+        DELIVERY: new Map(),
+      };
+      for (const p of products) {
+        const id = String(p.id);
+        const prices = Object.fromEntries(
+          (read.all(id) as Row[]).map((r) => [
+            String(r.code),
+            Number(r.amount_minor),
+          ]),
+        );
+        const base = prices.SALON ?? prices.TAKEAWAY ?? prices.DELIVERY ?? 0;
+        baseInsert.run(id, base);
+        baseValues.set(id, base);
+        for (const channel of ["SALON", "TAKEAWAY", "DELIVERY"] as const)
+          if (prices[channel] != null)
+            byChannel[channel].set(id, prices[channel]);
+      }
+      const assignments = this.db.prepare(
+        "INSERT INTO price_book_assignments(channel,book_id) VALUES(?,?)",
+      );
+      for (const channel of ["SALON", "TAKEAWAY", "DELIVERY"] as const) {
+        // Salon is the principal source. For other channels create a derived flat list only when legacy prices differed.
+        if (channel === "SALON") {
+          assignments.run(channel, "price-book-base");
+          continue;
+        }
+        let id = "price-book-base";
+        const hasDiff = [...byChannel[channel]].some(
+          ([productId, value]) => baseValues.get(productId) !== value,
+        );
+        if (hasDiff) {
+          // Share the same derived book when both historical channels have identical amounts.
+          if (channel === "DELIVERY") {
+            const takeaway = [...byChannel.TAKEAWAY].sort((a, b) =>
+              a[0].localeCompare(b[0]),
+            );
+            const delivery = [...byChannel.DELIVERY].sort((a, b) =>
+              a[0].localeCompare(b[0]),
+            );
+            if (
+              takeaway.length === delivery.length &&
+              takeaway.every(
+                ([pid, v], i) =>
+                  delivery[i]?.[0] === pid && delivery[i]?.[1] === v,
+              )
+            ) {
+              const existing = this.db
+                .prepare(
+                  "SELECT book_id FROM price_book_assignments WHERE channel='TAKEAWAY'",
+                )
+                .get() as Row | undefined;
+              if (existing) {
+                assignments.run(channel, String(existing.book_id));
+                continue;
+              }
+            }
+          }
+          id = `price-book-${channel.toLowerCase()}`;
+          this.db
+            .prepare(
+              "INSERT OR IGNORE INTO price_books(id,name,adjustment_bps,is_base,sort_order) VALUES(?,?,0,0,?)",
+            )
+            .run(
+              id,
+              channel === "TAKEAWAY" ? "Retiro" : "Delivery",
+              channel === "TAKEAWAY" ? 1 : 2,
+            );
+          for (const [productId, value] of byChannel[channel])
+            if (baseValues.get(productId) !== value)
+              override.run(productId, id, value);
+        }
+        assignments.run(channel, id);
+      }
+      this.materializePriceBooks();
+    });
+    run();
+  }
+
+  /** Keep existing channel consumers in sync without touching orders or rewriting unchanged prices. */
+  private materializePriceBooks(productIds?: readonly string[]): void {
+    if (productIds && productIds.length === 0) return;
+    const scope = productIds ? `WHERE base.product_id IN (${productIds.map(() => "?").join(",")})` : "";
+    const effective = this.db.prepare(`
+      SELECT base.product_id, base.amount_minor AS base_minor, list.id AS list_id,
+             book.adjustment_bps, override.amount_minor AS fixed_minor
+      FROM product_price_book_bases base
+      CROSS JOIN price_book_assignments assignment
+      JOIN price_books book ON book.id=assignment.book_id
+      JOIN price_lists list ON list.code=assignment.channel
+      LEFT JOIN product_price_book_overrides override
+        ON override.product_id=base.product_id AND override.book_id=book.id
+      ${scope}`).all(...(productIds ?? [])) as Row[];
+    const write = this.db.prepare(`INSERT INTO product_prices(product_id,price_list_id,amount_minor,updated_at)
+      VALUES(?,?,?,?) ON CONFLICT(product_id,price_list_id) DO UPDATE
+      SET amount_minor=excluded.amount_minor, updated_at=excluded.updated_at
+      WHERE product_prices.amount_minor <> excluded.amount_minor`);
+    const timestamp = nowIso();
+    for (const row of effective) {
+      const amount = calculateBookPrice(Number(row.base_minor), Number(row.adjustment_bps),
+        row.fixed_minor == null ? undefined : Number(row.fixed_minor));
+      write.run(row.product_id, row.list_id, amount, timestamp);
+    }
+  }
+
+  private validateProductPriceBook(
+    productId: string,
+    value: { baseMinor: number; overrides: Record<string, number> },
+  ): void {
+    if (!Number.isSafeInteger(value.baseMinor) || value.baseMinor < 0)
+      throw new Error("El precio base no es válido.");
+    const books = this.getPriceBooks().books;
+    for (const [id, amount] of Object.entries(value.overrides)) {
+      const book = books.find((b) => b.id === id);
+      if (!book || book.isBase || !Number.isSafeInteger(amount) || amount < 0)
+        throw new Error("Hay un precio propio o una lista inválida.");
+    }
+    for (const book of books)
+      calculateBookPrice(
+        value.baseMinor,
+        book.adjustmentBps,
+        value.overrides[book.id],
+      );
+  }
+
+  private validateAllPriceBookProducts(): void {
+    const rows = this.db
+      .prepare("SELECT product_id,amount_minor FROM product_price_book_bases")
+      .all() as Row[];
+    const books = this.getPriceBooks().books;
+    const overrideMap = new Map<string, Record<string, number>>();
+    for (const o of this.db
+      .prepare(
+        "SELECT product_id,book_id,amount_minor FROM product_price_book_overrides",
+      )
+      .all() as Row[]) {
+      const id = String(o.product_id);
+      const row = overrideMap.get(id) ?? {};
+      row[String(o.book_id)] = Number(o.amount_minor);
+      overrideMap.set(id, row);
+    }
+    for (const row of rows) {
+      const id = String(row.product_id);
+      const base = Number(row.amount_minor);
+      if (!Number.isSafeInteger(base) || base < 0)
+        throw new Error("El precio base no es válido.");
+      const overrides = overrideMap.get(id) ?? {};
+      for (const [bookId, amount] of Object.entries(overrides)) {
+        const book = books.find((b) => b.id === bookId);
+        if (!book || book.isBase || !Number.isSafeInteger(amount) || amount < 0)
+          throw new Error("Hay un precio propio o una lista inválida.");
+      }
+      for (const book of books)
+        calculateBookPrice(base, book.adjustmentBps, overrides[book.id]);
+    }
+  }
+
+  getPriceBooks(): PriceBooksDto {
+    const books = (
+      this.db
+        .prepare(
+          "SELECT id,name,adjustment_bps,is_base FROM price_books ORDER BY sort_order,name",
+        )
+        .all() as Row[]
+    ).map((r) => ({
+      id: String(r.id),
+      name: String(r.name),
+      adjustmentBps: Number(r.adjustment_bps),
+      isBase: flag(r.is_base),
+    }));
+    const assignments = Object.fromEntries(
+      (
+        this.db
+          .prepare("SELECT channel,book_id FROM price_book_assignments")
+          .all() as Row[]
+      ).map((r) => [String(r.channel), String(r.book_id)]),
+    ) as Record<PriceChannel, string>;
+    return { books, assignments };
+  }
+
+  savePriceBook(input: SavePriceBookInput): PriceBooksDto {
+    assertPermission(this.currentUser().permissions, "prices.bulk_update");
+    if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+    if (
+      !Number.isInteger(input.adjustmentBps) ||
+      input.adjustmentBps < -10000 ||
+      input.adjustmentBps > 100000
+    )
+      throw new Error(
+        "El ajuste debe estar entre -10000 y 100000 puntos base.",
+      );
+    if (!input.name.trim())
+      throw new Error("El nombre de la lista es obligatorio.");
+    return this.db.transaction(() => {
+      const auth = this.authorizePin(input.authorizerPin, "prices.bulk_update");
+      const existing = input.id
+        ? (this.db
+            .prepare("SELECT * FROM price_books WHERE id=? AND is_base=0")
+            .get(input.id) as Row | undefined)
+        : undefined;
+      if (input.id && !existing)
+        throw new Error("La lista no existe o es Principal.");
+      const before = existing
+        ? {
+            id: String(existing.id),
+            name: String(existing.name),
+            adjustmentBps: Number(existing.adjustment_bps),
+            isBase: flag(existing.is_base),
+          }
+        : null;
+      const duplicate = this.db
+        .prepare(
+          "SELECT id FROM price_books WHERE lower(name)=lower(?) AND id<>COALESCE(?, '')",
+        )
+        .get(input.name.trim(), input.id ?? "");
+      if (duplicate) throw new Error("Ya existe una lista con ese nombre.");
+      const id = input.id ?? randomUUID();
+      if (existing)
+        this.db
+          .prepare("UPDATE price_books SET name=?,adjustment_bps=? WHERE id=?")
+          .run(input.name.trim(), input.adjustmentBps, id);
+      else
+        this.db
+          .prepare(
+            "INSERT INTO price_books(id,name,adjustment_bps,is_base,sort_order) VALUES(?,?,?,0,COALESCE((SELECT MAX(sort_order)+1 FROM price_books),1))",
+          )
+          .run(id, input.name.trim(), input.adjustmentBps);
+      this.validateAllPriceBookProducts();
+      this.materializePriceBooks();
+      this.audit({
+        entityType: "PRICE_BOOK",
+        entityId: id,
+        action: existing ? "PRICE_BOOK_UPDATED" : "PRICE_BOOK_CREATED",
+        permission: "prices.bulk_update",
+        reason: input.reason.trim(),
+        before,
+        after: {
+          id,
+          name: input.name.trim(),
+          adjustmentBps: input.adjustmentBps,
+          isBase: false,
+        },
+        authorizerUserId: String(auth.id),
+      });
+      return this.getPriceBooks();
+    })();
+  }
+
+  assignPriceBooks(input: AssignPriceBooksInput): PriceBooksDto {
+    assertPermission(this.currentUser().permissions, "prices.bulk_update");
+    if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+    return this.db.transaction(() => {
+      const auth = this.authorizePin(input.authorizerPin, "prices.bulk_update");
+      const before = this.getPriceBooks().assignments;
+      for (const channel of ["SALON", "TAKEAWAY", "DELIVERY"] as const) {
+        const book = this.db
+          .prepare("SELECT id FROM price_books WHERE id=?")
+          .get(input.assignments[channel]);
+        if (!book) throw new Error(`La lista asignada a ${channel} no existe.`);
+        this.db
+          .prepare(
+            "INSERT INTO price_book_assignments(channel,book_id) VALUES(?,?) ON CONFLICT(channel) DO UPDATE SET book_id=excluded.book_id",
+          )
+          .run(channel, input.assignments[channel]);
+      }
+      this.materializePriceBooks();
+      this.audit({
+        entityType: "PRICE_BOOK",
+        entityId: "assignments",
+        action: "PRICE_BOOKS_ASSIGNED",
+        permission: "prices.bulk_update",
+        reason: input.reason.trim(),
+        before,
+        after: input.assignments,
+        authorizerUserId: String(auth.id),
+      });
+      return this.getPriceBooks();
+    })();
+  }
+
   private listProducts(): ProductDto[] {
     const rows = this.db
       .prepare(
@@ -1827,6 +2145,26 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
        FROM product_prices pp JOIN price_lists pl ON pl.id = pp.price_list_id
        WHERE pp.product_id = ? ORDER BY pl.sort_order`,
     );
+    const bookBases = new Map(
+      (
+        this.db
+          .prepare(
+            "SELECT product_id,amount_minor FROM product_price_book_bases",
+          )
+          .all() as Row[]
+      ).map((r) => [String(r.product_id), Number(r.amount_minor)]),
+    );
+    const bookOverrides = new Map<string, Record<string, number>>();
+    for (const row of this.db
+      .prepare(
+        "SELECT product_id,book_id,amount_minor FROM product_price_book_overrides",
+      )
+      .all() as Row[]) {
+      const id = String(row.product_id);
+      const entries = bookOverrides.get(id) ?? {};
+      entries[String(row.book_id)] = Number(row.amount_minor);
+      bookOverrides.set(id, entries);
+    }
     return rows.map((row) => ({
       id: String(row.id),
       categoryId: String(row.category_id),
@@ -1849,7 +2187,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           : Number(row.stock_critical_minor),
       imageDataUrl:
         row.image_data_url == null ? null : String(row.image_data_url),
-      comboDefinition: row.combo_definition_json == null ? null : JSON.parse(String(row.combo_definition_json)),
+      comboDefinition:
+        row.combo_definition_json == null
+          ? null
+          : JSON.parse(String(row.combo_definition_json)),
+      priceBook: bookBases.has(String(row.id))
+        ? {
+            baseMinor: bookBases.get(String(row.id))!,
+            overrides: bookOverrides.get(String(row.id)) ?? {},
+          }
+        : undefined,
       prices: (pricesStatement.all(row.id) as Row[]).map((price) => ({
         priceListId: String(price.price_list_id),
         priceListCode: String(price.price_list_code),
@@ -3370,7 +3717,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     assertPermission(this.currentUser().permissions, "prices.bulk_update");
     if (!input.name.trim()) throw new Error("Ingresá el nombre del producto.");
     if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
-    if (input.prices.some((price) => !Number.isSafeInteger(price.amountMinor) || price.amountMinor < 0))
+    if (
+      input.prices.some(
+        (price) =>
+          !Number.isSafeInteger(price.amountMinor) || price.amountMinor < 0,
+      )
+    )
       throw new Error("Ingresá precios válidos y dentro del rango permitido.");
     // Validate the authorizer before opening the transaction; all writes below
     // still share the outer transaction and roll back together on any failure.
@@ -3388,6 +3740,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           code: input.code,
           stockMinor: null,
           prices: input.prices,
+          priceBook: input.priceBook,
         });
         return this.configureProductCombo({
           productId: product.id,
@@ -6675,6 +7028,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   createProduct(input: {
+    priceBook?: { baseMinor: number; overrides: Record<string, number> };
     categoryId: Id;
     name: string;
     code?: string | null;
@@ -6689,6 +7043,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       amountMinor: number;
     }>;
   }): ProductDto {
+    if (input.priceBook) this.validateProductPriceBook("", input.priceBook);
     const run = this.db.transaction(() => {
       const category = requireRow(
         this.db
@@ -6754,6 +7109,28 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         if (!result.changes)
           throw new Error(`No existe la lista ${price.priceListCode}.`);
       }
+      const baseMinor =
+        input.priceBook?.baseMinor ??
+        input.prices.find((p) => p.priceListCode === "SALON")?.amountMinor ??
+        input.prices[0]?.amountMinor ??
+        0;
+      this.db
+        .prepare(
+          "INSERT INTO product_price_book_bases(product_id,amount_minor) VALUES(?,?)",
+        )
+        .run(id, baseMinor);
+      if (input.priceBook)
+        for (const [bookId, amount] of Object.entries(
+          input.priceBook.overrides,
+        )) {
+          this.db
+            .prepare(
+              "INSERT INTO product_price_book_overrides(product_id,book_id,amount_minor) VALUES(?,?,?)",
+            )
+            .run(id, bookId, amount);
+        }
+      if (!input.priceBook) reconcileLegacyPrices(this.db, id, input.prices);
+      this.materializePriceBooks([id]);
       this.audit({
         entityType: "PRODUCT",
         entityId: id,
@@ -6768,6 +7145,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   updateProduct(input: UpdateProductInput): ProductDto {
+    if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+    if (input.priceBook)
+      this.validateProductPriceBook(input.productId, input.priceBook);
     const run = this.db.transaction(() => {
       const authorizer = this.authorizePin(
         input.authorizerPin,
@@ -6777,7 +7157,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         this.listProducts().find((product) => product.id === input.productId),
         "El producto no existe.",
       );
-      if (input.stockMinor != null && before.comboDefinition) throw new Error("Un combo no puede tener stock propio; configurá el inventario de sus componentes.");
+      if (input.stockMinor != null && before.comboDefinition)
+        throw new Error(
+          "Un combo no puede tener stock propio; configurá el inventario de sus componentes.",
+        );
       requireRow(
         this.db
           .prepare("SELECT id FROM categories WHERE id = ? AND active = 1")
@@ -6874,6 +7257,27 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         if (!result.changes)
           throw new Error(`No existe la lista ${price.priceListCode}.`);
       }
+      if (input.priceBook) {
+        this.db
+          .prepare(
+            "INSERT INTO product_price_book_bases(product_id,amount_minor) VALUES(?,?) ON CONFLICT(product_id) DO UPDATE SET amount_minor=excluded.amount_minor",
+          )
+          .run(input.productId, input.priceBook.baseMinor);
+        this.db
+          .prepare(
+            "DELETE FROM product_price_book_overrides WHERE product_id=?",
+          )
+          .run(input.productId);
+        for (const [bookId, amount] of Object.entries(
+          input.priceBook.overrides,
+        ))
+          this.db
+            .prepare(
+              "INSERT INTO product_price_book_overrides(product_id,book_id,amount_minor) VALUES(?,?,?)",
+            )
+            .run(input.productId, bookId, amount);
+      } else reconcileLegacyPrices(this.db, input.productId, input.prices);
+      this.materializePriceBooks([input.productId]);
       const after = requireRow(
         this.listProducts().find((product) => product.id === input.productId),
         "No se pudo leer el producto actualizado.",
@@ -7022,41 +7426,63 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
       let changedPrices = 0;
       if (input.priceAdjustment) {
-        const getPrice = this.db.prepare(
-          `SELECT pp.amount_minor, pl.id AS price_list_id, pl.name AS price_list_name
-           FROM price_lists pl LEFT JOIN product_prices pp
-             ON pp.price_list_id = pl.id AND pp.product_id = ?
-           WHERE pl.code = ? AND pl.active = 1`,
-        );
-        const upsertPrice = this.db.prepare(
-          `INSERT INTO product_prices(product_id, price_list_id, amount_minor, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(product_id, price_list_id) DO UPDATE SET
-             amount_minor = excluded.amount_minor, updated_at = excluded.updated_at`,
-        );
-        for (const product of before) {
-          for (const code of input.priceAdjustment.priceListCodes) {
-            const price = requireRow(
-              getPrice.get(product.id, code) as Row | undefined,
-              `No existe la lista de precios ${code}.`,
+        const selectedBooks = input.priceAdjustment.bookIds;
+        if (selectedBooks?.length) {
+          const catalog = this.getPriceBooks();
+          for (const product of before) {
+            const current = product.priceBook ?? {
+              baseMinor:
+                product.prices.find((p) => p.priceListCode === "SALON")
+                  ?.amountMinor ?? 0,
+              overrides: {},
+            };
+            const next = applyBookAdjustment(
+              current,
+              catalog.books,
+              [...new Set(selectedBooks)],
+              input.priceAdjustment.mode,
+              input.priceAdjustment.value,
             );
-            const current = Number(price.amount_minor ?? 0);
-            const next =
-              input.priceAdjustment.mode === "PERCENTAGE"
-                ? Math.round(current * (1 + input.priceAdjustment.value / 100))
-                : current + input.priceAdjustment.value;
-            if (!Number.isSafeInteger(next))
-              throw new Error(
-                `El ajuste deja un precio fuera del rango válido en ${product.name}.`,
-              );
-            if (next < 0) {
-              throw new Error(
-                `El ajuste dejaría con precio negativo a ${product.name} en ${String(price.price_list_name)}.`,
-              );
-            }
-            upsertPrice.run(product.id, price.price_list_id, next, timestamp);
-            changedPrices += 1;
+            this.db
+              .prepare(
+                "INSERT INTO product_price_book_bases(product_id,amount_minor) VALUES(?,?) ON CONFLICT(product_id) DO UPDATE SET amount_minor=excluded.amount_minor",
+              )
+              .run(product.id, next.baseMinor);
+            this.db
+              .prepare(
+                "DELETE FROM product_price_book_overrides WHERE product_id=?",
+              )
+              .run(product.id);
+            for (const [bookId, amount] of Object.entries(next.overrides))
+              this.db
+                .prepare(
+                  "INSERT INTO product_price_book_overrides(product_id,book_id,amount_minor) VALUES(?,?,?)",
+                )
+                .run(product.id, bookId, amount);
+            changedPrices += selectedBooks.length;
           }
+          this.materializePriceBooks(requestedIds);
+        } else {
+          const { mode, value, priceListCodes } = input.priceAdjustment;
+          for (const product of before) {
+            const prices = product.prices.map((price) => {
+              const code = price.priceListCode as PriceChannel;
+              if (!priceListCodes.includes(code))
+                return { priceListCode: code, amountMinor: price.amountMinor };
+              const next =
+                mode === "PERCENTAGE"
+                  ? Math.round(price.amountMinor * (1 + value / 100))
+                  : price.amountMinor + value;
+              if (!Number.isSafeInteger(next) || next < 0)
+                throw new Error(
+                  `El ajuste deja un precio negativo o fuera del rango válido en ${product.name}.`,
+                );
+              changedPrices++;
+              return { priceListCode: code, amountMinor: next };
+            });
+            reconcileLegacyPrices(this.db, product.id, prices);
+          }
+          this.materializePriceBooks(requestedIds);
         }
       }
 

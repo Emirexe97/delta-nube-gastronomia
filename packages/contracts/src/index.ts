@@ -198,6 +198,34 @@ export interface CategoryDto {
   stockControlEnabled: boolean;
 }
 
+export type PriceChannel = "SALON" | "TAKEAWAY" | "DELIVERY";
+export interface PriceBookDto {
+  id: Id;
+  name: string;
+  adjustmentBps: number;
+  isBase: boolean;
+}
+export interface PriceBooksDto {
+  books: PriceBookDto[];
+  assignments: Record<PriceChannel, Id>;
+}
+export interface ProductPriceBookDto {
+  baseMinor: MoneyMinor;
+  overrides: Record<Id, MoneyMinor>;
+}
+export interface SavePriceBookInput {
+  id?: Id;
+  name: string;
+  adjustmentBps: number;
+  reason: string;
+  authorizerPin: string;
+}
+export interface AssignPriceBooksInput {
+  assignments: Record<PriceChannel, Id>;
+  reason: string;
+  authorizerPin: string;
+}
+
 export interface ProductPriceDto {
   priceListId: Id;
   priceListCode: string;
@@ -205,6 +233,7 @@ export interface ProductPriceDto {
 }
 
 export interface ProductDto {
+  priceBook?: ProductPriceBookDto;
   webPublished?: boolean;
   id: Id;
   categoryId: Id;
@@ -248,6 +277,7 @@ export interface ConfigureProductComboInput extends IdempotentRequest {
 }
 
 export interface CreateComboInput extends IdempotentRequest {
+  priceBook?: ProductPriceBookDto;
   categoryId: Id;
   name: string;
   code?: string | null;
@@ -905,6 +935,7 @@ export interface ConfirmOrderInput extends IdempotentRequest {
 }
 
 export interface UpdateProductInput {
+  priceBook?: ProductPriceBookDto;
   productId: Id;
   categoryId: Id;
   name: string;
@@ -931,6 +962,7 @@ export interface BulkUpdateProductsInput extends IdempotentRequest {
   priceAdjustment?: {
     mode: "PERCENTAGE" | "FIXED";
     value: number;
+    bookIds?: Id[];
     priceListCodes: Array<"SALON" | "TAKEAWAY" | "DELIVERY">;
   } | null;
   reason: string;
@@ -1475,7 +1507,11 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
     reason: string;
     authorizerPin: string;
   }): Promise<{ deleted: true }>;
+  getPriceBooks(): Promise<PriceBooksDto>;
+  savePriceBook(input: SavePriceBookInput): Promise<PriceBooksDto>;
+  assignPriceBooks(input: AssignPriceBooksInput): Promise<PriceBooksDto>;
   createProduct(input: {
+    priceBook?: ProductPriceBookDto;
     categoryId: Id;
     name: string;
     code?: string | null;

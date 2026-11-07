@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
@@ -7,11 +7,15 @@ import type {
   CategoryDto,
   ProductDto,
   FinanceReportDto,
+  PriceBookDto,
+  PriceBooksDto,
 } from "@gastronomy/contracts";
 import {
   CaretDown,
   ClockCounterClockwise,
   Copy,
+  Eye,
+  EyeSlash,
   MagnifyingGlass,
   Package,
   PencilSimple,
@@ -36,12 +40,19 @@ import { ComboConfigModal } from "../components/combo-config-modal";
 import { CombosTable } from "../components/combos-table";
 import { IngredientsPanel } from "../components/ingredients-panel";
 import { ProductCostEditor } from "../components/product-cost-editor";
+import { PriceBooksPanel } from "../components/price-books-panel";
+import {
+  hasInvalidCalculatedBookPrice,
+  PriceBookPricingEditor,
+} from "../components/price-book-pricing-editor";
+import { applyBookAdjustment, calculateBookPrice } from "@gastronomy/domain";
 import { convertProductImageToWebp } from "../product-image";
 import {
   auditActionLabel,
   formatMoney,
   humanError,
   parseMoneyInput,
+  parsePriceInput,
   parseStockInput,
 } from "../lib";
 import {
@@ -50,13 +61,6 @@ import {
   type ProductCost,
 } from "./catalog-filters";
 
-const visiblePriceListCodes = ["SALON", "OFF_PREMISE"] as const;
-type VisiblePriceListCode = (typeof visiblePriceListCodes)[number];
-type VisibleProductPrices = Record<VisiblePriceListCode, string>;
-const visiblePriceListLabels: Record<VisiblePriceListCode, string> = {
-  SALON: "Salón",
-  OFF_PREMISE: "Delivery / Para retirar",
-};
 
 function moneyInput(amountMinor: number) {
   return (amountMinor / 100).toLocaleString("es-AR", {
@@ -125,6 +129,22 @@ export function buildCatalogProductGroups(
   return groups;
 }
 
+function EditProductButton({ product, onEdit }: { product: ProductDto; onEdit(product: ProductDto): void }) {
+  return (
+    <button
+      type="button"
+      aria-label={`Editar ${product.name}`}
+      onClick={() => onEdit(product)}
+      className="focus-ring group relative inline-flex size-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 focus-visible:border-brand-300 focus-visible:text-brand-700"
+    >
+      <PencilSimple size={17} aria-hidden="true" />
+      <span aria-hidden="true" className="pointer-events-none invisible absolute right-full top-1/2 z-10 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-xs font-semibold text-white shadow-sm group-hover:visible group-focus-visible:visible">
+        {product.parentProductId ? "Editar variante" : "Editar producto"}
+      </span>
+    </button>
+  );
+}
+
 export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [query, setQuery] = useState("");
   // Prices and stock do not change when typing a search. Formatting every
@@ -135,17 +155,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         data.products.map((product) => [
           product.id,
           {
-            prices: {
-              SALON: formatMoney(
-                product.prices.find((price) => price.priceListCode === "SALON")
-                  ?.amountMinor ?? 0,
+            principal: formatMoney(
+                product.priceBook?.baseMinor ?? product.prices.find((price) => price.priceListCode === "SALON")?.amountMinor ?? 0,
               ),
-              OFF_PREMISE: formatMoney(
-                product.prices.find(
-                  (price) => price.priceListCode === "TAKEAWAY",
-                )?.amountMinor ?? 0,
-              ),
-            },
             stock:
               product.stockMinor == null
                 ? "Sin control"
@@ -201,8 +213,15 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [categoryQuery, setCategoryQuery] = useState("");
   const [comboQuery, setComboQuery] = useState("");
   const [tab, setTab] = useState<
-    "PRODUCTS" | "CATEGORIES" | "MODIFIERS" | "COMBOS" | "INGREDIENTS"
+    "PRODUCTS" | "CATEGORIES" | "MODIFIERS" | "COMBOS" | "INGREDIENTS" | "PRICE_BOOKS"
   >("PRODUCTS");
+  const [priceBooks, setPriceBooks] = useState<PriceBooksDto | null>(null);
+  const [priceBooksError, setPriceBooksError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    window.gastronomy.getPriceBooks().then((books) => { if (live) { setPriceBooks(books); setPriceBooksError(null); } }).catch((error) => { if (live) { setPriceBooks(null); setPriceBooksError(humanError(error)); } });
+    return () => { live = false; };
+  }, [data.currentUser.id]);
   useEffect(() => {
     if (costParam === "sin" || costParam === "con") setTab("PRODUCTS");
   }, [costParam]);
@@ -254,13 +273,18 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   };
   const webPublicationControl = (product: ProductDto) => {
     if (product.comboDefinition) return <span className="text-xs text-slate-500">Combo no disponible en web</span>;
+    const VisibilityIcon = product.webPublished ? Eye : EyeSlash;
     return (
       <button type="button" disabled={!canManageWebCatalog || publicationBusy !== null}
         aria-label={`${product.webPublished ? "Ocultar" : "Mostrar"} ${product.name} en la web`}
         aria-pressed={Boolean(product.webPublished)}
         title="La carta muestra productos habilitados, activos, disponibles y sincronizados."
         onClick={() => void toggleWebPublication(product)}
-        className="focus-ring rounded-lg border border-slate-200 px-2 py-1 text-xs font-bold disabled:opacity-50">
+        className={cn(
+          "focus-ring inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold transition-colors enabled:hover:bg-slate-100 disabled:cursor-default",
+          product.webPublished ? "text-brand-800" : "text-slate-600",
+        )}>
+        <VisibilityIcon size={15} aria-hidden="true" />
         {product.webPublished ? "Habilitado" : "Oculto"}
       </button>
     );
@@ -426,7 +450,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             Catálogo, modificadores y stock
           </h2>
           <p className="text-xs text-slate-600">
-            Precios por canal y control opcional de existencias
+            Productos, listas de precios y control de existencias
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -475,6 +499,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             ["MODIFIERS", "Modificadores"],
             ["COMBOS", "Combos"],
             ["INGREDIENTS", "Ingredientes"],
+            ["PRICE_BOOKS", "Listas de precios"],
           ] as const
         )
           .filter(
@@ -527,6 +552,10 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         </div>
       ) : null}
 
+      {tab === "PRICE_BOOKS" ? (
+        <PriceBooksPanel permissions={data.currentUser.permissions} onUpdated={setPriceBooks} />
+      ) : null}
+
       {tab === "PRODUCTS" ? (
         <>
         <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm" aria-label="Sincronización de catálogo web">
@@ -545,7 +574,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                 className="pl-9"
               />
             </div>
-            <div className="grid w-full gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="grid w-full gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="Categoría">
                 <Select
                   aria-label="Filtrar por categoría"
@@ -776,7 +805,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           ) : null}
           {productGroups.length ? (
             <div className="max-h-[calc(100vh-260px)] overflow-auto">
-              <table className="dn-table min-w-[920px]">
+              <table className="dn-table min-w-[800px]">
                 <thead>
                   <tr>
                     <th className="w-10">
@@ -800,12 +829,11 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                     <th>Producto</th>
                     <th>Categoría</th>
                     <th>Código</th>
-                    <th className="text-right">Salón</th>
-                    <th className="text-right">Delivery / Para retirar</th>
+                    <th className="text-right">Precio Principal</th>
                     <th>Stock</th>
                     <th>Estado</th>
                     <th>Web</th>
-                    <th className="text-right">Acciones</th>
+                    <th className="w-16 text-right">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -902,17 +930,13 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                           <td className="font-mono text-xs">
                             {parent.code || "—"}
                           </td>
-                          {visiblePriceListCodes.map((code) => (
-                            <td key={code} className="text-right font-semibold">
-                              {productDisplay.get(parent.id)!.prices[code]}
-                            </td>
-                          ))}
+                          <td className="text-right font-semibold tabular-nums">{productDisplay.get(parent.id)!.principal}{Object.keys(parent.priceBook?.overrides ?? {}).length > 0 ? <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800" title="Tiene precios propios fijos en listas derivadas">Fijos</span> : null}</td>
                           <td>
                             <button
                               type="button"
                               aria-label={`Stock actual de ${parent.name}; seleccionar para ajustar`}
                               onClick={() => setStockProduct(parent)}
-                              className="font-bold text-brand-700 hover:underline"
+                              className="focus-ring whitespace-nowrap rounded font-bold tabular-nums text-brand-700 hover:underline"
                             >
                               {productDisplay.get(parent.id)!.stock}
                             </button>
@@ -924,47 +948,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                           </td>
                           <td>{webPublicationControl(parent)}</td>
                           <td className="text-right">
-                            <div className="flex justify-end gap-1.5">
-                              {canManageCosts && !parent.comboDefinition ? (
-                                <Button
-                                  variant="secondary"
-                                  className="h-8 px-2.5 text-xs"
-                                  aria-label={`Costo de ${parent.name}`}
-                                  onClick={() => setCostProduct(parent)}
-                                >
-                                  Costo
-                                </Button>
-                              ) : null}
-                              <button
-                                type="button"
-                                aria-label={`Ajustar inventario de ${parent.name}`}
-                                title="Registrar un ajuste de inventario"
-                                onClick={() => setStockProduct(parent)}
-                                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                              >
-                                <SlidersHorizontal size={14} />
-                                Ajustar
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Editar ${parent.name}`}
-                                title="Editar producto y precios"
-                                onClick={() => setEditingProduct(parent)}
-                                className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                              >
-                                <PencilSimple size={14} />
-                                Editar
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Eliminar ${parent.name}`}
-                                title={`Eliminar producto ${parent.name}`}
-                                onClick={() => setDeletingProduct(parent)}
-                                className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 text-rose-700 transition hover:bg-rose-50"
-                              >
-                                <Trash size={14} />
-                              </button>
-                            </div>
+                            <EditProductButton product={parent} onEdit={setEditingProduct} />
                           </td>
                         </tr>
                         {hasVariants && expanded
@@ -1009,24 +993,13 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                 <td className="font-mono text-xs text-slate-600">
                                   {variant.code || "—"}
                                 </td>
-                                {visiblePriceListCodes.map((code) => (
-                                  <td
-                                    key={code}
-                                    className="text-right text-xs font-semibold text-slate-700"
-                                  >
-                                    {
-                                      productDisplay.get(variant.id)!.prices[
-                                        code
-                                      ]
-                                    }
-                                  </td>
-                                ))}
+                                <td className="text-right text-xs font-semibold tabular-nums text-slate-700">{productDisplay.get(variant.id)!.principal}{Object.keys(variant.priceBook?.overrides ?? {}).length > 0 ? <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800" title="Tiene precios propios fijos en listas derivadas">Fijos</span> : null}</td>
                                 <td>
                                   <button
                                     type="button"
                                     aria-label={`Stock actual de ${variant.name}; seleccionar para ajustar`}
                                     onClick={() => setStockProduct(variant)}
-                                    className="font-bold text-xs text-brand-700 hover:underline"
+                                    className="focus-ring whitespace-nowrap rounded text-xs font-bold tabular-nums text-brand-700 hover:underline"
                                   >
                                     {productDisplay.get(variant.id)!.stock}
                                   </button>
@@ -1040,50 +1013,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                                 </td>
                                 <td>{webPublicationControl(variant)}</td>
                                 <td className="text-right">
-                                  <div className="flex justify-end gap-1.5">
-                                    {canManageCosts &&
-                                    !variant.comboDefinition ? (
-                                      <Button
-                                        variant="secondary"
-                                        className="h-7 px-2 text-xs"
-                                        aria-label={`Costo de ${variant.name}`}
-                                        onClick={() => setCostProduct(variant)}
-                                      >
-                                        Costo
-                                      </Button>
-                                    ) : null}
-                                    <button
-                                      type="button"
-                                      aria-label={`Ajustar inventario de ${variant.name}`}
-                                      title="Registrar un ajuste de inventario"
-                                      onClick={() => setStockProduct(variant)}
-                                      className="focus-ring inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                                    >
-                                      <SlidersHorizontal size={13} />
-                                      Ajustar
-                                    </button>
-                                    <button
-                                      type="button"
-                                      aria-label={`Editar ${variant.name}`}
-                                      title="Editar variante y precios"
-                                      onClick={() => setEditingProduct(variant)}
-                                      className="focus-ring inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                                    >
-                                      <PencilSimple size={13} />
-                                      Editar
-                                    </button>
-                                    <button
-                                      type="button"
-                                      aria-label={`Eliminar ${variant.name}`}
-                                      title={`Eliminar variante ${variant.name}`}
-                                      onClick={() =>
-                                        setDeletingProduct(variant)
-                                      }
-                                      className="focus-ring inline-flex h-7 w-7 items-center justify-center rounded-lg border border-rose-200 bg-white text-rose-700 transition hover:bg-rose-50"
-                                    >
-                                      <Trash size={13} />
-                                    </button>
-                                  </div>
+                                  <EditProductButton product={variant} onEdit={setEditingProduct} />
                                 </td>
                               </tr>
                             ))
@@ -1202,12 +1132,20 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       )}
 
       <ProductModal
+        key={editingProduct?.id ?? "new-product"}
         open={productOpen || Boolean(editingProduct)}
         product={editingProduct}
         categories={data.categories}
         allProducts={data.products}
+        priceBooks={priceBooks?.books ?? []}
+        priceBooksLoaded={Boolean(priceBooks)}
+        priceBooksError={priceBooksError}
         initialCategoryId={newProductCategoryId}
         onClose={closeProduct}
+        onManageCost={canManageCosts && editingProduct && !editingProduct.comboDefinition
+          ? (product) => { closeProduct(); setCostProduct(product); }
+          : undefined}
+        onDeleteProduct={(product) => { closeProduct(); setDeletingProduct(product); }}
         onRequestVariant={(product) => {
           closeProduct();
           setVariantBaseProduct(product);
@@ -1226,6 +1164,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       <CreateVariantModal
         baseProduct={variantBaseProduct}
         categories={data.categories}
+        priceBooks={priceBooks?.books ?? []}
+        priceBooksLoaded={Boolean(priceBooks)}
+        priceBooksError={priceBooksError}
         onClose={() => setVariantBaseProduct(null)}
       />
       <CategoryModal
@@ -1257,6 +1198,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         product={comboProduct}
         products={data.products}
         categories={data.categories}
+        priceBooks={priceBooks}
         onClose={() => {
           setComboOpen(false);
           setComboProduct(null);
@@ -1280,6 +1222,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         )}
       </Modal>
       <BulkProductsModal
+        priceBooks={priceBooks}
         open={bulkOpen}
         products={selectedProducts}
         categories={data.categories}
@@ -1494,6 +1437,7 @@ function CategoryModal({
 function BulkProductsModal({
   open,
   products,
+  priceBooks,
   categories,
   onRemoveProduct,
   onClose,
@@ -1501,6 +1445,7 @@ function BulkProductsModal({
 }: {
   open: boolean;
   products: ProductDto[];
+  priceBooks: PriceBooksDto | null;
   categories: CategoryDto[];
   onRemoveProduct(productId: string): void;
   onClose(): void;
@@ -1511,9 +1456,9 @@ function BulkProductsModal({
   const [adjustPrices, setAdjustPrices] = useState(false);
   const [mode, setMode] = useState<"PERCENTAGE" | "FIXED">("PERCENTAGE");
   const [value, setValue] = useState("");
-  const [lists, setLists] = useState<Set<VisiblePriceListCode>>(
-    new Set(visiblePriceListCodes),
-  );
+  const [lists, setLists] = useState<Set<string>>(new Set());
+  const books = priceBooks?.books ?? [];
+  const baseId = books.find(book => book.isBase)?.id;
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -1524,61 +1469,31 @@ function BulkProductsModal({
     setAdjustPrices(false);
     setMode("PERCENTAGE");
     setValue("");
-    setLists(new Set(visiblePriceListCodes));
+    setLists(new Set(baseId ? [baseId] : []));
     setReason("");
     setPin("");
     setError(null);
-  }, [open]);
+  }, [open, baseId]);
   const productIds = products.map((product) => product.id);
   const parsedValue = (() => {
-    const normalized =
-      mode === "PERCENTAGE"
-        ? value.trim().replace(",", ".")
-        : value.trim().replace(/\./g, "").replace(",", ".");
-    const number = Number(normalized);
-    if (!Number.isFinite(number)) return null;
-    return mode === "PERCENTAGE" ? number : Math.round(number * 100);
+    const raw = value.trim();
+    if (mode === "PERCENTAGE")
+      return /^[+-]?\d+(?:[.,]\d{1,2})?$/.test(raw) ? Number(raw.replace(",", ".")) : null;
+    const cents = parsePriceInput(raw.replace(/^[+-]/, ""));
+    return cents === null ? null : raw.startsWith("-") ? -cents : cents;
   })();
-  const adjustedPrice = (amountMinor: number, code: VisiblePriceListCode) => {
-    if (!adjustPrices || !lists.has(code) || parsedValue == null)
-      return amountMinor;
-    return mode === "PERCENTAGE"
-      ? Math.round(amountMinor * (1 + parsedValue / 100))
-      : amountMinor + parsedValue;
-  };
-  const percentageOutOfRange =
-    mode === "PERCENTAGE" &&
-    parsedValue != null &&
-    (parsedValue < -100 || parsedValue > 1000);
-  const negativePrice = products.some((product) =>
-    visiblePriceListCodes.some((code) => {
-      const priceCode = code === "OFF_PREMISE" ? "TAKEAWAY" : code;
-      const current =
-        product.prices.find((price) => price.priceListCode === priceCode)
-          ?.amountMinor ?? 0;
-      return adjustedPrice(current, code) < 0;
-    }),
-  );
-  const unsafePrice =
-    (mode === "FIXED" &&
-      parsedValue != null &&
-      !Number.isSafeInteger(parsedValue)) ||
-    products.some((product) =>
-      visiblePriceListCodes.some((code) => {
-        const priceCode = code === "OFF_PREMISE" ? "TAKEAWAY" : code;
-        const current =
-          product.prices.find((price) => price.priceListCode === priceCode)
-            ?.amountMinor ?? 0;
-        return !Number.isSafeInteger(adjustedPrice(current, code));
-      }),
-    );
-  const invalidPriceAdjustment =
-    adjustPrices &&
-    (parsedValue == null ||
-      !lists.size ||
-      percentageOutOfRange ||
-      negativePrice ||
-      unsafePrice);
+  const nextBooks = new Map<string, NonNullable<ProductDto["priceBook"]>>();
+  let adjustmentError = "";
+  if (open && adjustPrices) {
+    try {
+      if (parsedValue == null) throw new Error("Ingresá una variación válida.");
+      for (const product of products) {
+        if (!product.priceBook) throw new Error("No se pudieron cargar todos los precios.");
+        nextBooks.set(product.id, applyBookAdjustment(product.priceBook, books, [...lists], mode, parsedValue));
+      }
+    } catch (err) { adjustmentError = humanError(err); }
+  }
+  const invalidPriceAdjustment = adjustPrices && (!books.length || !!adjustmentError);
   const hasChange = Boolean(categoryId || active || adjustPrices);
   const mutation = useApiMutation(
     (input: Parameters<typeof window.gastronomy.bulkUpdateProducts>[0]) =>
@@ -1617,12 +1532,7 @@ function BulkProductsModal({
               ? {
                   mode,
                   value: parsedValue!,
-                  priceListCodes: [
-                    ...(lists.has("SALON") ? (["SALON"] as const) : []),
-                    ...(lists.has("OFF_PREMISE")
-                      ? (["TAKEAWAY", "DELIVERY"] as const)
-                      : []),
-                  ],
+                  priceListCodes: [], bookIds: [...lists],
                 }
               : null,
             reason,
@@ -1704,8 +1614,9 @@ function BulkProductsModal({
                 <p className="mb-2 text-xs font-bold text-slate-600">
                   Listas a modificar
                 </p>
+                <p className="mb-2 text-xs text-slate-600">Ajustar la Principal actualiza los precios heredados. Si elegís otra lista, el resultado queda como precio propio.</p>
                 <div className="flex flex-wrap gap-3">
-                  {visiblePriceListCodes.map((code) => (
+                  {books.map(({id:code, name}) => (
                     <label
                       key={code}
                       className="flex items-center gap-2 text-xs font-semibold text-slate-600"
@@ -1723,7 +1634,7 @@ function BulkProductsModal({
                         }}
                         className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
                       />
-                      {visiblePriceListLabels[code]}
+                      {name}
                     </label>
                   ))}
                 </div>
@@ -1753,8 +1664,7 @@ function BulkProductsModal({
                     <th>Producto</th>
                     <th>Categoría</th>
                     <th>Estado</th>
-                    <th className="text-right">Salón</th>
-                    <th className="text-right">Delivery / Retirar</th>
+                    {books.map(book => <th key={book.id} className="text-right">{book.name}</th>)}
                     <th className="w-20 text-right">Acción</th>
                   </tr>
                 </thead>
@@ -1784,23 +1694,11 @@ function BulkProductsModal({
                             after={nextActive ? "Activo" : "Inactivo"}
                           />
                         </td>
-                        {visiblePriceListCodes.map((code) => {
-                          const priceCode =
-                            code === "OFF_PREMISE" ? "TAKEAWAY" : code;
-                          const current =
-                            product.prices.find(
-                              (price) => price.priceListCode === priceCode,
-                            )?.amountMinor ?? 0;
-                          const next = adjustedPrice(current, code);
-                          return (
-                            <td key={code} className="text-right">
-                              <PreviewChange
-                                before={formatMoney(current)}
-                                after={formatMoney(next)}
-                                invalid={next < 0}
-                              />
-                            </td>
-                          );
+                        {books.map(book => {
+                          const before = product.priceBook;
+                          const after = nextBooks.get(product.id) ?? before;
+                          const amount = (cfg: NonNullable<typeof before>) => formatMoney(book.isBase ? cfg.baseMinor : calculateBookPrice(cfg.baseMinor, book.adjustmentBps, cfg.overrides[book.id]));
+                          return <td key={book.id} className="text-right"><PreviewChange before={before ? amount(before) : "—"} after={after ? amount(after) : "—"} /></td>;
                         })}
                         <td className="text-right">
                           <button
@@ -1827,29 +1725,7 @@ function BulkProductsModal({
           )}
         </section>
 
-        {percentageOutOfRange ? (
-          <p
-            role="alert"
-            className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700"
-          >
-            El porcentaje debe estar entre -100% y 1000%.
-          </p>
-        ) : negativePrice ? (
-          <p
-            role="alert"
-            className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700"
-          >
-            El ajuste dejaría al menos un precio por debajo de cero. Revisá la
-            vista previa.
-          </p>
-        ) : unsafePrice ? (
-          <p
-            role="alert"
-            className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700"
-          >
-            El ajuste supera el importe máximo seguro. Ingresá un valor menor.
-          </p>
-        ) : null}
+        {adjustmentError && <p role="alert" className="rounded-lg bg-rose-50 p-2 text-xs text-rose-700">{adjustmentError}</p>}
 
         <div className="grid gap-3 rounded-xl border border-brand-100 bg-brand-50/40 p-3 sm:grid-cols-[1fr_150px]">
           <Field label="Motivo">
@@ -2259,6 +2135,15 @@ function EmptyProducts({ onCreate }: { onCreate(): void }) {
   );
 }
 
+const productSections = [
+  ["general", "General"],
+  ["prices", "Precios"],
+  ["inventory", "Inventario"],
+  ["variants", "Variantes"],
+  ["history", "Historial"],
+] as const;
+type ProductTab = (typeof productSections)[number][0];
+
 function ProductModal({
   open,
   product,
@@ -2270,9 +2155,17 @@ function ProductModal({
   onEditVariant,
   onAdjustStock,
   onOpenParent,
+  onManageCost,
+  onDeleteProduct,
+  priceBooks,
+  priceBooksLoaded,
+  priceBooksError,
 }: {
   open: boolean;
   product: ProductDto | null;
+  priceBooks: PriceBookDto[];
+  priceBooksLoaded: boolean;
+  priceBooksError: string | null;
   categories: CategoryDto[];
   allProducts?: ProductDto[];
   initialCategoryId: string | null;
@@ -2281,6 +2174,8 @@ function ProductModal({
   onEditVariant?: (variant: ProductDto) => void;
   onAdjustStock?: (product: ProductDto) => void;
   onOpenParent?: (parentProduct: ProductDto) => void;
+  onManageCost?: (product: ProductDto) => void;
+  onDeleteProduct?: (product: ProductDto) => void;
 }) {
   const editing = Boolean(product);
   const isVariant = Boolean(product?.parentProductId);
@@ -2305,19 +2200,19 @@ function ProductModal({
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageProcessing, setImageProcessing] = useState(false);
   const [active, setActive] = useState(true);
-  const [prices, setPrices] = useState<VisibleProductPrices>({
-    SALON: "",
-    OFF_PREMISE: "",
-  });
+  const [basePrice, setBasePrice] = useState("");
+  const [bookOverrides, setBookOverrides] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<AuditEntryDto[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<ProductTab>("general");
   const initializedFormKeyRef = useRef("");
 
-  useEffect(() => {
+  // Populate an opened record before its focused fields and dirty guard become interactive.
+  useLayoutEffect(() => {
     if (!open) {
       initializedFormKeyRef.current = "";
       return;
@@ -2363,24 +2258,8 @@ function ProductModal({
     );
     setImageDataUrl(product?.imageDataUrl ?? null);
     setImageProcessing(false);
-    setPrices(
-      Object.fromEntries(
-        visiblePriceListCodes.map((priceListCode) => [
-          priceListCode,
-          product
-            ? moneyInput(
-                product.prices.find(
-                  (price) =>
-                    price.priceListCode ===
-                    (priceListCode === "OFF_PREMISE"
-                      ? "TAKEAWAY"
-                      : priceListCode),
-                )?.amountMinor ?? 0,
-              )
-            : "",
-        ]),
-      ) as VisibleProductPrices,
-    );
+    setBasePrice(product ? moneyInput(product.priceBook?.baseMinor ?? product.prices.find((p) => p.priceListCode === "SALON")?.amountMinor ?? 0) : "");
+    setBookOverrides(Object.fromEntries(Object.entries(product?.priceBook?.overrides ?? {}).map(([id, amount]) => [id, moneyInput(amount)])));
     setReason("");
     setPin("");
     setError(null);
@@ -2404,7 +2283,7 @@ function ProductModal({
   };
 
   useEffect(() => {
-    if (!open || !product) {
+    if (!open || !product || activeTab !== "history") {
       setHistory([]);
       setHistoryError(null);
       setHistoryLoading(false);
@@ -2444,7 +2323,7 @@ function ProductModal({
         if (!cancelled) {
           setHistory([]);
           setHistoryError(
-            "No se pudo cargar el historial. Cerrá y volvé a abrir la ficha para reintentar.",
+            "No se pudo cargar el historial. Volvé a entrar a esta pestaña para reintentar.",
           );
         }
       })
@@ -2454,16 +2333,64 @@ function ProductModal({
     return () => {
       cancelled = true;
     };
-  }, [open, product]);
+  }, [open, product, activeTab]);
+
+  const hasDraftChanges = Boolean(
+    product &&
+    (categoryId !== product.categoryId ||
+      name !== product.name ||
+      code !== (product.code ?? "") ||
+      active !== product.active ||
+      imageDataUrl !== (product.imageDataUrl ?? null) ||
+      basePrice !== moneyInput(product.priceBook?.baseMinor ?? product.prices.find((p) => p.priceListCode === "SALON")?.amountMinor ?? 0) ||
+      JSON.stringify(bookOverrides) !== JSON.stringify(Object.fromEntries(Object.entries(product.priceBook?.overrides ?? {}).map(([id, amount]) => [id, moneyInput(amount)]))) ||
+      trackStock !== (product.stockMinor != null) ||
+      stock !==
+        (product.stockMinor == null ? "" : String(product.stockMinor / 1000)) ||
+      stockTarget !==
+        (product.stockTargetMinor == null
+          ? ""
+          : String(product.stockTargetMinor / 1000)) ||
+      stockMin !==
+        (product.stockMinMinor == null
+          ? ""
+          : String(product.stockMinMinor / 1000)) ||
+      stockCritical !==
+        (product.stockCriticalMinor == null
+          ? ""
+          : String(product.stockCriticalMinor / 1000))),
+  );
+  const runExternalAction = (action: () => void) => {
+    if (imageProcessing || mutation.isPending) return;
+    if (
+      hasDraftChanges &&
+      !window.confirm(
+        "Tenés cambios sin guardar. ¿Querés descartarlos y continuar?",
+      )
+    )
+      return;
+    action();
+  };
+  const requestClose = () => runExternalAction(onClose);
+  const tabs = isVariant
+    ? productSections.filter(([id]) => id !== "variants")
+    : productSections;
+  const panelProps = (id: ProductTab) =>
+    editing
+      ? {
+          role: "tabpanel",
+          id: `product-panel-${id}`,
+          "aria-labelledby": `product-tab-${id}`,
+          hidden: activeTab !== id,
+        }
+      : {};
 
   const parsedStockMinor = trackStock
     ? stock.trim()
       ? parseStockInput(stock)
       : 0
     : null;
-  const invalidPrices = visiblePriceListCodes.some(
-    (codeValue) => parseMoneyInput(prices[codeValue]) == null,
-  );
+  const invalidPrices = parsePriceInput(basePrice) == null || hasInvalidCalculatedBookPrice(basePrice, priceBooks, bookOverrides) || priceBooks.some((book) => !book.isBase && bookOverrides[book.id] !== undefined && parsePriceInput(bookOverrides[book.id] ?? "") == null);
   const invalidStock =
     trackStock && Boolean(stock.trim()) && parseStockInput(stock) == null;
   const parsedTarget =
@@ -2487,18 +2414,14 @@ function ProductModal({
         parsedCritical > parsedTarget));
 
   const mutation = useApiMutation(
-    async (parsedPrices: Record<VisiblePriceListCode, number>) => {
-      const normalizedPrices = [
-        { priceListCode: "SALON" as const, amountMinor: parsedPrices.SALON },
-        {
-          priceListCode: "TAKEAWAY" as const,
-          amountMinor: parsedPrices.OFF_PREMISE,
-        },
-        {
-          priceListCode: "DELIVERY" as const,
-          amountMinor: parsedPrices.OFF_PREMISE,
-        },
-      ];
+    async (_unused: void) => {
+      const baseMinor = parsePriceInput(basePrice);
+      if (baseMinor == null) throw new Error("Completá un precio Principal válido.");
+      const overrides = Object.fromEntries(Object.entries(bookOverrides).flatMap(([id, value]) => {
+        const amount = parsePriceInput(value);
+        return value.trim() && amount != null ? [[id, amount]] : [];
+      }));
+      const normalizedPrices: Array<{ priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY"; amountMinor: number }> = [];
       if (product) {
         return window.gastronomy.updateProduct({
           productId: product.id,
@@ -2513,6 +2436,7 @@ function ProductModal({
           stockCriticalMinor: parsedCritical,
           imageDataUrl,
           prices: normalizedPrices,
+          priceBook: { baseMinor, overrides },
           reason,
           authorizerPin: pin,
         });
@@ -2527,19 +2451,14 @@ function ProductModal({
         stockCriticalMinor: parsedCritical,
         imageDataUrl,
         prices: normalizedPrices,
+        priceBook: { baseMinor, overrides },
       });
     },
     { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
   );
 
   const submit = () => {
-    const parsed = Object.fromEntries(
-      visiblePriceListCodes.map((codeValue) => [
-        codeValue,
-        parseMoneyInput(prices[codeValue]),
-      ]),
-    ) as Record<VisiblePriceListCode, number | null>;
-    if (Object.values(parsed).some((value) => value == null)) {
+    if (parsePriceInput(basePrice) == null || hasInvalidCalculatedBookPrice(basePrice, priceBooks, bookOverrides) || priceBooks.some((book) => !book.isBase && bookOverrides[book.id] !== undefined && parsePriceInput(bookOverrides[book.id] ?? "") == null)) {
       setError("Completá precios válidos.");
       return;
     }
@@ -2553,13 +2472,14 @@ function ProductModal({
       setError("Indicá el motivo del cambio.");
       return;
     }
-    mutation.mutate(parsed as Record<VisiblePriceListCode, number>);
+    const baseMinor = parsePriceInput(basePrice)!;
+    mutation.mutate(undefined);
   };
 
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       closeDisabled={mutation.isPending}
       width="max-w-4xl"
       title={
@@ -2569,13 +2489,6 @@ function ProductModal({
             : `Editar · ${product?.name ?? "producto"}`
           : "Nuevo producto"
       }
-      description={
-        editing
-          ? isVariant
-            ? "Modificá los datos y precios de esta variante."
-            : "Modificá los datos y precios del producto."
-          : undefined
-      }
     >
       <form
         onSubmit={(event) => {
@@ -2584,6 +2497,53 @@ function ProductModal({
         }}
         className="grid gap-4"
       >
+        {editing ? (
+          <div
+            role="tablist"
+            aria-label="Secciones de edición"
+            className="flex flex-wrap gap-1 border-b border-slate-200 pb-2"
+          >
+            {tabs.map(([id, label]) => (
+              <button
+                key={id}
+                id={`product-tab-${id}`}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === id}
+                aria-controls={`product-panel-${id}`}
+                tabIndex={activeTab === id ? 0 : -1}
+                onClick={() => setActiveTab(id)}
+                onKeyDown={(event) => {
+                  if (
+                    !["ArrowRight", "ArrowLeft", "Home", "End"].includes(
+                      event.key,
+                    )
+                  )
+                    return;
+                  event.preventDefault();
+                  const index = tabs.findIndex(([tab]) => tab === activeTab);
+                  const next =
+                    event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? tabs.length - 1
+                        : (index +
+                            (event.key === "ArrowRight"
+                              ? 1
+                              : tabs.length - 1)) %
+                          tabs.length;
+                  const nextId = tabs[next]?.[0];
+                  if (!nextId) return;
+                  setActiveTab(nextId);
+                  document.getElementById(`product-tab-${nextId}`)?.focus();
+                }}
+                className={`focus-ring rounded-lg px-3 py-2 text-xs font-bold ${activeTab === id ? "bg-brand-50 text-brand-700" : "text-slate-600 hover:bg-slate-50"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {isVariant ? (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 text-xs text-amber-900">
             <div className="flex items-center gap-2">
@@ -2609,7 +2569,9 @@ function ProductModal({
               <Button
                 type="button"
                 variant="secondary"
-                onClick={() => onOpenParent(parentProduct)}
+                onClick={() =>
+                  runExternalAction(() => onOpenParent(parentProduct))
+                }
                 className="h-7 border-amber-300 px-2.5 text-xs font-bold text-amber-900 hover:bg-amber-100"
               >
                 Ir a producto base
@@ -2617,317 +2579,397 @@ function ProductModal({
             ) : null}
           </div>
         ) : null}
-        <Field label="Categoría">
-          <Select
-            value={categoryId}
-            onChange={(event) => handleCategoryChange(event.target.value)}
-          >
-            {categories
-              .filter((item) => item.active)
-              .map((category) => (
-                <option key={category.id} value={category.id}>
-                  {category.name}
-                </option>
-              ))}
-          </Select>
-        </Field>
-        <div className="grid gap-3 sm:grid-cols-[1fr_150px]">
-          <Field label="Nombre">
-            <Input
-              autoFocus
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              required
-            />
+        <div
+          {...panelProps("general")}
+          className="grid gap-4 [&[hidden]]:hidden"
+        >
+          <Field label="Categoría">
+            <Select
+              aria-label="Categoría"
+              value={categoryId}
+              onChange={(event) => handleCategoryChange(event.target.value)}
+            >
+              {categories
+                .filter((item) => item.active)
+                .map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+            </Select>
           </Field>
-          <Field label="Código">
-            <Input
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              placeholder="MUZG"
-            />
-          </Field>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {visiblePriceListCodes.map((key) => (
-            <Field key={key} label={visiblePriceListLabels[key]}>
+          <div className="grid gap-3 sm:grid-cols-[1fr_150px]">
+            <Field label="Nombre">
               <Input
-                inputMode="decimal"
-                value={prices[key]}
-                onChange={(event) =>
-                  setPrices((current) => ({
-                    ...current,
-                    [key]: event.target.value,
-                  }))
-                }
-                required
+                autoFocus
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                required={!editing || activeTab === "general"}
               />
             </Field>
-          ))}
-        </div>
-        <section
-          className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-3"
-          aria-label="Inventario"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-2.5">
-            <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 cursor-pointer">
+            <Field label="Código">
+              <Input
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+                placeholder="MUZG"
+              />
+            </Field>
+          </div>
+          <section
+            className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 p-3"
+            aria-label="Imagen del producto"
+          >
+            {imageDataUrl ? (
+              <img
+                src={imageDataUrl}
+                alt="Vista previa del producto"
+                className="h-16 w-16 shrink-0 rounded-lg border border-slate-200 object-cover"
+              />
+            ) : null}
+            <Field
+              label="Foto del producto"
+              hint="JPG, PNG o WebP hasta 10 MiB. Se optimiza automáticamente."
+              className="min-w-[240px] flex-1"
+            >
+              <Input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-xs file:font-semibold file:text-slate-700"
+                disabled={imageProcessing}
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  setImageProcessing(true);
+                  setError(null);
+                  try {
+                    setImageDataUrl(
+                      (await convertProductImageToWebp(file)).dataUrl,
+                    );
+                  } catch (value) {
+                    setError(humanError(value));
+                  } finally {
+                    setImageProcessing(false);
+                    event.target.value = "";
+                  }
+                }}
+              />
+            </Field>
+            {imageDataUrl ? (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={imageProcessing}
+                onClick={() => setImageDataUrl(null)}
+              >
+                Quitar
+              </Button>
+            ) : null}
+          </section>
+          {editing && (
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
               <input
                 type="checkbox"
-                checked={trackStock}
-                onChange={(event) => {
-                  const checked = event.target.checked;
-                  setTrackStock(checked);
-                  if (!checked) {
-                    setStock("");
-                    setStockTarget("");
-                    setStockMin("");
-                    setStockCritical("");
-                  } else if (!stock.trim()) {
-                    setStock("0");
-                  }
-                  if (error) setError(null);
-                }}
+                checked={active}
+                onChange={(event) => setActive(event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
               />
-              Controlar stock de este producto
+              Producto activo y disponible para nuevos pedidos
             </label>
-            <Badge tone={trackStock ? "blue" : "slate"}>
-              {trackStock ? "Con control de stock" : "Sin control de stock"}
-            </Badge>
-          </div>
-
-          {trackStock ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 pt-1">
-              {(
-                [
-                  ["Stock actual", stock, setStock],
-                  ["Objetivo", stockTarget, setStockTarget],
-                  ["Mínimo", stockMin, setStockMin],
-                  ["Crítico", stockCritical, setStockCritical],
-                ] as const
-              ).map(([label, value, setter]) => (
-                <Field key={label} label={label}>
-                  <Input
-                    inputMode="decimal"
-                    value={value}
-                    aria-invalid={invalidInventory}
-                    placeholder="0"
-                    onChange={(event) => {
-                      setter(event.target.value);
-                      if (error) setError(null);
-                    }}
-                  />
-                </Field>
-              ))}
-              <p className="text-xs text-slate-600 sm:col-span-2 lg:col-span-4">
-                Admite hasta tres decimales. Los niveles deben respetar Crítico
-                ≤ Mínimo ≤ Objetivo.
-              </p>
-            </div>
-          ) : (
-            <p className="text-xs text-slate-500 italic py-1">
-              Este producto se venderá sin descontar inventario ni alertar por
-              existencias mínimas.
-            </p>
           )}
-        </section>
-        <section
-          className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 p-3"
-          aria-label="Imagen del producto"
+        </div>
+        <div
+          {...panelProps("prices")}
+          className="grid gap-3 [&[hidden]]:hidden"
         >
-          {imageDataUrl ? (
-            <img
-              src={imageDataUrl}
-              alt="Vista previa del producto"
-              className="h-16 w-16 shrink-0 rounded-lg border border-slate-200 object-cover"
-            />
-          ) : null}
-          <Field
-            label="Foto del producto"
-            hint="JPG, PNG o WebP hasta 10 MiB. Se optimiza automáticamente."
-            className="min-w-[240px] flex-1"
-          >
-            <Input
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              disabled={imageProcessing}
-              onChange={async (event) => {
-                const file = event.target.files?.[0];
-                if (!file) return;
-                setImageProcessing(true);
-                setError(null);
-                try {
-                  setImageDataUrl(
-                    (await convertProductImageToWebp(file)).dataUrl,
-                  );
-                } catch (value) {
-                  setError(humanError(value));
-                } finally {
-                  setImageProcessing(false);
-                  event.target.value = "";
-                }
-              }}
-            />
-          </Field>
-          {imageDataUrl ? (
+          <PriceBookPricingEditor
+            books={priceBooks}
+            basePrice={basePrice}
+            onBasePriceChange={setBasePrice}
+            overrides={bookOverrides}
+            onOverridesChange={setBookOverrides}
+          />
+          {!priceBooksLoaded ? <p role="alert" className="rounded-md bg-rose-50 p-2 text-xs text-rose-700">No se pudieron cargar las listas de precios ({priceBooksError ?? "carga pendiente"}). No guardes precios hasta reintentar desde la pestaña Listas de precios.</p> : null}
+          {editing && onManageCost && product ? (
             <Button
               type="button"
+              className="justify-self-start"
               variant="secondary"
-              disabled={imageProcessing}
-              onClick={() => setImageDataUrl(null)}
+              onClick={() => runExternalAction(() => onManageCost(product))}
             >
-              Quitar
+              <SlidersHorizontal size={15} aria-hidden="true" /> Gestionar costo
             </Button>
           ) : null}
-        </section>
-
-        {editing && !isVariant ? (
+        </div>
+        <div
+          {...panelProps("inventory")}
+          className="grid gap-3 [&[hidden]]:hidden"
+        >
           <section
-            className="space-y-3 rounded-xl border border-indigo-100 bg-indigo-50/30 p-3.5"
-            aria-label="Variantes del producto"
+            className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-3"
+            aria-label="Inventario"
           >
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-100/80 pb-2.5">
-              <div className="flex items-center gap-2">
-                <Copy size={17} className="text-indigo-600" />
-                <div>
-                  <h4 className="text-xs font-bold text-slate-800">
-                    Variantes de este producto ({variants.length})
-                  </h4>
-                  <p className="text-xs text-slate-500">
-                    Presentaciones o tamaños derivados (ej. Chica, Mediana,
-                    Litro) con precios y existencias propias.
-                  </p>
-                </div>
-              </div>
-              {onRequestVariant && product ? (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => onRequestVariant(product)}
-                  className="h-8 gap-1 border-indigo-200 px-2.5 text-xs font-bold text-indigo-700 hover:bg-indigo-50"
-                >
-                  <Plus size={14} /> Nueva variante
-                </Button>
-              ) : null}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-2.5">
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={trackStock}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setTrackStock(checked);
+                    if (!checked) {
+                      setStock("");
+                      setStockTarget("");
+                      setStockMin("");
+                      setStockCritical("");
+                    } else if (!stock.trim()) {
+                      setStock("0");
+                    }
+                    if (error) setError(null);
+                  }}
+                  className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
+                />
+                Controlar stock de este producto
+              </label>
+              <Badge tone={trackStock ? "blue" : "slate"}>
+                {trackStock ? "Con control de stock" : "Sin control de stock"}
+              </Badge>
             </div>
 
-            {variants.length > 0 ? (
-              <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                <table className="w-full text-left text-xs">
-                  <thead className="border-b border-slate-100 bg-slate-50/80 text-xs font-bold uppercase tracking-wider text-slate-500">
-                    <tr>
-                      <th className="px-3 py-2">Variante</th>
-                      <th className="px-3 py-2">Código</th>
-                      <th className="px-3 py-2 text-right">Salón</th>
-                      <th className="px-3 py-2 text-right">Delivery</th>
-                      <th className="px-3 py-2">Stock</th>
-                      <th className="px-3 py-2">Estado</th>
-                      <th className="px-3 py-2 text-right">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {variants.map((variant) => {
-                      const salonPrice =
-                        variant.prices.find((p) => p.priceListCode === "SALON")
-                          ?.amountMinor ?? 0;
-                      const offPrice =
-                        variant.prices.find(
-                          (p) =>
-                            p.priceListCode === "TAKEAWAY" ||
-                            p.priceListCode === "DELIVERY",
-                        )?.amountMinor ?? 0;
-                      return (
-                        <tr key={variant.id} className="hover:bg-slate-50/60">
-                          <td className="px-3 py-2.5 font-bold text-slate-800">
-                            {variant.name}
-                          </td>
-                          <td className="px-3 py-2.5 font-mono text-xs text-slate-500">
-                            {variant.code || "—"}
-                          </td>
-                          <td className="px-3 py-2.5 text-right font-semibold text-slate-700">
-                            {formatMoney(salonPrice)}
-                          </td>
-                          <td className="px-3 py-2.5 text-right font-semibold text-slate-700">
-                            {formatMoney(offPrice)}
-                          </td>
-                          <td className="px-3 py-2.5">
-                            {onAdjustStock ? (
-                              <button
-                                type="button"
-                                onClick={() => onAdjustStock(variant)}
-                                className="font-bold text-brand-700 hover:underline"
-                                title="Ajustar inventario de esta variante"
-                              >
-                                {variant.stockMinor == null
-                                  ? "Sin control"
-                                  : `${(variant.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
-                              </button>
-                            ) : (
-                              <span>
-                                {variant.stockMinor == null
-                                  ? "Sin control"
-                                  : `${(variant.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2.5">
-                            <Badge tone={variant.active ? "green" : "slate"}>
-                              {variant.active ? "Activo" : "Inactivo"}
-                            </Badge>
-                          </td>
-                          <td className="px-3 py-2.5 text-right">
-                            <div className="flex justify-end gap-1">
-                              {onAdjustStock ? (
-                                <button
-                                  type="button"
-                                  onClick={() => onAdjustStock(variant)}
-                                  title="Ajustar stock"
-                                  className="focus-ring inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                                >
-                                  <SlidersHorizontal size={13} />
-                                  Stock
-                                </button>
-                              ) : null}
-                              {onEditVariant ? (
-                                <button
-                                  type="button"
-                                  onClick={() => onEditVariant(variant)}
-                                  title="Editar variante"
-                                  className="focus-ring inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700"
-                                >
-                                  <PencilSimple size={13} />
-                                  Editar
-                                </button>
-                              ) : null}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            {trackStock ? (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 pt-1">
+                {(
+                  [
+                    ["Stock actual", stock, setStock],
+                    ["Objetivo", stockTarget, setStockTarget],
+                    ["Mínimo", stockMin, setStockMin],
+                    ["Crítico", stockCritical, setStockCritical],
+                  ] as const
+                ).map(([label, value, setter]) => (
+                  <Field key={label} label={label}>
+                    <Input
+                      inputMode="decimal"
+                      value={value}
+                      aria-invalid={invalidInventory}
+                      placeholder="0"
+                      onChange={(event) => {
+                        setter(event.target.value);
+                        if (error) setError(null);
+                      }}
+                    />
+                  </Field>
+                ))}
+                <p className="text-xs text-slate-600 sm:col-span-2 lg:col-span-4">
+                  Admite hasta tres decimales. Los niveles deben respetar
+                  Crítico ≤ Mínimo ≤ Objetivo.
+                </p>
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-indigo-200 bg-white/70 p-3 text-center">
-                <p className="text-xs text-slate-500">
-                  Este producto todavía no tiene variantes cargadas.
-                </p>
-                {onRequestVariant && product ? (
+              <p className="text-xs text-slate-500 italic py-1">
+                Este producto se venderá sin descontar inventario ni alertar por
+                existencias mínimas.
+              </p>
+            )}
+          </section>
+          {editing && onAdjustStock && product ? (
+            <Button
+              type="button"
+              className="justify-self-start"
+              variant="secondary"
+              onClick={() => runExternalAction(() => onAdjustStock(product))}
+            >
+              <Package size={15} aria-hidden="true" /> Ajustar inventario
+            </Button>
+          ) : null}
+        </div>
+
+        {editing && !isVariant ? (
+          <div {...panelProps("variants")} className=" [&[hidden]]:hidden">
+            <section
+              className="space-y-3 rounded-xl border border-indigo-100 bg-indigo-50/30 p-3.5"
+              aria-label="Variantes del producto"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-100/80 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <Copy size={17} className="text-indigo-600" />
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-800">
+                      Variantes de este producto ({variants.length})
+                    </h4>
+                    <p className="text-xs text-slate-500">
+                      Presentaciones o tamaños derivados (ej. Chica, Mediana,
+                      Litro) con precios y existencias propias.
+                    </p>
+                  </div>
+                </div>
+                {onRequestVariant && product && variants.length > 0 ? (
                   <Button
                     type="button"
                     variant="secondary"
-                    onClick={() => onRequestVariant(product)}
-                    className="mt-2 h-7 px-2.5 text-xs font-bold"
+                    onClick={() =>
+                      runExternalAction(() => onRequestVariant(product))
+                    }
+                    className="h-8 gap-1 border-indigo-200 px-2.5 text-xs font-bold text-indigo-700 hover:bg-indigo-50"
                   >
-                    <Plus size={13} /> Crear primera variante
+                    <Plus size={14} /> Nueva variante
                   </Button>
                 ) : null}
               </div>
-            )}
-          </section>
+
+              {variants.length > 0 ? (
+                <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                  <table className="w-full text-left text-xs">
+                    <thead className="border-b border-slate-100 bg-slate-50/80 text-xs font-bold uppercase tracking-wider text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">Variante</th>
+                        <th className="px-3 py-2">Código</th>
+                        <th className="px-3 py-2 text-right">Precio Principal</th>
+                        <th className="px-3 py-2">Stock</th>
+                        <th className="px-3 py-2">Estado</th>
+                        <th className="px-3 py-2 text-right">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {variants.map((variant) => {
+                        const principalPrice = variant.priceBook?.baseMinor ?? variant.prices.find((p) => p.priceListCode === "SALON")?.amountMinor ?? 0;
+                        return (
+                          <tr key={variant.id} className="hover:bg-slate-50/60">
+                            <td className="px-3 py-2.5 font-bold text-slate-800">
+                              {variant.name}
+                            </td>
+                            <td className="px-3 py-2.5 font-mono text-xs text-slate-500">
+                              {variant.code || "—"}
+                            </td>
+                            <td className="px-3 py-2.5 text-right font-semibold text-slate-700">
+                              {formatMoney(principalPrice)}{Object.keys(variant.priceBook?.overrides ?? {}).length ? <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800" title="Tiene precios propios fijos en listas derivadas">Fijos</span> : null}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              {onAdjustStock ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    runExternalAction(() =>
+                                      onAdjustStock(variant),
+                                    )
+                                  }
+                                  className="font-bold text-brand-700 hover:underline"
+                                  title="Ajustar inventario de esta variante"
+                                >
+                                  {variant.stockMinor == null
+                                    ? "Sin control"
+                                    : `${(variant.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
+                                </button>
+                              ) : (
+                                <span>
+                                  {variant.stockMinor == null
+                                    ? "Sin control"
+                                    : `${(variant.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <Badge tone={variant.active ? "green" : "slate"}>
+                                {variant.active ? "Activo" : "Inactivo"}
+                              </Badge>
+                            </td>
+                            <td className="px-3 py-2.5 text-right">
+                              <div className="flex justify-end gap-1">
+                                {onEditVariant ? (
+                                  <EditProductButton
+                                    product={variant}
+                                    onEdit={(value) =>
+                                      runExternalAction(() =>
+                                        onEditVariant(value),
+                                      )
+                                    }
+                                  />
+                                ) : null}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-indigo-200 bg-white/70 p-3 text-center">
+                  <p className="text-xs text-slate-500">
+                    Este producto todavía no tiene variantes cargadas.
+                  </p>
+                  {onRequestVariant && product ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() =>
+                        runExternalAction(() => onRequestVariant(product))
+                      }
+                      className="mt-2 h-7 px-2.5 text-xs font-bold"
+                    >
+                      <Plus size={13} /> Crear primera variante
+                    </Button>
+                  ) : null}
+                </div>
+              )}
+            </section>
+          </div>
         ) : null}
 
         {editing ? (
+          <div {...panelProps("history")} className=" [&[hidden]]:hidden">
+            <section
+              aria-label="Historial reciente de cambios"
+              className="rounded-xl border border-slate-200"
+            >
+              <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                <ClockCounterClockwise size={15} />
+                Historial reciente
+              </div>
+              {historyLoading ? (
+                <p className="px-3 py-3 text-xs text-slate-600">
+                  Cargando cambios…
+                </p>
+              ) : historyError ? (
+                <p role="alert" className="px-3 py-3 text-xs text-rose-700">
+                  {historyError}
+                </p>
+              ) : history.length ? (
+                <ul className="divide-y divide-slate-100">
+                  {history.map((entry) => (
+                    <li
+                      key={entry.id}
+                      className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs"
+                    >
+                      <span className="font-semibold text-slate-700">
+                        <span className="block">
+                          {auditActionLabel(entry.action)}
+                        </span>
+                        <span className="font-normal">
+                          {entry.reason || "Sin detalle"}
+                        </span>
+                      </span>
+                      <span className="text-slate-600">
+                        {new Date(entry.timestamp).toLocaleString("es-AR")} ·{" "}
+                        {entry.operatorName ||
+                          entry.authorizerName ||
+                          "Sistema"}
+                        {entry.authorizerName &&
+                        entry.authorizerName !== entry.operatorName
+                          ? ` · Autorizó ${entry.authorizerName}`
+                          : null}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="px-3 py-3 text-xs text-slate-600">
+                  No hay ediciones ni ajustes de stock registrados.
+                </p>
+              )}
+            </section>
+          </div>
+        ) : null}
+
+        {editing && hasDraftChanges ? (
           <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-[1fr_150px]">
             <Field label="Motivo del cambio">
               <Input
@@ -2949,69 +2991,20 @@ function ProductModal({
                 required
               />
             </Field>
-            <label className="flex items-center gap-2 text-[12px] font-semibold text-slate-600 sm:col-span-2">
-              <input
-                type="checkbox"
-                checked={active}
-                onChange={(event) => setActive(event.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
-              />
-              Producto activo y disponible para nuevos pedidos
-            </label>
           </div>
         ) : null}
 
-        {editing ? (
-          <section
-            aria-label="Historial reciente de cambios"
-            className="rounded-xl border border-slate-200"
-          >
-            <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-500">
-              <ClockCounterClockwise size={15} />
-              Historial reciente
-            </div>
-            {historyLoading ? (
-              <p className="px-3 py-3 text-xs text-slate-600">
-                Cargando cambios…
-              </p>
-            ) : historyError ? (
-              <p role="alert" className="px-3 py-3 text-xs text-rose-700">
-                {historyError}
-              </p>
-            ) : history.length ? (
-              <ul className="divide-y divide-slate-100">
-                {history.map((entry) => (
-                  <li
-                    key={entry.id}
-                    className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs"
-                  >
-                    <span className="font-semibold text-slate-700">
-                      <span className="block">
-                        {auditActionLabel(entry.action)}
-                      </span>
-                      <span className="font-normal">
-                        {entry.reason || "Sin detalle"}
-                      </span>
-                    </span>
-                    <span className="text-slate-600">
-                      {new Date(entry.timestamp).toLocaleString("es-AR")} ·{" "}
-                      {entry.operatorName || entry.authorizerName || "Sistema"}
-                      {entry.authorizerName &&
-                      entry.authorizerName !== entry.operatorName
-                        ? ` · Autorizó ${entry.authorizerName}`
-                        : null}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="px-3 py-3 text-xs text-slate-600">
-                No hay ediciones ni ajustes de stock registrados.
-              </p>
-            )}
-          </section>
+        {editing &&
+        hasDraftChanges &&
+        (!name.trim() || invalidPrices || invalidInventory) ? (
+          <p role="status" className="text-xs font-medium text-amber-800">
+            {!name.trim()
+              ? "Completá el nombre en General."
+              : invalidPrices
+                ? "Revisá los importes en Precios."
+                : "Revisá las cantidades y los niveles en Inventario."}
+          </p>
         ) : null}
-
         {error ? (
           <p
             role="alert"
@@ -3021,28 +3014,23 @@ function ProductModal({
           </p>
         ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            {editing &&
-            product &&
-            !product.parentProductId &&
-            onRequestVariant ? (
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => onRequestVariant(product)}
-                title="Generar una variante de este producto con sus propios precios"
-                className="gap-1.5"
-              >
-                <Copy size={16} />
-                Generar variante
-              </Button>
-            ) : null}
-          </div>
-          <div className="flex justify-end gap-2">
+          {editing && activeTab === "general" && product && onDeleteProduct ? (
+            <button
+              type="button"
+              title={isVariant ? "Eliminar variante" : "Eliminar producto"}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-md px-2 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+              disabled={mutation.isPending || imageProcessing}
+              onClick={() => runExternalAction(() => onDeleteProduct(product))}
+            >
+              <Trash size={16} aria-hidden="true" />{" "}
+              {isVariant ? "Eliminar variante" : "Eliminar producto"}
+            </button>
+          ) : null}
+          <div className="ml-auto flex justify-end gap-2">
             <Button
               type="button"
               variant="secondary"
-              onClick={onClose}
+              onClick={requestClose}
               disabled={mutation.isPending}
             >
               Cancelar
@@ -3053,8 +3041,10 @@ function ProductModal({
                 !name.trim() ||
                 !categoryId ||
                 invalidPrices ||
+                !priceBooksLoaded ||
                 invalidInventory ||
-                (editing && (pin.length < 4 || !reason.trim())) ||
+                (editing &&
+                  (!hasDraftChanges || pin.length < 4 || !reason.trim())) ||
                 imageProcessing ||
                 mutation.isPending
               }
@@ -3100,10 +3090,16 @@ const variantPriceShortcuts = [
 function CreateVariantModal({
   baseProduct,
   categories,
+  priceBooks,
+  priceBooksLoaded,
+  priceBooksError,
   onClose,
 }: {
   baseProduct: ProductDto | null;
   categories: CategoryDto[];
+  priceBooks: PriceBookDto[];
+  priceBooksLoaded: boolean;
+  priceBooksError: string | null;
   onClose(): void;
 }) {
   const open = Boolean(baseProduct);
@@ -3121,10 +3117,8 @@ function CreateVariantModal({
     null,
   );
   const [imageProcessing, setImageProcessing] = useState(false);
-  const [prices, setPrices] = useState<VisibleProductPrices>({
-    SALON: "",
-    OFF_PREMISE: "",
-  });
+  const [basePrice, setBasePrice] = useState("");
+  const [bookOverrides, setBookOverrides] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const initializedKeyRef = useRef("");
 
@@ -3133,15 +3127,6 @@ function CreateVariantModal({
     return (
       baseProduct.prices.find((p) => p.priceListCode === "SALON")
         ?.amountMinor ?? 0
-    );
-  }, [baseProduct]);
-
-  const baseOffPremisePriceMinor = useMemo(() => {
-    if (!baseProduct) return 0;
-    return (
-      baseProduct.prices.find(
-        (p) => p.priceListCode === "TAKEAWAY" || p.priceListCode === "DELIVERY",
-      )?.amountMinor ?? 0
     );
   }, [baseProduct]);
 
@@ -3182,17 +3167,15 @@ function CreateVariantModal({
     setCopyImage(Boolean(baseProduct.imageDataUrl));
     setCustomImageDataUrl(null);
     setImageProcessing(false);
-    setPrices({
-      SALON: moneyInput(baseSalonPriceMinor),
-      OFF_PREMISE: moneyInput(baseOffPremisePriceMinor),
-    });
+    const initialPrice = baseProduct.priceBook?.baseMinor ?? baseSalonPriceMinor;
+    setBasePrice(moneyInput(initialPrice));
+    setBookOverrides({});
     setError(null);
   }, [
     baseProduct,
     open,
     categories,
     baseSalonPriceMinor,
-    baseOffPremisePriceMinor,
   ]);
 
   const handleSelectAttribute = (attr: string) => {
@@ -3214,20 +3197,12 @@ function CreateVariantModal({
   const applyPriceMultiplier = (multiplier: number) => {
     if (!baseProduct) return;
     if (multiplier === 1) {
-      setPrices({
-        SALON: moneyInput(baseSalonPriceMinor),
-        OFF_PREMISE: moneyInput(baseOffPremisePriceMinor),
-      });
+      setBasePrice(moneyInput(baseProduct.priceBook?.baseMinor ?? baseSalonPriceMinor));
       return;
     }
     const newSalonMinor =
-      Math.round((baseSalonPriceMinor * multiplier) / 100) * 100;
-    const newOffPremiseMinor =
-      Math.round((baseOffPremisePriceMinor * multiplier) / 100) * 100;
-    setPrices({
-      SALON: moneyInput(newSalonMinor),
-      OFF_PREMISE: moneyInput(newOffPremiseMinor),
-    });
+      Math.round(((baseProduct.priceBook?.baseMinor ?? baseSalonPriceMinor) * multiplier) / 100) * 100;
+    setBasePrice(moneyInput(newSalonMinor));
   };
 
   const activeImageDataUrl = copyImage
@@ -3240,9 +3215,7 @@ function CreateVariantModal({
       : 0
     : null;
 
-  const invalidPrices = visiblePriceListCodes.some(
-    (codeValue) => parseMoneyInput(prices[codeValue]) == null,
-  );
+  const invalidPrices = parsePriceInput(basePrice) == null || hasInvalidCalculatedBookPrice(basePrice, priceBooks, bookOverrides) || priceBooks.some((book) => !book.isBase && bookOverrides[book.id] !== undefined && parsePriceInput(bookOverrides[book.id] ?? "") == null);
   const invalidStock =
     trackStock && Boolean(stock.trim()) && parseStockInput(stock) == null;
   const parsedTarget =
@@ -3266,22 +3239,18 @@ function CreateVariantModal({
         parsedCritical > parsedTarget));
 
   const mutation = useApiMutation(
-    async (parsedPrices: Record<VisiblePriceListCode, number>) => {
+    async (_unused: void) => {
       if (!baseProduct) throw new Error("Producto base requerido");
       if (baseProduct.parentProductId) {
         throw new Error("Una variante no puede tener variantes.");
       }
-      const normalizedPrices = [
-        { priceListCode: "SALON" as const, amountMinor: parsedPrices.SALON },
-        {
-          priceListCode: "TAKEAWAY" as const,
-          amountMinor: parsedPrices.OFF_PREMISE,
-        },
-        {
-          priceListCode: "DELIVERY" as const,
-          amountMinor: parsedPrices.OFF_PREMISE,
-        },
-      ];
+      const baseMinor = parsePriceInput(basePrice);
+      if (baseMinor == null) throw new Error("Completá un precio Principal válido.");
+      const overrides = Object.fromEntries(Object.entries(bookOverrides).flatMap(([id, value]) => {
+        const amount = parsePriceInput(value);
+        return value.trim() && amount != null ? [[id, amount]] : [];
+      }));
+      const normalizedPrices: Array<{ priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY"; amountMinor: number }> = [];
       return window.gastronomy.createProduct({
         categoryId,
         name: name.trim(),
@@ -3293,6 +3262,7 @@ function CreateVariantModal({
         stockCriticalMinor: parsedCritical,
         imageDataUrl: activeImageDataUrl,
         prices: normalizedPrices,
+        priceBook: { baseMinor, overrides },
       });
     },
     { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
@@ -3307,13 +3277,7 @@ function CreateVariantModal({
       setError("Indicá el nombre de la variante.");
       return;
     }
-    const parsed = Object.fromEntries(
-      visiblePriceListCodes.map((codeValue) => [
-        codeValue,
-        parseMoneyInput(prices[codeValue]),
-      ]),
-    ) as Record<VisiblePriceListCode, number | null>;
-    if (Object.values(parsed).some((value) => value == null)) {
+    if (parsePriceInput(basePrice) == null || hasInvalidCalculatedBookPrice(basePrice, priceBooks, bookOverrides) || priceBooks.some((book) => !book.isBase && bookOverrides[book.id] !== undefined && parsePriceInput(bookOverrides[book.id] ?? "") == null)) {
       setError("Completá precios válidos.");
       return;
     }
@@ -3323,7 +3287,8 @@ function CreateVariantModal({
       );
       return;
     }
-    mutation.mutate(parsed as Record<VisiblePriceListCode, number>);
+    const baseMinor = parsePriceInput(basePrice)!;
+    mutation.mutate(undefined);
   };
 
   if (!baseProduct || baseProduct.parentProductId) return null;
@@ -3379,15 +3344,9 @@ function CreateVariantModal({
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <div className="rounded-lg border border-brand-100 bg-white/80 px-2.5 py-1">
-              <span className="text-slate-500">Salón base: </span>
+              <span className="text-slate-500">Precio Principal: </span>
               <strong className="text-slate-800">
-                {formatMoney(baseSalonPriceMinor)}
-              </strong>
-            </div>
-            <div className="rounded-lg border border-brand-100 bg-white/80 px-2.5 py-1">
-              <span className="text-slate-500">Delivery base: </span>
-              <strong className="text-slate-800">
-                {formatMoney(baseOffPremisePriceMinor)}
+                {formatMoney(baseProduct.priceBook?.baseMinor ?? baseSalonPriceMinor)}
               </strong>
             </div>
           </div>
@@ -3486,23 +3445,14 @@ function CreateVariantModal({
               ))}
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {visiblePriceListCodes.map((key) => (
-              <Field key={key} label={visiblePriceListLabels[key]}>
-                <Input
-                  inputMode="decimal"
-                  value={prices[key]}
-                  onChange={(event) =>
-                    setPrices((current) => ({
-                      ...current,
-                      [key]: event.target.value,
-                    }))
-                  }
-                  required
-                />
-              </Field>
-            ))}
-          </div>
+          <PriceBookPricingEditor
+            books={priceBooks}
+            basePrice={basePrice}
+            onBasePriceChange={setBasePrice}
+            overrides={bookOverrides}
+            onOverridesChange={setBookOverrides}
+          />
+          {!priceBooksLoaded ? <p role="alert" className="rounded-md bg-rose-50 p-2 text-xs text-rose-700">No se pudieron cargar las listas de precios ({priceBooksError ?? "carga pendiente"}). No es posible guardar la variante.</p> : null}
         </section>
 
         <section
@@ -3676,6 +3626,7 @@ function CreateVariantModal({
               !name.trim() ||
               !categoryId ||
               invalidPrices ||
+              !priceBooksLoaded ||
               invalidInventory ||
               imageProcessing ||
               mutation.isPending

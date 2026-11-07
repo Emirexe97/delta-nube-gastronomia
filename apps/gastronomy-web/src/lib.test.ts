@@ -5,12 +5,20 @@ import {
   paymentText,
   salesByChannel,
   parseMoneyInput,
+  parsePriceInput,
   moneyInputValue,
   localDateValue,
   parseStockInput,
   promisedTiming,
   rankProducts,
 } from "./lib";
+
+it("rechaza precios vacíos y conserva centavos con el formato local", () => {
+  for (const text of ["", " ", "-1", "1,234", "12.34.56", "1e3", "99999999999999999"]) expect(parsePriceInput(text)).toBeNull();
+  expect(parsePriceInput("0")).toBe(0);
+  expect(parsePriceInput("1.000,05")).toBe(100005);
+  expect(parsePriceInput("10.50")).toBe(1050);
+});
 
 const paidOrder = (
   id: string,

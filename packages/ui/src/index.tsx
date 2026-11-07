@@ -524,6 +524,7 @@ export function Modal({
         ),
       ].filter(
         (element) =>
+          element.tabIndex >= 0 &&
           !element.closest("[hidden], [inert]") &&
           element.getClientRects().length > 0,
       );

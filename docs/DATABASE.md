@@ -26,6 +26,7 @@ de una transacción antes de crear datos iniciales.
 - `cash_sessions`, `cash_movements`
 - `payment_methods`, `payments`, `payment_refunds`
 - `categories`, `products`, `price_lists`, `product_prices`
+- Desde v48: `price_books` define las listas y `price_book_assignments` vincula los modos de venta. `product_price_book_bases` y `product_price_book_overrides` guardan, respectivamente, Principal y las excepciones. `product_prices` sigue exponiendo los importes efectivos por modo a caja, mozos y catálogo web. Ver [Listas de precios](LISTAS_DE_PRECIOS.md).
 - `modifier_groups`, `modifiers`, `product_modifiers`
 - `customers`, `customer_addresses`
 - `table_sectors`, `restaurant_tables`, `floor_plan_shapes`

@@ -71,6 +71,10 @@ it("repeats with current prices and customer address into one fresh draft, one p
     (product: { id: string }) => product.id === f.product.id,
   ).prices)
     price.amountMinor = 14000;
+  const changed = saved.data.products.find(
+    (product: { id: string }) => product.id === f.product.id,
+  );
+  changed.priceBook = { baseMinor: 14000, overrides: {} };
   f.storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
   const api = createDemoApi(f.storage);
   const before = await api.getOrder({ orderId: f.source.id });

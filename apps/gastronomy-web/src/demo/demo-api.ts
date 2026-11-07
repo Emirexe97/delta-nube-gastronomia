@@ -17,6 +17,7 @@ import type {
   MarkOrderServedInput,
   OrderItemDto,
   ProductDto,
+  PriceBookDto, PriceBooksDto, PriceChannel, SavePriceBookInput, AssignPriceBooksInput,
   PurchaseDto,
   FinanceExpenseDto,
   FinanceExpenseReturnDto,
@@ -54,6 +55,8 @@ import {
   businessDateFromOpening,
   assertComboDefinition,
   calculateComboPrice,
+  calculateBookPrice,
+  applyBookAdjustment,
   assertComboLineAmount,
   assertIngredientValues, calculateIngredientRecipeCost,
 } from "@gastronomy/domain";
@@ -114,7 +117,9 @@ export interface DemoStorage {
 }
 
 interface DemoState {
-  version: 12;
+  version: 13;
+  priceBooks?: PriceBookDto[];
+  priceBookAssignments?: Record<PriceChannel, string>;
   orderNumbersByCashSession?: Record<string, number>;
   data: BootstrapDto;
   printSnapshots?: Record<string, { ticket: OrderDto; kitchenQuantities: Record<string, number> }>;
@@ -425,9 +430,13 @@ function seedState(): DemoState {
   const oldDate = new Date();
   oldDate.setDate(oldDate.getDate() - 120);
   const oldBusinessDate = oldDate.toISOString().slice(0, 10);
+  const bootstrap = createDemoBootstrap();
+  for (const product of bootstrap.products) product.priceBook = productBookFromPrices(product.prices, { SALON: "book-base", TAKEAWAY: "book-off-premise", DELIVERY: "book-off-premise" });
   return {
-    version: 12,
-    data: createDemoBootstrap(),
+    version: 13,
+    data: bootstrap,
+    priceBooks: [{ id: "book-base", name: "Principal", adjustmentBps: 0, isBase: true }, { id: "book-off-premise", name: "Fuera de salón", adjustmentBps: 0, isBase: false }],
+    priceBookAssignments: { SALON: "book-base", TAKEAWAY: "book-off-premise", DELIVERY: "book-off-premise" },
     historicalSessions: [
       {
         id: "cash-demo-old",
@@ -524,7 +533,7 @@ function loadState(storage: DemoStorage): DemoState {
       version: number;
     };
     if (
-      ![5, 6, 7, 8, 9, 10, 11, 12].includes(parsed.version) ||
+      ![5, 6, 7, 8, 9, 10, 11, 12, 13].includes(parsed.version) ||
       !parsed.data?.settings?.printing
     )
       return seedState();
@@ -626,7 +635,44 @@ function loadState(storage: DemoStorage): DemoState {
           order.number,
         );
     }
-    parsed.version = 12;
+    // Migrate v12 prices without changing amounts: create one book per distinct
+    // channel-price vector across the complete catalog, then map each channel.
+    if (!parsed.priceBooks || parsed.version < 13) {
+      const channels = ["SALON", "TAKEAWAY", "DELIVERY"] as const;
+      const signatures = channels.map((channel) => parsed.data.products.map((product) => product.prices.find((price) => price.priceListCode === channel)?.amountMinor ?? 0).join(","));
+      const baseId = "book-base";
+      const books: PriceBookDto[] = [{ id: baseId, name: "Principal", adjustmentBps: 0, isBase: true }];
+      const byChannel = new Map<string, string>([["SALON", baseId]]);
+      const signatureIds = new Map<string, string>([[signatures[0]!, baseId]]);
+      for (const channel of ["TAKEAWAY", "DELIVERY"] as const) {
+        const signature = signatures[channels.indexOf(channel)]!;
+        let id = signatureIds.get(signature);
+        if (!id) {
+          id = `book-migrated-${books.length}`;
+          books.push({ id, name: channel === "TAKEAWAY" ? "Retiro" : "Delivery", adjustmentBps: 0, isBase: false });
+          signatureIds.set(signature, id);
+        }
+        byChannel.set(channel, id);
+      }
+      parsed.priceBooks = books;
+      parsed.priceBookAssignments = Object.fromEntries(channels.map((channel) => [channel, byChannel.get(channel)!])) as Record<PriceChannel, string>;
+      for (const product of parsed.data.products) {
+        const salon = product.prices.find((price) => price.priceListCode === "SALON")?.amountMinor ?? 0;
+        const overrides: Record<string, number> = {};
+        const valuesByBook = new Map<string, number>();
+        for (const channel of channels) {
+          const bookId = parsed.priceBookAssignments[channel];
+          const amount = product.prices.find((price) => price.priceListCode === channel)?.amountMinor ?? 0;
+          if (bookId !== baseId) valuesByBook.set(bookId, amount);
+        }
+        for (const [bookId, amount] of valuesByBook) if (amount !== salon) overrides[bookId] = amount;
+        product.priceBook = { baseMinor: salon, overrides };
+      }
+    }
+    parsed.priceBooks ??= [{ id: "book-base", name: "Principal", adjustmentBps: 0, isBase: true }];
+    parsed.priceBookAssignments ??= { SALON: parsed.priceBooks.find((book) => book.isBase)!.id, TAKEAWAY: parsed.priceBooks.find((book) => book.isBase)!.id, DELIVERY: parsed.priceBooks.find((book) => book.isBase)!.id };
+    parsed.version = 13;
+    for (const product of parsed.data.products) refreshProductPrices(product, parsed as DemoState);
     return parsed as DemoState;
   } catch {
     return seedState();
@@ -663,12 +709,59 @@ function methodName(data: BootstrapDto, code: string) {
   );
 }
 
-function orderPrice(product: ProductDto, type: OrderDto["type"]) {
-  const code = type === "DINE_IN" ? "SALON" : type;
-  return (
-    product.prices.find((price) => price.priceListCode === code)?.amountMinor ??
-    0
-  );
+function orderPrice(product: ProductDto, type: OrderDto["type"], state?: DemoState) {
+  const channel: PriceChannel = type === "DINE_IN" ? "SALON" : type;
+  const assignment = state?.priceBookAssignments ?? { SALON: "book-base", TAKEAWAY: "book-base", DELIVERY: "book-base" };
+  const books = state?.priceBooks ?? [{ id: "book-base", name: "Principal", adjustmentBps: 0, isBase: true }];
+  const book = books.find((candidate) => candidate.id === assignment[channel]) ?? books.find((candidate) => candidate.isBase)!;
+  if (product.priceBook) return calculateBookPrice(product.priceBook.baseMinor, book.adjustmentBps, product.priceBook.overrides[book.id]);
+  return product.prices.find((price) => price.priceListCode === channel)?.amountMinor ?? 0;
+}
+
+function refreshProductPrices(product: ProductDto, state: DemoState) {
+  if (product.priceBook) validateDemoProductBook(product.priceBook, state.priceBooks!);
+  const assignments = state.priceBookAssignments!;
+  product.prices = (["SALON", "TAKEAWAY", "DELIVERY"] as const).map((channel) => {
+    const book = state.priceBooks!.find((item) => item.id === assignments[channel])!;
+    const amountMinor = product.priceBook
+      ? calculateBookPrice(product.priceBook.baseMinor, book.adjustmentBps, product.priceBook.overrides[book.id])
+      : product.prices.find((price) => price.priceListCode === channel)?.amountMinor ?? 0;
+    return { priceListId: book.id, priceListCode: channel, amountMinor };
+  });
+}
+
+function validateDemoProductBook(config: NonNullable<ProductDto["priceBook"]>, books: PriceBookDto[]) {
+  if (!config.overrides || typeof config.overrides !== "object" || Array.isArray(config.overrides) ||
+      Object.keys(config.overrides).some(id => !books.some(book => book.id === id && !book.isBase)))
+    throw new Error("Hay un precio propio asociado a una lista no válida.");
+  for (const book of books) calculateBookPrice(config.baseMinor, book.adjustmentBps, config.overrides[book.id]);
+}
+
+function productBookFromPrices(
+  prices: Array<{priceListCode: string; amountMinor: number}>,
+  assignments: Record<PriceChannel, string>,
+  books: PriceBookDto[] = [],
+  prior?: ProductDto["priceBook"],
+) {
+  const baseId = books.find(b => b.isBase)?.id ?? "book-base";
+  const principal = prices.find(p => assignments[p.priceListCode as PriceChannel] === baseId)?.amountMinor
+    ?? prior?.baseMinor ?? prices[0]?.amountMinor ?? 0;
+  const overrides = {...prior?.overrides};
+  const desired = new Map<string, number>();
+  for (const p of prices) {
+    const id = assignments[p.priceListCode as PriceChannel];
+    if (desired.has(id) && desired.get(id) !== p.amountMinor)
+      throw new Error("Los modos comparten una lista. Editá el precio desde la ficha de listas.");
+    desired.set(id, p.amountMinor);
+  }
+  for (const [id, amount] of desired) {
+    if (id === baseId || overrides[id] === amount) continue;
+    let calculated: number | undefined;
+    try { calculated = calculateBookPrice(principal, books.find(b=>b.id===id)?.adjustmentBps ?? 0); }
+    catch { /* An explicit fixed amount can still represent this price. */ }
+    if (calculated === amount) delete overrides[id]; else overrides[id] = amount;
+  }
+  return {baseMinor:principal, overrides};
 }
 
 function refreshOrder(order: OrderDto) {
@@ -1594,6 +1687,56 @@ export function createDemoApi(
       return data;
     },
 
+    async getPriceBooks() {
+      return output({ books: state.priceBooks!, assignments: state.priceBookAssignments! });
+    },
+
+    async savePriceBook(input: SavePriceBookInput) {
+      requirePin(input.authorizerPin);
+      if (!state.data.currentUser.permissions.includes("prices.bulk_update") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para editar precios.");
+      if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+      const name = input.name.trim();
+      if (!name || name.length > 80) throw new Error("El nombre de lista debe tener entre 1 y 80 caracteres.");
+      if (!Number.isSafeInteger(input.adjustmentBps) || input.adjustmentBps < -10000 || input.adjustmentBps > 100000) throw new Error("El ajuste de lista no es válido.");
+      const books = clone(state.priceBooks!);
+      let book = input.id ? books.find((candidate) => candidate.id === input.id) : undefined;
+      if (input.id && !book) throw new Error("La lista no existe.");
+      if (!book || book.isBase) {
+        if (book?.isBase) throw new Error("La lista Principal no se puede editar.");
+        if (books.some((candidate) => candidate.name.trim().toLocaleLowerCase("es-AR") === name.toLocaleLowerCase("es-AR"))) throw new Error("Ya existe una lista con ese nombre.");
+        book = { id: uid("price-book", state), name, adjustmentBps: input.adjustmentBps, isBase: false };
+        books.push(book);
+      } else {
+        if (books.some((candidate) => candidate.id !== book!.id && candidate.name.trim().toLocaleLowerCase("es-AR") === name.toLocaleLowerCase("es-AR"))) throw new Error("Ya existe una lista con ese nombre.");
+        book.name = name;
+        book.adjustmentBps = input.adjustmentBps;
+      }
+      for (const product of state.data.products) validateDemoProductBook(product.priceBook!, books);
+      state.priceBooks = books;
+      for (const product of state.data.products) refreshProductPrices(product, state);
+      audit(state, "PRODUCT", book.id, "PRICE_BOOK_SAVED", input.reason.trim(), "prices.bulk_update");
+      save();
+      return output({ books, assignments: state.priceBookAssignments! });
+    },
+
+    async assignPriceBooks(input: AssignPriceBooksInput) {
+      requirePin(input.authorizerPin);
+      if (!state.data.currentUser.permissions.includes("prices.bulk_update") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para editar precios.");
+      if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
+      if (Object.keys(input.assignments).length !== 3 || [input.assignments.SALON, input.assignments.TAKEAWAY, input.assignments.DELIVERY].some((id) => !state.priceBooks!.some((book) => book.id === id))) throw new Error("Una de las listas asignadas no existe.");
+
+      const assignments = clone(input.assignments);
+      for (const product of state.data.products) for (const channel of ["SALON", "TAKEAWAY", "DELIVERY"] as const) {
+        const book = state.priceBooks!.find((candidate) => candidate.id === assignments[channel])!;
+        calculateBookPrice(product.priceBook!.baseMinor, book.adjustmentBps, book.isBase ? undefined : product.priceBook!.overrides[book.id]);
+      }
+      state.priceBookAssignments = assignments;
+      for (const product of state.data.products) refreshProductPrices(product, state);
+      audit(state, "PRODUCT", "price-books", "PRICE_BOOKS_ASSIGNED", input.reason.trim(), "prices.bulk_update");
+      save();
+      return output({ books: state.priceBooks!, assignments: state.priceBookAssignments });
+    },
+
     async getOrder({ orderId }) {
       return output(orderById(orderId));
     },
@@ -2361,6 +2504,7 @@ export function createDemoApi(
       }
       const before = clone(product.comboDefinition ?? null);
       product.comboDefinition = clone(input.definition);
+      refreshProductPrices(product, state);
       audit(state, "PRODUCT", product.id, "PRODUCT_COMBO_CONFIGURED", input.reason.trim(), "prices.bulk_update");
       if (receiptKey) (state.comboConfigReceipts ??= {})[receiptKey] = { fingerprint, result: output(product) };
       save();
@@ -2397,7 +2541,7 @@ export function createDemoApi(
         });
         return { slotId: slot.id, slotName: slot.name, productId: product.id, nameSnapshot: product.name, quantity: slot.quantity, modifiers };
       });
-      const unit = calculateComboPrice(orderPrice(combo, order.type), components);
+      const unit = calculateComboPrice(orderPrice(combo, order.type, state), components);
       assertComboLineAmount(unit, quantity, order.subtotalMinor, order.deliveryFeeMinor);
       const item: OrderItemDto = { id: uid("item", state), productId: combo.id, productNameSnapshot: combo.name, quantity, unitPriceMinorSnapshot: unit, discountMinorSnapshot: 0, notes: input.notes?.trim() || null, halves: [], modifiers: [], comboComponents: components, lineTotalMinor: unit * quantity };
       if (order.lifecycleStatus === "CONFIRMED" && state.data.settings.stockEnabled) consumeComboStock({ ...order, items: [item] });
@@ -2419,7 +2563,7 @@ export function createDemoApi(
       const quantity = input.quantity ?? 1;
       if (quantity <= 0)
         throw new Error("La cantidad debe ser mayor que cero.");
-      const catalogUnit = orderPrice(product, order.type);
+      const catalogUnit = orderPrice(product, order.type, state);
       const unit = input.unitPriceMinorOverride ?? catalogUnit;
       if (!Number.isInteger(unit) || unit < 0)
         throw new Error("El precio manual no es válido.");
@@ -2576,8 +2720,8 @@ export function createDemoApi(
       const first = productById(input.firstProductId);
       const second = productById(input.secondProductId);
       if (first.comboDefinition || second.comboDefinition) throw new Error("Los combos no pueden agregarse como mitad y mitad.");
-      const firstPrice = orderPrice(first, order.type);
-      const secondPrice = orderPrice(second, order.type);
+      const firstPrice = orderPrice(first, order.type, state);
+      const secondPrice = orderPrice(second, order.type, state);
       const unit =
         state.data.settings.halfAndHalfPricingMode === "MOST_EXPENSIVE"
           ? Math.max(firstPrice, secondPrice)
@@ -4289,7 +4433,7 @@ export function createDemoApi(
       if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
       const category = categoryById(input.categoryId);
       if (!category.active) throw new Error("No se puede configurar un combo en una categoría inactiva.");
-      const prices = normalizeProductPrices(input.prices);
+      const prices = input.priceBook ? [] : normalizeProductPrices(input.prices);
       if (prices.some((price) => !Number.isSafeInteger(price.amountMinor) || price.amountMinor < 0)) throw new Error("Ingresá precios válidos y dentro del rango permitido.");
       const proposedId = "__combo_candidate_validation__";
       const candidate: ProductDto = {
@@ -4306,6 +4450,7 @@ export function createDemoApi(
         stockMinMinor: null,
         stockCriticalMinor: null,
         imageDataUrl: null,
+      priceBook: input.priceBook ?? productBookFromPrices(prices, state.priceBookAssignments!, state.priceBooks!),
         prices: prices.map((price) => ({ priceListId: `price-${price.priceListCode.toLowerCase()}`, ...price })),
       };
       assertComboDefinition(input.definition, candidate.id, [...state.data.products, candidate]);
@@ -4313,6 +4458,8 @@ export function createDemoApi(
       if (input.definition.slots.some((slot) => slot.productIds.some((id) => !eligible.has(id)))) throw new Error("Las opciones solo pueden incluir productos activos que no sean combos.");
       // All validations run before either product or audit state is changed.
       const product = { ...candidate, id: uid("product", state), comboDefinition: clone(input.definition) };
+      product.priceBook = input.priceBook ?? candidate.priceBook;
+      refreshProductPrices(product, state);
       state.data.products.push(product);
       audit(state, "PRODUCT", product.id, "PRODUCTO_CREADO");
       audit(state, "PRODUCT", product.id, "PRODUCT_COMBO_CONFIGURED", input.reason.trim(), "prices.bulk_update");
@@ -4323,7 +4470,7 @@ export function createDemoApi(
 
     async createProduct(input) {
       const category = categoryById(input.categoryId);
-      const prices = normalizeProductPrices(input.prices);
+      const prices = input.priceBook ? [] : normalizeProductPrices(input.prices);
       validateProductInventory(input);
       if (input.parentProductId) {
         const parent = state.data.products.find(
@@ -4350,11 +4497,13 @@ export function createDemoApi(
         stockMinMinor: input.stockMinMinor ?? null,
         stockCriticalMinor: input.stockCriticalMinor ?? null,
         imageDataUrl: input.imageDataUrl ?? null,
+        priceBook: input.priceBook ?? productBookFromPrices(prices, state.priceBookAssignments!, state.priceBooks!),
         prices: prices.map((price) => ({
           priceListId: `price-${price.priceListCode.toLowerCase()}`,
           ...price,
         })),
       };
+      refreshProductPrices(product, state);
       if (!product.name) throw new Error("Ingresá el nombre del producto.");
       state.data.products.push(product);
       audit(state, "PRODUCT", product.id, "PRODUCTO_CREADO");
@@ -4365,6 +4514,7 @@ export function createDemoApi(
     async updateProduct(input) {
       requirePin(input.authorizerPin);
       validateProductInventory(input);
+      if (input.priceBook) validateDemoProductBook(input.priceBook, state.priceBooks!);
       const product = productById(input.productId);
       const category = categoryById(input.categoryId);
       if (input.stockMinor != null && product.comboDefinition) throw new Error("Un combo no puede tener stock propio; configurá el inventario de sus componentes.");
@@ -4414,11 +4564,10 @@ export function createDemoApi(
           input.imageDataUrl === undefined
             ? product.imageDataUrl
             : input.imageDataUrl,
-        prices: normalizeProductPrices(input.prices).map((price) => ({
-          priceListId: `price-${price.priceListCode.toLowerCase()}`,
-          ...price,
-        })),
+        priceBook: input.priceBook ?? productBookFromPrices(normalizeProductPrices(input.prices), state.priceBookAssignments!, state.priceBooks!, product.priceBook),
+        prices: input.priceBook ? product.prices : normalizeProductPrices(input.prices).map((price) => ({ priceListId: `price-${price.priceListCode.toLowerCase()}`, ...price })),
       });
+      refreshProductPrices(product, state);
       audit(
         state,
         "PRODUCT",
@@ -4487,48 +4636,17 @@ export function createDemoApi(
           }
           if (input.active != null) product.active = input.active;
           if (input.priceAdjustment) {
-            const priceListCodes = new Set(
-              input.priceAdjustment.priceListCodes,
-            );
-            if (
-              priceListCodes.has("TAKEAWAY") ||
-              priceListCodes.has("DELIVERY")
-            ) {
-              priceListCodes.add("TAKEAWAY");
-              priceListCodes.add("DELIVERY");
+            product.priceBook ??= { baseMinor: product.prices.find((p) => p.priceListCode === "SALON")?.amountMinor ?? 0, overrides: {} };
+            const selectedBooks = input.priceAdjustment.bookIds?.length
+              ? input.priceAdjustment.bookIds
+              : input.priceAdjustment.priceListCodes.map((code) => state.priceBookAssignments![code]);
+            try {
+              product.priceBook = applyBookAdjustment(product.priceBook, state.priceBooks!, selectedBooks, input.priceAdjustment.mode, input.priceAdjustment.value);
+            } catch (error) {
+              throw new Error(`${product.name}: ${error instanceof Error ? error.message : "El ajuste no es válido."}`);
             }
-            for (const code of priceListCodes) {
-              const price = product.prices.find(
-                (candidate) => candidate.priceListCode === code,
-              );
-              if (!price) continue;
-              const next =
-                input.priceAdjustment.mode === "PERCENTAGE"
-                  ? Math.round(
-                      price.amountMinor *
-                        (1 + input.priceAdjustment.value / 100),
-                    )
-                  : price.amountMinor + input.priceAdjustment.value;
-              if (next < 0)
-                throw new Error(
-                  `El ajuste dejaría con precio negativo a ${product.name}.`,
-                );
-              if (!Number.isSafeInteger(next))
-                throw new Error(
-                  `El ajuste dejaría un precio fuera del rango válido en ${product.name}.`,
-                );
-              price.amountMinor = next;
-            }
-            if (priceListCodes.has("TAKEAWAY")) {
-              const takeaway = product.prices.find(
-                (price) => price.priceListCode === "TAKEAWAY",
-              );
-              const delivery = product.prices.find(
-                (price) => price.priceListCode === "DELIVERY",
-              );
-              if (takeaway && delivery)
-                delivery.amountMinor = takeaway.amountMinor;
-            }
+            refreshProductPrices(product, state);
+            continue;
           }
         }
         audit(

@@ -58,8 +58,7 @@ export function CombosTable({
                 <th>Combo</th>
                 <th>Categoría</th>
                 <th>Opciones</th>
-                <th className="text-right">Salón</th>
-                <th className="text-right">Delivery / Para retirar</th>
+                <th className="text-right">Precio Principal</th>
                 <th>Estado</th>
                 <th className="text-right">Acciones</th>
               </tr>
@@ -83,15 +82,13 @@ export function CombosTable({
                       )
                       .join(" · ")}
                   </td>
-                  {["SALON", "TAKEAWAY"].map((code) => (
-                    <td key={code} className="text-right font-semibold">
-                      {formatMoney(
-                        product.prices.find(
-                          (price) => price.priceListCode === code,
-                        )?.amountMinor ?? 0,
-                      )}
-                    </td>
-                  ))}
+                  <td className="text-right font-semibold">
+                    {formatMoney(
+                      product.priceBook?.baseMinor ??
+                        product.prices.find((price) => price.priceListCode === "SALON")?.amountMinor ??
+                        0,
+                    )}
+                  </td>
                   <td>
                     <Badge tone={product.active ? "green" : "slate"}>
                       {product.active ? "Activo" : "Inactivo"}

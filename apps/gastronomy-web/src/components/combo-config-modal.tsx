@@ -1,35 +1,42 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type {
   CategoryDto,
   ComboDefinitionDto,
   ConfigureProductComboInput,
   CreateComboInput,
   ProductDto,
+  PriceBooksDto,
 } from "@gastronomy/contracts";
-import { assertComboDefinition } from "@gastronomy/domain";
+import { assertComboDefinition, calculateBookPrice } from "@gastronomy/domain";
 import { Button, Field, Input, Modal, Select } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
-import { humanError, parseMoneyInput } from "../lib";
+import { formatMoney, humanError, parsePriceInput } from "../lib";
 
 export function ComboConfigModal({
   open,
   product,
   products,
   categories,
+  priceBooks,
   onClose,
 }: {
   open: boolean;
   product: ProductDto | null;
   products: ProductDto[];
   categories: CategoryDto[];
+  priceBooks: PriceBooksDto | null;
   onClose(): void;
 }) {
+  const booksDto = priceBooks ?? {
+    books: [],
+    assignments: { SALON: "", TAKEAWAY: "", DELIVERY: "" },
+  };
   const [slots, setSlots] = useState<ComboDefinitionDto["slots"]>([]);
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [categoryId, setCategoryId] = useState("");
-  const [salonPrice, setSalonPrice] = useState("");
-  const [offPremisePrice, setOffPremisePrice] = useState("");
+  const [basePrice, setBasePrice] = useState("");
+  const [priceOverrides, setPriceOverrides] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -55,13 +62,15 @@ export function ComboConfigModal({
     },
   );
   const productId = product?.id;
-  useEffect(() => {
+  // Reset the new record before its inputs can receive focus. A passive effect
+  // could otherwise wipe the first edits when reopening a recently saved combo.
+  useLayoutEffect(() => {
     if (!open) return;
     setName("");
     setCode("");
     setCategoryId(categories.find((category) => category.active)?.id ?? "");
-    setSalonPrice("");
-    setOffPremisePrice("");
+    setBasePrice("");
+    setPriceOverrides({});
     setSlots(
       product?.comboDefinition?.slots.map((slot) => ({
         ...slot,
@@ -90,6 +99,36 @@ export function ComboConfigModal({
         (category) => category.id === candidate.categoryId && category.active,
       ),
   );
+  const derivedPricePreview = (amountText: string, adjustmentBps: number) => {
+    if (!amountText.trim()) return "—";
+    const amount = parsePriceInput(amountText);
+    if (amount == null) return "Precio fuera de rango";
+    try {
+      return formatMoney(calculateBookPrice(amount, adjustmentBps));
+    } catch {
+      return "Precio fuera de rango";
+    }
+  };
+  const creationPriceError = (() => {
+    if (product) return null;
+    const base = parsePriceInput(basePrice);
+    if (base == null) return "Completá un precio Principal válido.";
+    if (!booksDto.books.some((book) => book.isBase)) return "No se pudo cargar la lista Principal.";
+    const overrides: Record<string, number> = {};
+    for (const [bookId, value] of Object.entries(priceOverrides)) {
+      if (!value.trim()) continue;
+      const amount = parsePriceInput(value);
+      if (amount == null) return "Completá precios propios válidos y dentro del rango permitido.";
+      if (!booksDto.books.some((book) => book.id === bookId)) return "Una lista de precios ya no está disponible. Volvé a abrir el combo.";
+      overrides[bookId] = amount;
+    }
+    try {
+      for (const book of booksDto.books) calculateBookPrice(base, book.adjustmentBps, overrides[book.id]);
+    } catch (value) {
+      return humanError(value);
+    }
+    return null;
+  })();
 
   const submit = (definition: ComboDefinitionDto | null) => {
     if (mutation.isPending) return;
@@ -136,13 +175,31 @@ export function ComboConfigModal({
         input: { ...common, productId: product.id, definition },
       };
     } else {
-      const salon = parseMoneyInput(salonPrice);
-      const offPremise = parseMoneyInput(offPremisePrice);
+      const base = parsePriceInput(basePrice);
+      const baseBook = booksDto.books.find((book) => book.isBase);
+      if (creationPriceError) {
+        setError(creationPriceError);
+        return;
+      }
+      const overrides: Record<string, number> = {};
+      for (const [bookId, value] of Object.entries(priceOverrides)) {
+        if (!value.trim()) continue;
+        const amount = parsePriceInput(value);
+        if (amount == null) {
+          setError("Completá precios propios válidos y dentro del rango permitido.");
+          return;
+        }
+        if (!booksDto.books.some((book) => book.id === bookId)) {
+          setError("Una lista de precios ya no está disponible. Volvé a abrir el combo.");
+          return;
+        }
+        overrides[bookId] = amount;
+      }
       if (
         !name.trim() ||
         !categoryId ||
-        salon == null ||
-        offPremise == null ||
+        base == null ||
+        !baseBook ||
         !definition
       ) {
         setError("Completá nombre, categoría y precios válidos del combo.");
@@ -156,11 +213,11 @@ export function ComboConfigModal({
           code: code.trim() || null,
           categoryId,
           definition,
-          prices: [
-            { priceListCode: "SALON", amountMinor: salon },
-            { priceListCode: "TAKEAWAY", amountMinor: offPremise },
-            { priceListCode: "DELIVERY", amountMinor: offPremise },
-          ],
+          priceBook: {
+            baseMinor: base!,
+            overrides,
+          },
+          prices: [],
         },
       };
     }
@@ -182,6 +239,9 @@ export function ComboConfigModal({
     setError(null);
   };
   const authorized = Boolean(reason.trim() && /^\d{4,8}$/.test(pin));
+  const createFieldsIncomplete =
+    !product &&
+    (!name.trim() || !categoryId || Boolean(creationPriceError));
 
   return (
     <Modal
@@ -232,24 +292,25 @@ export function ComboConfigModal({
               />
             </Field>
             <div />
-            <Field label="Precio Salón">
+            <Field label="Precio base · Principal">
               <Input
-                aria-label="Precio Salón del combo"
+                aria-label="Precio base del combo"
                 inputMode="decimal"
                 disabled={mutation.isPending}
-                value={salonPrice}
-                onChange={(event) => setSalonPrice(event.target.value)}
+                value={basePrice}
+                onChange={(event) => {
+                  setBasePrice(event.target.value);
+                  setError(null);
+                }}
               />
             </Field>
-            <Field label="Precio Delivery / Para retirar">
-              <Input
-                aria-label="Precio Delivery / Para retirar del combo"
-                inputMode="decimal"
-                disabled={mutation.isPending}
-                value={offPremisePrice}
-                onChange={(event) => setOffPremisePrice(event.target.value)}
-              />
-            </Field>
+            <div />
+            {booksDto.books.filter((book) => !book.isBase).map((book) => (
+              <Field key={book.id} label={`Precio propio · ${book.name}`} hint={`Derivado: ${derivedPricePreview(basePrice, book.adjustmentBps)}`}>
+                <Input aria-label={`Precio propio ${book.name}`} inputMode="decimal" disabled={mutation.isPending} placeholder="Heredar derivado" value={priceOverrides[book.id] ?? ""} onChange={(event) => { setPriceOverrides((current) => ({ ...current, [book.id]: event.target.value })); setError(null); }} />
+              </Field>
+            ))}
+            {!priceBooks?.books.length && <p role="alert" className="text-xs text-amber-800 sm:col-span-2">No se pudieron cargar las listas de precios. Reintentá antes de crear el combo.</p>}
             <p className="text-xs text-slate-500 sm:col-span-2">
               El stock se controla en los componentes, según las opciones
               elegidas al vender.
@@ -428,11 +489,7 @@ export function ComboConfigModal({
               mutation.isPending ||
               !authorized ||
               product?.stockMinor != null ||
-              (!product &&
-                (!name.trim() ||
-                  !categoryId ||
-                  parseMoneyInput(salonPrice) == null ||
-                  parseMoneyInput(offPremisePrice) == null))
+              createFieldsIncomplete
             }
             onClick={() => submit({ slots })}
           >

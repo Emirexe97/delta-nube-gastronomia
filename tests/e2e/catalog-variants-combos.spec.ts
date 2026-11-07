@@ -164,11 +164,8 @@ test("Combos crea y edita combos completos desde su pestaña sin botones en cada
     .selectOption(fixture.component.categoryId);
   await dialog.getByLabel("Código del combo", { exact: true }).fill("COMBO-QA");
   await dialog
-    .getByLabel("Precio Salón del combo", { exact: true })
+    .getByLabel("Precio base del combo", { exact: true })
     .fill("8500");
-  await dialog
-    .getByLabel("Precio Delivery / Para retirar del combo", { exact: true })
-    .fill("9000");
   await dialog
     .getByLabel("Nombre de opción 1", { exact: true })
     .fill("Principal");
@@ -196,15 +193,14 @@ test("Combos crea y edita combos completos desde su pestaña sin botones en cada
   const row = page.getByRole("row").filter({ hasText: "Combo almuerzo QA" });
   await expect(row).toContainText("Principal × 1");
   await expect(row).toContainText(/8\.500/);
-  await expect(row).toContainText(/9\.000/);
+  await expect(page.getByRole("columnheader", { name: "Precio Principal", exact: true })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Salón", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("columnheader", { name: "Delivery / Para retirar", exact: true })).toHaveCount(0);
   const created = (
     await page.evaluate(() => window.gastronomy.bootstrap())
   ).products.find((product) => product.code === "COMBO-QA")!;
   expect(created.stockMinor).toBeNull();
-  expect(
-    created.prices.find((price) => price.priceListCode === "DELIVERY")
-      ?.amountMinor,
-  ).toBe(900000);
+  expect(created.priceBook?.baseMinor).toBe(850000);
   expect(created.comboDefinition?.slots[0]?.productIds).toEqual([
     fixture.component.id,
   ]);
@@ -221,6 +217,7 @@ test("Combos crea y edita combos completos desde su pestaña sin botones en cada
   await dialog.getByLabel("Cantidad de opción 1", { exact: true }).fill("2");
   await dialog.getByLabel("Motivo", { exact: true }).fill("Dos unidades QA");
   await dialog.getByLabel("PIN de autorización", { exact: true }).fill("1234");
+  await expect(dialog.getByRole("button", { name: "Guardar combo", exact: true })).toBeEnabled();
   await dialog
     .getByRole("button", { name: "Guardar combo", exact: true })
     .click();
@@ -234,5 +231,96 @@ test("Combos crea y edita combos completos desde su pestaña sin botones en cada
   await testInfo.attach("pestana-combos", {
     body: await page.screenshot(),
     contentType: "image/png",
+  });
+});
+
+test("las listas derivadas y overrides afectan canales nuevos, no el precio de pedidos anteriores", async () => {
+  const result = await page.evaluate(async () => {
+    const api = window.gastronomy;
+    const initial = await api.getPriceBooks();
+    const base = initial.books.find((book) => book.isBase)!;
+    const derived = await api.savePriceBook({
+      name: "Delivery E2E",
+      adjustmentBps: 1500,
+      authorizerPin: "1234",
+      reason: "Prueba de lista derivada",
+    });
+    const book = derived.books.find((entry) => entry.name === "Delivery E2E")!;
+    const categoryId = (await api.bootstrap()).categories.find((entry) => entry.active)!.id;
+    const product = await api.createProduct({
+      categoryId,
+      name: "Producto listas E2E",
+      priceBook: { baseMinor: 10000, overrides: { [book.id]: 20000 } },
+      prices: [
+        { priceListCode: "SALON", amountMinor: 10000 },
+        { priceListCode: "TAKEAWAY", amountMinor: 10000 },
+        { priceListCode: "DELIVERY", amountMinor: 20000 },
+      ],
+    });
+    const derivedProduct = await api.createProduct({
+      categoryId,
+      name: "Producto derivado E2E",
+      priceBook: { baseMinor: 10000, overrides: {} },
+      prices: [
+        { priceListCode: "SALON", amountMinor: 10000 },
+        { priceListCode: "TAKEAWAY", amountMinor: 10000 },
+        { priceListCode: "DELIVERY", amountMinor: 11500 },
+      ],
+    });
+    await api.openCashSession({ openingAmountMinor: 0 });
+    const order = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Cliente listas E2E",
+      customerPhone: "1111111111",
+    });
+    const withItem = await api.addOrderItem({ orderId: order.id, productId: product.id });
+    await api.confirmOrder({ orderId: order.id });
+    const beforeAssignment = await api.bootstrap();
+    const priceBefore = beforeAssignment.products.find((entry) => entry.id === derivedProduct.id)!.prices.find((price) => price.priceListCode === "DELIVERY")!.amountMinor;
+    await api.savePriceBook({
+      id: book.id,
+      name: book.name,
+      adjustmentBps: 3000,
+      authorizerPin: "1234",
+      reason: "Cambio de porcentaje",
+    });
+    await api.assignPriceBooks({
+      assignments: { SALON: base.id, TAKEAWAY: book.id, DELIVERY: book.id },
+      authorizerPin: "1234",
+      reason: "Asignar listas por modo",
+    });
+    const after = await api.getPriceBooks();
+    const afterAssignment = await api.bootstrap();
+    const priceAfter = afterAssignment.products.find((entry) => entry.id === derivedProduct.id)!.prices.find((price) => price.priceListCode === "DELIVERY")!.amountMinor;
+    const historical = await api.getOrder({ orderId: order.id });
+    const nextOrder = await api.createOrder({
+      type: "TAKEAWAY",
+      customerName: "Cliente lista nueva E2E",
+      customerPhone: "1111111112",
+    });
+    const newSale = await api.addOrderItem({ orderId: nextOrder.id, productId: product.id });
+    return {
+      baseId: base.id,
+      bookId: book.id,
+      product,
+      derivedProduct,
+      originalItem: withItem.items[0],
+      currentItem: historical.items[0],
+      assignments: after.assignments,
+      priceBefore,
+      priceAfter,
+      newSaleItem: newSale.items[0],
+    };
+  });
+  expect(result.product.priceBook).toEqual({ baseMinor: 10000, overrides: { [result.bookId]: 20000 } });
+  expect(result.derivedProduct.priceBook).toEqual({ baseMinor: 10000, overrides: {} });
+  expect(result.priceBefore).toBe(10000);
+  expect(result.priceAfter).toBe(13000); // Rule changed from +15% to +30% before assigning it.
+  expect(result.newSaleItem.unitPriceMinorSnapshot).toBe(20000);
+  expect(result.assignments).toEqual({ SALON: result.baseId, TAKEAWAY: result.bookId, DELIVERY: result.bookId });
+  expect(result.currentItem).toMatchObject({
+    id: result.originalItem.id,
+    unitPriceMinorSnapshot: result.originalItem.unitPriceMinorSnapshot,
+    lineTotalMinor: result.originalItem.lineTotalMinor,
   });
 });

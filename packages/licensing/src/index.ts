@@ -118,6 +118,7 @@ export function licenseAllowsMethod(
     "listPurchases",
     "getFinanceReport",
     "getFinanceProductCosts",
+    "getPriceBooks",
     "listFinanceExpenses",
     "listRecurringFinanceExpenses",
     "getUserPermissions",

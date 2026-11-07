@@ -1172,4 +1172,15 @@ CREATE TABLE waiter_pending_batch_lines (
 ALTER TABLE waiter_sessions ADD COLUMN expires_on_cash_close INTEGER NOT NULL DEFAULT 0 CHECK(expires_on_cash_close IN (0,1));
 `,
   },
+  {
+    version: 48,
+    name: "price_books_engine",
+    sql: String.raw`
+CREATE TABLE price_books (id TEXT PRIMARY KEY, name TEXT NOT NULL, adjustment_bps INTEGER NOT NULL CHECK(adjustment_bps BETWEEN -10000 AND 100000), is_base INTEGER NOT NULL DEFAULT 0 CHECK(is_base IN (0,1)), sort_order INTEGER NOT NULL DEFAULT 0);
+CREATE UNIQUE INDEX price_books_one_base ON price_books(is_base) WHERE is_base=1;
+CREATE TABLE price_book_assignments (channel TEXT PRIMARY KEY CHECK(channel IN ('SALON','TAKEAWAY','DELIVERY')), book_id TEXT NOT NULL REFERENCES price_books(id));
+CREATE TABLE product_price_book_overrides (product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE, book_id TEXT NOT NULL REFERENCES price_books(id) ON DELETE CASCADE, amount_minor INTEGER NOT NULL CHECK(amount_minor >= 0), PRIMARY KEY(product_id,book_id));
+CREATE TABLE product_price_book_bases (product_id TEXT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, amount_minor INTEGER NOT NULL CHECK(amount_minor >= 0));
+`
+  },
 ];

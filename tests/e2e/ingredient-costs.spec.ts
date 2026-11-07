@@ -109,8 +109,14 @@ test("ingredientes calcula recetas por peso y volumen, recalcula ventas futuras 
   expect(potato.presentationQuantityMicros).toBe(16_000_000);
   await page.getByRole("tab", { name: "Productos", exact: true }).click();
   await page
-    .getByRole("button", { name: `Costo de ${product.name}`, exact: true })
+    .getByRole("button", { name: `Editar ${product.name}`, exact: true })
     .click();
+  const productEdit = page.getByRole("dialog", {
+    name: `Editar · ${product.name}`,
+    exact: true,
+  });
+  await productEdit.getByRole("tab", { name: "Precios", exact: true }).click();
+  await productEdit.getByRole("button", { name: /costo/i }).click();
   let dialog = page.getByRole("dialog", {
     name: `Costo · ${product.name}`,
     exact: true,
@@ -202,8 +208,16 @@ test("ingredientes calcula recetas por peso y volumen, recalcula ventas futuras 
   ).toBe(historical);
   await page.getByRole("tab", { name: "Productos", exact: true }).click();
   await page
-    .getByRole("button", { name: `Costo de ${product.name}`, exact: true })
+    .getByRole("button", { name: `Editar ${product.name}`, exact: true })
     .click();
+  const productEditAgain = page.getByRole("dialog", {
+    name: `Editar · ${product.name}`,
+    exact: true,
+  });
+  await productEditAgain
+    .getByRole("tab", { name: "Precios", exact: true })
+    .click();
+  await productEditAgain.getByRole("button", { name: /costo/i }).click();
   dialog = page.getByRole("dialog", {
     name: `Costo · ${product.name}`,
     exact: true,

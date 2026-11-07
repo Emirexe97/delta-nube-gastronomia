@@ -31,10 +31,8 @@ it("demo createCombo validates before mutation and replays the same idempotency 
   const input = {
     categoryId: category.id,
     name: "Combo atómico",
-    prices: ["SALON", "TAKEAWAY", "DELIVERY"].map((priceListCode) => ({
-      priceListCode: priceListCode as "SALON" | "TAKEAWAY" | "DELIVERY",
-      amountMinor: 9000,
-    })),
+    priceBook: { baseMinor: 9000, overrides: {} },
+    prices: [],
     definition: { slots: [{ id: "main", name: "Principal", quantity: 1, productIds: [component.id] }] },
     reason: "Alta combo",
     authorizerPin: "1234",
@@ -42,6 +40,7 @@ it("demo createCombo validates before mutation and replays the same idempotency 
   };
   const created = await api.createCombo(input);
   expect(created.comboDefinition).toEqual(input.definition);
+  expect(created.priceBook).toEqual(input.priceBook);
   expect(await api.createCombo(input)).toEqual(created);
   await expect(api.createCombo({ ...input, name: "Otro nombre" })).rejects.toThrow(/idempotencia/i);
   expect((await api.bootstrap()).products.filter((product) => product.name === input.name)).toHaveLength(1);

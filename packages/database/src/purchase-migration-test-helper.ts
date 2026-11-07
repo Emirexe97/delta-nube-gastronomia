@@ -10,6 +10,18 @@ export function rewindPurchaseTestSchema(
   db: InstanceType<typeof Database>,
   targetVersion: number,
 ) {
+  if (targetVersion < 48)
+    db.exec(`DROP TABLE IF EXISTS product_price_book_overrides;
+      DROP TABLE IF EXISTS product_price_book_bases;
+      DROP TABLE IF EXISTS price_book_assignments;
+      DROP TABLE IF EXISTS price_books;`);
+  if (targetVersion < 47 && targetVersion >= 45)
+    db.exec("ALTER TABLE waiter_sessions DROP COLUMN expires_on_cash_close");
+  if (targetVersion < 46)
+    db.exec("DROP TABLE IF EXISTS waiter_pending_batch_lines; DROP TABLE IF EXISTS waiter_pending_batches;");
+  if (targetVersion < 45)
+    db.exec(`DROP TABLE IF EXISTS waiter_batch_lines; DROP TABLE IF EXISTS waiter_batches;
+      DROP TABLE IF EXISTS waiter_sessions; DROP TABLE IF EXISTS waiter_challenges;`);
   if (targetVersion < 44) {
     db.exec(`DROP TABLE IF EXISTS web_order_acks;
       DROP TABLE IF EXISTS web_order_cursors;

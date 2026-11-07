@@ -50,11 +50,20 @@ test("producto nuevo y edición: Enter avanza y Shift+Enter vuelve", async () =>
   const edit = page.getByRole("dialog", { name: /Editar ·/ });
   const editName = edit.getByLabel("Nombre", { exact: true });
   const editCode = edit.getByLabel("Código", { exact: true });
+  await expect(editName).toHaveValue(/\S/);
+  const originalEditName = await editName.inputValue();
   await editName.press("Enter");
   await expect(editCode).toBeFocused();
   await editCode.press("Shift+Enter");
   await expect(editName).toBeFocused();
+  await editName.fill("Borrador teclado E2E");
+  await edit.getByRole("tab", { name: "Precios", exact: true }).click();
+  await edit.getByRole("tab", { name: "Inventario", exact: true }).click();
+  await edit.getByRole("tab", { name: "General", exact: true }).click();
+  await expect(editName).toHaveValue("Borrador teclado E2E");
+  await editName.fill(originalEditName);
   await edit.getByRole("button", { name: "Cancelar" }).click();
+  await expect(edit).toBeHidden();
 });
 
 test("usuario multi-campo respeta Enter y Shift+Enter", async () => {
@@ -99,7 +108,9 @@ test("Enter en el último campo de un formulario válido conserva el submit nati
     .first()
     .click();
   const dialog = page.getByRole("dialog", { name: "Nuevo cliente" });
-  await dialog.getByRole("textbox", { name: "Teléfono", exact: true }).fill("11 5555-7788");
+  await dialog
+    .getByRole("textbox", { name: "Teléfono", exact: true })
+    .fill("11 5555-7788");
   await dialog.getByLabel("Nombre").fill("Cliente navegación");
   await dialog
     .getByLabel("Dirección", { exact: true })
@@ -121,7 +132,9 @@ test("combobox abierto: Enter selecciona la opción y no salta el campo", async 
     .first()
     .click();
   const customer = page.getByRole("dialog", { name: "Nuevo cliente" });
-  await customer.getByRole("textbox", { name: "Teléfono", exact: true }).fill("11 5555-9900");
+  await customer
+    .getByRole("textbox", { name: "Teléfono", exact: true })
+    .fill("11 5555-9900");
   await customer.getByLabel("Nombre").fill("Cliente combobox");
   await customer
     .getByLabel("Dirección", { exact: true })

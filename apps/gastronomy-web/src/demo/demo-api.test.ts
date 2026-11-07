@@ -20,6 +20,51 @@ class MemoryStorage implements DemoStorage {
 }
 
 describe("API de demostración", () => {
+  it("rechaza precios de lista inválidos sin editar el producto y conserva un precio propio de cero", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const auth = {reason:"Prueba", authorizerPin:"1234"};
+    const {books} = await api.savePriceBook({...auth, name:"Especial", adjustmentBps:1250});
+    const special = books.find(b=>b.name==="Especial")!;
+    const base = books.find(b=>b.isBase)!;
+    const categoryId = (await api.bootstrap()).categories[0]!.id;
+    const product = await api.createProduct({categoryId, name:"Muestra", prices:[],
+      priceBook:{baseMinor:15000,overrides:{[special.id]:0}}});
+    await api.assignPriceBooks({...auth, assignments:{SALON:special.id,TAKEAWAY:base.id,DELIVERY:base.id}});
+    const edit = {...auth,categoryId,productId:product.id,name:"Cambio inválido",active:true,prices:[]};
+    await expect(api.updateProduct({...edit,priceBook:{baseMinor:30000,overrides:{[base.id]:20}}})).rejects.toThrow();
+    await expect(api.updateProduct({...edit,priceBook:{baseMinor:Number.MAX_SAFE_INTEGER,overrides:{}}})).rejects.toThrow();
+    const fetched = (await api.bootstrap()).products.find(p=>p.id===product.id)!;
+    expect(fetched.name).toBe("Muestra");
+    expect(fetched.prices.find(p=>p.priceListCode==="SALON")?.amountMinor).toBe(0);
+    expect(fetched.prices.find(p=>p.priceListCode==="DELIVERY")?.amountMinor).toBe(15000);
+  });
+  it("migra storage v12 a listas por vectores de precios sin cambiar importes", async () => {
+    const storage = new MemoryStorage();
+    const initial = await createDemoApi(storage).bootstrap();
+    const legacy = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    legacy.version = 12;
+    delete legacy.priceBooks;
+    delete legacy.priceBookAssignments;
+    for (const product of legacy.data.products) {
+      delete product.priceBook;
+      product.prices = [
+        { priceListId: "legacy-salon", priceListCode: "SALON", amountMinor: 100 },
+        { priceListId: "legacy-takeaway", priceListCode: "TAKEAWAY", amountMinor: 120 },
+        { priceListId: "legacy-delivery", priceListCode: "DELIVERY", amountMinor: 135 },
+      ];
+    }
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(legacy));
+    const migratedApi = createDemoApi(storage);
+    const migrated = await migratedApi.bootstrap();
+    const books = await migratedApi.getPriceBooks();
+    expect(books.assignments.SALON).not.toBe(books.assignments.TAKEAWAY);
+    expect(books.assignments.TAKEAWAY).not.toBe(books.assignments.DELIVERY);
+    expect(migrated.products[0]!.prices.map((p) => p.amountMinor)).toEqual([100, 120, 135]);
+    expect(migrated.products.every((p) => p.priceBook?.baseMinor === 100)).toBe(true);
+    expect(migrated.products.every((p) => Object.keys(p.priceBook!.overrides).every((id) => id !== books.books.find((b) => b.isBase)!.id))).toBe(true);
+    expect(JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!).version).toBe(13);
+    expect(initial.products).toHaveLength(migrated.products.length);
+  });
   it("lectura de costos incluye inactivos y cero sin modificar almacenamiento", async () => {
     const storage = new MemoryStorage();
     const api = createDemoApi(storage);
