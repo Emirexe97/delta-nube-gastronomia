@@ -39,7 +39,8 @@ jobs:
 
       - name: Build web and workspace
         run: |
-          pnpm --filter @gastronomy/web build
+          # Turbo builds the UI theme and all workspace dependencies before Vite.
+          # Building web directly first only worked with pre-existing local dist files.
           pnpm build
 
       - name: Package Intel app and create DMG
