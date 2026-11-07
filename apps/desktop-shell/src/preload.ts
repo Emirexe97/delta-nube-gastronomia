@@ -5,6 +5,7 @@ const invoke = <T>(method: keyof DesktopApi, payload?: unknown) =>
   ipcRenderer.invoke(`gastronomy:${method}`, payload) as Promise<T>;
 
 const api: DesktopApi = {
+  askPosAssistantAi: (input) => invoke("askPosAssistantAi", input),
   listDelayedWaiterBatches: () => invoke("listDelayedWaiterBatches"),
   confirmDelayedWaiterBatch: (input) => invoke("confirmDelayedWaiterBatch", input),
   rejectDelayedWaiterBatch: (input) => invoke("rejectDelayedWaiterBatch", input),

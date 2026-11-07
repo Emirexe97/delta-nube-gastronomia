@@ -50,6 +50,7 @@ import { useEnterNavigation } from "./hooks/use-enter-navigation";
 import { useLicenseStatus } from "./hooks/use-license-status";
 import { useAppUpdateStatus } from "./hooks/use-app-update-status";
 import { HeaderClock } from "./components/header-clock";
+import { PosAssistantMenu } from "./components/pos-assistant-menu";
 import { RouteErrorBoundary } from "./components/route-error-boundary";
 import { resetDemoAndReload } from "./demo/startup";
 
@@ -93,6 +94,7 @@ const navigation = [
     label: "Informes",
     icon: ArrowsLeftRight,
     group: "Control",
+    permission: "reports.view",
   },
   { to: "/auditoria", label: "Auditoría", icon: ShieldCheck, group: "Control" },
   {
@@ -533,16 +535,16 @@ export function App() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="dn-app-header flex h-16 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 max-sm:px-3">
-          <div>
+          <div className="min-w-0">
             <h1
               ref={routeHeadingRef}
               tabIndex={-1}
-              className="text-lg font-semibold tracking-tight text-slate-950 outline-none"
+              className="truncate text-lg font-semibold tracking-tight text-slate-950 outline-none"
             >
               {current?.label ?? "Gastronomía"}
             </h1>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-3 max-sm:gap-1.5">
             {isDemoMode ? (
               <button
                 type="button"
@@ -563,6 +565,15 @@ export function App() {
               <Clock size={15} />
               <HeaderClock />
             </div>
+            <PosAssistantMenu
+              key={JSON.stringify([
+                location.pathname,
+                bootstrap.data.currentUser.id,
+                bootstrap.data.currentUser.permissions,
+                bootstrap.data.cashSession?.id,
+              ])}
+              data={bootstrap.data}
+            />
             {bootstrap.data.cashSession ? (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5">
                 <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">
@@ -692,7 +703,9 @@ export function App() {
             />
             <Route
               path="/informes"
-              element={<ReportsPage data={bootstrap.data} />}
+              element={visibleNavigation.some((item) => item.to === "/informes")
+                ? <ReportsPage data={bootstrap.data} />
+                : <Navigate to="/resumen" replace />}
             />
             <Route path="/auditoria" element={<AuditPage />} />
             <Route

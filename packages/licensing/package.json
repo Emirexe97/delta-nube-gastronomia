@@ -6,6 +6,11 @@
   "main": "dist/index.js",
   "types": "src/index.ts",
   "exports": {
+    "./pos-ai-intents": {
+      "types": "./src/pos-ai-intents.ts",
+      "browser": "./src/pos-ai-intents.ts",
+      "default": "./dist/pos-ai-intents.js"
+    },
     ".": {
       "types": "./src/index.ts",
       "import": "./dist/index.js",

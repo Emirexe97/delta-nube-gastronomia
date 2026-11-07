@@ -9,6 +9,20 @@
     timer: 0,
     dialogAction: null,
     busy: false,
+    merchants: {
+      items: [],
+      total: 0,
+      limit: 25,
+      offset: 0,
+      sandboxEnabled: false,
+    },
+    merchantQuery: "",
+    selectedMerchantId: "",
+    merchantDetail: null,
+    merchantSearchTimer: 0,
+    merchantListRequest: 0,
+    merchantDetailRequest: 0,
+    dialogIdempotency: null,
   };
   const loginView = $("#loginView");
   const dashboardView = $("#dashboardView");
@@ -60,12 +74,43 @@
     }
     if (!response.ok) {
       const message = data && (data.message || data.error);
+      const friendly = {
+        sandbox_buyer_only:
+          "Usá el correo del comprador de prueba configurado en este entorno.",
+        sandbox_disabled: "El ensayo de Mercado Pago no está habilitado.",
+        sandbox_subscription_exists:
+          "Este comercio ya tiene una adhesión de prueba. Revisala antes de crear otra.",
+        sandbox_creation_unconfirmed:
+          "No pudimos confirmar la adhesión. Revisá su estado antes de volver a intentarlo.",
+        sandbox_creation_rejected:
+          "No se creó la adhesión. Revisá las cuentas de prueba, el importe y la configuración de Mercado Pago antes de reintentar.",
+        sandbox_provider_unconfirmed:
+          "Mercado Pago no confirmó los datos de prueba. No se acreditó ningún período.",
+        sandbox_identity_mismatch:
+          "La suscripción no corresponde a este comercio de prueba.",
+        sandbox_charge_mismatch:
+          "La cuota no coincide con la adhesión de este comercio.",
+        sandbox_subscription_id_required:
+          "Ingresá el identificador de la suscripción de prueba.",
+        sandbox_reconcile_first:
+          "Primero verificá la suscripción con su identificador de Mercado Pago.",
+        revision_conflict:
+          "La licencia cambió. Cerrá el formulario y revisá los datos actualizados antes de reintentar.",
+        renewal_cannot_shorten:
+          "La fecha elegida no puede acortar la vigencia actual.",
+        courtesy_must_extend:
+          "Para dar una cortesía, elegí una fecha posterior a la vigencia actual.",
+        invalid_amount:
+          "Ingresá un importe positivo en pesos con hasta dos decimales.",
+      };
       const error = new Error(
-        typeof message === "string"
-          ? message
-          : response.status === 409
-            ? "Los datos cambiaron en otra sesión. Actualizamos la información; revisá antes de volver a intentar."
-            : "No se pudo completar la operación. Intentá nuevamente.",
+        Object.hasOwn(friendly, message)
+          ? friendly[message]
+          : typeof message === "string"
+            ? message
+            : response.status === 409
+              ? "Los datos cambiaron en otra sesión. Actualizamos la información; revisá antes de volver a intentar."
+              : "No se pudo completar la operación. Intentá nuevamente.",
       );
       error.status = response.status;
       throw error;
@@ -77,6 +122,24 @@
     state.csrfToken = "";
     state.username = "";
     state.data = null;
+    state.merchants = {
+      items: [],
+      total: 0,
+      limit: 25,
+      offset: 0,
+      sandboxEnabled: false,
+    };
+    state.merchantQuery = "";
+    state.selectedMerchantId = "";
+    state.merchantDetail = null;
+    state.merchantListRequest++;
+    state.merchantDetailRequest++;
+    clearTimeout(state.merchantSearchTimer);
+    if ($("#merchantSearch")) $("#merchantSearch").value = "";
+    if ($("#merchantDetail")) {
+      $("#merchantDetail").replaceChildren();
+      $("#merchantDetail").hidden = true;
+    }
     dashboardView.hidden = true;
     loginView.hidden = false;
     $("#logoutButton").hidden = true;
@@ -85,6 +148,7 @@
     $("#password").value = "";
   }
   function showDashboard(session) {
+    if (state.username && state.username !== session.username) showLogin();
     state.csrfToken = session.csrfToken;
     state.username = session.username;
     loginView.hidden = true;
@@ -101,6 +165,7 @@
       const data = await request("/overview");
       state.data = data || { requests: [], licenses: [], audit: [] };
       renderOverview();
+      await loadMerchants(true);
       $("#updatedAt").textContent =
         `Actualizado ${new Intl.DateTimeFormat("es-AR", { hour: "2-digit", minute: "2-digit" }).format(new Date())}`;
       if (!silent) setMessage("");
@@ -112,6 +177,384 @@
       if (error.status === 401) return;
       if (!silent) setMessage(error.message, true);
     }
+  }
+  function idempotencyKey() {
+    return typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+  function idempotencyFor(payload) {
+    const signature = JSON.stringify(payload);
+    if (
+      !state.dialogIdempotency ||
+      state.dialogIdempotency.signature !== signature
+    )
+      state.dialogIdempotency = { signature, key: idempotencyKey() };
+    return state.dialogIdempotency.key;
+  }
+  function accessBadge(status) {
+    const labels = {
+      ACTIVE: "Activo",
+      GRACE: "Gracia",
+      EXPIRED: "Vencido",
+      SUSPENDED: "Suspendido",
+    };
+    return el(
+      "span",
+      `status access-${String(status || "").toLowerCase()}`,
+      labels[status] || "Sin estado",
+    );
+  }
+  function chargeSummary(merchant) {
+    return el("span", "manual-mode", "Manual");
+  }
+  async function loadMerchants(silent = false) {
+    if (!state.csrfToken || !$("#merchantsBody")) return;
+    const requestId = ++state.merchantListRequest;
+    const q = encodeURIComponent(state.merchantQuery);
+    try {
+      const data = await request(
+        `/merchants?query=${q}&limit=25&offset=${state.merchants.offset}`,
+      );
+      if (requestId !== state.merchantListRequest || !state.csrfToken) return;
+      state.merchants = { ...state.merchants, ...data };
+      renderMerchants();
+      if (
+        state.selectedMerchantId &&
+        data.items.some((item) => item.id === state.selectedMerchantId)
+      )
+        await loadMerchantDetail(state.selectedMerchantId, true);
+      else if (state.selectedMerchantId) {
+        state.selectedMerchantId = "";
+        state.merchantDetail = null;
+        $("#merchantDetail").replaceChildren();
+        $("#merchantDetail").hidden = true;
+      }
+      const notice = $("#sandboxNotice");
+      notice.hidden = !!data.sandboxEnabled;
+      notice.textContent =
+        "Ensayo de adhesión deshabilitado: falta configuración. No se realizarán operaciones de cobro automático.";
+    } catch (error) {
+      if (!silent && error.status !== 401) setMessage(error.message, true);
+    }
+  }
+  function renderMerchants() {
+    const body = $("#merchantsBody");
+    body.replaceChildren();
+    const items = state.merchants.items || [];
+    for (const merchant of items) {
+      const row = el("tr", "merchant-row");
+      const identity = el("div", "merchant-identity");
+      identity.append(
+        el("strong", "", merchant.businessName || "Comercio sin nombre"),
+      );
+      identity.append(
+        el(
+          "span",
+          "secondary-line",
+          merchant.accountEmail || "Sin correo de cuenta",
+        ),
+      );
+      if (merchant.installationId)
+        identity.append(
+          el("span", "secondary-line", `Equipo ${merchant.installationId}`),
+        );
+      tableCell(row, identity);
+      const access = el("div", "merchant-access");
+      access.append(
+        accessBadge(merchant.accessStatus),
+        el(
+          "span",
+          "secondary-line",
+          `Vigente hasta ${isIndefinite(merchant.paidThrough) ? "sin vencimiento" : formatDate(merchant.paidThrough)}`,
+        ),
+      );
+      tableCell(row, access);
+      tableCell(row, chargeSummary(merchant));
+      const payment = merchant.lastPayment;
+      const last = payment
+        ? `${formatDate(payment.createdAt)} · ${formatArs(payment.amountCents)}`
+        : "Sin pagos registrados";
+      tableCell(row, el("span", "secondary-line", last));
+      const actions = el("div", "merchant-actions");
+      actions.append(
+        makeButton("Ver detalle", "button-small button-outline", () => {
+          state.selectedMerchantId = merchant.id;
+          state.merchantDetail = null;
+          $("#merchantDetail").replaceChildren();
+          $("#merchantDetail").hidden = true;
+          loadMerchantDetail(merchant.id);
+        }),
+      );
+      tableCell(row, actions);
+      body.append(row);
+    }
+    $("#merchantsEmpty").hidden = items.length > 0;
+    $("#merchantCount").textContent = `${state.merchants.total || 0} comercios`;
+    const page = Math.floor((state.merchants.offset || 0) / 25) + 1;
+    $("#merchantsPage").textContent = `Página ${page}`;
+    $("#merchantsPrev").disabled = state.merchants.offset <= 0;
+    $("#merchantsNext").disabled =
+      state.merchants.offset + items.length >= state.merchants.total;
+  }
+  function formatArs(cents) {
+    return new Intl.NumberFormat("es-AR", {
+      style: "currency",
+      currency: "ARS",
+    }).format((Number(cents) || 0) / 100);
+  }
+  function localDateInput(value) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }
+  function sandboxPaymentLabel(value) {
+    const labels = {
+      APPROVED: "Aprobado",
+      REVERSED: "Revertido",
+      REJECTED: "Rechazado",
+      PENDING: "Pendiente",
+    };
+    return labels[value] || "Para revisar";
+  }
+  async function loadMerchantDetail(id, silent = false) {
+    const requestId = ++state.merchantDetailRequest;
+    try {
+      const result = await request(`/merchants/${encodeURIComponent(id)}`);
+      if (
+        requestId !== state.merchantDetailRequest ||
+        id !== state.selectedMerchantId ||
+        !state.csrfToken
+      )
+        return;
+      state.merchantDetail = result;
+      renderMerchantDetail();
+    } catch (error) {
+      if (!silent) setMessage(error.message, true);
+    }
+  }
+  function renderMerchantDetail() {
+    const pane = $("#merchantDetail"),
+      data = state.merchantDetail;
+    if (!data || !data.merchant) {
+      pane.hidden = true;
+      return;
+    }
+    pane.hidden = false;
+    pane.replaceChildren();
+    const merchant = data.merchant;
+    const heading = el("div", "merchant-detail-heading");
+    const title = el("div"),
+      detailTitle = el("h3", "", merchant.businessName || "Comercio");
+    detailTitle.id = "merchantDetailTitle";
+    title.append(
+      el("p", "eyebrow", "FICHA DEL COMERCIO"),
+      detailTitle,
+      el(
+        "span",
+        "secondary-line",
+        merchant.accountEmail || "Sin correo de cuenta",
+      ),
+      el(
+        "span",
+        "secondary-line",
+        merchant.installationId
+          ? `Equipo vinculado: ${merchant.installationId}`
+          : "Sin equipo vinculado",
+      ),
+    );
+    const close = makeButton(
+      "Cerrar detalle",
+      "button-small button-outline",
+      () => {
+        state.selectedMerchantId = "";
+        state.merchantDetail = null;
+        pane.hidden = true;
+      },
+    );
+    heading.append(title, close);
+    pane.append(heading);
+    const status = el("div", "merchant-status-grid");
+    const access = el("article", "merchant-status-card");
+    access.append(
+      el("span", "stat-label", "ACCESO AL PROGRAMA"),
+      accessBadge(merchant.accessStatus),
+      el(
+        "span",
+        "secondary-line",
+        `Vigente hasta ${isIndefinite(merchant.paidThrough) ? "sin vencimiento" : formatDate(merchant.paidThrough)}`,
+      ),
+    );
+    const charge = el("article", "merchant-status-card");
+    charge.append(
+      el("span", "stat-label", "COBRO REAL"),
+      el("span", "manual-mode", "Modalidad: Manual"),
+      el(
+        "span",
+        "secondary-line",
+        merchant.lastPayment
+          ? `Último pago registrado ${formatArs(merchant.lastPayment.amountCents)} · ${formatDate(merchant.lastPayment.createdAt)}`
+          : "Sin pagos registrados",
+      ),
+    );
+    status.append(access, charge);
+    pane.append(status);
+    const buttons = el("div", "merchant-detail-actions");
+    buttons.append(
+      makeButton("Registrar pago ARS", "button-small button-primary", () =>
+        openMerchantPayment(merchant),
+      ),
+    );
+    buttons.append(
+      makeButton("Cargar cortesía", "button-small button-outline", () =>
+        openMerchantCourtesy(merchant),
+      ),
+    );
+    buttons.append(
+      makeButton(
+        merchant.status === "SUSPENDED"
+          ? "Reactivar acceso"
+          : "Suspender acceso",
+        "button-small button-outline",
+        () => openMerchantStatus(merchant),
+      ),
+    );
+    buttons.append(
+      makeButton(
+        merchant.accountEmail ? "Restablecer contraseña" : "Crear cuenta",
+        "button-small button-outline",
+        () => openAccountDialog(merchant),
+      ),
+    );
+    pane.append(buttons);
+    const history = el("div", "merchant-history");
+    history.append(el("h4", "", "Historial"));
+    const actionLabels = {
+      MERCHANT_CREATED: "Comercio creado",
+      MANUAL_PAYMENT_RECORDED: "Pago manual registrado",
+      COURTESY_RECORDED: "Cortesía aplicada",
+      LICENSE_SUSPENDED: "Acceso suspendido",
+      LICENSE_REACTIVATED: "Acceso reactivado",
+      LICENSE_RENEWED: "Vigencia renovada",
+      ACCOUNT_CREDENTIALS_SET: "Credenciales de cuenta actualizadas",
+      ACCOUNT_DEVICE_ACTIVATED: "Equipo activado",
+      REQUEST_APPROVED: "Equipo aprobado",
+      REQUEST_REJECTED: "Solicitud rechazada",
+    };
+    for (const entry of data.history || []) {
+      const line = el("article", "history-entry");
+      line.append(el("span", "history-dot", "•"));
+      const copy = el("div");
+      copy.append(
+        el(
+          "strong",
+          "",
+          actionLabels[entry.action] ||
+            (entry.action || "Actividad").replaceAll("_", " "),
+        ),
+        el(
+          "span",
+          "secondary-line",
+          `${formatDate(entry.createdAt)}${entry.amountCents != null ? ` · ${formatArs(entry.amountCents)}` : ""}${entry.actor ? ` · Operador: ${entry.actor}` : ""}`,
+        ),
+      );
+      if (entry.reason) copy.append(el("p", "", entry.reason));
+      line.append(copy);
+      history.append(line);
+    }
+    if (!(data.history || []).length)
+      history.append(el("p", "empty-inline", "Todavía no hay actividad."));
+    pane.append(history);
+    if (data.sandboxEnabled)
+      renderSandbox(merchant, data.sandbox || merchant.sandbox, pane);
+  }
+  function renderSandbox(merchant, sandbox, pane) {
+    const section = el("section", "sandbox-card");
+    section.append(
+      el("p", "eyebrow", "ENSAYO AISLADO · SIN IMPACTO REAL"),
+      el("h4", "", "Adhesión de prueba"),
+    );
+    section.append(
+      el(
+        "p",
+        "muted",
+        "Usa el entorno sandbox: no cobra al comprador, no cambia el acceso ni registra pagos reales.",
+      ),
+    );
+    if (sandbox) {
+      const labels = {
+        PENDING: "Pendiente",
+        AUTHORIZED: "Autorizada (prueba)",
+        PAUSED: "Pausada",
+        CREATING: "Creando enlace",
+        REVIEW: "Requiere revisión",
+        CANCELLED: "Cancelada",
+      };
+      section.append(
+        el(
+          "span",
+          "sandbox-status",
+          `Prueba: ${labels[sandbox.status] || sandbox.status}`,
+        ),
+        el(
+          "p",
+          "secondary-line",
+          `${sandbox.payerEmail || "Sin email"} · ${formatArs(sandbox.amountCents)} mensuales · vigencia simulada ${sandbox.paidThrough ? formatDate(sandbox.paidThrough) : "pendiente"}`,
+        ),
+      );
+      if (sandbox.lastPaymentStatus)
+        section.append(
+          el(
+            "p",
+            `sandbox-payment-status status-${String(sandbox.lastPaymentStatus).toLowerCase()}`,
+            `Último resultado de pago de prueba: ${sandboxPaymentLabel(sandbox.lastPaymentStatus)}`,
+          ),
+        );
+      if (sandbox.checkoutUrl) {
+        const a = el("a", "sandbox-link", "Abrir enlace de prueba");
+        a.href = sandbox.checkoutUrl;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        section.append(a);
+      }
+      if (sandbox.reference || sandbox.providerId)
+        section.append(
+          el(
+            "p",
+            "field-help",
+            `Referencia de proveedor: ${sandbox.reference || "sin referencia"}${sandbox.providerId ? ` · ID ${sandbox.providerId}` : ""}. Si requiere revisión, confirmá los identificadores con el proveedor antes de conciliar.`,
+          ),
+        );
+      section.append(
+        makeButton("Verificar ensayo", "button-small button-outline", () =>
+          openSandboxReconcile(merchant, sandbox),
+        ),
+      );
+      if (sandbox.status !== "CANCELLED")
+        section.append(
+          makeButton(
+            "Cancelar prueba",
+            "button-small button-outline button-danger",
+            () => cancelSandbox(merchant),
+          ),
+        );
+      else
+        section.append(
+          makeButton(
+            "Crear otro enlace de adhesión de prueba",
+            "button-small button-outline",
+            () => openSandboxDialog(merchant),
+          ),
+        );
+    } else
+      section.append(
+        makeButton(
+          "Crear enlace de adhesión de prueba",
+          "button-small button-outline",
+          () => openSandboxDialog(merchant),
+        ),
+      );
+    pane.append(section);
   }
   function formatDate(value) {
     if (!value) return "Sin fecha";
@@ -230,7 +673,10 @@
       business.append(
         el("span", "secondary-line", `Licencia · ${license.id || "—"}`),
       );
-      if (license.accountEmail) business.append(el("span", "secondary-line", `Cuenta · ${license.accountEmail}`));
+      if (license.accountEmail)
+        business.append(
+          el("span", "secondary-line", `Cuenta · ${license.accountEmail}`),
+        );
       tableCell(row, business);
       tableCell(
         row,
@@ -259,7 +705,13 @@
           openRenewDialog(license),
         ),
       );
-      actions.append(makeButton(license.accountEmail ? "Restablecer contraseña" : "Crear cuenta", "button-small button-outline", () => openAccountDialog(license)));
+      actions.append(
+        makeButton(
+          license.accountEmail ? "Restablecer contraseña" : "Crear cuenta",
+          "button-small button-outline",
+          () => openAccountDialog(license),
+        ),
+      );
       actionCell.append(actions);
       row.append(actionCell);
       body.append(row);
@@ -362,6 +814,7 @@
     action,
   }) {
     state.dialogAction = action;
+    state.dialogIdempotency = null;
     $("#dialogEyebrow").textContent = eyebrow;
     $("#dialogTitle").textContent = title;
     $("#dialogDescription").textContent = description;
@@ -589,22 +1042,54 @@
   function openAccountDialog(license) {
     configureDialog({
       eyebrow: "CUENTA DEL PROGRAMA",
-      title: license.accountEmail ? "Restablecer contraseña" : "Crear cuenta de licencia",
+      title: license.accountEmail
+        ? "Restablecer contraseña"
+        : "Crear cuenta de licencia",
       description: `${license.businessName} · Una cuenta y una PC por licencia. No cambia el equipo vinculado ni la vigencia. Verificá la identidad del titular antes de restablecer su contraseña.`,
       submitLabel: "Guardar cuenta",
       action: null,
     });
-    const email = addField("Correo de la cuenta", "email", "email", "Esta cuenta es independiente del catálogo web y de los PIN del personal.");
-    email.required = true; email.maxLength = 254;
-    email.value = license.accountEmail || ""; email.readOnly = !!license.accountEmail;
-    const password = addField("Nueva contraseña", "accountPassword", "password", "De 15 a 128 caracteres. Compartila con el titular por un canal seguro. No se podrá consultar después.");
-    password.required = true; password.minLength = 15; password.maxLength = 128; password.autocomplete = "new-password";
-    const repeat = addField("Repetir contraseña", "passwordConfirm", "password");
-    repeat.required = true; repeat.autocomplete = "new-password"; repeat.maxLength = 128;
+    const email = addField(
+      "Correo de la cuenta",
+      "email",
+      "email",
+      "Esta cuenta es independiente del catálogo web y de los PIN del personal.",
+    );
+    email.required = true;
+    email.maxLength = 254;
+    email.value = license.accountEmail || "";
+    email.readOnly = !!license.accountEmail;
+    const password = addField(
+      "Nueva contraseña",
+      "accountPassword",
+      "password",
+      "De 15 a 128 caracteres. Compartila con el titular por un canal seguro. No se podrá consultar después.",
+    );
+    password.required = true;
+    password.minLength = 15;
+    password.maxLength = 128;
+    password.autocomplete = "new-password";
+    const repeat = addField(
+      "Repetir contraseña",
+      "passwordConfirm",
+      "password",
+    );
+    repeat.required = true;
+    repeat.autocomplete = "new-password";
+    repeat.maxLength = 128;
     addReasonField();
     state.dialogAction = (form) => {
-      if (password.value !== repeat.value) throw new Error("Las contraseñas no coinciden.");
-      return { path: "/accounts", payload: { licenseId: license.id, email: email.value.trim().toLowerCase(), password: password.value, reason: readReason(form) } };
+      if (password.value !== repeat.value)
+        throw new Error("Las contraseñas no coinciden.");
+      return {
+        path: "/accounts",
+        payload: {
+          licenseId: license.id,
+          email: email.value.trim().toLowerCase(),
+          password: password.value,
+          reason: readReason(form),
+        },
+      };
     };
     email.focus();
   }
@@ -662,6 +1147,231 @@
         },
       };
     };
+  }
+  function addPaidThroughField(initial = "") {
+    const date = addField(
+      "Vigente hasta",
+      "paidThroughDate",
+      "date",
+      "La fecha elegida incluye todo ese día.",
+    );
+    date.required = true;
+    date.value =
+      initial && !isIndefinite(initial) ? localDateInput(initial) : "";
+    const wrap = el("div", "field-group"),
+      label = el("label", "check-row"),
+      check = document.createElement("input");
+    check.type = "checkbox";
+    check.name = "indefinite";
+    check.checked = isIndefinite(initial);
+    date.disabled = check.checked;
+    date.required = !check.checked;
+    label.append(check, el("span", "", "Sin vencimiento"));
+    wrap.append(label);
+    date.parentElement.after(wrap);
+    check.addEventListener("change", () => {
+      date.disabled = check.checked;
+      date.required = !check.checked;
+    });
+    return () => {
+      if (!check.checked && !date.value)
+        throw new Error("Elegí la fecha de vigencia.");
+      return check.checked
+        ? "9999-01-01T00:00:00.000Z"
+        : dateToEndIso(date.value);
+    };
+  }
+  function openMerchantCreate() {
+    configureDialog({
+      eyebrow: "ALTA DE COMERCIO",
+      title: "Registrar comercio",
+      description:
+        "Creá una licencia y definí su vigencia. El alta no registra un pago; los cobros se anotan manualmente.",
+      submitLabel: "Crear comercio",
+      action: null,
+    });
+    const name = addField("Nombre del comercio", "businessName", "text");
+    name.required = true;
+    name.maxLength = 160;
+    const defaultDate = new Date();
+    defaultDate.setDate(defaultDate.getDate() + 30);
+    const getPaidThrough = addPaidThroughField(
+      dateToEndIso(localDateInput(defaultDate)),
+    );
+    addReasonField();
+    state.dialogAction = (form) => {
+      const payload = {
+        businessName: name.value.trim(),
+        paidThrough: getPaidThrough(),
+        reason: readReason(form),
+      };
+      payload.idempotencyKey = idempotencyFor(payload);
+      return { path: "/merchants", payload };
+    };
+    name.focus();
+  }
+  function openMerchantPayment(merchant) {
+    configureDialog({
+      eyebrow: "COBRO MANUAL · ARS",
+      title: "Registrar pago",
+      description: `${merchant.businessName}. Esto registra un pago recibido manualmente; no inicia un débito ni una adhesión automática.`,
+      submitLabel: "Registrar pago manual",
+      action: null,
+    });
+    const amount = addField(
+      "Importe recibido (ARS)",
+      "amountArs",
+      "number",
+      "Importe decimal en pesos; ejemplo: 12500,50.",
+    );
+    amount.required = true;
+    amount.min = "0.01";
+    amount.step = "0.01";
+    const getPaidThrough = addPaidThroughField(merchant.paidThrough);
+    addReasonField();
+    state.dialogAction = (form) => {
+      const payload = {
+        expectedRevision: merchant.revision,
+        amountArs: amount.value,
+        paidThrough: getPaidThrough(),
+        reason: readReason(form),
+      };
+      payload.idempotencyKey = idempotencyFor(payload);
+      return {
+        path: `/merchants/${encodeURIComponent(merchant.id)}/payment`,
+        payload,
+      };
+    };
+  }
+  function openMerchantCourtesy(merchant) {
+    configureDialog({
+      eyebrow: "CORTESÍA · SIN COBRO",
+      title: "Cargar cortesía",
+      description: `${merchant.businessName}. Se ampliará la vigencia sin crear registro de pago ni informar un importe.`,
+      submitLabel: "Aplicar cortesía",
+      action: null,
+    });
+    const getPaidThrough = addPaidThroughField(merchant.paidThrough);
+    addReasonField();
+    state.dialogAction = (form) => {
+      const payload = {
+        expectedRevision: merchant.revision,
+        paidThrough: getPaidThrough(),
+        reason: readReason(form),
+      };
+      payload.idempotencyKey = idempotencyFor(payload);
+      return {
+        path: `/merchants/${encodeURIComponent(merchant.id)}/courtesy`,
+        payload,
+      };
+    };
+  }
+  function openMerchantStatus(merchant) {
+    const next = merchant.status === "SUSPENDED" ? "ACTIVE" : "SUSPENDED",
+      label = next === "ACTIVE" ? "Reactivar" : "Suspender";
+    configureDialog({
+      eyebrow: "ACCESO AL PROGRAMA",
+      title: `${label} comercio`,
+      description: `${merchant.businessName}. El estado de cobro permanece independiente.`,
+      submitLabel: `${label} acceso`,
+      action: null,
+    });
+    addReasonField();
+    state.dialogAction = (form) => ({
+      path: `/licenses/${encodeURIComponent(merchant.id)}/status`,
+      payload: {
+        status: next,
+        expectedRevision: merchant.revision,
+        reason: readReason(form),
+      },
+    });
+  }
+  function openSandboxDialog(merchant) {
+    configureDialog({
+      eyebrow: "ENSAYO SANDBOX · SIN IMPACTO REAL",
+      title: "Crear adhesión de prueba",
+      description:
+        "Se generará un enlace en entorno de pruebas. No se realizará un cobro real y no cambiará el acceso del comercio.",
+      submitLabel: "Crear enlace sandbox",
+      action: null,
+    });
+    const email = addField(
+      "Email del comprador de pruebas",
+      "payerEmail",
+      "email",
+      "Usá únicamente el email designado para probar la adhesión.",
+    );
+    email.required = true;
+    email.maxLength = 254;
+    const amount = addField(
+      "Precio mensual simulado (ARS)",
+      "amountArs",
+      "number",
+      "Importe mensual de prueba; no se cobrará.",
+    );
+    amount.required = true;
+    amount.min = "0.01";
+    amount.step = "0.01";
+    state.dialogAction = () => ({
+      path: `/merchants/${encodeURIComponent(merchant.id)}/sandbox`,
+      payload: {
+        payerEmail: email.value.trim().toLowerCase(),
+        amountArs: amount.value,
+      },
+    });
+  }
+  function openSandboxReconcile(merchant, sandbox) {
+    configureDialog({
+      eyebrow: "VERIFICACIÓN SANDBOX · SIN COBRO",
+      title: "Verificar adhesión de prueba",
+      description:
+        "Consulta el estado con el proveedor sandbox; no crea ni cobra una operación. Para revisión sin identificadores registrados, completá los IDs que te informó el proveedor.",
+      submitLabel: "Verificar ensayo",
+      action: null,
+    });
+    const subscription = addField(
+      "ID de suscripción (opcional)",
+      "subscriptionId",
+      "text",
+      "Necesario sólo si el proveedor aún no pudo vincular la notificación.",
+    );
+    subscription.maxLength = 200;
+    subscription.value = sandbox.providerId || "";
+    const installment = addField(
+      "ID de cuota (opcional)",
+      "installmentId",
+      "text",
+    );
+    installment.maxLength = 200;
+    state.dialogAction = () => {
+      const payload = {};
+      if (subscription.value.trim())
+        payload.subscriptionId = subscription.value.trim();
+      if (installment.value.trim())
+        payload.installmentId = installment.value.trim();
+      return {
+        path: `/merchants/${encodeURIComponent(merchant.id)}/sandbox/reconcile`,
+        payload,
+      };
+    };
+  }
+  async function cancelSandbox(merchant) {
+    if (
+      !window.confirm(
+        `Cancelar la adhesión sandbox de ${merchant.businessName}? No afecta pagos ni acceso reales.`,
+      )
+    )
+      return;
+    try {
+      await request(
+        `/merchants/${encodeURIComponent(merchant.id)}/sandbox/cancel`,
+        { method: "POST", mutate: true, body: JSON.stringify({}) },
+      );
+      await loadMerchants(true);
+      setMessage("Prueba sandbox cancelada. No se modificó la cuenta real.");
+    } catch (error) {
+      setMessage(error.message, true);
+    }
   }
   $("#loginForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -723,7 +1433,9 @@
       });
       actionDialog.close();
       setMessage(
-        "Cambios guardados. Se aplicarán al equipo en su próxima verificación de licencia.",
+        result.path.includes("/sandbox")
+          ? "Ensayo actualizado. No cambió el acceso ni se registró un pago real."
+          : "Cambios guardados. La PC verá los cambios de acceso en su próxima verificación.",
       );
       await loadOverview(true);
     } catch (error) {
@@ -734,13 +1446,33 @@
       cancel.disabled = false;
     } finally {
       state.busy = false;
-      for (const field of dialogFields.querySelectorAll('input[type="password"]')) field.value = "";
+      for (const field of dialogFields.querySelectorAll(
+        'input[type="password"]',
+      ))
+        field.value = "";
     }
   });
   actionDialog.addEventListener("close", () => {
-    for (const field of dialogFields.querySelectorAll('input[type="password"]')) field.value = "";
+    for (const field of dialogFields.querySelectorAll('input[type="password"]'))
+      field.value = "";
     state.dialogAction = null;
     state.busy = false;
+  });
+
+  $("#merchantCreateButton").addEventListener("click", openMerchantCreate);
+  $("#merchantSearch").addEventListener("input", (event) => {
+    state.merchantQuery = event.currentTarget.value.trim();
+    state.merchants.offset = 0;
+    clearTimeout(state.merchantSearchTimer);
+    state.merchantSearchTimer = window.setTimeout(() => loadMerchants(), 250);
+  });
+  $("#merchantsPrev").addEventListener("click", () => {
+    state.merchants.offset = Math.max(0, state.merchants.offset - 25);
+    loadMerchants();
+  });
+  $("#merchantsNext").addEventListener("click", () => {
+    state.merchants.offset += 25;
+    loadMerchants();
   });
 
   request("/session")

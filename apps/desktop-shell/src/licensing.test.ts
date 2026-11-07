@@ -68,6 +68,56 @@ async function setup(
   return license;
 }
 
+async function setupAiReadyLicense(
+  dir: string,
+  aiFetch: typeof fetch,
+  serverUrl = "https://example.test",
+) {
+  const { publicKey, privateKey } = keys();
+  let challengeCount = 0;
+  const fetcher: typeof fetch = async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (path.endsWith("/challenge")) {
+      challengeCount += 1;
+      return new Response(JSON.stringify({
+        challengeId: challengeCount === 1 ? "enroll-challenge-123" : "ai-challenge-123",
+        nonce: challengeCount === 1 ? "e".repeat(43) : "a".repeat(43),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }));
+    }
+    if (path.endsWith("/request")) {
+      const body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        request: {
+          id: "request-enrollment-123",
+          installationId: body.installationId,
+          businessName: body.businessName,
+          keyFingerprint: devicePublicKeyFingerprint(body.publicKey),
+          status: "APPROVED",
+          licenseId: "license_123",
+          createdAt: new Date().toISOString(),
+        },
+        token: responseToken(body.installationId, Date.now(), privateKey),
+      }));
+    }
+    return aiFetch(url, init);
+  };
+  const license = new DesktopLicensing({
+    userDataPath: dir,
+    isPackaged: true,
+    config: { serverUrl, publicKey },
+    safeStorage: {
+      encryptString: (value) => Buffer.from(`vault:${value}`),
+      decryptString: (value) => value.toString().replace(/^vault:/, ""),
+    },
+    fetch: fetcher,
+  });
+  await license.initialize();
+  const status = await license.requestLicenseAccess({ businessName: "Cafe Norte" });
+  assert.equal(status.canOperate, true);
+  return license;
+}
+
 test("development bypasses license; packaged invalid or absent config fails closed", async () => {
   const dir = await mkdtemp(join(tmpdir(), "gastronomy-license-"));
   try {
@@ -562,4 +612,173 @@ test("account activation times out stalled response bodies and rejects oversized
     await assert.rejects(license.signInAccount({ email: "owner@example.com", password: "secret" }), /respuesta de licencia inválida/);
     assert.equal(JSON.parse(await readFile(join(dir, "license-state.json"), "utf8")).token, tokenBefore);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("POS AI sends only the signed prompt assertion and validates its response", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-pos-ai-proof-"));
+  try {
+    let captured: { url: string; init?: RequestInit } | undefined;
+    const license = await setupAiReadyLicense(dir, async (url, init) => {
+      captured = { url: String(url), init };
+      return new Response(JSON.stringify({
+        questionId: "sales-today",
+        remaining: { user: 7, merchant: 80 },
+      }));
+    });
+    const result = await license.askPosAssistantAi({
+      actorId: "operator-user-123",
+      requestId: "request-pos-ai-123",
+      prompt: "  ¿Cuánto vendimos hoy?  ",
+    });
+    assert.deepEqual(result, {
+      ok: true,
+      questionId: "sales-today",
+      remaining: { user: 7, merchant: 80 },
+    });
+    assert.equal(captured?.url, "https://example.test/v2/pos/ai");
+    assert.equal(captured?.init?.redirect, "error");
+    assert.equal(captured?.init?.method, "POST");
+    const body = JSON.parse(String(captured?.init?.body));
+    assert.deepEqual(Object.keys(body).sort(), [
+      "actorId",
+      "challengeId",
+      "installationId",
+      "prompt",
+      "publicKey",
+      "requestId",
+      "signature",
+    ]);
+    assert.equal(body.prompt, "¿Cuánto vendimos hoy?");
+    assert.equal("pin" in body, false);
+    assert.equal("staffNumber" in body, false);
+    assert.equal("orderId" in body, false);
+    assert.equal("productId" in body, false);
+    const proof = {
+      purpose: "pos-ai" as const,
+      challengeId: body.challengeId,
+      nonce: "a".repeat(43),
+      installationId: body.installationId,
+      keyFingerprint: devicePublicKeyFingerprint(body.publicKey),
+      actorId: body.actorId,
+      requestId: body.requestId,
+      prompt: body.prompt,
+    };
+    assert.equal(verifyDeviceProof(proof, body.signature, body.publicKey), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POS AI requires HTTPS and rejects redirects and malformed server responses", async () => {
+  const insecureDir = await mkdtemp(join(tmpdir(), "gastronomy-pos-ai-http-"));
+  try {
+    let insecureFetches = 0;
+    const insecure = new DesktopLicensing({
+      userDataPath: insecureDir,
+      isPackaged: true,
+      config: { serverUrl: "http://example.test", publicKey: keys().publicKey },
+      fetch: async () => { insecureFetches += 1; throw new Error("must not fetch"); },
+    });
+    await insecure.initialize();
+    await assert.rejects(insecure.askPosAssistantAi({
+      actorId: "operator-user-123",
+      requestId: "request-pos-ai-123",
+      prompt: "Consulta",
+    }));
+    assert.equal(insecureFetches, 0);
+  } finally {
+    await rm(insecureDir, { recursive: true, force: true });
+  }
+
+  for (const [name, aiFetch] of [
+    ["redirect", async (_url: RequestInfo | URL, init?: RequestInit) => {
+      assert.equal(init?.redirect, "error");
+      throw new TypeError("redirect disallowed");
+    }],
+    ["bad payload", async () => new Response("{}")],
+    ["oversized response", async () => new Response("x".repeat(16 * 1024 + 1))],
+  ] as const) {
+    const dir = await mkdtemp(join(tmpdir(), `gastronomy-pos-ai-${name.replaceAll(" ", "-")}-`));
+    try {
+      const license = await setupAiReadyLicense(dir, aiFetch);
+      await assert.rejects(license.askPosAssistantAi({
+        actorId: "operator-user-123",
+        requestId: "request-pos-ai-123",
+        prompt: "Consulta",
+      }));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("POS AI maps quotas and rejects unbounded remaining counts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-pos-ai-quota-"));
+  try {
+    const license = await setupAiReadyLicense(dir, async () => new Response(
+      JSON.stringify({
+        error: "merchant_daily_limit",
+        retryAfter: 3600,
+        remaining: { user: 3, merchant: 0 },
+      }),
+      { status: 429 },
+    ));
+    assert.deepEqual(await license.askPosAssistantAi({
+      actorId: "operator-user-123",
+      requestId: "request-pos-ai-123",
+      prompt: "Consulta",
+    }), {
+      ok: false,
+      code: "merchant_daily_limit",
+      retryAfter: 3600,
+      remaining: { user: 3, merchant: 0 },
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+
+  const invalidDir = await mkdtemp(join(tmpdir(), "gastronomy-pos-ai-unbounded-"));
+  try {
+    const license = await setupAiReadyLicense(invalidDir, async () => new Response(
+      JSON.stringify({ questionId: "sales-today", remaining: { user: 100_001, merchant: 1 } }),
+    ));
+    await assert.rejects(license.askPosAssistantAi({
+      actorId: "operator-user-123",
+      requestId: "request-pos-ai-123",
+      prompt: "Consulta",
+    }));
+  } finally {
+    await rm(invalidDir, { recursive: true, force: true });
+  }
+});
+
+test("POS AI request timeout is approximately sixteen seconds", async (context) => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-pos-ai-timeout-"));
+  try {
+    let aiSignal: AbortSignal | undefined;
+    let entered!: () => void;
+    const aiEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const license = await setupAiReadyLicense(dir, async (_url, init) => {
+      aiSignal = init?.signal as AbortSignal;
+      entered();
+      return new Promise<Response>((_resolve, reject) => {
+        aiSignal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    });
+    context.mock.timers.enable({ apis: ["setTimeout"] });
+    const pending = license.askPosAssistantAi({
+      actorId: "operator-user-123",
+      requestId: "request-pos-ai-123",
+      prompt: "Consulta",
+    });
+    await aiEntered;
+    context.mock.timers.tick(15_999);
+    assert.equal(aiSignal?.aborted, false);
+    context.mock.timers.tick(1);
+    await assert.rejects(pending);
+    assert.equal(aiSignal?.aborted, true);
+  } finally {
+    context.mock.timers.reset();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -6,7 +6,7 @@ import {
   verify,
 } from "node:crypto";
 
-export type DeviceProofPurpose = "request" | "lease";
+export type DeviceProofPurpose = "request" | "lease" | "pos-ai";
 export interface DeviceProof {
   purpose: DeviceProofPurpose;
   challengeId: string;
@@ -14,6 +14,9 @@ export interface DeviceProof {
   installationId: string;
   keyFingerprint: string;
   businessName?: string;
+  actorId?: string;
+  requestId?: string;
+  prompt?: string;
 }
 
 /** A public identifier, not a credential or authorization to operate. */
@@ -34,7 +37,7 @@ export function deviceProofMessage(proof: DeviceProof): Buffer {
     typeof value === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(value);
   if (
     !proof ||
-    !["request", "lease"].includes(proof.purpose) ||
+    !["request", "lease", "pos-ai"].includes(proof.purpose) ||
     !id(proof.challengeId) ||
     !id(proof.installationId) ||
     typeof proof.nonce !== "string" ||
@@ -50,20 +53,21 @@ export function deviceProofMessage(proof: DeviceProof): Buffer {
       proof.businessName.length > 160)
   )
     throw new Error("Ingresá el nombre del negocio.");
-  if (proof.purpose === "lease" && proof.businessName !== undefined)
+  if (proof.purpose === "lease" && (proof.businessName !== undefined || proof.actorId !== undefined || proof.requestId !== undefined || proof.prompt !== undefined))
     throw new Error("La prueba de verificación no admite otro negocio.");
-  return Buffer.from(
-    JSON.stringify([
-      "delta-nube-gastronomia/device-proof/v1",
+  if (proof.purpose === "pos-ai" && (proof.businessName !== undefined || typeof proof.actorId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(proof.actorId) || !id(proof.requestId) || typeof proof.prompt !== "string" || !proof.prompt.trim() || proof.prompt.length > 500))
+    throw new Error("Solicitud de IA inválida.");
+  const canonical = [
+      proof.purpose === "pos-ai" ? "delta-nube-gastronomia/pos-ai-proof/v1" : "delta-nube-gastronomia/device-proof/v1",
       proof.purpose,
       proof.challengeId,
       proof.nonce,
       proof.installationId,
       proof.keyFingerprint,
       proof.purpose === "request" ? proof.businessName!.trim() : "",
-    ]),
-    "utf8",
-  );
+    ];
+  if (proof.purpose === "pos-ai") canonical.push(proof.actorId!, proof.requestId!, proof.prompt!.trim());
+  return Buffer.from(JSON.stringify(canonical), "utf8");
 }
 
 export function signDeviceProof(

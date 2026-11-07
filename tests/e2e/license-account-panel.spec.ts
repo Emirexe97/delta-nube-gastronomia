@@ -46,6 +46,7 @@ test("panel crea cuenta y restablece contraseña sin guardar credenciales en tex
     await page.getByLabel("Contraseña", { exact: true }).fill(panelPassword);
     await page.getByRole("button", { name: /Ingresar/ }).click();
     await expect(page.getByRole("heading", { name: "Licencias", exact: true })).toBeVisible();
+    await page.locator("details.legacy-licenses > summary").click();
     const row = page.locator("#licensesBody tr").filter({ hasText: "Panel account fixture" });
 
     await row.getByRole("button", { name: "Crear cuenta", exact: true }).click();

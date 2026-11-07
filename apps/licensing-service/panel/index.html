@@ -143,6 +143,81 @@
           </article>
         </div>
 
+        <section
+          class="panel-section merchants-section"
+          aria-labelledby="merchantsTitle"
+        >
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">CUENTAS Y COBROS</p>
+              <h2 id="merchantsTitle">Comercios</h2>
+            </div>
+            <button
+              class="button button-primary"
+              id="merchantCreateButton"
+              type="button"
+            >
+              ＋ Alta de comercio
+            </button>
+          </div>
+          <p class="muted merchant-intro">
+            El acceso al programa y el estado de cobro son independientes. Los
+            pagos se registran manualmente en ARS.
+          </p>
+          <div class="merchant-toolbar">
+            <label class="merchant-search-label" for="merchantSearch"
+              >Buscar comercio</label
+            ><input
+              id="merchantSearch"
+              type="search"
+              placeholder="Nombre, correo o equipo…"
+              autocomplete="off"
+            /><span id="merchantCount" class="section-caption"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="merchant-table">
+              <thead>
+                <tr>
+                  <th>Comercio</th>
+                  <th>Acceso · vigencia</th>
+                  <th>Modalidad real</th>
+                  <th>Último pago</th>
+                  <th><span class="sr-only">Acciones</span></th>
+                </tr>
+              </thead>
+              <tbody id="merchantsBody"></tbody>
+            </table>
+            <div class="empty-state" id="merchantsEmpty" hidden>
+              <span class="empty-symbol" aria-hidden="true">◇</span
+              ><strong>No hay comercios para mostrar</strong
+              ><span>Probá otra búsqueda o registrá un comercio.</span>
+            </div>
+          </div>
+          <nav class="merchant-pagination" aria-label="Paginación de comercios">
+            <button
+              class="button button-outline button-small"
+              id="merchantsPrev"
+              type="button"
+            >
+              ← Anterior</button
+            ><span id="merchantsPage" aria-live="polite">Página 1</span
+            ><button
+              class="button button-outline button-small"
+              id="merchantsNext"
+              type="button"
+            >
+              Siguiente →
+            </button>
+          </nav>
+          <section
+            id="merchantDetail"
+            class="merchant-detail"
+            aria-labelledby="merchantDetailTitle"
+            hidden
+          ></section>
+          <aside id="sandboxNotice" class="sandbox-notice" hidden></aside>
+        </section>
+
         <section class="panel-section" aria-labelledby="requestsTitle">
           <div class="section-heading">
             <div>
@@ -174,39 +249,43 @@
           </div>
         </section>
 
-        <section
-          class="panel-section licenses-section"
-          aria-labelledby="licensesTitle"
-        >
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">VIGENCIAS</p>
-              <h2 id="licensesTitle">Licencias activas y suspendidas</h2>
+        <details class="legacy-licenses">
+          <summary>Vista anterior de licencias (compatibilidad)</summary>
+          <section
+            class="panel-section licenses-section"
+            aria-labelledby="licensesTitle"
+          >
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">VIGENCIAS</p>
+                <h2 id="licensesTitle">Licencias activas y suspendidas</h2>
+              </div>
+              <span class="section-caption"
+                >La vigencia se aplica en la próxima verificación del
+                equipo</span
+              >
             </div>
-            <span class="section-caption"
-              >La vigencia se aplica en la próxima verificación del equipo</span
-            >
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Negocio</th>
-                  <th>Vigente hasta</th>
-                  <th>Estado</th>
-                  <th>Revisión</th>
-                  <th><span class="sr-only">Acciones</span></th>
-                </tr>
-              </thead>
-              <tbody id="licensesBody"></tbody>
-            </table>
-            <div class="empty-state" id="licensesEmpty" hidden>
-              <span class="empty-symbol" aria-hidden="true">◇</span
-              ><strong>Aún no hay licencias</strong
-              ><span>Las licencias aprobadas se mostrarán aquí.</span>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Negocio</th>
+                    <th>Vigente hasta</th>
+                    <th>Estado</th>
+                    <th>Revisión</th>
+                    <th><span class="sr-only">Acciones</span></th>
+                  </tr>
+                </thead>
+                <tbody id="licensesBody"></tbody>
+              </table>
+              <div class="empty-state" id="licensesEmpty" hidden>
+                <span class="empty-symbol" aria-hidden="true">◇</span
+                ><strong>Aún no hay licencias</strong
+                ><span>Las licencias aprobadas se mostrarán aquí.</span>
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        </details>
 
         <section
           class="panel-section audit-section"

@@ -37,6 +37,7 @@ import {
   CashSessionReportModal,
 } from "../components/cash-session-report";
 import {
+  countPendingCashOrders,
   formatMoney,
   moneyInputValue,
   humanError,
@@ -82,13 +83,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
       row.status === "PENDING" &&
       row.amountDueMinor > row.settledAmountMinor,
   );
-  const pendingOrderCount = data.orders.filter(
-    (order) =>
-      (order.cashSessionCreatedId === session?.id ||
-        order.cashSessionPaidId === session?.id) &&
-      order.operationalStatus !== "DELIVERED" &&
-      order.operationalStatus !== "CANCELLED",
-  ).length;
+  const pendingOrderCount = countPendingCashOrders(data.orders, session?.id);
   const pendingDriverOwesMinor = pendingDeliveryLedger
     .filter((row) => row.direction === "DRIVER_OWES_BUSINESS")
     .reduce((sum, row) => sum + row.amountDueMinor - row.settledAmountMinor, 0);

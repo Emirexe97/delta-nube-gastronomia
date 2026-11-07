@@ -324,6 +324,14 @@ export function promisedTiming(value: string | null, now = Date.now()) {
 }
 
 /** Ventas cobradas y vigentes de una caja; evita mezclar cajas históricas. */
+export function countPendingCashOrders(orders: readonly OrderDto[], sessionId?: string) {
+  if (!sessionId) return 0;
+  return orders.filter((order) =>
+    (order.cashSessionCreatedId === sessionId || order.cashSessionPaidId === sessionId) &&
+    order.operationalStatus !== "DELIVERED" && order.operationalStatus !== "CANCELLED"
+  ).length;
+}
+
 export function paidOrdersForSession(
   orders: OrderDto[],
   session: CashSessionDto | null,

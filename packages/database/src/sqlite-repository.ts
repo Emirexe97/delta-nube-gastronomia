@@ -934,6 +934,21 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     );
   }
 
+  // The desktop's default operator is shared. An online query must be attributed
+  // to the person who verified their own staff number and PIN on this device.
+  verifyPosAiOperator(staffNumber: number, pin: string): { id: string; permissions: string[] } | null {
+    if (!Number.isSafeInteger(staffNumber) || staffNumber <= 0 ||
+        typeof pin !== "string" || !/^\d{4,8}$/.test(pin)) return null;
+    const user = this.db.prepare(
+      "SELECT id, role_id, pin_hash FROM users WHERE staff_number=? AND active=1",
+    ).get(staffNumber) as { id: string; role_id: string; pin_hash: string } | undefined;
+    if (!user || !bcrypt.compareSync(pin, user.pin_hash)) return null;
+    const permissions = this.db.prepare(
+      "SELECT permission_code FROM role_permissions WHERE role_id=?",
+    ).all(user.role_id) as { permission_code: string }[];
+    return { id: user.id, permissions: permissions.map((row) => row.permission_code) };
+  }
+
   private currentUser(): UserDto {
     const row = requireRow(
       this.db
@@ -10285,6 +10300,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   getCashSessionReport(
     filters: CashSessionReportFilters,
   ): CashSessionReportDto {
+    const permissions = this.currentUser().permissions;
+    if (!permissions.includes("*"))
+      assertPermission(permissions, "reports.view");
     const sessionRow = requireRow(
       this.db
         .prepare("SELECT * FROM cash_sessions WHERE id = ?")
@@ -10610,6 +10628,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     };
   }
   getDetailedReport(filters: ReportFilters): DetailedReportDto {
+    const permissions = this.currentUser().permissions;
+    if (!permissions.includes("*"))
+      assertPermission(permissions, "reports.view");
     const params = [filters.dateFrom, filters.dateTo];
     const attributedOrders = `JOIN (
       SELECT order_id, SUM(net_minor) AS amount_minor, MAX(payment_session_count) AS payment_session_count

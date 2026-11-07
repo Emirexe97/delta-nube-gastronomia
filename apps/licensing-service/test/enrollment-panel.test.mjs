@@ -467,7 +467,10 @@ test("account activation atomically claims a fresh license/device and one of two
   const badProofEmail = `bad-proof-${randomBytes(4).toString("hex")}@example.test`;
   await api("/admin/accounts", { auth: true, method: "POST", data: { email: badProofEmail, password, licenseId: badProofLicense.id } });
   const badProof = await deviceLeaseProof(deviceKeyPair(), `bad-proof-install-${randomBytes(3).toString("hex")}`);
-  badProof.signature = `${badProof.signature.slice(0, -1)}${badProof.signature.endsWith("A") ? "B" : "A"}`;
+  // Mutate a signed byte, not the unused padding bits of the last base64url character.
+  const alteredSignature = Buffer.from(badProof.signature, "base64url");
+  alteredSignature[0] ^= 1;
+  badProof.signature = alteredSignature.toString("base64url");
   const refusedProof = await api("/v2/accounts/activate", { method: "POST", data: { ...badProof, email: badProofEmail, password } });
   assert.equal(refusedProof.status, 401);
   const afterBadProof = await api("/admin/licenses", { auth: true });

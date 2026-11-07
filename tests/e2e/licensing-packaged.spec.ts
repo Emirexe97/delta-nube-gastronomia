@@ -541,6 +541,7 @@ test("owner panel approves a packaged device without codes, suspends it and pres
     .getByRole("button", { name: "Aprobar solicitud", exact: true })
     .click();
   await expect(dialog).not.toBeVisible();
+  await owner.locator("details.legacy-licenses > summary").click();
   const licenseRow = owner
     .locator("#licensesBody tr")
     .filter({ hasText: "E2E Panel Café" });

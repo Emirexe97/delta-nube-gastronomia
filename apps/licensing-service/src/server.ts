@@ -25,14 +25,21 @@ import {
 } from "@gastronomy/licensing";
 import { hashAccountPassword, verifyAccountPassword, verifyPanelPassword } from "./panel-auth.js";
 import { issueWebSiteTicket } from "@gastronomy/web-orders/provision";
+import { createMerchantLedger, MerchantLedgerError } from "./merchant-ledger.js";
+import { arsToCents, BillingError, createSandboxBilling, type SandboxGateway } from "./sandbox-billing.js";
+import { createMpGateway, readSandboxConfig, verifyWebhookSignature, MercadoPagoSandboxError } from "./mercadopago-sandbox.js";
+import { createPosAiProvider } from "./pos-ai-provider.js";
+import { createPosAiQuota } from "./pos-ai-quota.js";
 
 const MAX_BODY = 16 * 1024;
 type Env = {
+  sandboxBilling?: { gateway: SandboxGateway; webhookSecret: string };
   webSiteProvisionSecret?: string;
   dbPath: string;
   adminToken: string;
   privateKey: string;
   rateLimit?: number;
+  posAi?: { apiKey?: string; model?: string; timeoutMs?: number; fetchImpl?: typeof fetch };
   panelAuth?: {
     username: string;
     passwordHash: string;
@@ -224,6 +231,16 @@ export function createLicenseServer(
       license_id TEXT, request_id TEXT, reason TEXT NOT NULL, created_at TEXT NOT NULL
     );`;
   db.exec(schema);
+  const merchants = createMerchantLedger(db);
+  const posAiQuota = createPosAiQuota(db);
+  const posAiProvider = env.posAi?.apiKey
+    ? createPosAiProvider({ apiKey: env.posAi.apiKey, model: env.posAi.model, timeoutMs: env.posAi.timeoutMs, fetchImpl: env.posAi.fetchImpl })
+    : undefined;
+  const sandbox = createSandboxBilling(db, env.sandboxBilling?.gateway);
+  if (env.sandboxBilling && (!env.panelAuth || env.sandboxBilling.webhookSecret.length < 32 ||
+      env.sandboxBilling.webhookSecret === env.adminToken))
+    throw new Error("Sandbox requires the private owner panel and a dedicated webhook signing secret");
+  let pendingNotifications = 0;
   const privateKey = env.privateKey;
   const publicKey = createPublicKey(privateKey)
     .export({ type: "spki", format: "pem" })
@@ -349,12 +366,13 @@ export function createLicenseServer(
     requestId: string | null,
     reason: string,
     createdAt = new Date().toISOString(),
+    actor: string | null = null,
   ) =>
     db
       .prepare(
-        "INSERT INTO owner_audit(action,license_id,request_id,reason,created_at) VALUES(?,?,?,?,?)",
+        "INSERT INTO owner_audit(action,license_id,request_id,reason,created_at,actor) VALUES(?,?,?,?,?,?)",
       )
-      .run(action, licenseId, requestId, reason, createdAt);
+      .run(action, licenseId, requestId, reason, createdAt, actor);
   const panelRequestShape = (row: DeviceRequestRow) => ({
     id: row.id,
     installationId: row.installation_id,
@@ -555,6 +573,46 @@ export function createLicenseServer(
         json(res, 415, { error: "unsupported_media_type" });
         return true;
       }
+      if (url.pathname === "/manage/api/merchants" && req.method === "GET") {
+        const list = merchants.listMerchants({
+          query: url.searchParams.get("query") ?? "",
+          limit: Number(url.searchParams.get("limit") ?? 25),
+          offset: Number(url.searchParams.get("offset") ?? 0),
+        });
+        json(res, 200, { ...list, sandboxEnabled: sandbox.enabled });
+        return true;
+      }
+      if (url.pathname === "/manage/api/merchants" && req.method === "POST") {
+        const b = await body(req);
+        if (typeof b.businessName !== "string" || typeof b.paidThrough !== "string" || typeof b.reason !== "string" || typeof b.idempotencyKey !== "string")
+          throw new BillingError("invalid_merchant");
+        json(res, 201, merchants.createMerchant({businessName:b.businessName, paidThrough:b.paidThrough, reason:b.reason, idempotencyKey:b.idempotencyKey}, session.username));
+        return true;
+      }
+      const merchantRoute = /^\/manage\/api\/merchants\/([\w-]{8,128})(?:\/(payment|courtesy|sandbox|sandbox\/cancel|sandbox\/reconcile))?$/.exec(url.pathname);
+      if (merchantRoute) {
+        const [, merchantId, action] = merchantRoute;
+        if (!action && req.method === "GET") {
+          json(res, 200, { ...merchants.getMerchant(merchantId!), sandboxEnabled: sandbox.enabled, sandbox: sandbox.summary(merchantId!) });
+          return true;
+        }
+        if (req.method === "POST" && (action === "payment" || action === "courtesy")) {
+          const b = await body(req);
+          if (typeof b.expectedRevision !== "number" || typeof b.paidThrough !== "string" || typeof b.reason !== "string" || typeof b.idempotencyKey !== "string")
+            throw new BillingError("invalid_adjustment");
+          const payload = {expectedRevision:b.expectedRevision, paidThrough:b.paidThrough, reason:b.reason, idempotencyKey:b.idempotencyKey};
+          const result = action === "payment" ? merchants.recordManualPayment(merchantId!, {...payload, amountCents:arsToCents(b.amountArs)}, session.username) : merchants.recordCourtesy(merchantId!, payload, session.username);
+          json(res, 200, result);
+          return true;
+        }
+        if (req.method === "POST" && (action === "sandbox" || action === "sandbox/cancel" || action === "sandbox/reconcile")) {
+          const b = await body(req);
+          const state = action === "sandbox" ? await sandbox.create(merchantId!, b, session.username)
+            : action === "sandbox/cancel" ? await sandbox.cancel(merchantId!) : await sandbox.reconcile(merchantId!, b);
+          json(res, 200, { sandbox: state });
+          return true;
+        }
+      }
       if (req.method === "POST" && url.pathname === "/manage/api/accounts") {
         const b = await body(req);
         const email = normalizeEmail(b.email);
@@ -580,7 +638,7 @@ export function createLicenseServer(
         withTransaction(() => {
           db.prepare("INSERT INTO accounts(email,password_hash,license_id,status,created_at,updated_at) VALUES(?,?,?,'ACTIVE',?,?) ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,status='ACTIVE',updated_at=excluded.updated_at")
             .run(email, passwordHash, license.id, now, now);
-          writeAudit("ACCOUNT_CREDENTIALS_SET", license.id, null, reason, now);
+          writeAudit("ACCOUNT_CREDENTIALS_SET", license.id, null, reason, now, session.username);
         });
         json(res, priorEmail ? 200 : 201, { account: { email, licenseId: license.id } });
         return true;
@@ -692,7 +750,7 @@ export function createLicenseServer(
             const approved = db
               .prepare("SELECT * FROM device_requests WHERE id = ?")
               .get(requestRow.id) as DeviceRequestRow;
-            writeAudit("REQUEST_APPROVED", license.id, requestRow.id, reason, now);
+            writeAudit("REQUEST_APPROVED", license.id, requestRow.id, reason, now, session.username);
             return { request: approved, license: rowById(license.id)!, idempotent: false };
           });
         } catch (error) {
@@ -736,7 +794,7 @@ export function createLicenseServer(
           db.prepare(
             "UPDATE device_requests SET status = 'REJECTED', updated_at = ? WHERE id = ? AND status = 'PENDING'",
           ).run(now, row.id);
-          writeAudit("REQUEST_REJECTED", row.license_id, row.id, reason, now);
+          writeAudit("REQUEST_REJECTED", row.license_id, row.id, reason, now, session.username);
           return {
             status: 200 as const,
             row: db.prepare("SELECT * FROM device_requests WHERE id = ?").get(row.id) as DeviceRequestRow,
@@ -786,6 +844,7 @@ export function createLicenseServer(
             null,
             reason,
             now,
+            session.username,
           );
           return { status: 200 as const, license: rowById(id)!, idempotent: false };
         });
@@ -834,7 +893,7 @@ export function createLicenseServer(
             .run(paidThrough, id, row.revision);
           if (Number(updated.changes) !== 1)
             return { status: 409 as const, license: rowById(id)! };
-          writeAudit("LICENSE_RENEWED", id, null, reason, now);
+          writeAudit("LICENSE_RENEWED", id, null, reason, now, session.username);
           return { status: 200 as const, license: rowById(id)!, idempotent: false };
         });
         if (result.status !== 200) {
@@ -874,6 +933,23 @@ export function createLicenseServer(
       )
         return json(res, 400, { error: "invalid_request_target" });
       const ip = req.socket.remoteAddress ?? "unknown";
+      if (req.method === "POST" && url.pathname === "/billing/test/mercadopago/webhook") {
+        const config = env.sandboxBilling;
+        if (!config) return json(res, 404, { error: "not_found" });
+        const ids = url.searchParams.getAll("data.id"), sig = req.headers["x-signature"], rid = req.headers["x-request-id"];
+        if (ids.length !== 1 || !/^[a-zA-Z0-9_-]{1,128}$/.test(ids[0]!) || typeof sig !== "string" || typeof rid !== "string" ||
+            !verifyWebhookSignature({xSignature:sig, xRequestId:rid, dataId:ids[0]},config.webhookSecret))
+          return json(res,401,{ error:"invalid_signature" });
+        if (!isJson(req)) return json(res,415,{ error:"unsupported_media_type" });
+        const b = await body(req);
+        const topic = url.searchParams.get("type") ?? b.type;
+        if (typeof topic !== "string" || (b.type && b.type !== topic))
+          return json(res,400,{error:"invalid_notification"});
+        if (pendingNotifications >= 8) return json(res,503,{error:"retry_later"});
+        pendingNotifications++;
+        try { await sandbox.notify(topic,ids[0]!); } finally { pendingNotifications--; }
+        return json(res,200,{received:true});
+      }
       if (req.method === "GET" && url.pathname === "/health")
         return json(res, 200, { status: "ok" });
       if (url.pathname.startsWith("/manage")) {
@@ -1020,6 +1096,55 @@ export function createLicenseServer(
           return json(res, 200, { licenses: rows.map(publicRow) });
         }
         return json(res, 404, { error: "not_found" });
+      }
+      if (req.method === "POST" && url.pathname === "/v2/pos/ai") {
+        if (throttled(`pos-ai:${ip}`)) return json(res, 429, { error: "rate_limited" });
+        if (!isJson(req)) return json(res, 415, { error: "unsupported_media_type" });
+        if (!posAiProvider) return json(res, 503, { error: "unavailable" });
+        const b = await body(req);
+        if (!validId(b.installationId) || !validId(b.challengeId) || !validId(b.actorId) || !validId(b.requestId) ||
+            typeof b.publicKey !== "string" || b.publicKey.length < 40 || b.publicKey.length > 2048 ||
+            typeof b.prompt !== "string" || !b.prompt.trim() || b.prompt.length > 500 ||
+            typeof b.signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(b.signature))
+          return json(res, 400, { error: "invalid" });
+        let fingerprint: string;
+        try { fingerprint = devicePublicKeyFingerprint(b.publicKey); }
+        catch { return json(res, 401, { error: "unauthorized" }); }
+        const challenge = db.prepare("SELECT * FROM device_challenges WHERE id = ?")
+          .get(b.challengeId) as ChallengeRow | undefined;
+        if (!challenge || challenge.purpose !== "lease" || challenge.installation_id !== b.installationId ||
+            challenge.key_fingerprint !== fingerprint || challenge.public_key !== b.publicKey ||
+            challenge.used_at || Date.parse(challenge.expires_at) <= Date.now())
+          return json(res, 401, { error: "unauthorized" });
+        const proof: DeviceProof = { purpose: "pos-ai", challengeId: challenge.id, nonce: challenge.nonce,
+          installationId: challenge.installation_id, keyFingerprint: fingerprint,
+          actorId: b.actorId as string, requestId: b.requestId as string, prompt: (b.prompt as string).trim() };
+        if (!verifyDeviceProof(proof, b.signature as string, challenge.public_key))
+          return json(res, 401, { error: "unauthorized" });
+        const device = db.prepare("SELECT license_id FROM device_requests WHERE installation_id = ? AND key_fingerprint = ? AND public_key = ? AND status = 'APPROVED'")
+          .get(challenge.installation_id, fingerprint, challenge.public_key) as { license_id: string | null } | undefined;
+        if (!device?.license_id) return json(res, 401, { error: "unauthorized" });
+        const license = rowById(device.license_id);
+        if (!license || license.installation_id !== challenge.installation_id || license.status !== "ACTIVE" || Date.parse(license.paid_through) <= Date.now())
+          return json(res, 401, { error: "unauthorized" });
+        const nowIso = new Date().toISOString();
+        const consumed = db.prepare("UPDATE device_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?")
+          .run(nowIso, challenge.id, nowIso);
+        if (Number(consumed.changes) !== 1) return json(res, 401, { error: "unauthorized" });
+        let reservation;
+        try { reservation = posAiQuota.reserve({ merchantId: license.id, userId: b.actorId as string, requestId: b.requestId as string }); }
+        catch { return json(res, 503, { error: "unavailable" }); }
+        if (reservation.idempotent && reservation.allowed)
+          return json(res, 409, { error: "duplicate", remaining: reservation.remaining });
+        if (!reservation.allowed)
+          return json(res, 429, { error: reservation.status, retryAfter: reservation.retryAfter, remaining: reservation.remaining });
+        try {
+          const result = await posAiProvider.resolve(proof.prompt!);
+          return json(res, 200, { ...result, remaining: reservation.remaining });
+        } catch (error) {
+          const status = error instanceof Error && error.message === "invalid_prompt" ? 400 : 503;
+          return json(res, status, { error: status === 400 ? "invalid" : "unavailable", remaining: reservation.remaining });
+        }
       }
       if (
         req.method === "POST" &&
@@ -1352,6 +1477,8 @@ export function createLicenseServer(
       }
       return json(res, 404, { error: "not_found" });
     } catch (error) {
+      if (error instanceof MerchantLedgerError || error instanceof BillingError) return json(res, error.status, { error: error.code });
+      if (error instanceof MercadoPagoSandboxError) return json(res,502,{error:"sandbox_provider_unconfirmed"});
       const status =
         typeof error === "object" && error !== null && "status" in error
           ? Number((error as { status: unknown }).status)
@@ -1419,12 +1546,29 @@ if (
       "Set PANEL_USERNAME, PANEL_PASSWORD_HASH_FILE and PANEL_ORIGIN together to enable the owner panel",
     );
   const { server, close } = createLicenseServer({
+    ...(process.env.MP_SANDBOX_ENABLED === "true" ? {
+      sandboxBilling: {
+        gateway: createMpGateway(readSandboxConfig({
+          ...process.env,
+          MP_SANDBOX_ACCESS_TOKEN: process.env.MP_SANDBOX_ACCESS_TOKEN_FILE
+            ? readFileSync(process.env.MP_SANDBOX_ACCESS_TOKEN_FILE,"utf8").trim() : process.env.MP_SANDBOX_ACCESS_TOKEN,
+        })),
+        webhookSecret: process.env.MP_SANDBOX_WEBHOOK_SECRET_FILE
+          ? readFileSync(process.env.MP_SANDBOX_WEBHOOK_SECRET_FILE,"utf8").trim() : process.env.MP_SANDBOX_WEBHOOK_SECRET ?? "",
+      },
+    } : {}),
     dbPath,
     adminToken: readFileSync(adminFile, "utf8").trim(),
     privateKey: readFileSync(privateFile, "utf8"),
     webSiteProvisionSecret: process.env.WEB_SITE_PROVISION_SECRET_FILE
       ? readFileSync(process.env.WEB_SITE_PROVISION_SECRET_FILE, "utf8").trim()
       : process.env.WEB_SITE_PROVISION_SECRET,
+    posAi: {
+      apiKey: process.env.GEMINI_API_KEY_FILE
+        ? readFileSync(process.env.GEMINI_API_KEY_FILE, "utf8").trim()
+        : process.env.GEMINI_API_KEY,
+      model: process.env.POS_AI_MODEL ?? "gemini-3.1-flash-lite",
+    },
     ...(panelEnvCount === 3
       ? {
           panelAuth: {

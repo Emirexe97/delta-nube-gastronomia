@@ -32,6 +32,7 @@ import { WebSiteProvisioning } from "./web-site-provisioning";
 import QRCode from "qrcode";
 import { shareWebSite as performWebSiteShare, type WebSiteShareAction } from "./web-site-sharing";
 import { licenseAllowsMethod } from "@gastronomy/licensing";
+import { POS_AI_INTENTS } from "@gastronomy/licensing";
 import { UpdateInstallGate } from "./update-install-gate";
 import { createUpdateRuntime } from "./update-runtime";
 import type { DesktopUpdater } from "./app-updater";
@@ -102,6 +103,7 @@ let updateTimer: ReturnType<typeof setInterval> | null = null;
 let updateStartupTimer: ReturnType<typeof setTimeout> | null = null;
 let updateQuitRequested = false;
 let printDiagnostics: PrintDiagnostics | undefined;
+const posAiPinFailures = new Map<string, { count: number; blockedUntil: number }>();
 function printTiming() {
   printDiagnostics ??= createPrintDiagnostics(join(app.getPath("userData"), "diagnostics"));
   return printDiagnostics.start();
@@ -421,6 +423,7 @@ function registerIpcHandlers() {
     | "getAppUpdateStatus"
     | "checkAppUpdate"
     | "installAppUpdate"
+    | "askPosAssistantAi"
   >;
   const completeMethodList = <T extends readonly ForwardedDesktopMethod[]>(
     methods: T &
@@ -554,6 +557,92 @@ function registerIpcHandlers() {
     }
   });
   handleOperation("gastronomy:getLicenseStatus", () => licensing!.getStatus());
+  handleOperation(
+    "gastronomy:askPosAssistantAi",
+    async (
+      _event,
+      input: {
+        requestId?: unknown;
+        text?: unknown;
+        staffNumber?: unknown;
+        pin?: unknown;
+      },
+    ) => {
+    const invalid = { ok: false as const, code: "invalid" as const };
+      const allowedKeys = ["pin", "requestId", "staffNumber", "text"];
+      if (
+        !input ||
+        Object.keys(input).sort().join(",") !== allowedKeys.join(",") ||
+        typeof input.requestId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.requestId) ||
+        typeof input.text !== "string" ||
+        !input.text.trim() ||
+        input.text.trim().length > 500 ||
+        !Number.isSafeInteger(input.staffNumber) ||
+        (input.staffNumber as number) <= 0 ||
+        typeof input.pin !== "string" ||
+        !/^\d{4,8}$/.test(input.pin)
+      ) return invalid;
+
+      const status = await licensing!.getStatus();
+      if (!status.canOperate || !licensing!.hasEnrollmentIdentity())
+        return { ok: false as const, code: "unavailable" as const };
+      const installKey = status.installationId;
+      const attempt = posAiPinFailures.get(installKey) ?? {
+        count: 0,
+        blockedUntil: 0,
+      };
+      if (Date.now() < attempt.blockedUntil) {
+        return {
+          ok: false as const,
+          code: "cooldown" as const,
+          retryAfter: Math.ceil((attempt.blockedUntil - Date.now()) / 1000),
+        };
+      }
+      const operator = services().localRepository.verifyPosAiOperator(
+        input.staffNumber as number,
+        input.pin,
+      );
+      if (!operator) {
+        attempt.count += 1;
+        if (attempt.count >= 5) {
+          attempt.count = 0;
+          attempt.blockedUntil = Date.now() + 60_000;
+        }
+        posAiPinFailures.set(installKey, attempt);
+        return { ok: false as const, code: "unauthorized" as const };
+      }
+      posAiPinFailures.delete(installKey);
+      // PIN and staff number are intentionally discarded before any network request.
+      let response;
+      try {
+        response = await licensing!.askPosAssistantAi({
+          actorId: operator.id,
+          requestId: input.requestId,
+          prompt: input.text.trim(),
+        });
+      } catch {
+        return { ok: false as const, code: "unavailable" as const };
+      }
+      if (!response.ok || response.questionId === null) return response;
+      const intent = POS_AI_INTENTS.find(
+        (entry) => entry.id === response.questionId,
+      );
+      if (
+        !intent ||
+        ("permission" in intent &&
+          !operator.permissions.includes("*") &&
+          !operator.permissions.includes(intent.permission))
+      ) {
+        return {
+          ok: false as const,
+          code: "unauthorized" as const,
+          remaining: response.remaining,
+        };
+      }
+      return response;
+    },
+  );
   handleOperation("gastronomy:signInLicenseAccount", (_event, input: { email?: unknown; password?: unknown }) => {
     if (typeof input?.email !== "string" || input.email.length > 254 || typeof input.password !== "string" || input.password.length > 128)
       throw new Error("Ingresá el correo y la contraseña de tu cuenta.");

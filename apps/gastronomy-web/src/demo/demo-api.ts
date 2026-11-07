@@ -6467,6 +6467,9 @@ export function createDemoApi(
     async getCashSessionReport(
       filters: CashSessionReportFilters,
     ): Promise<CashSessionReportDto> {
+      const permissions = state.data.currentUser.permissions;
+      if (!permissions.includes("reports.view") && !permissions.includes("*"))
+        throw new Error("El usuario no tiene permiso para esta operación.");
       if (!filters?.cashSessionId) throw new Error("La caja no es válida.");
       return sessionReport(state, filters);
     },
@@ -6474,6 +6477,9 @@ export function createDemoApi(
     async getDetailedReport(
       filters: ReportFilters,
     ): Promise<DetailedReportDto> {
+      const permissions = state.data.currentUser.permissions;
+      if (!permissions.includes("reports.view") && !permissions.includes("*"))
+        throw new Error("El usuario no tiene permiso para esta operación.");
       const orders = state.data.orders.filter(
         (order) =>
           order.operationalStatus !== "CANCELLED" &&
@@ -6619,6 +6625,10 @@ export function createDemoApi(
             .reduce((sum, row) => sum + row.amountDueMinor, 0),
         },
       });
+    },
+
+    async askPosAssistantAi() {
+      return { ok: false, code: "unavailable" } as const;
     },
 
     async getAuditLog(input) {

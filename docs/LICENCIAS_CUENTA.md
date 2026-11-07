@@ -1,5 +1,7 @@
 # Licencia con cuenta del programa
 
+Para administrar comercios con o sin correo, registrar pagos manuales u otorgar cortesías, ver [Panel por comercio y cobros de prueba](../apps/licensing-service/docs/COMERCIOS_Y_COBROS_DE_PRUEBA.md). El ensayo de Mercado Pago nunca renueva el permiso firmado.
+
 La cuenta es propia de Delta Nube Gastronomía, independiente del catálogo web y de los usuarios/PIN de caja y mozos. Un administrador crea el correo y la contraseña sobre una licencia existente desde el panel privado, **Crear cuenta**. **Restablecer contraseña** exige verificar al titular y registrar un motivo; no permite consultar la contraseña anterior. No hay alta pública ni recuperación automática por correo en esta versión.
 
 ## Activación

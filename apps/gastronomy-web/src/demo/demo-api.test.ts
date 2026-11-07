@@ -97,6 +97,34 @@ describe("API de demostración", () => {
     ).rejects.toThrow(/permiso/i);
   });
 
+  it("los informes demo requieren reports.view y aceptan el permiso wildcard", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    const bootstrap = await api.bootstrap();
+    const saved = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    saved.data.currentUser.permissions = [];
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+    const restricted = createDemoApi(storage);
+    await expect(restricted.getDetailedReport({
+      dateFrom: bootstrap.cashSession!.businessDate,
+      dateTo: bootstrap.cashSession!.businessDate,
+    })).rejects.toThrow(/permiso/i);
+    await expect(restricted.getCashSessionReport({
+      cashSessionId: bootstrap.cashSession!.id,
+    })).rejects.toThrow(/permiso/i);
+
+    saved.data.currentUser.permissions = ["*"];
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
+    const wildcard = createDemoApi(storage);
+    await expect(wildcard.getDetailedReport({
+      dateFrom: bootstrap.cashSession!.businessDate,
+      dateTo: bootstrap.cashSession!.businessDate,
+    })).resolves.toBeDefined();
+    await expect(wildcard.getCashSessionReport({
+      cashSessionId: bootstrap.cashSession!.id,
+    })).resolves.toBeDefined();
+  });
+
   it("finanzas demo resta el envío a cargo del negocio una vez y excluye pagos/liquidaciones", async () => {
     const storage = new MemoryStorage();
     const api = createDemoApi(storage);

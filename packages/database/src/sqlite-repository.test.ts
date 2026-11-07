@@ -1355,6 +1355,43 @@ function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
   }
 }
 
+test("la consulta IA identifica por número y PIN al operador activo, no al administrador compartido", () => {
+  withRepository((repo) => {
+    const waiter = repo.createUser({ staffNumber: 13, fullName: "Moza", roleCode: "WAITER", pin: "6789", authorizerPin: "2468" });
+    const operator = repo.verifyPosAiOperator(13, "6789");
+    assert.equal(operator?.id, waiter.id);
+    assert.ok(!operator.permissions.includes("reports.view"));
+    assert.equal(repo.verifyPosAiOperator(13, "2468"), null);
+    assert.equal(repo.verifyPosAiOperator(42, "6789"), null);
+    repo.db.prepare("UPDATE users SET active=0 WHERE id=?").run(waiter.id);
+    assert.equal(repo.verifyPosAiOperator(13, "6789"), null);
+  });
+});
+
+test("los informes requieren reports.view y aceptan el permiso wildcard", () => {
+  withRepository((repository) => {
+    const session = repository.openCashSession({ openingAmountMinor: 0 });
+    const roleId = (repository.db
+      .prepare("SELECT role_id FROM users WHERE id = 'user-admin'")
+      .get() as { role_id: string }).role_id;
+    repository.db.prepare("DELETE FROM role_permissions WHERE role_id = ?").run(roleId);
+
+    assert.throws(
+      () => repository.getDetailedReport({ dateFrom: session.businessDate, dateTo: session.businessDate }),
+      /permiso/i,
+    );
+    assert.throws(
+      () => repository.getCashSessionReport({ cashSessionId: session.id }),
+      /permiso/i,
+    );
+
+    repository.db.prepare("INSERT INTO permissions(code, description) VALUES ('*', 'Todos los permisos')").run();
+    repository.db.prepare("INSERT INTO role_permissions(role_id, permission_code) VALUES (?, '*')").run(roleId);
+    assert.doesNotThrow(() => repository.getDetailedReport({ dateFrom: session.businessDate, dateTo: session.businessDate }));
+    assert.doesNotThrow(() => repository.getCashSessionReport({ cashSessionId: session.id }));
+  });
+});
+
 test("persiste inventario avanzado y foto WebP al crear y editar productos", () => {
   withRepository((repository) => {
     const category = repository.bootstrap().categories[0]!;

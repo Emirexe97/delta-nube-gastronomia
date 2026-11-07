@@ -33,6 +33,8 @@ Candidato funcional local:
 - cancelación con PIN, auditoría y eventos de dominio;
 - configuración modular;
 - dashboard e informes básicos;
+- **Preguntale al POS**, en la barra superior: buscador de diez preguntas de caja, ventas y operación. Muestra las consultas permitidas para el usuario y responde con datos del equipo, sin internet, sin servicios de IA y sin modificar pedidos ni caja;
+- **Consultar con IA** (opcional): interpreta otras formulaciones con Gemini, bajo cupos del servidor. [Configuración, límites y manejo de la clave](docs/POS_IA.md);
 - exportación de ventas a CSV UTF-8 con BOM;
 - repartidores como identidades operativas sin pantalla ni PIN propio, asignación en envíos y panel de caja con entregas, ganancias y horarios de rendición;
 - usuarios por rol/capacidad, cambios protegidos y auditoría consultable limitada a eliminaciones y acciones sensibles;

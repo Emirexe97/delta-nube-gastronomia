@@ -11,6 +11,8 @@ export const bootstrapKey = ["bootstrap"] as const;
 export function useBootstrap() {
   return useQuery<BootstrapDto>({
     queryKey: bootstrapKey,
+    // Bootstrap reads the on-device store, even when the network is offline.
+    networkMode: "always",
     queryFn: () => {
       if (!window.gastronomy)
         throw new Error(

@@ -1,0 +1,12 @@
+# Opt in only after provisioning the server-side key. No published port.
+services:
+  api:
+    environment:
+      GEMINI_API_KEY_FILE: /run/credentials/gemini-api-key
+      POS_AI_MODEL: ${POS_AI_MODEL:-gemini-3.1-flash-lite}
+    networks:
+      private: {}
+      pos_ai_egress: {}
+networks:
+  pos_ai_egress:
+    driver: bridge

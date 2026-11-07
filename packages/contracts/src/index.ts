@@ -1363,6 +1363,7 @@ import type { WebCommerceApi } from "./web-commerce";
 export * from "./waiter-desk";
 import type { WaiterDeskApi } from "./waiter-desk";
 export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
+  askPosAssistantAi(input: PosAssistantAiInput): Promise<PosAssistantAiResult>;
   listIngredients(): Promise<IngredientDto[]>;
   saveIngredient(input: SaveIngredientInput): Promise<IngredientDto>;
   getProductCostConfiguration(input: { productId: string }): Promise<ProductCostConfigurationDto>;
@@ -1707,6 +1708,16 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   saveSettings(settings: AppSettingsDto): Promise<AppSettingsDto>;
   getDashboard(businessDate?: BusinessDate): Promise<DashboardSummaryDto>;
 }
+
+export interface PosAssistantAiInput {
+  requestId: string;
+  text: string;
+  staffNumber: number;
+  pin: string;
+}
+export type PosAssistantAiResult =
+  | { ok: true; questionId: string | null; remaining: { user: number; merchant: number } }
+  | { ok: false; code: "unavailable" | "unauthorized" | "user_daily_limit" | "merchant_daily_limit" | "cooldown" | "invalid" | "duplicate"; retryAfter?: number; remaining?: { user: number; merchant: number } };
 
 declare global {
   interface Window {

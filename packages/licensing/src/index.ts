@@ -1,4 +1,5 @@
 import { sign, verify, createPrivateKey, createPublicKey } from "node:crypto";
+export { POS_AI_INTENTS } from "./pos-ai-intents.js";
 export {
   devicePublicKeyFingerprint,
   deviceProofMessage,

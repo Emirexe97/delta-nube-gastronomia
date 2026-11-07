@@ -1,8 +1,10 @@
-# Servicio manual de licencias
+# Servicio de licencias por comercio
 
-API independiente para emitir permisos Ed25519 de Delta Nube Gastronomía. No integra PSP, datos del POS ni dependencias nativas. Requiere Node.js >=22.13 (usa `node:sqlite`).
+API independiente para emitir permisos Ed25519 de Delta Nube Gastronomía. El panel privado permite administrar comercios, vigencias, cortesías y pagos manuales. El módulo opcional Mercado Pago es **exclusivamente de prueba**: no cobra ni otorga permisos reales. No utiliza los datos del POS. Requiere Node.js >=22.13 (usa `node:sqlite`). Ver [cómo probar el panel y las suscripciones](docs/COMERCIOS_Y_COBROS_DE_PRUEBA.md).
 
 ## Configuración y ejecución
+
+**Gemini (opcional):** el servidor puede interpretar preguntas del POS con cupos por comercio y operador, sin recibir reportes ni PIN. Ver [activación de Consultar con IA](../../docs/POS_IA.md) para la ubicación del secreto, el override de Docker y una prueba controlada.
 
 Construir desde la raíz del monorepo con `pnpm install`, `pnpm --filter @gastronomy/licensing build` y `pnpm --filter @gastronomy/licensing-service build`; ejecutar `pnpm --filter @gastronomy/licensing-service start`.
 

@@ -15,7 +15,9 @@ import type { LicenseLease } from "@gastronomy/licensing";
 const DAY = 86_400_000;
 const ROLLBACK_TOLERANCE = 5 * 60_000;
 const TIMEOUT_MS = 5_000;
+const POS_AI_TIMEOUT_MS = 16_000;
 const MAX_RESPONSE_BYTES = 16 * 1024;
+const MAX_POS_AI_REQUEST_BYTES = 4 * 1024;
 type Persisted = {
   schema: 1;
   installationId: string;
@@ -317,6 +319,94 @@ export class DesktopLicensing {
     this.webSiteProvisioner = handlers.provision; this.getWebSiteChoice = handlers.getChoice; this.selectWebSiteChoice = handlers.selectChoice; this.getWebSiteStatus = handlers.getStatus;
   }
   hasEnrollmentIdentity() { return !!(this.identity && this.identityPrivateKey); }
+  async askPosAssistantAi(input: { actorId: string; requestId: string; prompt: string }) {
+    if (
+      !input ||
+      !/^[A-Za-z0-9_-]{8,128}$/.test(input.actorId) ||
+      !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId) ||
+      typeof input.prompt !== "string" ||
+      !input.prompt.trim() ||
+      input.prompt.trim().length > 500
+    ) throw new ResponseProblem("invalid");
+    if (
+      !this.validConfig() ||
+      new URL(this.config.serverUrl!).protocol !== "https:" ||
+      !this.identity ||
+      !this.identityPrivateKey
+    ) throw new ResponseProblem("offline");
+    const status = await this.getStatus();
+    if (!status.canOperate) throw new ResponseProblem("offline");
+    const installationId = this.state.installationId;
+    const keyFingerprint = devicePublicKeyFingerprint(this.identity.publicKey);
+    const challenge = await this.postEnrollment(
+      "/v2/devices/challenge",
+      { installationId, publicKey: this.identity.publicKey, purpose: "lease" },
+    );
+    this.validateChallenge(challenge);
+    const prompt = input.prompt.trim();
+    const proof = {
+      purpose: "pos-ai" as const,
+      challengeId: challenge.challengeId,
+      nonce: challenge.nonce,
+      installationId,
+      keyFingerprint,
+      actorId: input.actorId,
+      requestId: input.requestId,
+      prompt,
+    };
+    const signature = signDeviceProof(proof, this.identityPrivateKey);
+    const body = {
+      installationId,
+      publicKey: this.identity.publicKey,
+      challengeId: challenge.challengeId,
+      signature,
+      actorId: input.actorId,
+      requestId: input.requestId,
+      prompt,
+    };
+    const serializedBody = JSON.stringify(body);
+    if (Buffer.byteLength(serializedBody, "utf8") > MAX_POS_AI_REQUEST_BYTES) throw new ResponseProblem("invalid");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), POS_AI_TIMEOUT_MS);
+    try {
+      const response = await this.fetcher(
+        new URL("/v2/pos/ai", this.config.serverUrl),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: { "content-type": "application/json" },
+          body: serializedBody,
+          signal: controller.signal,
+        },
+      );
+      const raw = await this.readBoundedBody(response, controller.signal);
+      let payload: any;
+      try { payload = JSON.parse(raw); } catch { throw new ResponseProblem("invalid"); }
+      if (!response.ok) {
+        return {
+          ok: false as const,
+          code: mapAiError(payload?.error ?? payload?.code, response.status),
+          ...(Number.isFinite(payload?.retryAfter)
+            ? { retryAfter: payload.retryAfter }
+            : {}),
+          ...(validRemaining(payload?.remaining)
+            ? { remaining: payload.remaining }
+            : {}),
+        };
+      }
+      if (
+        !validRemaining(payload?.remaining) ||
+        !(payload.questionId === null ||
+          (typeof payload.questionId === "string" &&
+            /^[a-z][a-z0-9-]{1,40}$/.test(payload.questionId)))
+      ) throw new ResponseProblem("invalid");
+      return { ok: true as const, questionId: payload.questionId, remaining: payload.remaining };
+    } catch (error) {
+      if (error instanceof ResponseProblem) throw error;
+      throw new ResponseProblem("offline");
+    }
+    finally { clearTimeout(timer); }
+  }
   signInAccount(input: { email: string; password: string }): Promise<LicenseStatusDto> {
     return this.enqueue(() => this.performAccountSignIn(input));
   }
@@ -649,6 +739,29 @@ class ResponseProblem extends Error {
     super(kind);
     this.kind = kind;
   }
+}
+
+function validRemaining(value: any): value is { user: number; merchant: number } {
+  const max = 100_000;
+  return (
+    !!value &&
+    Number.isSafeInteger(value.user) &&
+    value.user >= 0 &&
+    value.user <= max &&
+    Number.isSafeInteger(value.merchant) &&
+    value.merchant >= 0 &&
+    value.merchant <= max
+  );
+}
+function mapAiError(
+  code: unknown,
+  status: number,
+): "unavailable" | "unauthorized" | "user_daily_limit" | "merchant_daily_limit" | "cooldown" | "invalid" | "duplicate" {
+  if (code === "unauthorized" || status === 401 || status === 403) return "unauthorized";
+  if (code === "user_daily_limit" || code === "merchant_daily_limit" || code === "cooldown" || code === "duplicate" || code === "invalid") return code;
+  if (status === 429) return code === "merchant_limit" ? "merchant_daily_limit" : code === "user_limit" ? "user_daily_limit" : "cooldown";
+  if (status === 400) return "invalid";
+  return "unavailable";
 }
 
 function accountError(code: string, status: number): string {
