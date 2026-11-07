@@ -31,7 +31,6 @@ import { useApiMutation } from "../api";
 import { OrderEditor } from "../components/order-editor";
 import { OrderCustomerSelector } from "../components/order-customer-selector";
 import { WebOrdersInbox } from "./web-orders-inbox";
-import { DelayedWaiterInbox, DelayedWaiterCount, canReviewDelayedWaiters } from "../components/delayed-waiter-inbox";
 import {
   formatMoney,
   formatTime,
@@ -50,7 +49,13 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
     "ALL" | OrderType | "PENDING" | "PAID" | "OVERDUE" | "READY"
   >("ALL");
   const [query, setQuery] = useState("");
-  const [ordersTab, setOrdersTab] = useState<"POS" | "WEB" | "WAITER">("POS");
+  const [ordersTab, setOrdersTab] = useState<"POS" | "WEB">("POS");
+  const onOrdersTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const tabs = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []);
+    const index = tabs.indexOf(event.currentTarget);
+    const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+    if (next >= 0) { event.preventDefault(); tabs[next]?.focus(); tabs[next]?.click(); }
+  };
   const [selectedOrder, setSelectedOrder] = useState<string | null>(null);
   const [newType, setNewType] = useState<OrderType | null>(null);
   const [initialCustomer, setInitialCustomer] = useState<CustomerDto | null>(
@@ -166,9 +171,6 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
           <h2 className="text-lg font-extrabold tracking-tight">
             Para retirar y envíos
           </h2>
-          <p className="text-xs text-slate-600">
-            Consultá los pedidos para retirar y los envíos.
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -195,11 +197,10 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
       ) : null}
       <Card className="overflow-hidden">
         <div className="flex gap-1 border-b border-slate-100 p-2" role="tablist" aria-label="Pedidos">
-          <button type="button" role="tab" aria-selected={ordersTab === "POS"} onClick={() => setOrdersTab("POS")} className={cn("rounded-lg px-3 py-2 text-xs font-bold", ordersTab === "POS" ? "bg-brand-700 text-white" : "bg-slate-100 text-slate-700")}>Pedidos POS</button>
-          <button type="button" role="tab" aria-selected={ordersTab === "WEB"} onClick={() => setOrdersTab("WEB")} className={cn("rounded-lg px-3 py-2 text-xs font-bold", ordersTab === "WEB" ? "bg-brand-700 text-white" : "bg-slate-100 text-slate-700")}>Pedidos web <WebOrdersInboxCount data={data} active={active} /></button>
-          {canReviewDelayedWaiters(data) && <button type="button" role="tab" aria-selected={ordersTab === "WAITER"} onClick={() => setOrdersTab("WAITER")} className={cn("rounded-lg px-3 py-2 text-xs font-bold", ordersTab === "WAITER" ? "bg-brand-700 text-white" : "bg-slate-100 text-slate-700")}>Mozos demorados <DelayedWaiterCount data={data} active={active} /></button>}
+          <button id="orders-tab-pos" aria-controls="orders-panel-pos" type="button" role="tab" aria-selected={ordersTab === "POS"} tabIndex={ordersTab === "POS" ? 0 : -1} onKeyDown={onOrdersTabKeyDown} onClick={() => setOrdersTab("POS")} className={cn("rounded-lg px-3 py-2 text-xs font-bold", ordersTab === "POS" ? "bg-brand-700 text-white" : "bg-slate-100 text-slate-700")}>Pedidos del local</button>
+          <button id="orders-tab-web" aria-controls="orders-panel-web" type="button" role="tab" aria-selected={ordersTab === "WEB"} tabIndex={ordersTab === "WEB" ? 0 : -1} onKeyDown={onOrdersTabKeyDown} onClick={() => setOrdersTab("WEB")} className={cn("rounded-lg px-3 py-2 text-xs font-bold", ordersTab === "WEB" ? "bg-brand-700 text-white" : "bg-slate-100 text-slate-700")}>Pedidos web <WebOrdersInboxCount data={data} active={active} /></button>
         </div>
-        {ordersTab === "WAITER" ? <DelayedWaiterInbox data={data} active={active} /> : ordersTab === "WEB" ? <WebOrdersInbox data={data} active={active} /> : <>
+        {ordersTab === "WEB" ? <div id="orders-panel-web" role="tabpanel" aria-labelledby="orders-tab-web"><WebOrdersInbox data={data} active={active} /></div> : <div id="orders-panel-pos" role="tabpanel" aria-labelledby="orders-tab-pos">
         <div className="flex flex-col gap-2.5 border-b border-slate-100 p-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="relative w-full min-w-0 flex-1 xl:max-w-xs">
             <MagnifyingGlass
@@ -379,7 +380,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
             </div>
           )}
         </div>
-        </>}
+        </div>}
       </Card>
       <NewOrderModal
         open={Boolean(newType || editingDraftOrder)}

@@ -27,6 +27,7 @@ import { comboComponentsHtml } from "./combo-ticket";
 import { restoreValidatedCopy } from "./safe-restore.cjs";
 import { isBackgroundTest } from "./e2e-background.cjs";
 import { DesktopLicensing } from "./licensing";
+import { localPilotLicenseOptions } from "./local-pilot-config";
 import { WebSiteProvisioning } from "./web-site-provisioning";
 import QRCode from "qrcode";
 import { shareWebSite as performWebSiteShare, type WebSiteShareAction } from "./web-site-sharing";
@@ -53,21 +54,24 @@ function createDesktopLicensing(options: Omit<ConstructorParameters<typeof Deskt
   return new DesktopLicensing({ ...options, safeStorage: electronSafeStorage });
 }
 let webInstallationId: string | undefined;
+let hostedPilotMode = false;
 const webCommerceEnv: NodeJS.ProcessEnv = { ...process.env };
 const webCommerce = createWebCommerceSync({
   getRepository: () => services().localRepository,
   getInstallationId: () => webInstallationId,
   env: webCommerceEnv,
+  isEnabled: () => !hostedPilotMode,
 });
 const waiterRelay = createWaiterRelay({
   config: () => waiterRelayConfig(webCommerceEnv, webInstallationId),
+  cashSessionId: () => repository?.getWaiterCashSessionId() ?? null,
   process: async (request) => {
     const release = operationGate.enterOperation();
     try {
       if (!(await licensing?.getStatus())?.canOperate) throw new WaiterRequestError("pos_unavailable","La caja no está operativa.");
       const result = handleWaiterRequest(services().localRepository, request, dispatchWaiterPrint);
       if (request.method === "waiter.submitBatch" && result && typeof result === "object" && "status" in result && result.status === "PENDING_REVIEW")
-        mainWindow?.webContents.send("gastronomy:waiterOrderChanged", "Pedido de mozo demorado: revisalo en Pedidos → Mozos demorados. No se imprimió.");
+        mainWindow?.webContents.send("gastronomy:waiterOrderChanged", "Hay un pedido de mozo para revisar en Salón → Mozos. Todavía no se envió a cocina.");
       return result;
     } finally { release(); }
   },
@@ -410,6 +414,7 @@ function registerIpcHandlers() {
     | "listPrinters"
     | "testPrinter"
     | "getLicenseStatus"
+    | "signInLicenseAccount"
     | "activateLicense"
     | "requestLicenseAccess"
     | "refreshLicense"
@@ -548,6 +553,11 @@ function registerIpcHandlers() {
     }
   });
   handleOperation("gastronomy:getLicenseStatus", () => licensing!.getStatus());
+  handleOperation("gastronomy:signInLicenseAccount", (_event, input: { email?: unknown; password?: unknown }) => {
+    if (typeof input?.email !== "string" || input.email.length > 254 || typeof input.password !== "string" || input.password.length > 128)
+      throw new Error("Ingresá el correo y la contraseña de tu cuenta.");
+    return licensing!.signInAccount({ email: input.email, password: input.password });
+  });
   handleOperation(
     "gastronomy:activateLicense",
     (_event, input: { code?: unknown }) => {
@@ -885,8 +895,11 @@ function registerIpcHandlers() {
           repository = new SqliteGastronomyRepository(databasePath, {
             seedStarterCatalog: !app.isPackaged,
           });
+          // A restored snapshot must never resurrect a previously revoked phone.
+          repository.resetWaiterAccess();
           application = new GastronomyApplication(repository);
           waiterRelay.reset();
+          waiterRelay.wake();
           webCommerce.invalidate();
         },
       });
@@ -1008,10 +1021,15 @@ app
       seedStarterCatalog: !app.isPackaged,
     });
     application = new GastronomyApplication(repository);
+    const pilotLicenseOptions = await localPilotLicenseOptions({ enabled: process.env.GASTRONOMY_LOCAL_PILOT, hostedOrigin: process.env.GASTRONOMY_HOSTED_PILOT_ORIGIN, isPackaged: app.isPackaged, userDataPath: app.getPath("userData") });
+    // This is set only after localPilotLicenseOptions has validated the explicit
+    // unpackaged temporary profile and matching HTTPS hosted origin.
+    hostedPilotMode = !app.isPackaged && process.env.GASTRONOMY_LOCAL_PILOT === "1" && !!process.env.GASTRONOMY_HOSTED_PILOT_ORIGIN && "config" in pilotLicenseOptions && !!pilotLicenseOptions.config;
     licensing = createDesktopLicensing({
       userDataPath: app.getPath("userData"),
       isPackaged: app.isPackaged,
       configPath: resolve(__dirname, "../licensing-config.json"),
+      ...pilotLicenseOptions,
     });
     await licensing.initialize();
     webSite = new WebSiteProvisioning({ userDataPath: app.getPath("userData"), baseUrl: process.env.GASTRONOMY_WEB_PROVISION_URL ?? "https://pedidos.deltanubeweb.com", env: webCommerceEnv, safeStorage: electronSafeStorage, installationId: () => webInstallationId, onConfigured: () => { webCommerce.invalidate(); void pollWebCommerce(); } });
@@ -1030,14 +1048,15 @@ app
         if (status.state === "ERROR") operationGate.cancelInstall();
       },
     });
-    // SQLite startup invalidates previous mobile sessions and unredeemed challenges.
+    // Preserve cash-bound access across PC restarts; report a closed cash too.
+    waiterRelay.wake();
     waiterTimer = setInterval(() => { void waiterRelay.tick(); }, 1000);
     registerIpcHandlers();
     // Always run the lightweight scheduler: provisioned credentials can arrive after approval.
     webSyncTimer = setInterval(() => { void pollWebCommerce(); }, 15_000);
     void pollWebCommerce();
     webSiteTimer = setInterval(() => { void pollWebSiteProvisioning(); }, 15_000);
-    if (app.isPackaged) {
+    if (app.isPackaged || process.env.GASTRONOMY_LOCAL_PILOT === "1") {
       void pollLicensing();
       licensingTimer = setInterval(() => { void pollLicensing(); }, 60_000);
     }

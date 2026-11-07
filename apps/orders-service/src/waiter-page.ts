@@ -1,3 +1,5 @@
+import { sharedThemeCss } from '@gastronomy/ui/theme';
+
 /** Mobile-first companion UI for floor staff. Session credentials stay in tab memory;
  * only the unsent draft and an uncertain batch's stable request id are persisted. */
 export const waiterHtml = String.raw`<!doctype html>
@@ -8,35 +10,27 @@ export const waiterHtml = String.raw`<!doctype html>
     <meta name="color-scheme" content="light" />
     <title>Comandas</title>
     <style>
-      :root {
-        font:
-          16px system-ui,
-          -apple-system,
-          'Segoe UI',
-          sans-serif;
-        color: #20251f;
-        background: #f4f5f0;
-        --green: #176b4a;
-        --line: #dfe4dc;
-        --muted: #68736a;
-      }
+      ${sharedThemeCss}
+      :root { font: 16px var(--dn-font-sans, system-ui, -apple-system, 'Segoe UI', sans-serif); color: var(--dn-color-text); background: var(--dn-color-background); }
       * {
         box-sizing: border-box;
       }
       body {
         margin: 0;
         padding: 0 0 env(safe-area-inset-bottom);
+        background: var(--dn-color-background);
       }
       button,
       input,
-      select {
+      select,
+      textarea {
         font: inherit;
       }
       button {
         border: 0;
-        border-radius: 14px;
+        border-radius: var(--dn-radius-control);
         padding: 13px 16px;
-        background: var(--green);
+        background: var(--dn-color-primary);
         color: white;
         font-weight: 700;
         min-height: 46px;
@@ -44,37 +38,41 @@ export const waiterHtml = String.raw`<!doctype html>
       button:disabled {
         opacity: 0.45;
       }
+      button.secondary { background: var(--dn-color-surface-2); color: var(--dn-color-text-body); border: 1px solid var(--dn-color-border); }
       header {
         position: sticky;
         top: 0;
-        background: #f4f5f0ee;
+        background: color-mix(in srgb, var(--dn-color-background) 94%, transparent);
         backdrop-filter: blur(12px);
         padding: 12px 16px;
-        border-bottom: 1px solid var(--line);
+        border-bottom: 1px solid var(--dn-color-border);
         z-index: 2;
       }
       header h1 {
-        font-size: 20px;
+        font-size: 22px;
+        letter-spacing: -.035em;
         margin: 0;
       }
+      .brand { color: var(--dn-color-primary); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
       header small {
-        color: var(--muted);
+        color: var(--dn-color-text-muted);
       }
       main {
         max-width: 600px;
         margin: auto;
-        padding: 16px 16px 100px;
+        padding: 20px 16px 112px;
       }
       .card {
-        background: white;
-        border: 1px solid var(--line);
-        border-radius: 18px;
-        padding: 16px;
-        margin: 0 0 14px;
-        box-shadow: 0 4px 16px #18261908;
+        background: var(--dn-color-surface);
+        border: 1px solid var(--dn-color-border);
+        border-radius: var(--dn-radius-card);
+        padding: 18px;
+        margin: 0 0 16px;
+        box-shadow: 0 1px 2px color-mix(in srgb, var(--dn-color-text) 5%, transparent);
       }
       h2 {
         font-size: 17px;
+        letter-spacing: -.02em;
         margin: 0 0 12px;
       }
       .row {
@@ -85,11 +83,12 @@ export const waiterHtml = String.raw`<!doctype html>
       .row > * {
         min-width: 0;
       }
+      .row > button { flex-shrink: 0; }
       .split {
         justify-content: space-between;
       }
       .muted {
-        color: var(--muted);
+        color: var(--dn-color-text-muted);
         font-size: 14px;
       }
       .status {
@@ -108,10 +107,11 @@ export const waiterHtml = String.raw`<!doctype html>
         color: #9d3028;
       }
       input,
-      select {
-        border: 1px solid #cbd3ca;
-        background: white;
-        border-radius: 12px;
+      select,
+      textarea {
+        border: 1px solid var(--dn-color-border);
+        background: var(--dn-color-surface);
+        border-radius: var(--dn-radius-control);
         padding: 12px;
         min-height: 46px;
         width: 100%;
@@ -129,20 +129,20 @@ export const waiterHtml = String.raw`<!doctype html>
       }
       .categories button {
         white-space: nowrap;
-        background: #e5ebe4;
-        color: #315440;
+        background: var(--dn-color-surface-2);
+        color: var(--dn-color-text-body);
         padding: 9px 13px;
-        min-height: 40px;
+        min-height: 44px;
       }
       .categories button.active {
-        background: var(--green);
+        background: var(--dn-color-primary);
         color: white;
       }
       .product {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 12px 0;
+        padding: 14px 2px;
         border-top: 1px solid #eef0ec;
         gap: 10px;
       }
@@ -155,8 +155,8 @@ export const waiterHtml = String.raw`<!doctype html>
         gap: 8px;
       }
       .stepper button {
-        min-height: 38px;
-        width: 38px;
+        min-height: 44px;
+        width: 44px;
         padding: 0;
         font-size: 20px;
       }
@@ -165,7 +165,7 @@ export const waiterHtml = String.raw`<!doctype html>
         text-align: center;
       }
       .line {
-        padding: 12px 0;
+        padding: 14px 0;
         border-bottom: 1px solid #eef0ec;
       }
       .line:last-child {
@@ -173,7 +173,7 @@ export const waiterHtml = String.raw`<!doctype html>
       }
       .line small {
         display: block;
-        color: var(--muted);
+        color: var(--dn-color-text-muted);
       }
       .sticky {
         position: fixed;
@@ -181,8 +181,8 @@ export const waiterHtml = String.raw`<!doctype html>
         left: 0;
         right: 0;
         padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
-        background: #fff;
-        border-top: 1px solid var(--line);
+        background: var(--dn-color-surface);
+        border-top: 1px solid var(--dn-color-border);
         display: flex;
         justify-content: center;
         z-index: 3;
@@ -190,6 +190,27 @@ export const waiterHtml = String.raw`<!doctype html>
       .sticky button {
         width: min(568px, 100%);
       }
+      #pendingCard { border-color: #fdba74; background: var(--dn-color-primary-soft); }
+      #pendingCard .row { flex-wrap: wrap; }
+      #pendingCard, #printCard, #pairMessage, #appMessage { scroll-margin-block: 96px; }
+      #pendingCard:focus-visible, #printCard:focus-visible { outline: 2px solid var(--dn-color-primary); outline-offset: 3px; }
+      .row h2 { margin: 0; }
+      .card > .row + .muted { margin-top: 8px; }
+      .product > span { font-weight: 600; line-height: 1.35; }
+      #table { font-weight: 650; }
+      #draft:has(.line) { border-top: 1px solid var(--dn-color-border); margin-top: 10px; }
+      .line textarea { margin-top: 9px; min-height: 44px; resize: vertical; }
+      button { cursor: pointer; transition: background-color .16s ease, transform .16s ease; }
+      button:not(.secondary):not(.help-trigger):hover:not(:disabled) { background: var(--dn-color-primary-hover); color: white; }
+      button.secondary:hover:not(:disabled), .categories button:not(.active):hover:not(:disabled), .help-trigger:hover:not(:disabled) { background: var(--dn-color-primary-soft); color: var(--dn-color-primary-hover); }
+      button:active:not(:disabled) { transform: translateY(1px); }
+      button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid var(--dn-color-primary); outline-offset: 2px; }
+      .help-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
+      .help-trigger { width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 50%; background: var(--dn-color-surface-2); color: var(--dn-color-primary); border: 1px solid var(--dn-color-border); font-weight: 800; }
+      .help-popover { position: fixed; z-index: 10; width: min(280px, calc(100vw - 24px)); padding: 12px 14px; border: 1px solid var(--dn-color-border); border-radius: var(--dn-radius-control); background: var(--dn-color-surface); color: var(--dn-color-text-body); box-shadow: var(--dn-shadow-card); font-size: 14px; line-height: 1.45; }
+      .help-popover[hidden] { display: none; }
+      @media (max-width: 380px) { main { padding-inline: 12px; } .card { padding: 14px; } header { padding-inline: 12px; } .row { gap: 8px; } #pairForm .row { align-items: stretch; } #pairForm button { padding-inline: 12px; } }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: .01ms !important; scroll-behavior: auto !important; } }
       [hidden] {
         display: none !important;
       }
@@ -207,18 +228,18 @@ export const waiterHtml = String.raw`<!doctype html>
   <body>
     <header>
       <div class="row split">
-        <h1>Comandas</h1>
+        <div><div class="brand">Delta Nube</div><h1>Comandas</h1></div>
         <small id="connection">Sin vincular</small>
       </div>
       <small id="sessionExpiry" class="muted"></small>
     </header>
     <main>
       <section id="pairing" class="card">
-        <h2>Vincular dispositivo</h2>
-        <p class="muted">Escaneá el QR de invitación que muestra la caja y escribí tu PIN personal.</p>
+        <h2>Ingresar como mozo</h2>
+        <p class="muted">Escaneá el QR en caja e ingresá tu PIN.</p>
         <div id="qrbox" hidden><div class="muted" id="qrtext"></div></div>
         <form id="pairForm">
-          <label class="muted" for="pin">PIN</label>
+          <div class="row split"><label class="muted" for="pin">PIN</label><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda sobre el PIN" aria-expanded="false" aria-controls="help-pin">?</button><span class="help-popover" id="help-pin" role="tooltip" hidden>Usá el PIN que te dieron en caja. Si no lo tenés, pedí que te vinculen.</span></span></div>
           <div class="row">
             <input
               id="pin"
@@ -231,49 +252,48 @@ export const waiterHtml = String.raw`<!doctype html>
             /><button type="submit">Vincular</button>
           </div>
         </form>
-        <div id="pairMessage" class="status" hidden></div>
+        <div id="pairMessage" class="status" tabindex="-1" hidden></div>
       </section>
       <section id="app" hidden>
         <div class="card">
           <div class="row split">
             <div>
               <h2 id="welcome">Hola</h2>
-              <div class="muted">Estado de conexión</div>
             </div>
             <button id="reconnect" type="button">Actualizar</button>
           </div>
-          <div id="appMessage" class="status">Conectado</div>
-          <label class="muted" for="table">Mesa</label
-          ><select id="table"></select>
+          <div id="appMessage" class="status" role="status" tabindex="-1" hidden></div>
+          <div class="row split"><label class="muted" for="table">Mesa</label><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda para elegir mesa" aria-expanded="false" aria-controls="help-table">?</button><span class="help-popover" id="help-table" role="tooltip" hidden>Elegí la mesa antes de agregar productos. El pedido se prepara para esa mesa.</span></span></div>
+          <select id="table"></select>
+        </div>
+        <div id="pendingCard" class="card" role="status" aria-live="polite" tabindex="-1" hidden>
+          <h2 id="pendingTitle">Pedido por confirmar</h2>
+          <p id="pendingText" class="muted"></p>
+          <div class="row">
+            <button id="checkPending" type="button">Ver estado</button>
+            <button id="retryPending" type="button" hidden>Volver a intentar</button>
+            <button id="closeOldPending" class="secondary" type="button" hidden>Quitar aviso anterior</button>
+          </div>
         </div>
         <div class="card">
-          <h2>Menú</h2>
+          <div class="row split"><h2>Menú</h2><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda sobre el menú" aria-expanded="false" aria-controls="help-menu">?</button><span class="help-popover" id="help-menu" role="tooltip" hidden>Elegí una categoría y usá + para sumar productos al pedido.</span></span></div>
           <div id="categories" class="categories"></div>
           <div id="products"></div>
         </div>
         <div class="card">
           <div class="row split">
-            <h2>Borrador</h2>
-            <button id="clearDraft" type="button" style="background: #e8ece7; color: #304438">
+            <h2>Para enviar</h2>
+            <button id="clearDraft" class="secondary" type="button">
               Vaciar
             </button>
           </div>
-          <div id="draft"><p class="muted">Agregá productos al borrador.</p></div>
+          <div id="draft"><p class="muted">Elegí los productos del pedido.</p></div>
         </div>
-        <div id="pendingCard" class="card" hidden>
-          <h2>Tanda pendiente</h2>
-          <p id="pendingText" class="muted"></p>
-          <div class="row">
-            <button id="checkPending" type="button">Consultar estado</button
-            ><button id="retryPending" type="button" hidden>Reintentar misma tanda</button>
-            <button id="closeOldPending" type="button" hidden style="background: #e8ece7; color: #304438">Cerrar pendiente del turno anterior</button>
-          </div>
+        <div id="printCard" class="card" tabindex="-1" hidden>
+          <h2>Último envío</h2>
+          <div id="printStatus" class="status" role="status"></div>
         </div>
-        <div class="card">
-          <h2>Impresión</h2>
-          <div id="printStatus" class="status">Sin tandas enviadas</div>
-        </div>
-        <button id="logout" type="button" style="background: #e8ece7; color: #304438; width: 100%">
+        <button id="logout" class="secondary" type="button" style="width: 100%">
           Desvincular este dispositivo
         </button>
       </section>
@@ -284,12 +304,76 @@ export const waiterHtml = String.raw`<!doctype html>
     <script>
       (() => {
         'use strict';
+        const helpButtons = Array.from(document.querySelectorAll('.help-trigger'));
+        function closeHelp(except) {
+          for (const button of helpButtons) {
+            if (button === except) continue;
+            button.setAttribute('aria-expanded', 'false');
+            button.dataset.helpPinned = 'false';
+            button.removeAttribute('aria-describedby');
+            document.getElementById(button.getAttribute('aria-controls')).hidden = true;
+          }
+        }
+        function positionHelp(button, panel) {
+          const rect = button.getBoundingClientRect(), margin = 12;
+          panel.hidden = false;
+          const width = Math.min(280, window.innerWidth - margin * 2);
+          panel.style.width = width + 'px';
+          const height = panel.getBoundingClientRect().height;
+          const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+          const top = rect.bottom + height + margin <= window.innerHeight ? rect.bottom + 8 : Math.max(margin, rect.top - height - 8);
+          panel.style.left = left + 'px'; panel.style.top = top + 'px';
+        }
+        for (const button of helpButtons) {
+          const panel = document.getElementById(button.getAttribute('aria-controls'));
+          function openHelp() { closeHelp(button); positionHelp(button, panel); button.setAttribute('aria-expanded', 'true'); button.setAttribute('aria-describedby', panel.id); }
+          let hoverTimer = 0;
+          button.addEventListener('mouseenter', () => { clearTimeout(hoverTimer); openHelp(); });
+          button.addEventListener('mouseleave', () => { if (document.activeElement !== button) hoverTimer = setTimeout(() => { if (!panel.matches(':hover')) { panel.hidden = true; button.setAttribute('aria-expanded', 'false'); button.removeAttribute('aria-describedby'); } }, 180); });
+          button.addEventListener('focus', openHelp);
+          button.addEventListener('blur', () => { panel.hidden = true; button.setAttribute('aria-expanded', 'false'); button.removeAttribute('aria-describedby'); });
+          button.addEventListener('click', (event) => { event.stopPropagation(); const shouldOpen = button.dataset.helpPinned !== 'true'; closeHelp(); if (shouldOpen) { button.dataset.helpPinned = 'true'; openHelp(); } });
+          panel.addEventListener('mouseenter', () => clearTimeout(hoverTimer));
+          panel.addEventListener('mouseleave', () => { if (document.activeElement !== button) { panel.hidden = true; button.setAttribute('aria-expanded', 'false'); button.removeAttribute('aria-describedby'); } });
+        }
+        document.addEventListener('click', (event) => { if (!event.target.closest('.help-wrap')) closeHelp(); });
+        document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeHelp(); });
+        window.addEventListener('resize', () => closeHelp());
+        window.addEventListener('scroll', () => closeHelp(), true);
         const API = '/v1/waiter',
           TOKEN_KEY = 'waiter:session:v1';
+        function newRequestId() {
+          if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+          // Older mobile browsers can lack randomUUID; never fall back to Math.random.
+          const bytes = crypto.getRandomValues(new Uint8Array(16));
+          bytes[6] = (bytes[6] & 15) | 64;
+          bytes[8] = (bytes[8] & 63) | 128;
+          const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+          return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+        }
+        function createServerClockAnchor(serverNow, monotonicAtReceipt, wallAtReceipt) {
+          const serverTime = typeof serverNow === 'string' ? Date.parse(serverNow) : NaN;
+          if (!Number.isFinite(serverTime) || !Number.isFinite(monotonicAtReceipt) || !Number.isFinite(wallAtReceipt)) return null;
+          return { serverTime, monotonicAtReceipt, wallAtReceipt };
+        }
+        function estimateServerTimestamp(anchor, monotonicNow, wallNow) {
+          if (!anchor || !Number.isFinite(monotonicNow) || !Number.isFinite(wallNow)) return null;
+          const elapsed = Math.max(0, monotonicNow - anchor.monotonicAtReceipt, wallNow - anchor.wallAtReceipt);
+          const timestamp = anchor.serverTime + elapsed;
+          return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+        }
         let DRAFT_KEY = '',
           PENDING_KEY = '',
           WATCH_KEY = '',
-          watchTimer = null;
+          watchTimer = null,
+          serverClockAnchor = null;
+        const renderedSignatures = new WeakMap();
+        function renderIfChanged(node, signature, build) {
+          if (renderedSignatures.get(node) === signature) return false;
+          build();
+          renderedSignatures.set(node, signature);
+          return true;
+        }
         const safeGet = (store, key) => {
             try {
               return store.getItem(key);
@@ -326,7 +410,8 @@ export const waiterHtml = String.raw`<!doctype html>
           challenge = null,
           oldShiftNotFoundId = '',
           oldShiftNotFoundSessionId = '',
-          busy = false;
+          busy = false,
+          checkingPending = false;
         const el = (id) => document.getElementById(id),
           request = async (path, opts = {}) => {
             const headers = {
@@ -390,7 +475,7 @@ export const waiterHtml = String.raw`<!doctype html>
             }
             throw new Error('request_timeout');
           },
-          rpc = async (method, params = {}, stableId = crypto.randomUUID()) => {
+          rpc = async (method, params = {}, stableId = newRequestId()) => {
             try {
               const queued = await request('/rpc', {
                 method: 'POST',
@@ -437,6 +522,30 @@ export const waiterHtml = String.raw`<!doctype html>
           n.textContent = text;
           n.className = 'status ' + kind;
           n.hidden = false;
+          if (id === 'printStatus') el('printCard').hidden = !!pending();
+        }
+        function showPending(title, text) {
+          el('pendingCard').hidden = false;
+          el('pendingTitle').textContent = title;
+          el('pendingText').textContent = text;
+          el('appMessage').hidden = true;
+          el('printCard').hidden = true;
+        }
+        function revealOrderStatus() {
+          const ids = el('app').hidden ? ['pairMessage'] : ['pendingCard', 'printCard', 'appMessage'];
+          const target = ids.map(el).find((node) => !node.hidden);
+          if (!target) return;
+          target.focus({ preventScroll: true });
+          target.scrollIntoView({
+            block: 'center',
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+          });
+        }
+        function primaryAction(hasPending, isBusy, hasLines, isChecking = false) {
+          return {
+            disabled: isBusy || isChecking || (!hasPending && !hasLines),
+            label: isBusy ? 'Enviando…' : isChecking ? 'Consultando…' : hasPending ? 'Ver estado del pedido' : 'Enviar a cocina',
+          };
         }
         function allProducts() {
           return state?.menu?.products || [];
@@ -446,30 +555,38 @@ export const waiterHtml = String.raw`<!doctype html>
           el('pairing').hidden = true;
           el('app').hidden = false;
           el('sendBar').hidden = false;
-          el('connection').textContent = 'En línea';
-          el('sessionExpiry').textContent = state.expiresAt
-            ? 'Sesión hasta ' +
-              new Date(state.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            : '';
+          el('sessionExpiry').textContent = state.validUntil === 'CASH_CLOSE' && state.cashSessionId
+            ? 'Hasta el cierre de caja'
+            : state.expiresAt
+              ? 'Sesión hasta ' + new Date(state.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : '';
           el('welcome').textContent = 'Hola, ' + (state.waiter?.name || 'mozo/a');
           const locked = busy || !!pending(),
             ts = state.tables || [];
           const sel = el('table');
-          sel.replaceChildren();
-          for (const t of ts) {
-            const o = document.createElement('option');
-            o.value = String(t.id);
-            o.textContent = t.name || t.label || 'Mesa ' + (t.number ?? t.id);
-            sel.append(o);
-          }
+          const previousDraftTableId = draft.tableId;
+          const availableTable = (id) => ts.some((t) => String(t.id) === String(id));
+          const missingTable = !!(draft.lines.length && !availableTable(draft.tableId));
+          const tableSignature = JSON.stringify([ts, missingTable ? draft.tableId : null]);
+          renderIfChanged(sel, tableSignature, () => {
+            sel.replaceChildren();
+            for (const t of ts) {
+              const o = document.createElement('option');
+              o.value = String(t.id);
+              o.textContent = t.name || t.label || 'Mesa ' + (t.number ?? t.id);
+              sel.append(o);
+            }
+            if (missingTable) {
+              const missing = document.createElement('option');
+              missing.value = String(draft.tableId);
+              missing.textContent = 'Mesa original no disponible';
+              missing.selected = true;
+              sel.prepend(missing);
+            }
+          });
           if (draft.tableId && ts.some((t) => String(t.id) === String(draft.tableId)))
             sel.value = draft.tableId;
           else if (draft.lines.length) {
-            const missing = document.createElement('option');
-            missing.value = String(draft.tableId);
-            missing.textContent = 'Mesa original no disponible';
-            missing.selected = true;
-            sel.prepend(missing);
             setMsg(
               'appMessage',
               'La mesa del borrador ya no está disponible. No se cambió automáticamente.',
@@ -480,9 +597,12 @@ export const waiterHtml = String.raw`<!doctype html>
             sel.value = draft.tableId;
           }
           if (!draft.lines.length) {
-            draft.expectedOrderId =
+            const expectedOrderId =
               ts.find((t) => String(t.id) === String(draft.tableId))?.openOrderId ?? null;
-            saveDraft();
+            if (draft.tableId !== previousDraftTableId || draft.expectedOrderId !== expectedOrderId) {
+              draft.expectedOrderId = expectedOrderId;
+              saveDraft();
+            }
           }
           sel.disabled =
             locked ||
@@ -491,44 +611,46 @@ export const waiterHtml = String.raw`<!doctype html>
           if (!selectedCategory || !cats.some((c) => String(c.id ?? c) === selectedCategory))
             selectedCategory = String(cats[0]?.id ?? cats[0] ?? '');
           const cs = el('categories');
-          cs.replaceChildren();
-          for (const c of cats) {
-            const id = String(c.id ?? c),
-              b = document.createElement('button');
-            b.textContent = c.name || String(c);
-            b.className = id === selectedCategory ? 'active' : '';
-            b.onclick = () => {
-              selectedCategory = id;
-              render();
-            };
-            cs.append(b);
-          }
+          const categorySignature = JSON.stringify(cats.map((c) => [String(c.id ?? c), c.name || String(c)]));
+          renderIfChanged(cs, categorySignature, () => {
+            cs.replaceChildren();
+            for (const c of cats) {
+              const id = String(c.id ?? c), b = document.createElement('button');
+              b.textContent = c.name || String(c);
+              b.onclick = () => { selectedCategory = id; render(); };
+              cs.append(b);
+            }
+          });
+          Array.from(cs.children).forEach((button, index) => {
+            button.className = String(cats[index]?.id ?? cats[index]) === selectedCategory ? 'active' : '';
+          });
           const ps = el('products');
-          ps.replaceChildren();
-          for (const p of allProducts().filter(
-            (p) => !p.categoryId || String(p.categoryId) === selectedCategory,
-          )) {
-            const row = document.createElement('div');
-            row.className = 'product';
-            const info = document.createElement('span');
-            info.textContent = p.name || p.label || String(p.id);
-            const control = document.createElement('div');
-            control.className = 'stepper';
-            const add = document.createElement('button');
-            add.textContent = '+';
-            add.disabled = locked;
-            add.setAttribute('aria-label', 'Agregar ' + info.textContent);
-            add.onclick = () => change(p, 1);
-            control.append(add);
-            row.append(info, control);
-            ps.append(row);
+          const visibleProducts = allProducts().filter((p) => !p.categoryId || String(p.categoryId) === selectedCategory);
+          const productSignature = JSON.stringify([selectedCategory, visibleProducts]);
+          const focusedProductId = document.activeElement?.dataset?.productId || '';
+          renderIfChanged(ps, productSignature, () => {
+            ps.replaceChildren();
+            for (const p of visibleProducts) {
+              const row = document.createElement('div'); row.className = 'product';
+              const info = document.createElement('span'); info.textContent = p.name || p.label || String(p.id);
+              const control = document.createElement('div'); control.className = 'stepper';
+              const add = document.createElement('button'); add.textContent = '+';
+              add.dataset.productId = String(p.id ?? p.productId);
+              add.setAttribute('aria-label', 'Agregar ' + info.textContent);
+              add.onclick = () => change(p, 1); control.append(add); row.append(info, control); ps.append(row);
+            }
+          });
+          for (const button of ps.querySelectorAll('.stepper button')) button.disabled = locked;
+          if (focusedProductId) {
+            const matchingButton = Array.from(ps.querySelectorAll('.stepper button')).find((button) => button.dataset.productId === focusedProductId);
+            if (matchingButton && document.activeElement !== matchingButton) matchingButton.focus({ preventScroll: true });
           }
           const box = el('draft');
           box.replaceChildren();
           if (!draft.lines.length) {
             const p = document.createElement('p');
             p.className = 'muted';
-            p.textContent = 'Agregá productos al borrador.';
+            p.textContent = 'Elegí los productos del pedido.';
             box.append(p);
           }
           for (const line of draft.lines) {
@@ -555,6 +677,7 @@ export const waiterHtml = String.raw`<!doctype html>
             const note = document.createElement('textarea');
             note.maxLength = 300;
             note.placeholder = 'Nota para cocina (opcional)';
+            note.setAttribute('aria-label', 'Nota para cocina de ' + (p?.name || line.name || 'este producto'));
             note.value = line.note || '';
             note.disabled = locked;
             note.oninput = () => {
@@ -565,9 +688,11 @@ export const waiterHtml = String.raw`<!doctype html>
             box.append(row);
           }
           el('clearDraft').disabled = locked;
-          el('send').disabled = !draft.lines.length || busy || locked;
-          el('send').textContent = locked ? 'Tanda pendiente: consultar' : 'Enviar a cocina';
-          el('send').onclick = locked ? checkPending : sendBatch;
+          const action = primaryAction(!!pending(), busy, draft.lines.length > 0, checkingPending);
+          el('send').disabled = action.disabled;
+          el('send').textContent = action.label;
+          el('checkPending').disabled = checkingPending;
+          el('send').onclick = pending() ? () => checkPending(true) : sendBatch;
         }
         function change(product, delta) {
           if (pending()) return;
@@ -575,11 +700,11 @@ export const waiterHtml = String.raw`<!doctype html>
           let line = draft.lines.find((x) => x.productId === id);
           if (!line && delta > 0) {
             if (draft.lines.length >= 80) {
-              setMsg('appMessage', 'Máximo 80 productos diferentes por tanda.', 'warn');
+              setMsg('appMessage', 'Podés enviar hasta 80 productos diferentes a la vez.', 'warn');
               return;
             }
             line = {
-              lineId: crypto.randomUUID(),
+              lineId: newRequestId(),
               productId: id,
               quantity: 0,
               name: product.name || '',
@@ -623,6 +748,7 @@ export const waiterHtml = String.raw`<!doctype html>
         async function refresh() {
           try {
             state = await rpc('waiter.getState');
+            serverClockAnchor = createServerClockAnchor(state?.serverNow, performance.now(), Date.now());
             const scope =
               encodeURIComponent(tenantId) +
               ':' +
@@ -651,7 +777,7 @@ export const waiterHtml = String.raw`<!doctype html>
             WATCH_KEY = 'waiter:watch:v1:' + scope;
             draft = loadDraft();
             el('connection').textContent = 'En línea';
-            setMsg('appMessage', 'Conectado');
+            el('appMessage').hidden = true;
             render();
             const p = pending();
             if (p) await checkPending();
@@ -664,7 +790,7 @@ export const waiterHtml = String.raw`<!doctype html>
               'appMessage',
               unauthorized
                 ? 'El vínculo expiró o fue revocado. Escaneá un QR vigente para volver a vincular; el borrador se conserva.'
-                : 'Sin conexión. El borrador se conserva; al reconectar consultaremos la tanda pendiente antes de intentar enviar.',
+                : 'Sin conexión con caja. Tu pedido sigue guardado; tocá «Actualizar» para comprobarlo.',
               'warn',
             );
             if (unauthorized) {
@@ -678,12 +804,9 @@ export const waiterHtml = String.raw`<!doctype html>
         }
         async function loadChallenge() {
           challenge = { tenantId, terminalId, challengeId };
-          el('qrbox').hidden = false;
-          el('qrtext').textContent = challengeId
-            ? 'Invitación del local reconocida. Ingresá tu PIN personal.'
-            : 'La invitación no está disponible. Escaneá un QR vigente desde la caja.';
+          el('qrbox').hidden = true;
           if (!challengeId)
-            setMsg('pairMessage', 'El QR es temporal; volvé a escanearlo desde la caja.', 'error');
+            setMsg('pairMessage', 'Escaneá un QR nuevo en caja para ingresar.', 'warn');
         }
         el('pairForm').onsubmit = async (e) => {
           e.preventDefault();
@@ -719,7 +842,7 @@ export const waiterHtml = String.raw`<!doctype html>
         };
         el('clearDraft').onclick = () => {
           if (busy || pending()) return;
-          if (!draft.lines.length || confirm('¿Vaciar el borrador?')) {
+          if (!draft.lines.length || confirm('¿Quitar los productos que todavía no enviaste?')) {
             draft = { tableId: draft.tableId, expectedOrderId: draft.expectedOrderId, lines: [] };
             saveDraft();
             render();
@@ -738,9 +861,9 @@ export const waiterHtml = String.raw`<!doctype html>
           busy = true;
           render();
           const record = {
-            requestId: crypto.randomUUID(),
+            requestId: newRequestId(),
             // Immutable across retries; the DB uses this to quarantine delayed sends.
-            submittedAt: new Date().toISOString(),
+            submittedAt: estimateServerTimestamp(serverClockAnchor, performance.now(), Date.now()),
             tableId: draft.tableId,
             expectedOrderId: draft.expectedOrderId ?? null,
             expectedCashSessionId: state.cashSessionId ?? null,
@@ -750,7 +873,7 @@ export const waiterHtml = String.raw`<!doctype html>
             localStorage.setItem(PENDING_KEY, JSON.stringify(record));
           } catch {
             busy = false;
-            setMsg('appMessage', 'No se pudo guardar la tanda con seguridad; no se envió.', 'error');
+            setMsg('appMessage', 'No pudimos guardar el pedido. No se envió; mantené esta pantalla abierta.', 'error');
             render();
             return;
           }
@@ -760,18 +883,12 @@ export const waiterHtml = String.raw`<!doctype html>
             if (err.definitive)
               updateBatch({ requestId: record.requestId, status: 'rejected', error: err.message });
             else {
-              el('pendingCard').hidden = false;
-              el('pendingText').textContent =
-                'No se confirmó. Consultá estado o reintentá con el mismo ID y las mismas líneas.';
-              setMsg(
-                'appMessage',
-                'Envío incierto. Conservamos el identificador y las líneas; no reenviamos automáticamente.',
-                'warn',
-              );
+              showPending('Comprobá si llegó', 'No pudimos confirmar el envío. Tocá «Ver estado» antes de volver a pedirlo.');
             }
           } finally {
             busy = false;
             render();
+            revealOrderStatus();
           }
         }
         async function submit(record) {
@@ -813,13 +930,13 @@ export const waiterHtml = String.raw`<!doctype html>
           if (s === 'printed') {
             saveWatch(null);
             setMsg('printStatus', sameCashSession
-              ? 'Tanda impresa'
-              : 'Tanda confirmada para un turno anterior. Se limpiaron las líneas aceptadas sin modificar la mesa de esta sesión.', 'warn');
+              ? 'Comanda enviada a la impresora'
+              : 'El pedido del turno anterior ya fue confirmado.', sameCashSession ? '' : 'warn');
           } else if (s === 'failed') {
             saveWatch(null);
             setMsg('printStatus', sameCashSession
-              ? 'Tanda aceptada; falló la impresión. Revisá la impresora.'
-              : 'Tanda confirmada para un turno anterior; falló la impresión. Se limpiaron las líneas aceptadas sin modificar la mesa de esta sesión.', 'warn');
+              ? 'Pedido recibido. Avisá en caja: falló la impresión. No lo vuelvas a enviar.'
+              : 'El pedido del turno anterior fue recibido. Avisá en caja: falló la impresión.', 'warn');
           } else {
             saveWatch({
               requestId: record.requestId,
@@ -828,8 +945,8 @@ export const waiterHtml = String.raw`<!doctype html>
               printJobId: d.printJobId,
             });
             setMsg('printStatus', sameCashSession
-              ? 'Tanda aceptada. Impresión: ' + (d.status || 'pendiente')
-              : 'Tanda confirmada para un turno anterior. Se limpiaron las líneas aceptadas sin modificar la mesa de esta sesión. Impresión: ' + (d.status || 'pendiente'), 'warn');
+              ? 'Pedido recibido. Preparando la comanda…'
+              : 'Pedido del turno anterior recibido. Preparando la comanda…', '');
             schedulePrintCheck();
           }
           render();
@@ -842,30 +959,23 @@ export const waiterHtml = String.raw`<!doctype html>
           oldShiftNotFoundSessionId = '';
           el('closeOldPending').hidden = true;
           if (status === 'pending_review') {
-            el('pendingCard').hidden = false;
-            el('pendingText').textContent =
-              'Tanda demorada o con hora no verificable. Esperando confirmación de caja; todavía no se envió a cocina.';
+            showPending('Pedido pendiente de revisión', 'Avisá en caja para que revisen el pedido. Todavía no se envió a cocina.');
             el('retryPending').hidden = true;
-            setMsg('printStatus', 'Pendiente de revisión en caja; aún no enviada a cocina.', 'warn');
             render();
             return;
           }
           if (status === 'not_found') {
-            el('pendingCard').hidden = false;
             const sameCashSession =
               String(record.expectedCashSessionId || '') === String(state?.cashSessionId || '');
-            el('pendingText').textContent = sameCashSession
-              ? 'El servidor no encontró la tanda. Podés reintentarla con el mismo ID y las mismas líneas.'
-              : 'No se encontró en esta sesión de caja. No la reenvíes: consultá en caja usando la mesa y el identificador original.';
+            showPending(sameCashSession ? 'El pedido no llegó' : 'Revisá el pedido anterior', sameCashSession
+              ? 'Podés volver a intentar este envío. No agregues los productos de nuevo.'
+              : 'Es de un turno anterior. No lo reenvíes: consultá en caja.');
             el('retryPending').hidden = !sameCashSession;
             el('closeOldPending').hidden = sameCashSession || !record.expectedCashSessionId;
             if (!sameCashSession && record.expectedCashSessionId) {
               oldShiftNotFoundId = record.requestId;
               oldShiftNotFoundSessionId = String(state?.cashSessionId || '');
             }
-            setMsg('printStatus', sameCashSession
-              ? 'Tanda sin confirmar; requiere reintento manual.'
-              : 'Tanda pendiente de verificación con caja; no se reenviará desde otro turno.', 'warn');
             render();
             return;
           }
@@ -882,21 +992,15 @@ export const waiterHtml = String.raw`<!doctype html>
             el('retryPending').hidden = true;
             setMsg(
               'printStatus',
-              'Tanda rechazada: ' + (d.error?.message || d.error || 'revisá el borrador'),
+              'El pedido no se agregó. Revisalo con caja antes de enviarlo otra vez.',
               'error',
             );
             safeRemove(localStorage, PENDING_KEY);
+            el('printCard').hidden = false;
             render();
           } else {
-            el('pendingCard').hidden = false;
-            el('pendingText').textContent =
-              'Envío ' +
-              record.requestId +
-              ' — ' +
-              (status || 'sin confirmar') +
-              '. No se volverá a enviar automáticamente.';
+            showPending('Comprobá si llegó', 'Todavía no pudimos confirmar el pedido. Tocá «Ver estado»; no lo envíes de nuevo.');
             el('retryPending').hidden = true;
-            setMsg('printStatus', 'Estado de impresión: ' + (status || 'pendiente'), 'warn');
             render();
           }
         }
@@ -914,7 +1018,7 @@ export const waiterHtml = String.raw`<!doctype html>
           ) return;
           const sessionId = String(state.cashSessionId || '');
           if (!confirm(
-            '¿Consultaste con caja y verificaste que esta tanda no fue recibida? Cerrar el seguimiento en este dispositivo no cancela un pedido que ya haya sido recibido.'
+            '¿Verificaste con caja que el pedido anterior no llegó? Quitar este aviso no cancela un pedido recibido.'
           )) return;
           const current = pending();
           if (
@@ -933,7 +1037,7 @@ export const waiterHtml = String.raw`<!doctype html>
           el('closeOldPending').hidden = true;
           setMsg(
             'printStatus',
-            'Seguimiento anterior cerrado en este dispositivo. Esto no cancela un pedido que caja ya haya recibido.',
+            'Aviso anterior quitado. Los pedidos recibidos no se cancelaron.',
             'warn',
           );
           render();
@@ -947,10 +1051,10 @@ export const waiterHtml = String.raw`<!doctype html>
             setMsg(
               'printStatus',
               status === 'printed'
-                ? 'Tanda impresa'
+                ? 'Comanda enviada a la impresora'
                 : status === 'failed'
-                  ? 'Caja recibió la tanda; revisá la impresora.'
-                  : 'Estado de impresión: ' + (d.status || 'pendiente'),
+                  ? 'Pedido recibido. Avisá en caja: falló la impresión. No lo vuelvas a enviar.'
+                  : 'Pedido recibido. Preparando la comanda…',
               status === 'failed' ? 'warn' : '',
             );
             if (status === 'printed' || status === 'failed') {
@@ -963,7 +1067,7 @@ export const waiterHtml = String.raw`<!doctype html>
           } catch {
             setMsg(
               'printStatus',
-              'No se pudo actualizar el estado de impresión. Se conserva el seguimiento.',
+              'El pedido ya fue recibido. No pudimos comprobar la impresión; consultá en caja.',
               'warn',
             );
             schedulePrintCheck();
@@ -973,14 +1077,16 @@ export const waiterHtml = String.raw`<!doctype html>
           if (watchTimer) clearTimeout(watchTimer);
           if (token && state && readWatch()) watchTimer = setTimeout(checkPrint, 5000);
         }
-        async function checkPending() {
+        async function checkPending(reveal = false) {
           const p = pending();
-          if (!p) return;
+          if (!p || checkingPending) return;
+          checkingPending = true;
           oldShiftNotFoundId = '';
-          el('pendingCard').hidden = false;
-          el('pendingText').textContent = 'Consultando tanda ' + p.requestId + '…';
+          showPending('Consultando pedido…', 'Esperá un momento.');
           el('retryPending').hidden = true;
           el('closeOldPending').hidden = true;
+          render();
+          if (reveal) revealOrderStatus();
           try {
             const d = await rpc('waiter.getBatch', { requestId: p.requestId });
             updateBatch(d);
@@ -988,16 +1094,18 @@ export const waiterHtml = String.raw`<!doctype html>
             if (String(err.message).toLowerCase().includes('not_found')) {
               // An RPC/relay error is not authoritative proof the durable POS
               // lacks this request; only a successful getBatch result unlocks closure.
-              el('pendingText').textContent =
-                'No se pudo confirmar el estado. La tanda se conserva; volvé a consultar.';
+              showPending('No pudimos comprobarlo', 'El pedido sigue guardado. Volvé a consultar; no lo envíes de nuevo.');
               return;
             }
             el('closeOldPending').hidden = true;
-            el('pendingText').textContent =
-              'No se pudo confirmar. Se conserva la misma tanda y el mismo identificador; volvé a consultar.';
+            showPending('No pudimos comprobarlo', 'El pedido sigue guardado. Volvé a consultar; no lo envíes de nuevo.');
+          } finally {
+            checkingPending = false;
+            render();
+            if (reveal) revealOrderStatus();
           }
         }
-        el('checkPending').onclick = checkPending;
+        el('checkPending').onclick = () => checkPending(true);
         el('closeOldPending').onclick = closeOldPending;
         el('retryPending').onclick = async () => {
           const p = pending();
@@ -1021,10 +1129,10 @@ export const waiterHtml = String.raw`<!doctype html>
           } catch (err) {
             if (err.definitive) updateBatch({ requestId: p.requestId, status: 'rejected', error: err.message });
             else
-              el('pendingText').textContent =
-                'No se confirmó el reintento. La misma tanda sigue pendiente.';
+              showPending('Comprobá si llegó', 'No pudimos confirmar el envío. Tocá «Ver estado» antes de volver a pedirlo.');
           } finally {
             el('retryPending').disabled = false;
+            revealOrderStatus();
           }
         };
         el('logout').onclick = async () => {

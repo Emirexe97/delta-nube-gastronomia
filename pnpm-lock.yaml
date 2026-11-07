@@ -173,6 +173,9 @@ importers:
 
   apps/orders-service:
     dependencies:
+      '@gastronomy/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@gastronomy/web-orders':
         specifier: workspace:*
         version: link:../../packages/web-orders

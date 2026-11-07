@@ -11,6 +11,7 @@
     "start:storefront": "node dist/storefront.js"
   },
   "dependencies": {
+    "@gastronomy/ui": "workspace:*",
     "@gastronomy/web-orders": "workspace:*"
   },
   "devDependencies": {

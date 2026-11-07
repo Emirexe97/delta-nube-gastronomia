@@ -12,7 +12,7 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const call = (
   port,
   path,
-  { method = "GET", body, auth, origin, terminal, challenge } = {},
+  { method = "GET", body, auth, origin, terminal, challenge, cashSession } = {},
 ) =>
   new Promise((resolveCall, reject) => {
     const data =
@@ -34,6 +34,7 @@ const call = (
           ...(auth ? { authorization: `Bearer ${auth}` } : {}),
           ...(terminal ? { "x-pos-installation": "terminal1" } : {}),
           ...(challenge ? { "x-waiter-challenge": challenge } : {}),
+          ...(cashSession !== undefined ? { "x-pos-cash-session": cashSession } : {}),
           ...(origin ? { origin } : {}),
         },
       },
@@ -176,7 +177,6 @@ test("waiter relay pairs, queues and returns per-request RPC responses without p
     ).json.result.sessionToken,
     sessionToken,
   );
-
   const businessRequestId = randomBytes(18).toString("base64url");
   const rpcBody = {
     requestId: businessRequestId,

@@ -73,6 +73,7 @@ test("development IPC reports disabled updates without affecting cash or license
   expect(result.after.cashSession?.status).toBe("OPEN");
   expect(result.license.canOperate).toBe(true);
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
+  await page.getByRole("tab", { name: "Actualizaciones", exact: true }).click();
   await expect(
     page
       .locator("#settings-updates")
@@ -121,6 +122,7 @@ test("simulated update IPC shows progress and READY notice, confirms explicitly,
   });
   await page.reload();
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
+  await page.getByRole("tab", { name: "Actualizaciones", exact: true }).click();
   await expect(
     page.getByRole("progressbar", { name: "Progreso de descarga" }),
   ).toHaveAttribute("value", "47");

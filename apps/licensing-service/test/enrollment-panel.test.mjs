@@ -1,6 +1,6 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
@@ -346,6 +346,25 @@ test("owner explicitly approves a matching existing license; signed lease works 
     existingLicense.id,
   );
 
+  const accountPassword = "pilot account password 2026!";
+  const accountSetup = await api("/admin/accounts", { auth: true, method: "POST", data: { email: "Pilot@Example.test", password: accountPassword, licenseId: existingLicense.id } });
+  assert.equal(accountSetup.status, 201);
+  const setupBody = await accountSetup.json();
+  assert.deepEqual(setupBody.account, { email: "pilot@example.test", licenseId: existingLicense.id });
+  assert.equal(JSON.stringify(setupBody).includes(accountPassword), false);
+  const accountProof = await deviceLeaseProof(pair, "install-existing-001");
+  const activated = await api("/v2/accounts/activate", { method: "POST", data: { ...accountProof, email: "PILOT@example.test", password: accountPassword } });
+  assert.equal(activated.status, 200);
+  const activatedBody = await activated.json();
+  assert.deepEqual(activatedBody.account, { email: "pilot@example.test" });
+  assert.equal(activatedBody.request.status, "APPROVED");
+  assert.equal(verifyLease(activatedBody.token, publicKey, "install-existing-001").licenseId, existingLicense.id);
+  assert.equal(JSON.stringify(activatedBody).includes(accountPassword), false);
+  const replay = await api("/v2/accounts/activate", { method: "POST", data: { ...accountProof, email: "pilot@example.test", password: accountPassword } });
+  assert.equal(replay.status, 409);
+  const wrongPassword = await api("/v2/accounts/activate", { method: "POST", data: { ...(await deviceLeaseProof(pair, "install-existing-001")), email: "pilot@example.test", password: "incorrect password definitely" } });
+  assert.equal(wrongPassword.status, 401);
+
   const overview = await api("/manage/api/overview", {
     cookie: `dng_owner=${ownerCookie}`,
   });
@@ -357,6 +376,8 @@ test("owner explicitly approves a matching existing license; signed lease works 
   );
   assert.equal("activation_hash" in data.licenses[0], false);
   assert.equal("public_key" in data.requests[0], false);
+  const dbBytes = readFileSync(join(dir, "licenses.sqlite")).toString("utf8");
+  assert.equal(dbBytes.includes(accountPassword), false);
   assert.ok(
     data.audit.some(
       (row) =>
@@ -387,6 +408,79 @@ test("owner explicitly approves a matching existing license; signed lease works 
   const pausedBody = await paused.json();
   assert.equal(verifyLease(pausedBody.token, publicKey, "install-existing-001").status, "SUSPENDED");
   assert.equal("webSiteTicket" in pausedBody, false);
+});
+
+test("account activation atomically claims a fresh license/device and one of two concurrent PCs wins", async () => {
+  const license = await createLegacyLicense("Account first binding");
+  const email = `first-${randomBytes(4).toString("hex")}@example.test`;
+  const password = "pilot first binding password!";
+  const forbidden = await api("/manage/api/accounts", { method: "POST", data: { email, password, licenseId: license.id, reason: "set login" } });
+  assert.equal(forbidden.status, 401);
+  const csrfDenied = await api("/manage/api/accounts", { method: "POST", data: { email, password, licenseId: license.id, reason: "set login" }, cookie: `dng_owner=${ownerCookie}` });
+  assert.equal(csrfDenied.status, 403);
+  const setup = await api("/admin/accounts", { auth: true, method: "POST", data: { email, password, licenseId: license.id } });
+  assert.equal(setup.status, 201);
+  const firstPair = deviceKeyPair();
+  const firstProof = await deviceLeaseProof(firstPair, `first-install-${randomBytes(3).toString("hex")}`);
+  const result = await api("/v2/accounts/activate", { method: "POST", data: { ...firstProof, email, password } });
+  assert.equal(result.status, 200);
+  const activated = await result.json();
+  assert.equal(activated.request.status, "APPROVED");
+  assert.equal(activated.request.installationId, firstProof.installationId);
+  assert.equal(verifyLease(activated.token, publicKey, firstProof.installationId).licenseId, license.id);
+  const panelReset = await api("/manage/api/accounts", { method: "POST", data: { email, password: "pilot reset password 2026!", licenseId: license.id, reason: "Owner reset after verification" }, cookie: `dng_owner=${ownerCookie}`, csrf: csrfToken });
+  assert.equal(panelReset.status, 200);
+  assert.equal(JSON.stringify(await panelReset.json()).includes("pilot reset password"), false);
+  const postReset = await api("/v2/accounts/activate", { method: "POST", data: { ...(await deviceLeaseProof(firstPair, firstProof.installationId)), email, password: "pilot reset password 2026!" } });
+  assert.equal(postReset.status, 200);
+  const sameInstallOtherKey = await api("/v2/accounts/activate", { method: "POST", data: { ...(await deviceLeaseProof(deviceKeyPair(), firstProof.installationId)), email, password: "pilot reset password 2026!" } });
+  assert.equal(sameInstallOtherKey.status, 409);
+  assert.equal((await sameInstallOtherKey.json()).error, "installation_mismatch");
+  const secondPair = deviceKeyPair();
+  const secondProof = await deviceLeaseProof(secondPair, `second-install-${randomBytes(3).toString("hex")}`);
+  const conflict = await api("/v2/accounts/activate", { method: "POST", data: { ...secondProof, email, password: "pilot reset password 2026!" } });
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).error, "installation_mismatch");
+
+  const raceLicense = await createLegacyLicense("Account concurrent binding");
+  const raceEmail = `race-${randomBytes(4).toString("hex")}@example.test`;
+  await api("/admin/accounts", { auth: true, method: "POST", data: { email: raceEmail, password, licenseId: raceLicense.id } });
+  const candidates = await Promise.all([deviceLeaseProof(deviceKeyPair(), `race-one-${randomBytes(3).toString("hex")}`), deviceLeaseProof(deviceKeyPair(), `race-two-${randomBytes(3).toString("hex")}`)]);
+  const outcomes = await Promise.all(candidates.map((proof) => api("/v2/accounts/activate", { method: "POST", data: { ...proof, email: raceEmail, password } })));
+  assert.deepEqual(outcomes.map((response) => response.status).sort(), [200, 409]);
+  const boundLicense = await api("/admin/licenses", { auth: true });
+  assert.equal((await boundLicense.json()).licenses.find((row) => row.id === raceLicense.id).installationId, candidates[outcomes[0].status === 200 ? 0 : 1].installationId);
+
+  const rejectedLicense = await createLegacyLicense("Rejected device account");
+  const rejectedEmail = `reject-${randomBytes(4).toString("hex")}@example.test`;
+  await api("/admin/accounts", { auth: true, method: "POST", data: { email: rejectedEmail, password, licenseId: rejectedLicense.id } });
+  const rejectedPair = deviceKeyPair();
+  const rejectedDevice = await makeDeviceRequest(rejectedPair, "Rejected account device", `rejected-install-${randomBytes(3).toString("hex")}`);
+  const pending = await rejectedDevice.response.json();
+  const rejection = await api(`/manage/api/requests/${pending.request.id}/reject`, { method: "POST", data: { reason: "Owner rejected this installation" }, cookie: `dng_owner=${ownerCookie}`, csrf: csrfToken });
+  assert.equal(rejection.status, 200);
+  const rejectedActivation = await api("/v2/accounts/activate", { method: "POST", data: { ...(await deviceLeaseProof(rejectedPair, rejectedDevice.signed.installationId)), email: rejectedEmail, password } });
+  assert.equal(rejectedActivation.status, 409);
+  assert.equal((await rejectedActivation.json()).error, "installation_mismatch");
+
+  const badProofLicense = await createLegacyLicense("Bad proof account");
+  const badProofEmail = `bad-proof-${randomBytes(4).toString("hex")}@example.test`;
+  await api("/admin/accounts", { auth: true, method: "POST", data: { email: badProofEmail, password, licenseId: badProofLicense.id } });
+  const badProof = await deviceLeaseProof(deviceKeyPair(), `bad-proof-install-${randomBytes(3).toString("hex")}`);
+  badProof.signature = `${badProof.signature.slice(0, -1)}${badProof.signature.endsWith("A") ? "B" : "A"}`;
+  const refusedProof = await api("/v2/accounts/activate", { method: "POST", data: { ...badProof, email: badProofEmail, password } });
+  assert.equal(refusedProof.status, 401);
+  const afterBadProof = await api("/admin/licenses", { auth: true });
+  assert.equal((await afterBadProof.json()).licenses.find((row) => row.id === badProofLicense.id).installationId, null);
+
+  await new Promise((resolve) => app.server.close(resolve));
+  app.close();
+  app = createLicenseServer({ dbPath: join(dir, "licenses.sqlite"), adminToken: admin, privateKey, rateLimit: 500, webSiteProvisionSecret, panelAuth: { username: "owner", passwordHash, origin, secureCookies: true } });
+  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  base = `http://127.0.0.1:${app.server.address().port}`;
+  const afterRestart = await api("/v2/accounts/activate", { method: "POST", data: { ...(await deviceLeaseProof(firstPair, firstProof.installationId)), email, password: "pilot reset password 2026!" } });
+  assert.equal(afterRestart.status, 200);
+  assert.equal((await afterRestart.json()).account.email, email);
 });
 
 test("owner rejects pending device; requests cannot transfer a key or bypass one-approved-device policy", async () => {

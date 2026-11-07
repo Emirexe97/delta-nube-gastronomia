@@ -116,10 +116,20 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
   await expect(createOrderButton).toBeEnabled();
   await page.getByRole("button", { name: "Crear pedido" }).click();
   await expect(page.getByText(/Pedido #\d+/)).toBeVisible();
+  const sidebar = page.locator('[data-app-navigation="true"]');
+  await expect(sidebar).toBeVisible();
+  const sidebarBox = await sidebar.boundingBox();
   const overlayBox = await page.getByTestId("modal-overlay").boundingBox();
   const orderDialog = page.getByRole("dialog", { name: /Pedido #\d+/ });
   const dialogBox = await orderDialog.boundingBox();
-  expect(overlayBox).toMatchObject({ x: 0, y: 0, width: 1366, height: 680 });
+  expect(sidebarBox).not.toBeNull();
+  expect(overlayBox).not.toBeNull();
+  expect(overlayBox!.x).toBeCloseTo(sidebarBox!.x + sidebarBox!.width);
+  expect(overlayBox!.width).toBeCloseTo(
+    1366 - (sidebarBox!.x + sidebarBox!.width),
+  );
+  expect(overlayBox!.y).toBe(0);
+  expect(overlayBox!.height).toBe(680);
   expect(dialogBox).not.toBeNull();
   expect(dialogBox!.y).toBeGreaterThanOrEqual(0);
   expect(dialogBox!.y + dialogBox!.height).toBeLessThanOrEqual(680);
@@ -193,7 +203,7 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   await customerDialog
     .getByLabel("Dirección", { exact: true })
     .fill("Belgrano 100");
-  await customerDialog.getByLabel("Valor del envío").fill("2500");
+  await customerDialog.getByLabel("Valor del envío", { exact: true }).fill("2500");
   await customerDialog
     .getByRole("button", { name: "Guardar y seleccionar" })
     .click();
@@ -250,7 +260,7 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
     .getByLabel("Dirección", { exact: true })
     .nth(1)
     .fill("Mitre 900");
-  await editCustomerDialog.getByLabel("Valor del envío").nth(1).fill("3500");
+  await editCustomerDialog.getByLabel("Valor del envío", { exact: true }).nth(1).fill("3500");
   await editCustomerDialog
     .getByRole("button", { name: "Guardar cambios" })
     .click();
@@ -270,7 +280,7 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   });
   await expect(deliveryCustomerOption).toBeVisible();
   await deliveryCustomerOption.click();
-  const addressSelector = page.getByLabel("Dirección guardada");
+  const addressSelector = page.getByRole("combobox", { name: "Dirección guardada", exact: true });
   await expect(addressSelector).toBeVisible();
   await expect(addressSelector.locator("option")).toContainText([
     "Otra dirección para este pedido",
@@ -286,10 +296,10 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
     "Mitre 900",
   );
   const newDeliveryDialog = page.getByRole("dialog", { name: "Nuevo Envío" });
-  await expect(newDeliveryDialog.getByLabel("Costo de envío")).toHaveValue(
+  await expect(newDeliveryDialog.getByLabel("Costo de envío", { exact: true })).toHaveValue(
     "3500",
   );
-  await newDeliveryDialog.getByLabel("Costo de envío").fill("4200");
+  await newDeliveryDialog.getByLabel("Costo de envío", { exact: true }).fill("4200");
   await newDeliveryDialog.getByRole("button", { name: "Crear pedido" }).click();
 
   const draftDialog = page.getByRole("dialog", { name: /Pedido #\d+ · Envío/ });
@@ -299,10 +309,10 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   const editDraftDialog = page.getByRole("dialog", {
     name: "Editar datos · Envío",
   });
-  await expect(editDraftDialog.getByLabel("Costo de envío")).toHaveValue(
+  await expect(editDraftDialog.getByLabel("Costo de envío", { exact: true })).toHaveValue(
     "4200",
   );
-  await editDraftDialog.getByLabel("Costo de envío").fill("4600");
+  await editDraftDialog.getByLabel("Costo de envío", { exact: true }).fill("4600");
   await editDraftDialog
     .getByRole("button", { name: "Guardar y volver al pedido" })
     .click();
@@ -440,7 +450,7 @@ test("edita precios de producto con autorización e historial", async () => {
     name: /Operación masiva · 2 productos/,
   });
   await bulkDialog.getByLabel("Ajustar precios").check();
-  await bulkDialog.getByLabel("Variación (%)").fill("10");
+  await bulkDialog.getByLabel("Variación (%)", { exact: true }).fill("10");
   await bulkDialog.getByLabel("Delivery / Para retirar").uncheck();
   await bulkDialog.getByLabel("Motivo").fill("Aumento masivo E2E");
   await bulkDialog.getByLabel("PIN de autorización").fill("1234");
@@ -688,6 +698,7 @@ test("protege modales anidados y completa atajos y recuperación por teclado", a
 
 test("guarda perfiles de impresión compatibles con el POS", async () => {
   await page.getByRole("link", { name: "Configuración" }).click();
+  await page.getByRole("tab", { name: "Impresión", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Impresión", exact: true }),
   ).toBeVisible();
@@ -697,6 +708,7 @@ test("guarda perfiles de impresión compatibles con el POS", async () => {
   await kitchenProfile.getByLabel("Nombre del perfil").fill("Cocina E2E");
   await kitchenProfile.getByLabel("Ancho de papel").selectOption("58mm");
   await kitchenProfile.getByLabel("Copias").fill("2");
+  await page.getByRole("tab", { name: "Textos", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Textos de impresión" }),
   ).toBeVisible();
@@ -712,6 +724,7 @@ test("guarda perfiles de impresión compatibles con el POS", async () => {
   ).toBeVisible();
   await page.getByRole("link", { name: "Caja" }).click();
   await page.getByRole("link", { name: "Configuración" }).click();
+  await page.getByRole("tab", { name: "Impresión", exact: true }).click();
   const persistedKitchen = page.getByRole("region", {
     name: "Comanda de cocina",
   });
@@ -719,6 +732,7 @@ test("guarda perfiles de impresión compatibles con el POS", async () => {
     "Cocina E2E",
   );
   await expect(persistedKitchen.getByLabel("Copias")).toHaveValue("2");
+  await page.getByRole("tab", { name: "Textos", exact: true }).click();
   await expect(page.getByLabel("Encabezado de comanda")).toHaveValue(
     "COCINA E2E",
   );
@@ -758,14 +772,25 @@ test("concilia la caja con cambio final distinto y confirmación definitiva", as
   await expect(
     dialog.getByText("Composición del efectivo esperado"),
   ).toBeVisible();
-  await dialog.getByLabel("Total contado en caja").fill("50000");
+  await expect(
+    dialog.getByText(/No hay pedidos ni rendiciones pendientes/),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("checkbox", { name: /Forzar cierre/ }),
+  ).toHaveCount(0);
+  await dialog.getByLabel("Total contado en caja").fill("49000");
   await dialog.getByLabel("Cambio final para la próxima caja").fill("30000");
   await expect(dialog.getByText("Efectivo a retirar")).toBeVisible();
-  await dialog
-    .getByLabel(/Forzar cierre si existen pedidos pendientes/)
-    .check();
-  await dialog.getByLabel("Motivo del cierre forzado").fill("Cierre E2E");
-  await dialog.getByLabel("PIN de autorización").fill("1234");
+  await expect(
+    dialog.getByRole("button", { name: "Revisar cierre" }),
+  ).toBeDisabled();
+  await expect(
+    dialog.getByText("Indicá el motivo de la diferencia de arqueo.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await dialog.getByLabel("Motivo de la diferencia").fill("Diferencia E2E");
+  await expect(dialog.getByLabel("PIN de autorización")).toHaveCount(0);
   await dialog.getByRole("button", { name: "Revisar cierre" }).click();
   const confirmation = page.getByRole("dialog", {
     name: "Confirmar cierre definitivo",
@@ -774,7 +799,7 @@ test("concilia la caja con cambio final distinto y confirmación definitiva", as
     confirmation
       .getByText("Efectivo a retirar")
       .locator("..")
-      .getByText("$ 20.000", { exact: true }),
+      .getByText("$ 19.000", { exact: true }),
   ).toBeVisible();
   await confirmation
     .getByRole("button", { name: "Confirmar cierre definitivo" })

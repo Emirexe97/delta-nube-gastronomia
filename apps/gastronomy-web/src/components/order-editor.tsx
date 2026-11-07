@@ -1578,6 +1578,7 @@ export function OrderEditor({
             </Field>
             <Field
               label="Precio unitario"
+              hintMode="inline"
               hint={
                 addingPriceChanged
                   ? "Precio manual · requiere PIN"
@@ -2667,6 +2668,7 @@ function DepositModal({
         <Field
           label="Importe de la seña"
           hint="Se descontará del saldo a cobrar"
+          hintMode="inline"
         >
           <Input
             autoFocus
@@ -3618,6 +3620,7 @@ function PaymentModal({
           <div className="mt-3 grid gap-3">
             <Field
               label="Repartidor"
+              hintMode={driverSelectionLocked ? "inline" : "help"}
               hint={
                 driverSelectionLocked
                   ? "Se mantiene el repartidor asignado porque el pedido ya tiene un pago parcial."

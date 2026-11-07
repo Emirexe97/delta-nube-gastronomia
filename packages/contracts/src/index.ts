@@ -14,6 +14,7 @@ export type LicenseState =
   | "INVALID"
   | "CLOCK_ROLLBACK";
 export interface LicenseStatusDto {
+  account?: { email: string } | null;
   state: LicenseState;
   canOperate: boolean;
   installationId: string;
@@ -1338,6 +1339,7 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   checkAppUpdate(): Promise<AppUpdateStatusDto>;
   installAppUpdate(): Promise<AppUpdateStatusDto>;
   getLicenseStatus(): Promise<LicenseStatusDto>;
+  signInLicenseAccount(input: { email: string; password: string }): Promise<LicenseStatusDto>;
   requestLicenseAccess(input: {
     businessName: string;
     webSite?: { slug: string; whatsappNumber: string };

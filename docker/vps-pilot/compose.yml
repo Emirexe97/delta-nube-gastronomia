@@ -1,0 +1,89 @@
+name: gastronomy_account_waiter_pilot
+
+services:
+  license:
+    image: sha256:c1cf559ea8f3c286b719c508bbffea31007c06f3ac1632153cbfbae22457eaef
+    pull_policy: never
+    entrypoint: ["node"]
+    command: ["/pilot/app.js"]
+    working_dir: /pilot
+    user: "1000:1000"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "2"
+    environment:
+      HOME: /pilot-home
+      HOSTING_PILOT_KIND: license
+      PORT: "3000"
+      NODE_ENV: production
+    volumes:
+      - ./release/license:/pilot:ro
+      - ./state/license:/pilot-home:rw
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      private:
+        aliases: [gastronomy-pilot-license]
+
+  waiter:
+    image: sha256:c1cf559ea8f3c286b719c508bbffea31007c06f3ac1632153cbfbae22457eaef
+    pull_policy: never
+    entrypoint: ["node"]
+    command: ["/pilot/app.js"]
+    working_dir: /pilot
+    user: "1000:1000"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.25
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: "2"
+    environment:
+      HOME: /pilot-home
+      HOSTING_PILOT_KIND: waiter
+      PORT: "3000"
+      NODE_ENV: production
+    volumes:
+      - ./release/waiter:/pilot:ro
+      - ./state/waiter:/pilot-home:rw
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      private:
+        aliases: [gastronomy-pilot-waiter]
+
+networks:
+  private:
+    name: gastronomy_account_waiter_pilot_private
+    internal: true

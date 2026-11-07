@@ -474,3 +474,92 @@ test("enrollment and lease polling serialize instead of consuming each other's r
     assert.deepEqual(paths, ["/v2/devices/challenge", "/v2/devices/request", "/v2/devices/challenge", "/v2/devices/lease"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("account activation signs a device lease challenge, persists only email and encrypted identity, and resumes offline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-account-"));
+  try {
+    let now = Date.parse("2026-03-01T12:00:00.000Z");
+    const { publicKey, privateKey } = keys();
+    const calls: string[] = [];
+    const safeStorage = { encryptString: (s: string) => Buffer.from(`vault:${s}`), decryptString: (b: Buffer) => b.toString().replace(/^vault:/, "") };
+    const fetcher: typeof fetch = async (url, init) => {
+      const path = new URL(String(url)).pathname; calls.push(path);
+      const body = JSON.parse(String(init?.body));
+      if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-account", nonce: "q".repeat(43), expiresAt: new Date(now + 60_000).toISOString() }));
+      assert.equal(path, "/v2/accounts/activate");
+      assert.equal(body.email, "owner@example.com"); assert.equal(body.password, "secret-not-on-disk");
+      return new Response(JSON.stringify({
+        request: { id: "request-account", installationId: body.installationId, businessName: "Cafe Norte", keyFingerprint: devicePublicKeyFingerprint(body.publicKey), status: "APPROVED", licenseId: "license_123", createdAt: new Date(now).toISOString() },
+        token: responseToken(body.installationId, now, privateKey), account: { email: "owner@example.com" },
+      }));
+    };
+    const make = async (fetch: typeof globalThis.fetch) => { const value = new DesktopLicensing({ userDataPath: dir, isPackaged: true, now: () => now, config: { serverUrl: "https://example.test", publicKey }, safeStorage, fetch }); await value.initialize(); return value; };
+    const license = await make(fetcher);
+    const input = { email: " Owner@Example.com ", password: "secret-not-on-disk" };
+    const status = await license.signInAccount(input);
+    assert.equal(status.state, "ACTIVE"); assert.deepEqual(status.account, { email: "owner@example.com" });
+    assert.deepEqual(calls, ["/v2/devices/challenge", "/v2/accounts/activate"]);
+    const disk = await readFile(join(dir, "license-state.json"), "utf8") + await readFile(join(dir, "device-identity.json"), "utf8");
+    assert.doesNotMatch(disk, /secret-not-on-disk/); assert.match(disk, /owner@example.com/); assert.doesNotMatch(disk, /BEGIN PRIVATE KEY/);
+    now += DAY;
+    const restarted = await make(async () => { throw new Error("offline"); });
+    assert.deepEqual((await restarted.getStatus()).account, { email: "owner@example.com" });
+    assert.equal((await restarted.getStatus()).canOperate, true);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("account failures are actionable and preserve the existing lease; identity alone never changes legacy refresh", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-account-fail-"));
+  try {
+    const { publicKey, privateKey } = keys(); let now = Date.now();
+    const license = new DesktopLicensing({ userDataPath: dir, isPackaged: true, now: () => now, config: { serverUrl: "https://example.test", publicKey }, safeStorage: { encryptString: s => Buffer.from(s), decryptString: b => b.toString() }, fetch: async (url, init) => {
+      const path = new URL(String(url)).pathname; const body = JSON.parse(String(init?.body));
+      if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-account", nonce: "q".repeat(43), expiresAt: new Date(now + 60_000).toISOString() }));
+      if (path.endsWith("accounts/activate")) return new Response(JSON.stringify({ error: "invalid_credentials" }), { status: 401 });
+      if (path.endsWith("activate")) return new Response(JSON.stringify({ token: responseToken(body.installationId, now, privateKey) }));
+      assert.equal(path, "/v1/verify", "unacknowledged account identity must not switch legacy refresh to v2");
+      return new Response(JSON.stringify({ token: responseToken(body.installationId, now, privateKey) }));
+    } });
+    await license.initialize();
+    await license.activate("VALID-CODE");
+    const before = await readFile(join(dir, "license-state.json"), "utf8");
+    await assert.rejects(license.signInAccount({ email: "owner@example.com", password: "wrong" }), /Email o contraseña incorrectos/);
+    assert.equal(await readFile(join(dir, "license-state.json"), "utf8"), before);
+    await license.refresh();
+    assert.equal((await license.getStatus()).state, "ACTIVE");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("rejects credential-bearing server URLs and supports enforced local licensing tests", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-account-config-"));
+  try {
+    const { publicKey } = keys();
+    const insecure = new DesktopLicensing({ userDataPath: dir, isPackaged: true, config: { serverUrl: "https://user:pass@example.test", publicKey } });
+    await insecure.initialize(); assert.equal((await insecure.getStatus()).state, "NOT_CONFIGURED");
+    const enforced = new DesktopLicensing({ userDataPath: dir, isPackaged: false, enforceLicense: true, config: { serverUrl: "https://example.test", publicKey } });
+    await enforced.initialize(); assert.equal((await enforced.getStatus()).state, "UNACTIVATED");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("account activation times out stalled response bodies and rejects oversized bodies without replacing a valid lease", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gastronomy-account-body-"));
+  try {
+    const { publicKey, privateKey } = keys(); const now = Date.now();
+    let mode: "stall" | "oversize" = "stall";
+    const fetcher: typeof fetch = async (url, init) => {
+      const path = new URL(String(url)).pathname; const body = JSON.parse(String(init?.body));
+      if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-body", nonce: "q".repeat(43), expiresAt: new Date(now + 60_000).toISOString() }));
+      if (path.endsWith("/v1/activate")) return new Response(JSON.stringify({ token: responseToken(body.installationId, now, privateKey) }));
+      if (mode === "stall") return new Response(new ReadableStream<Uint8Array>({ start() { /* intentionally never completes */ } }));
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array(16 * 1024 + 1)); controller.close(); } }));
+    };
+    const license = new DesktopLicensing({ userDataPath: dir, isPackaged: true, now: () => now, config: { serverUrl: "https://example.test", publicKey }, safeStorage: { encryptString: s => Buffer.from(s), decryptString: b => b.toString() }, fetch: fetcher });
+    await license.initialize(); await license.activate("VALID");
+    const tokenBefore = JSON.parse(await readFile(join(dir, "license-state.json"), "utf8")).token;
+    await assert.rejects(license.signInAccount({ email: "owner@example.com", password: "secret" }), /No se pudo conectar/);
+    assert.equal(JSON.parse(await readFile(join(dir, "license-state.json"), "utf8")).token, tokenBefore);
+    mode = "oversize";
+    await assert.rejects(license.signInAccount({ email: "owner@example.com", password: "secret" }), /respuesta de licencia inválida/);
+    assert.equal(JSON.parse(await readFile(join(dir, "license-state.json"), "utf8")).token, tokenBefore);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

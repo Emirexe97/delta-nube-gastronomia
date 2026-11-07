@@ -15,6 +15,37 @@ const derive = (password: string, salt: Buffer) =>
     });
   });
 
+const ACCOUNT_OPTIONS = { N: 1 << 15, r: 8, p: 3, maxmem: 128 * 1024 * 1024 };
+const deriveAccount = (password: string, salt: Buffer) =>
+  new Promise<Buffer>((resolve, reject) => {
+    scryptCallback(password, salt, KEY_BYTES, ACCOUNT_OPTIONS, (error, key) => {
+      if (error) reject(error);
+      else resolve(key as Buffer);
+    });
+  });
+
+/** Account passwords use a separately versioned, stronger hash format. */
+export async function hashAccountPassword(password: string): Promise<string> {
+  if (typeof password !== "string" || password.length < 15 || password.length > 128 || Buffer.byteLength(password, "utf8") > 512)
+    throw new Error("Account password must be 15-128 characters");
+  const salt = randomBytes(SALT_BYTES);
+  const derived = await deriveAccount(password, salt);
+  return `account-scrypt-v1$${salt.toString("base64url")}$${derived.toString("base64url")}`;
+}
+
+export async function verifyAccountPassword(password: string, encoded: string): Promise<boolean> {
+  if (typeof password !== "string" || password.length > 128 || Buffer.byteLength(password, "utf8") > 512 || typeof encoded !== "string") return false;
+  const match = /^account-scrypt-v1\$([A-Za-z0-9_-]{22})\$([A-Za-z0-9_-]{86})$/.exec(encoded);
+  if (!match) return false;
+  try {
+    const salt = Buffer.from(match[1]!, "base64url");
+    const expected = Buffer.from(match[2]!, "base64url");
+    if (salt.length !== SALT_BYTES || expected.length !== KEY_BYTES) return false;
+    const actual = await deriveAccount(password, salt);
+    return timingSafeEqual(actual, expected);
+  } catch { return false; }
+}
+
 /** Encoded value intended for the private PANEL_PASSWORD_HASH_FILE. */
 export async function hashPanelPassword(password: string): Promise<string> {
   if (

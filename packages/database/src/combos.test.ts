@@ -57,14 +57,12 @@ test("combo configuration and item preserve component snapshots and calculate th
       })),
     });
     assert.equal(
-      Number(
-        (
-          repo.db
-            .prepare("SELECT MAX(version) AS version FROM schema_migrations")
-            .get() as { version: number }
-        ).version,
-      ),
-      40,
+      (
+        repo.db
+          .prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 40")
+          .get() as { count: number }
+      ).count,
+      1,
     );
     const definition = {
       slots: [

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3-multiple-ciphers";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
+import { migrations } from "./migrations";
 import { latestSchemaVersion, removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
 
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
@@ -43,7 +44,7 @@ function protectedState(db: InstanceType<typeof Database>) {
 function withoutSchemaAdditions(state: Record<string, any>) {
   return Object.fromEntries(Object.entries(state).map(([table, rows]) => [table, (rows as any[]).map((row) => {
     const copy = { ...row };
-    if (table === "products") delete copy.combo_definition_json;
+    if (table === "products") { delete copy.combo_definition_json; delete copy.web_published; }
     if (table === "order_items") delete copy.combo_components_json;
     if (table === "purchases") { delete copy.revision; delete copy.cancelled_at; delete copy.cancellation_reason; }
     return copy;
@@ -151,7 +152,7 @@ test("migration adds zero revision to existing purchases without changing any hi
     assert.deepEqual(withoutSchemaAdditions(protectedState(db)), businessBefore);
     assert.deepEqual(db.prepare("SELECT * FROM command_receipts ORDER BY rowid").all(), receiptsBefore);
     assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, latestSchemaVersion);
-    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), [{ version: 35 }, { version: 36 }, { version: 37 }, { version: 38 }, { version: 39 }, { version: 40 }, { version: 41 }]);
+    assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), migrations.filter((migration) => migration.version >= 35).map(({ version }) => ({ version })));
     assert.equal((db.prepare("SELECT COUNT(*) count FROM purchase_item_cost_corrections").get() as any).count, 0);
     assert.equal((db.prepare("SELECT COUNT(*) count FROM purchase_item_quantity_corrections").get() as any).count, 0);
   } finally {

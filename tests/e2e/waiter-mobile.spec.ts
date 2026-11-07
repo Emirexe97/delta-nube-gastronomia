@@ -12,7 +12,7 @@ import { createServer, type AddressInfo } from "node:net";
 
 test("QR de caja → teléfono → dos tandas a un solo comandero y revocación", async ({
   page: phone,
-}) => {
+}, testInfo) => {
   test.setTimeout(100_000);
   const { createOrdersServer } =
     await import("../../apps/orders-service/dist/server.js");
@@ -115,15 +115,16 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     });
     await pos.reload();
     await pos.getByRole("link", { name: "Configuración" }).click();
+    await pos.getByRole("tab", { name: "Impresión", exact: true }).click();
     const kitchen = pos.getByRole("region", {
       name: "Comanda de cocina",
       exact: true,
     });
     await kitchen
-      .getByLabel("Modo", { exact: false })
+      .getByRole("combobox", { name: /^Modo/ })
       .selectOption("SYSTEM_DIRECT");
     await kitchen
-      .getByLabel("Impresora", { exact: false })
+      .getByRole("combobox", { name: /^Impresora/ })
       .selectOption("Cocina piloto");
     // Test the unsaved profile against the selected driver; it must not reset the selection.
     await kitchen.getByRole("button", { name: "Imprimir prueba" }).click();
@@ -132,7 +133,7 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
         app!.evaluate(({ app }) => (app as any).__waiterTickets.length),
       )
       .toBe(1);
-    await expect(kitchen.getByLabel("Impresora", { exact: false })).toHaveValue(
+    await expect(kitchen.getByRole("combobox", { name: /^Impresora/ })).toHaveValue(
       "Cocina piloto",
     );
     await app.evaluate(({ app }) => {
@@ -141,9 +142,10 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     await pos
       .getByRole("button", { name: "Guardar configuración", exact: true })
       .click();
+    await pos.getByRole("tab", { name: "Modo Mozo", exact: true }).click();
     const panel = pos.locator("#settings-waiter");
     await panel.locator("select").selectOption(waiter.id);
-    await panel.getByRole("button", { name: "Generar QR presencial" }).click();
+    await panel.getByRole("button", { name: "Vincular teléfono" }).click();
     const img = panel.locator("img");
     await expect(img).toBeVisible();
     const image = await img.getAttribute("src");
@@ -152,6 +154,18 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     );
     expect(address).toContain(origin + "/waiter#");
     await phone.setViewportSize({ width: 375, height: 812 });
+    // A physical phone can be ahead of the PC. Immediate orders must use the PC time anchor,
+    // not quarantine every send as a future timestamp. Only this isolated browser clock changes.
+    await phone.addInitScript(() => {
+      const NativeDate = Date;
+      (window as any).__nativePilotDate = NativeDate;
+      class AheadDate extends NativeDate {
+        constructor(value?: any) { if (arguments.length === 0) super(NativeDate.now() + 300_000); else super(value); }
+        static now() { return NativeDate.now() + 300_000; }
+      }
+      window.Date = AheadDate as DateConstructor;
+    });
+    await phone.setViewportSize({ width: 390, height: 844 });
     await phone.goto(address!);
     await phone.locator("#pin").fill("5731");
     await phone.getByRole("button", { name: "Vincular", exact: true }).click();
@@ -189,6 +203,12 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
         }
       }
       await add.click();
+      if (index === 0) {
+        expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+        const screenshot = testInfo.outputPath("waiter-active-order-mobile.png");
+        await phone.screenshot({ path: screenshot, fullPage: true });
+        await testInfo.attach("waiter-active-order-mobile", { path: screenshot, contentType: "image/png" });
+      }
       await phone.locator("#send").click();
       await expect
         .poll(async () => (await tickets()).length, { timeout: 15000 })
@@ -202,6 +222,7 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     expect(slips[0]).toMatch(/plato piloto uno/i);
     expect(slips[1]).toMatch(/plato piloto dos/i);
     expect(slips[1]).not.toMatch(/plato piloto uno/i);
+    await phone.evaluate(() => { window.Date = (window as any).__nativePilotDate; });
     // A spool failure leaves the sale untouched. Only the saved ticket is retried.
     await app.evaluate(({ app }) => {
       (app as any).__waiterOffline = true;
@@ -256,19 +277,20 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     });
     await phone.getByRole("button", { name: "Agregar Plato piloto dos", exact: true }).click();
     await phone.locator("#send").click();
-    await expect(phone.locator("#pendingText")).toContainText("confirmación de caja", { timeout: 12000 });
+    await expect(phone.locator("#pendingTitle")).toContainText("Pedido pendiente de revisión", { timeout: 12000 });
+    await expect(phone.locator("#send")).toBeEnabled();
     expect(await tickets()).toHaveLength(3);
     expect((await pos.evaluate(() => window.gastronomy.listDelayedWaiterBatches()))).toHaveLength(1);
     const stillThree = await pos.evaluate((id) => window.gastronomy.getOrder({ orderId: id }), job.orderId);
     expect(stillThree.items.reduce((sum, i) => sum + i.quantity, 0)).toBe(3);
     await phone.locator("#checkPending").click();
-    await expect(phone.locator("#pendingText")).toContainText("confirmación de caja");
+    await expect(phone.locator("#pendingTitle")).toContainText("Pedido pendiente de revisión");
     expect(await tickets()).toHaveLength(3);
-    await pos.getByRole("link", { name: "Pedidos", exact: true }).click();
-    await pos.getByRole("tab", { name: /Mozos demorados/ }).click();
+    await pos.getByRole("link", { name: "Salón", exact: true }).click();
+    await pos.getByRole("tab", { name: /Mozos/ }).click();
     await pos.getByRole("button", { name: /Mesa 88.*Moza piloto/ }).click();
     await expect(pos.getByText("1 × Plato piloto dos", { exact: true })).toBeVisible();
-    await pos.getByRole("button", { name: "Confirmar e imprimir tanda", exact: true }).click();
+    await pos.getByRole("button", { name: "Aprobar y enviar a cocina", exact: true }).click();
     await expect.poll(async () => (await tickets()).length, { timeout: 12000 }).toBe(4);
     const once = await pos.evaluate((requestId) => window.gastronomy.confirmDelayedWaiterBatch({ requestId }), delayedPayload.requestId);
     expect(once.created).toBe(false);
@@ -277,8 +299,9 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     expect((await tickets())[3]).not.toMatch(/plato piloto uno/i);
     await phone.locator("#checkPending").click();
     await expect(phone.locator("#draft")).not.toContainText("Plato piloto dos");
-    await expect(pos.getByText("No hay tandas demoradas pendientes.")).toBeVisible();
+    await expect(pos.getByText("No hay pedidos pendientes de revisión.")).toBeVisible();
     await pos.getByRole("link", { name: "Configuración", exact: true }).click();
+    await pos.getByRole("tab", { name: "Modo Mozo", exact: true }).click();
     await panel.getByRole("button", { name: "Revocar", exact: true }).click();
     await phone.locator("#reconnect").click();
     await expect(phone.locator("#pin")).toBeVisible({ timeout: 12000 });

@@ -51,7 +51,7 @@ test("development runtime reports DEVELOPMENT through the real preload and IPC",
 
 test("settings license panel shows the live development status without activation UI or a blocking banner", async () => {
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
-  await page.getByRole("button", { name: "Licencia", exact: true }).click();
+  await page.getByRole("tab", { name: "Licencia", exact: true }).click();
   const panel = page.locator("#settings-license");
   await expect(panel).toBeVisible();
   await expect(
@@ -73,11 +73,9 @@ test("settings license panel shows the live development status without activatio
 
 test("license settings coexist with the existing backup section", async () => {
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
-  await page.getByRole("button", { name: "Licencia", exact: true }).click();
+  await page.getByRole("tab", { name: "Licencia", exact: true }).click();
   await expect(page.locator("#settings-license")).toBeVisible();
-  await page
-    .getByRole("button", { name: "Copias de seguridad", exact: true })
-    .click();
+  await page.getByRole("tab", { name: "Copias de seguridad", exact: true }).click();
   await expect(page.locator("#settings-backup")).toBeVisible();
   await expect(
     page

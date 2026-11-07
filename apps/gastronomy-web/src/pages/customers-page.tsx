@@ -1023,6 +1023,7 @@ function CustomerModal({
         <div className="grid gap-3 sm:grid-cols-2">
           <Field
             label="Teléfono"
+            hintMode={phone && !phoneValid ? "inline" : "help"}
             hint={
               phone && !phoneValid
                 ? "Ingresá al menos 6 dígitos."
@@ -1045,6 +1046,7 @@ function CustomerModal({
           </Field>
           <Field
             label="Nombre"
+            hintMode={name && !nameValid ? "inline" : "help"}
             hint={
               name && !nameValid
                 ? "Ingresá un nombre más descriptivo."

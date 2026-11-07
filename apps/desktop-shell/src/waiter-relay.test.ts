@@ -10,6 +10,25 @@ const env = {
 };
 const cfg = waiterRelayConfig(env, "terminal-a")!;
 
+test("explicit mobile HTTPS ingress changes only QR origin, never terminal credentials destination", async () => {
+  const transport = "http://127.0.0.1:8098";
+  const settings = { ...env, GASTRONOMY_WEB_ORDERS_URL: transport, GASTRONOMY_WAITER_PUBLIC_URL: "https://192.168.18.69:8443" };
+  const config = waiterRelayConfig(settings, "terminal-a")!;
+  const challengeId = "q".repeat(43);
+  const relay = createWaiterRelay({ config: () => config, process: async () => null, fetch: async (input) => {
+    assert.equal(new URL(String(input)).origin, transport);
+    return Response.json({ challengeId, inviteUrl: "https://attacker.example/", expiresAt: new Date(Date.now() + 120000).toISOString() });
+  } });
+  const qr = new URL((await relay.invite(challengeId)).url);
+  assert.equal(qr.origin, "https://192.168.18.69:8443");
+  assert.equal(qr.pathname, "/waiter");
+  assert.equal(new URLSearchParams(qr.hash.slice(1)).get("challenge"), challengeId);
+  assert.ok(!qr.href.includes(config.token));
+  for (const invalid of ["http://192.168.1.2", "https://user:secret@example.test", "https://example.test/path", "https://example.test?token=secret"]) {
+    assert.equal(waiterRelayConfig({ ...settings, GASTRONOMY_WAITER_PUBLIC_URL: invalid }, "terminal-a"), null);
+  }
+});
+
 test("credentials only go to an explicitly configured TLS origin; QR uses a fragment, never the receive key or relay-provided host", async () => {
   for (const s of [
     "http://shop.example",
@@ -102,4 +121,31 @@ test("lost terminal ACK does not execute twice; obsolete requests and closed wor
   worker.reset();
   await worker.tick();
   assert.equal(polls, 2);
+});
+
+test("cash-aware worker serves long shifts and restarts, then reports closure without constant idle polling", async () => {
+  let n = 1_000_000;
+  let cash: string | null = "cash-shift-a";
+  const headers: Array<string | null> = [];
+  const worker = createWaiterRelay({
+    config: () => cfg,
+    cashSessionId: () => cash,
+    now: () => n,
+    process: async () => null,
+    fetch: async (_input, init) => {
+      headers.push(new Headers(init?.headers).get("x-pos-cash-session"));
+      return Response.json({ requests: [] });
+    },
+  });
+  // No QR/wake is needed after an ordinary PC restart with an open shift.
+  await worker.tick();
+  n += 13 * 60 * 60_000;
+  await worker.tick();
+  assert.deepEqual(headers, ["cash-shift-a", "cash-shift-a"]);
+  cash = null;
+  await worker.tick();
+  assert.equal(headers.at(-1), "");
+  n += 120_001;
+  await worker.tick();
+  assert.equal(headers.length, 3);
 });

@@ -1,20 +1,11 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { LicenseStatusDto } from "@gastronomy/contracts";
 import { Button, Card, Field, Input } from "@gastronomy/ui";
 import { humanError } from "../lib";
 import { normalizeSiteSlug, siteChoice } from "./web-site-input";
-
-export const licenseQueryKey = ["license-status"] as const;
-
-export function useLicenseStatus() {
-  return useQuery({
-    queryKey: licenseQueryKey,
-    queryFn: () => window.gastronomy.getLicenseStatus(),
-    refetchInterval: 60_000,
-    retry: false,
-  });
-}
+import { licenseQueryKey, useLicenseStatus } from "../hooks/use-license-status";
+export { licenseQueryKey, useLicenseStatus } from "../hooks/use-license-status";
 
 const labels: Record<LicenseStatusDto["state"], string> = {
   DEVELOPMENT: "Modo de desarrollo",
@@ -59,6 +50,21 @@ export function LicensePanel() {
   const siteSlug = chosenSlug ?? normalizeSiteSlug(businessName);
   const [whatsappNumber, setWhatsappNumber] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const signIn = useMutation({
+    mutationFn: () => {
+      const credentials = { email: email.trim(), password };
+      setPassword("");
+      return window.gastronomy.signInLicenseAccount(credentials);
+    },
+    onSuccess: (status) => {
+      queryClient.setQueryData(licenseQueryKey, status);
+      setError(null);
+    },
+    onError: (value) => setError(humanError(value)),
+    gcTime: 0,
+  });
   const refresh = useMutation({
     mutationFn: () => window.gastronomy.refreshLicense(),
     onSuccess: (status) => {
@@ -81,7 +87,7 @@ export function LicensePanel() {
     onError: (value) => setError(humanError(value)),
   });
   const status = statusQuery.data;
-  const busy = request.isPending || refresh.isPending;
+  const busy = request.isPending || refresh.isPending || signIn.isPending;
   const canRequest =
     status &&
     status.enrollment?.status !== "PENDING" &&
@@ -124,6 +130,26 @@ export function LicensePanel() {
               <p className="text-xs leading-5 text-slate-600">
                 {status.message}
               </p>
+            ) : null}
+            {status.account?.email ? <Info label="Cuenta de licencia" value={status.account.email} extra="Este equipo conserva su permiso local. No necesita iniciar sesión en cada venta." /> : null}
+            {status.state !== "DEVELOPMENT" ? (
+              <form className="grid gap-3 rounded-xl border border-brand-100 bg-brand-50/30 p-3" onSubmit={(event) => {
+                event.preventDefault();
+                if (busy) return;
+                setError(null);
+                signIn.mutate();
+              }}>
+                <div>
+                  <h4 className="text-sm font-bold">Ingresar con mi cuenta</h4>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">Usá la cuenta de licencia que te habilitó Delta Nube. Se vincula a esta PC; no es el PIN del cajero ni del mozo. Internet se necesita para activar o actualizar el permiso, no para cada pedido local.</p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Correo de la cuenta"><Input type="email" autoComplete="username" required maxLength={254} value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
+                  <Field label="Contraseña de la cuenta"><Input type="password" autoComplete="current-password" required maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} /></Field>
+                </div>
+                <div><Button type="submit" disabled={busy || !email.trim() || !password}>{signIn.isPending ? "Vinculando equipo…" : "Ingresar y activar este equipo"}</Button></div>
+                <p className="text-xs text-slate-500">¿No tenés cuenta u olvidaste la contraseña? Contactá al administrador de Delta Nube. Las licencias anteriores siguen siendo válidas.</p>
+              </form>
             ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               <Info

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AppUpdateStatusDto } from "@gastronomy/contracts";
 import {
   ArrowClockwise,
@@ -9,17 +9,8 @@ import {
 import { Button, Card, Modal } from "@gastronomy/ui";
 import { humanError } from "../lib";
 
-export const appUpdateQueryKey = ["app-update-status"] as const;
-
-export function useAppUpdateStatus() {
-  return useQuery({
-    queryKey: appUpdateQueryKey,
-    queryFn: () => window.gastronomy.getAppUpdateStatus(),
-    refetchInterval: (query) =>
-      query.state.data?.state === "DOWNLOADING" ? 2_000 : 10_000,
-    retry: false,
-  });
-}
+import { appUpdateQueryKey, useAppUpdateStatus } from "../hooks/use-app-update-status";
+export { appUpdateQueryKey, useAppUpdateStatus } from "../hooks/use-app-update-status";
 
 export function AppUpdatePanel() {
   const queryClient = useQueryClient();

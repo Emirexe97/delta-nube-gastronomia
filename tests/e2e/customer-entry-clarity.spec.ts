@@ -259,7 +259,7 @@ test("otra dirección vacía mantiene dirección y vínculo entre TAKEAWAY y DEL
   const query = dialog.getByRole("combobox", { name: /Buscar cliente/ });
   await query.fill(customer.name);
   await dialog.getByRole("option", { name: new RegExp(customer.name) }).click();
-  const saved = dialog.getByLabel("Dirección guardada");
+  const saved = dialog.getByRole("combobox", { name: /^Dirección guardada/ });
   await expect(saved.locator("option")).toHaveCount(
     customer.addresses.length + 1,
   );
@@ -280,7 +280,7 @@ test("otra dirección vacía mantiene dirección y vínculo entre TAKEAWAY y DEL
   await expect(reopened.getByLabel("Dirección *", { exact: true })).toHaveValue(
     "Calle personalizada 99",
   );
-  await expect(reopened.getByLabel("Dirección guardada")).toHaveValue("");
+  await expect(reopened.getByRole("combobox", { name: /^Dirección guardada/ })).toHaveValue("");
   await capture("custom-address-modality-recovery", {
     addressId: null,
     address: "Calle personalizada 99",
@@ -412,7 +412,7 @@ test("retirar no exige validar un costo de envío oculto al guardar la ficha", a
     .getByLabel("Nombre del cliente *", { exact: true })
     .fill("Cliente retiro");
   await dialog.getByLabel("Teléfono *", { exact: true }).fill("11 4455-6677");
-  await dialog.getByLabel("Costo de envío").fill("importe inválido");
+  await dialog.getByRole("textbox", { name: "Costo de envío", exact: true }).fill("importe inválido");
   await dialog.getByLabel("Modalidad del pedido").selectOption("TAKEAWAY");
   const takeaway = page.getByRole("dialog", { name: "Nuevo Para retirar" });
   await takeaway
@@ -517,12 +517,12 @@ test("una ficha tardía recupera direcciones sin sobrescribir los datos editados
   await dialog
     .getByLabel("Dirección *", { exact: true })
     .fill("Dirección propia 123");
-  await dialog.getByLabel("Costo de envío").fill("37,5");
+  await dialog.getByRole("textbox", { name: "Costo de envío", exact: true }).fill("37,5");
   await app.evaluate(() => (globalThis as any).__profileRelease());
   await expect(
-    dialog.getByLabel("Dirección guardada").locator("option"),
+    dialog.getByRole("combobox", { name: /^Dirección guardada/ }).locator("option"),
   ).toContainText(["Ficha recuperada"]);
-  await expect(dialog.getByLabel("Dirección guardada")).toHaveValue("");
+  await expect(dialog.getByRole("combobox", { name: /^Dirección guardada/ })).toHaveValue("");
   await expect(
     dialog.getByLabel("Nombre del cliente *", { exact: true }),
   ).toHaveValue("Nombre editado");
@@ -532,5 +532,5 @@ test("una ficha tardía recupera direcciones sin sobrescribir los datos editados
   await expect(dialog.getByLabel("Dirección *", { exact: true })).toHaveValue(
     "Dirección propia 123",
   );
-  await expect(dialog.getByLabel("Costo de envío")).toHaveValue("37,5");
+  await expect(dialog.getByRole("textbox", { name: "Costo de envío", exact: true })).toHaveValue("37,5");
 });

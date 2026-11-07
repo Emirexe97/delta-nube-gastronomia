@@ -99,7 +99,7 @@ test("Enter en el último campo de un formulario válido conserva el submit nati
     .first()
     .click();
   const dialog = page.getByRole("dialog", { name: "Nuevo cliente" });
-  await dialog.getByLabel("Teléfono").fill("11 5555-7788");
+  await dialog.getByRole("textbox", { name: "Teléfono", exact: true }).fill("11 5555-7788");
   await dialog.getByLabel("Nombre").fill("Cliente navegación");
   await dialog
     .getByLabel("Dirección", { exact: true })
@@ -121,7 +121,7 @@ test("combobox abierto: Enter selecciona la opción y no salta el campo", async 
     .first()
     .click();
   const customer = page.getByRole("dialog", { name: "Nuevo cliente" });
-  await customer.getByLabel("Teléfono").fill("11 5555-9900");
+  await customer.getByRole("textbox", { name: "Teléfono", exact: true }).fill("11 5555-9900");
   await customer.getByLabel("Nombre").fill("Cliente combobox");
   await customer
     .getByLabel("Dirección", { exact: true })

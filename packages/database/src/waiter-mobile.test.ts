@@ -3,7 +3,7 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
 
 function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
@@ -29,6 +29,7 @@ test("waiter challenge is short-lived, pairing binds a real waiter to the open s
     assert.equal(Number((repository.db.prepare("SELECT attempts FROM waiter_challenges WHERE id=?").get(challengeHash) as { attempts: number }).attempts), 1);
     const paired = repository.pairWaiterSession({ challengeId: challenge.challengeId, pin: "1357" });
     const state = repository.getWaiterSessionState(paired.sessionToken);
+    assert.ok(Number.isFinite(Date.parse(state.serverNow)), "waiter state must include an authoritative server clock anchor");
     assert.equal(state.waiter.id, paired.waiter.id);
     assert.ok(state.tables.length > 0);
     assert.ok(state.menu.products.length > 0);
@@ -40,6 +41,31 @@ test("waiter challenge is short-lived, pairing binds a real waiter to the open s
     const renewed = repository.pairWaiterSession({ challengeId: renewedChallenge.challengeId, pin: "1357" });
     repository.resetWaiterAccess();
     assert.throws(() => repository.getWaiterSessionState(renewed.sessionToken), /venció o fue revocada/);
+  });
+});
+
+test("cash-bound access survives a long shift but close and next shift invalidate reads and writes", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-06T10:00:00Z") });
+  withRepository((repository) => {
+    const cash = repository.openCashSession({ openingAmountMinor: 0 });
+    const waiter = repository.createUser({ fullName: "Mozo turno", roleCode: "WAITER", pin: "1357", authorizerPin: "2468" });
+    const paired = repository.pairWaiterSession({ challengeId: repository.createWaiterChallenge(waiter.id).challengeId, pin: "1357" });
+    assert.equal(paired.expiresAt, null);
+    assert.equal(paired.validUntil, "CASH_CLOSE");
+    assert.equal(paired.cashSessionId, cash.id);
+    t.mock.timers.tick(13 * 60 * 60_000);
+    assert.equal(repository.getWaiterSessionState(paired.sessionToken).cashSessionId, cash.id);
+    assert.equal(repository.listWaiterDevices()[0]!.expiresAt, null);
+    const unusedQr = repository.createWaiterChallenge(waiter.id);
+    repository.closeCashSession({ countedAmountMinor: 0 });
+    assert.deepEqual(repository.listWaiterDevices(), []);
+    assert.throws(() => repository.getWaiterSessionState(paired.sessionToken));
+    repository.openCashSession({ openingAmountMinor: 0 });
+    assert.throws(() => repository.pairWaiterSession({ challengeId: unusedQr.challengeId, pin: "1357" }));
+    assert.throws(() => repository.getWaiterSessionState(paired.sessionToken));
+    assert.throws(() => repository.submitWaiterBatch(paired.sessionToken, { requestId: `closed-${randomUUID()}`, tableId: "none", lines: [] }));
+    assert.equal(Number((repository.db.prepare("SELECT COUNT(*) n FROM orders").get() as { n: number }).n), 0);
+    assert.equal(Number((repository.db.prepare("SELECT COUNT(*) n FROM print_jobs").get() as { n: number }).n), 0);
   });
 });
 
@@ -122,7 +148,7 @@ test("late waiter batches stay pending without side effects until cashier confir
     assert.equal(repository.confirmDelayedWaiterBatch({requestId: input.requestId}).created, false);
     assert.equal(repository.listDelayedWaiterBatches().length, 0);
     const waiterHash=(repository.db.prepare("SELECT token_hash FROM waiter_sessions WHERE user_id=? ORDER BY created_at LIMIT 1").get(waiter.id) as {token_hash:string}).token_hash;
-    repository.db.prepare("UPDATE waiter_sessions SET expires_at=? WHERE token_hash=?").run(new Date(Date.now()-1).toISOString(), waiterHash);
+    repository.revokeWaiterDevice(waiterHash);
     const renewed = repository.pairWaiterSession({ challengeId: repository.createWaiterChallenge(waiter.id).challengeId, pin: "1357" });
     assert.equal(repository.getWaiterBatch(renewed.sessionToken,input.requestId)?.orderId,confirmed.orderId,"renewed same-waiter session can resolve old receipt");
     assert.equal(repository.submitWaiterBatch(renewed.sessionToken,input).created,false,"original delayed request returns accepted receipt after confirmation");
@@ -218,7 +244,7 @@ test("pending review survives repository restart and remains visible after waite
   finally { restored.close(); for(const suffix of ["","-wal","-shm"]) rmSync(`${path}${suffix}`,{force:true}); }
 });
 
-test("expired challenges, expired sessions, and closed shifts are not reusable or listed as active devices", () => {
+test("expired challenges, legacy timed sessions, and closed shifts are not reusable or listed as active devices", () => {
   withRepository((repository) => {
     const cash = repository.openCashSession({ openingAmountMinor: 0 });
     const waiter = repository.createUser({ fullName: "Moza Uno", roleCode: "WAITER", pin: "1357", authorizerPin: "2468" });
@@ -233,7 +259,7 @@ test("expired challenges, expired sessions, and closed shifts are not reusable o
     const renewed = repository.createWaiterChallenge(waiter.id);
     const session = repository.pairWaiterSession({ challengeId: renewed.challengeId, pin: "1357" });
     const deviceId = repository.listWaiterDevices()[0]!.id;
-    repository.db.prepare("UPDATE waiter_sessions SET expires_at=? WHERE token_hash=?").run(new Date(Date.now() - 1000).toISOString(), deviceId);
+    repository.db.prepare("UPDATE waiter_sessions SET expires_on_cash_close=0,expires_at=? WHERE token_hash=?").run(new Date(Date.now() - 1000).toISOString(), deviceId);
     assert.deepEqual(repository.listWaiterDevices(), []);
     assert.throws(() => repository.getWaiterSessionState(session.sessionToken), /venció o fue revocada/);
     const current = repository.pairWaiterSession({ challengeId: (repository.createWaiterChallenge(waiter.id)).challengeId, pin: "1357" });
@@ -244,17 +270,24 @@ test("expired challenges, expired sessions, and closed shifts are not reusable o
   });
 });
 
-test("opening the POS again revokes persisted waiter credentials", () => {
+test("POS restart preserves cash-bound access only, without reviving legacy credentials", () => {
   const path = join(tmpdir(), `waiter-restart-${randomUUID()}.sqlite`);
   const first = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   let token = "";
+  let legacyToken = "";
   try {
     first.openCashSession({ openingAmountMinor: 0 });
     const waiter = first.createUser({ fullName: "Moza Uno", roleCode: "WAITER", pin: "1357", authorizerPin: "2468" });
     token = first.pairWaiterSession({ challengeId: first.createWaiterChallenge(waiter.id).challengeId, pin: "1357" }).sessionToken;
+    legacyToken = first.pairWaiterSession({ challengeId: first.createWaiterChallenge(waiter.id).challengeId, pin: "1357" }).sessionToken;
+    first.db.prepare("UPDATE waiter_sessions SET expires_on_cash_close=0,expires_at=? WHERE token_hash=?").run(new Date(Date.now()+60_000).toISOString(), createHash("sha256").update(legacyToken).digest("hex"));
   } finally { first.close(); }
   const restored = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
-  try { assert.throws(() => restored.getWaiterSessionState(token), /venció o fue revocada/); }
+  try {
+    assert.equal(restored.getWaiterSessionState(token).validUntil, "CASH_CLOSE");
+    assert.throws(() => restored.getWaiterSessionState(legacyToken), /venció o fue revocada/);
+    assert.equal(restored.listWaiterDevices().length, 1);
+  }
   finally {
     restored.close();
     for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });

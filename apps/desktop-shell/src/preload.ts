@@ -42,6 +42,7 @@ const api: DesktopApi = {
   correctPurchaseItemProduct: (input) =>
     invoke("correctPurchaseItemProduct", input),
   getLicenseStatus: () => invoke("getLicenseStatus"),
+  signInLicenseAccount: (input) => invoke("signInLicenseAccount", input),
   activateLicense: (input) => invoke("activateLicense", input),
   requestLicenseAccess: (input) => invoke("requestLicenseAccess", input),
   refreshLicense: () => invoke("refreshLicense"),

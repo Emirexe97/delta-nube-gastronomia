@@ -9,3 +9,7 @@
 !packages/web-orders/package.json
 !packages/web-orders/dist/
 !packages/web-orders/dist/**
+!packages/ui/
+!packages/ui/package.json
+!packages/ui/dist/
+!packages/ui/dist/**

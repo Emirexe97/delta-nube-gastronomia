@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { BootstrapDto, DelayedWaiterBatch } from "@gastronomy/contracts";
 import { canReviewDelayedWaiters, DelayedWaiterInbox, delayedWaiterKey } from "./delayed-waiter-inbox";
 
@@ -28,15 +30,29 @@ describe("cashier review of delayed waiter batches", () => {
     expect(canReviewDelayedWaiters({ ...data, currentUser: { ...data.currentUser, roleCode: "WAITER" } })).toBe(false);
     expect(canReviewDelayedWaiters({ ...data, currentUser: { ...data.currentUser, permissions: [] } })).toBe(false);
   });
-  it("shows pending local data, warns before duplicate manual entry, and needs no network flag", () => {
+  it("shows pending orders and warns before duplicate manual entry", () => {
     const html = render([entry]);
     expect(html).toContain("Mesa 1");
     expect(html).toContain("Ana");
-    expect(html).toContain("no necesita Internet");
-    expect(html).toContain("No se incorporaron a la mesa ni se imprimieron");
-    expect(html).toContain("ya se cargaron manualmente");
+    expect(html).toContain("todavía no se agregaron a la mesa ni se enviaron a cocina");
+    expect(html).toContain("ya los cargó manualmente");
   });
   it("renders an explicit empty state", () => {
-    expect(render([])).toContain("No hay tandas demoradas pendientes");
+    expect(render([])).toContain("No hay pedidos pendientes de revisión");
+    expect(render([])).toContain("Los pedidos ya aceptados aparecen dentro de su mesa");
+    expect(render([])).not.toContain("Antes de confirmar");
+  });
+  it("places the permission-gated waiter tab in Salon, not Orders", () => {
+    const root = resolve(process.cwd(), "src/pages");
+    const salon = readFileSync(resolve(root, "tables-page.tsx"), "utf8");
+    const orders = readFileSync(resolve(root, "orders-page.tsx"), "utf8");
+    expect(salon).toContain("canReviewWaiters && <button id=\"salon-tab-mozos\"");
+    expect(salon).toContain("<DelayedWaiterInbox data={data} active={workspaceActive} />");
+    expect(orders).not.toContain("DelayedWaiterInbox");
+    expect(orders).not.toContain("DelayedWaiterCount");
+    expect(orders).not.toContain("Mozos demorados");
+    const desktop = readFileSync(resolve(process.cwd(), "../desktop-shell/src/main.ts"), "utf8");
+    expect(desktop).toContain("Salón → Mozos");
+    expect(desktop).not.toContain("Pedidos → Mozos demorados");
   });
 });

@@ -56,7 +56,10 @@ const returnInput = (
   idempotencyKey,
 });
 
-test("recibe devolución total en caja con método real distinto, preserva pago original y la registra en el período de recepción", () =>
+test("recibe devolución total en caja con método real distinto, preserva pago original y la registra en el período de recepción", (t) => {
+  // La fecha contable de la recepción proviene del reloj; fijarlo evita que
+  // el reporte probado dependa del día en que se ejecuta la suite.
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-31T12:00:00.000Z") });
   fixture((repo, db) => {
     const session = repo.openCashSession({ openingAmountMinor: 100000 });
     const expense = repo.createFinanceExpense(expenseInput);
@@ -219,9 +222,13 @@ test("recibe devolución total en caja con método real distinto, preserva pago 
         }),
       /devolución de gasto/,
     );
-  }));
+  });
+  t.mock.timers.reset();
+});
 
-test("registra devolución externa sin crear movimiento de caja y separa gasto bruto y devolución por fecha de recepción", () =>
+test("registra devolución externa sin crear movimiento de caja y separa gasto bruto y devolución por fecha de recepción", (t) => {
+  // Cruce septiembre → octubre con un instante reproducible para el retorno.
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-01T12:00:00.000Z") });
   fixture((repo, db) => {
     const expense = repo.createFinanceExpense({
       ...expenseInput,
@@ -279,7 +286,9 @@ test("registra devolución externa sin crear movimiento de caja y separa gasto b
       oct.monthly.find((row: any) => row.month === "2026-10").netExpensesMinor,
       -12000,
     );
-  }));
+  });
+  t.mock.timers.reset();
+});
 
 test("rechaza saldo pendiente, recurrencias/fijos/cancelados, revisión obsoleta, replay conflictivo y reversión genérica", () =>
   fixture((repo, db) => {

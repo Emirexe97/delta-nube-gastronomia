@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import type {
   AppSettingsDto,
@@ -18,6 +18,7 @@ import {
   Button,
   Card,
   Field,
+  HelpTip,
   Input,
   Select,
   Textarea,
@@ -25,19 +26,73 @@ import {
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
 import { humanError } from "../lib";
+import { useLocation, useNavigate } from "react-router-dom";
 import { LicensePanel } from "../components/license-panel";
 import { AppUpdatePanel } from "../components/app-update-panel";
 import { WaiterDeskPanel } from "../components/waiter-desk-panel";
 import { WebSitePanel } from "../components/web-site-panel";
 
+const SETTINGS_SECTIONS = [
+  ["settings-general", "General"],
+  ["settings-printing", "Impresión"],
+  ["settings-waiter", "Modo Mozo"],
+  ["settings-print-texts", "Textos"],
+  ["settings-backup", "Copias de seguridad"],
+  ["settings-license", "Licencia"],
+  ["settings-website", "Página web"],
+  ["settings-updates", "Actualizaciones"],
+] as const;
+
 export function SettingsPage({ data }: { data: BootstrapDto }) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [settings, setSettings] = useState<AppSettingsDto>(data.settings);
   const [message, setMessage] = useState<string | null>(null);
-  useEffect(() => setSettings(data.settings), [data.settings]);
+  const [activeSection, setActiveSection] = useState(() => {
+    const section = location.hash.slice(1);
+    return SETTINGS_SECTIONS.some(([id]) => id === section)
+      ? section
+      : "settings-general";
+  });
+  const [visitedSections, setVisitedSections] = useState<Set<string>>(
+    () => new Set([activeSection]),
+  );
+  const settingsAtLastRender = useRef(data.settings);
+  const submittedSettings = useRef<AppSettingsDto | null>(null);
+  // Bootstrap refreshes can happen while a form is dirty. Only adopt refreshed
+  // server state when the user hasn't diverged from the previous baseline.
+  useEffect(() => {
+    if (
+      JSON.stringify(settings) === JSON.stringify(settingsAtLastRender.current)
+    ) {
+      setSettings(data.settings);
+    }
+    settingsAtLastRender.current = data.settings;
+  }, [data.settings, settings]);
+  useEffect(() => {
+    const requested = location.hash.slice(1);
+    const section = SETTINGS_SECTIONS.some(([id]) => id === requested) ? requested : "settings-general";
+    setActiveSection(section);
+    setVisitedSections((current) => current.has(section) ? current : new Set(current).add(section));
+  }, [location.hash]);
+  const selectSection = (id: string) => {
+    setActiveSection(id);
+    setVisitedSections((current) => new Set(current).add(id));
+    if (location.hash !== `#${id}`) {
+      navigate(
+        { pathname: location.pathname, search: location.search, hash: `#${id}` },
+        { state: location.state, replace: true },
+      );
+    }
+  };
   const mutation = useApiMutation(
     (value: AppSettingsDto) => window.gastronomy.saveSettings(value),
     {
-      onSuccess: () => setMessage("Configuración guardada."),
+      onSuccess: (saved) => {
+        setSettings((current) => current === submittedSettings.current ? saved : current);
+        settingsAtLastRender.current = saved;
+        setMessage("Configuración guardada.");
+      },
       onError: (value) => setMessage(humanError(value)),
     },
   );
@@ -70,38 +125,42 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
       data-enter-navigation
       className="panel-enter mx-auto max-w-[1100px] space-y-4"
     >
-      <div>
-        <h2 className="text-lg font-extrabold">Configuración de Gastronomía</h2>
-        <p className="text-xs text-slate-600">
-          Adaptá la operación sin perder información histórica
-        </p>
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold tracking-tight">Configuración de Gastronomía</h2>
+        <HelpTip label="Ayuda de configuración">
+          Ajustá el programa a tu negocio. Los cambios no borran tu historial.
+        </HelpTip>
       </div>
-      <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white/95 p-2 shadow-sm backdrop-blur">
+      <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
         <nav
+          role="tablist"
           aria-label="Secciones de configuración"
           className="flex flex-wrap gap-1"
+          onKeyDown={(event) => {
+            const index = SETTINGS_SECTIONS.findIndex(([id]) => id === activeSection);
+            let next = index;
+            if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % SETTINGS_SECTIONS.length;
+            else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + SETTINGS_SECTIONS.length) % SETTINGS_SECTIONS.length;
+            else if (event.key === "Home") next = 0;
+            else if (event.key === "End") next = SETTINGS_SECTIONS.length - 1;
+            else return;
+            event.preventDefault();
+            const id = SETTINGS_SECTIONS[next]![0];
+            selectSection(id);
+            document.getElementById(`tab-${id}`)?.focus();
+          }}
         >
-          {(
-            [
-              ["settings-general", "General"],
-              ["settings-printing", "Impresión"],
-              ["settings-waiter", "Modo Mozo"],
-              ["settings-print-texts", "Textos"],
-              ["settings-backup", "Copias de seguridad"],
-              ["settings-license", "Licencia"],
-              ["settings-website", "Página web"],
-              ["settings-updates", "Actualizaciones"],
-            ] as const
-          ).map(([id, label]) => (
+          {SETTINGS_SECTIONS.map(([id, label]) => (
             <button
               key={id}
+              id={`tab-${id}`}
               type="button"
-              onClick={() =>
-                document
-                  .getElementById(id)
-                  ?.scrollIntoView({ behavior: "smooth", block: "start" })
-              }
-              className="focus-ring rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-brand-50 hover:text-brand-700"
+              role="tab"
+              aria-selected={activeSection === id}
+              aria-controls={`panel-${id}`}
+              tabIndex={activeSection === id ? 0 : -1}
+              onClick={() => selectSection(id)}
+              className={cn("focus-ring min-h-10 rounded-lg px-3 py-2 text-xs font-bold", activeSection === id ? "bg-brand-50 text-brand-800" : "text-slate-600 hover:bg-slate-50")}
             >
               {label}
             </button>
@@ -112,24 +171,25 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             <p
               role="status"
               aria-live="polite"
-              className="w-full max-w-[520px] break-words rounded-lg bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800 sm:w-auto sm:truncate"
+              className="w-full max-w-[520px] break-words rounded-lg bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800 sm:w-auto"
               title={message}
             >
               {message}
             </p>
           ) : null}
           <Button
-            onClick={() => mutation.mutate(settings)}
+            onClick={() => {
+              submittedSettings.current = settings;
+              mutation.mutate({ ...settings });
+            }}
             disabled={mutation.isPending}
           >
             {mutation.isPending ? "Guardando…" : "Guardar configuración"}
           </Button>
         </div>
       </div>
-      <section
-        id="settings-general"
-        className="scroll-mt-20 grid gap-4 lg:grid-cols-[1fr_1.2fr]"
-      >
+      <div id="panel-settings-general" role="tabpanel" aria-labelledby="tab-settings-general" hidden={activeSection !== "settings-general"} className="space-y-4">
+      <section id="settings-general" className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
         <Card className="p-4">
           <SectionTitle
             icon={GearSix}
@@ -290,14 +350,17 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
               El cobro del envío corresponde al repartidor
             </span>
             <span className="mt-1 block font-normal text-slate-600">
-              Desactivado: el negocio conserva el cobro del envío. Activado: se
-              registra en la cuenta del repartidor, permite pagarle desde
-              Repartidores y los pagos afectan el cierre de caja. Activarlo
-              también habilita la liquidación; cada pedido conserva la
-              titularidad definida en su primer cobro.
+              Activado: el envío se paga al repartidor. Desactivado: queda para el negocio.
+              Los pagos al repartidor se descuentan de caja.
             </span>
           </span>
         </label>
+        <div className="mt-1 flex justify-end">
+          <HelpTip label="Sobre el cobro del envío">
+            Activar esta opción también habilita la liquidación de repartidores.
+            Cada pedido mantiene esta elección desde su primer pago, aunque después cambies la configuración.
+          </HelpTip>
+        </div>
         {settings.deliverySettlementEnabled &&
         (settings.deliveryFeeBelongsToDriver ?? true) ? (
           <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50/50 p-3.5 space-y-2">
@@ -381,17 +444,31 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
           </div>
         ) : null}
       </Card>
-      <PrintingSettingsCard
+      </div>
+      <div id="panel-settings-printing" role="tabpanel" aria-labelledby="tab-settings-printing" hidden={activeSection !== "settings-printing"}>
+      {visitedSections.has("settings-printing") ? <PrintingSettingsCard
         settings={settings}
         onChange={setSettings}
         onMessage={setMessage}
-      />
-      <PrintTextSettingsCard settings={settings} onChange={setSettings} />
-      <LicensePanel />
-      <WaiterDeskPanel data={data} />
-      <WebSitePanel />
-      <AppUpdatePanel />
-      <Card id="settings-backup" className="scroll-mt-20 p-4">
+      /> : null}
+      </div>
+      <div id="panel-settings-print-texts" role="tabpanel" aria-labelledby="tab-settings-print-texts" hidden={activeSection !== "settings-print-texts"}>
+      {visitedSections.has("settings-print-texts") ? <PrintTextSettingsCard settings={settings} onChange={setSettings} /> : null}
+      </div>
+      <div id="panel-settings-license" role="tabpanel" aria-labelledby="tab-settings-license" hidden={activeSection !== "settings-license"}>
+      {visitedSections.has("settings-license") ? <LicensePanel /> : null}
+      </div>
+      <div id="panel-settings-waiter" role="tabpanel" aria-labelledby="tab-settings-waiter" hidden={activeSection !== "settings-waiter"}>
+      {visitedSections.has("settings-waiter") ? <WaiterDeskPanel data={data} /> : null}
+      </div>
+      <div id="panel-settings-website" role="tabpanel" aria-labelledby="tab-settings-website" hidden={activeSection !== "settings-website"}>
+      {visitedSections.has("settings-website") ? <WebSitePanel /> : null}
+      </div>
+      <div id="panel-settings-updates" role="tabpanel" aria-labelledby="tab-settings-updates" hidden={activeSection !== "settings-updates"}>
+      {visitedSections.has("settings-updates") ? <AppUpdatePanel /> : null}
+      </div>
+      <div id="panel-settings-backup" role="tabpanel" aria-labelledby="tab-settings-backup" hidden={activeSection !== "settings-backup"}>
+      {visitedSections.has("settings-backup") ? <Card id="settings-backup" className="p-4">
         <SectionTitle
           icon={Database}
           title="Copias de seguridad y restauración"
@@ -415,7 +492,8 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             Restaurar copia
           </Button>
         </div>
-      </Card>
+      </Card> : null}
+      </div>
     </div>
   );
 }
@@ -461,12 +539,19 @@ function PrintingSettingsCard({
     onError: (error) => onMessage(humanError(error)),
   });
   return (
-    <Card id="settings-printing" className="scroll-mt-20 p-4">
-      <SectionTitle
-        icon={Printer}
-        title="Impresión"
-        detail="Configurá por separado la impresión de comandas y cuentas"
-      />
+      <Card id="settings-printing" className="p-4">
+      <div className="flex items-start justify-between gap-3">
+        <SectionTitle
+          icon={Printer}
+          title="Impresión"
+          detail="Comandas de cocina y cuentas de clientes"
+        />
+        <HelpTip label="Cómo se imprimen las comandas">
+          Los pedidos del mozo salen por una sola impresora de cocina. Desde el pedido
+          podés imprimir la comanda completa, sólo los agregados o una copia.
+          El corte del papel depende de la impresora y su controlador.
+        </HelpTip>
+      </div>
       <Button variant="secondary" disabled={loading} onClick={() => rescan(n=>n+1)}>
         {loading ? "Buscando impresoras…" : "Actualizar lista de impresoras"}
       </Button>
@@ -504,12 +589,7 @@ function PrintingSettingsCard({
           />
         </div>
         <p className="text-xs leading-5 text-slate-600">
-          La comanda del mozo sale por una sola impresora de cocina: no se divide ni se
-          filtra por categoría. En el pedido podés elegir comanda completa,
-          sólo agregados desde la última impresión exitosa o reimpresión. La
-          cuenta del cliente es un documento aparte. La prueba confirma que el
-          sistema aceptó el trabajo; verificá que haya salido en papel. El corte
-          depende de la impresora y su controlador.
+          La prueba confirma el envío a la impresora. Verificá que haya salido en papel.
         </p>
       </div>
     </Card>
@@ -533,7 +613,7 @@ function PrintTextSettingsCard({
       },
     });
   return (
-    <Card id="settings-print-texts" className="scroll-mt-20 p-4">
+    <Card id="settings-print-texts" className="p-4">
       <SectionTitle
         icon={TextT}
         title="Textos de impresión"
@@ -719,7 +799,7 @@ function PrinterProfileEditor({
             ? requireExplicitDevice
               ? "Para Modo Mozo tenés que elegir el comandero por nombre. Los pedidos desde escritorio también admiten la predeterminada."
               : "Si no elegís una impresora, se usará la predeterminada del sistema."
-            : "Este modo permite elegir una impresora al imprimir."}
+            : "Podés revisar la cuenta o comanda y elegir una impresora antes de imprimir."}
         >
           <Select
             value={profile.mode}
@@ -728,7 +808,7 @@ function PrinterProfileEditor({
             }
           >
             <option value="SYSTEM_DIALOG">
-              Vista previa y diálogo del sistema
+              Vista previa
             </option>
             <option value="SYSTEM_DIRECT">
               Impresión directa
@@ -742,7 +822,8 @@ function PrinterProfileEditor({
         ) : null}
         <Field
           label="Impresora"
-          hint={loading ? "Buscando dispositivos…" : " "}
+          hint={loading ? "Buscando impresoras…" : undefined}
+          hintMode="inline"
         >
           <Select
             value={profile.deviceName}

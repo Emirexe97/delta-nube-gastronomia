@@ -15,11 +15,23 @@ export function roundHalfUp(value: number) {
   return Math.round(value + Number.EPSILON);
 }
 
+// Formatters are immutable and considerably more expensive than formatting a
+// value. Keep a bounded cache, never amounts or business data.
+const moneyFormatters = new Map<string, Intl.NumberFormat>();
+const maxMoneyFormatters = 16;
+
 export function formatMoney(amountMinor: number, currency = "ARS") {
-  return new Intl.NumberFormat("es-AR", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(amountMinor / 100);
+  let formatter = moneyFormatters.get(currency);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat("es-AR", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    });
+    if (moneyFormatters.size >= maxMoneyFormatters)
+      moneyFormatters.delete(moneyFormatters.keys().next().value!);
+    moneyFormatters.set(currency, formatter);
+  }
+  return formatter.format(amountMinor / 100);
 }

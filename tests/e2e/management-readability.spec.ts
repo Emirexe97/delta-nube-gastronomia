@@ -427,17 +427,21 @@ for (const width of [1100, 1366]) {
       .getByRole("link", { name: "Configuración", exact: true })
       .click();
     const root = page.locator("main .panel-enter");
-    const nav = root.getByRole("navigation", {
+    const nav = root.getByRole("tablist", {
       name: "Secciones de configuración",
     });
     for (const section of [
       "General",
       "Impresión",
+      "Modo Mozo",
       "Textos",
       "Copias de seguridad",
+      "Licencia",
+      "Página web",
+      "Actualizaciones",
     ])
       await expect(
-        nav.getByRole("button", { name: section, exact: true }),
+        nav.getByRole("tab", { name: section, exact: true }),
       ).toBeVisible();
     const rootLabels = await readable(
       root.locator(
@@ -451,8 +455,12 @@ for (const width of [1100, 1366]) {
       ["printing", "Impresión", "settings-printing"],
       ["texts", "Textos", "settings-print-texts"],
       ["backup", "Copias de seguridad", "settings-backup"],
+      ["waiter", "Modo Mozo", "settings-waiter"],
+      ["license", "Licencia", "settings-license"],
+      ["website", "Página web", "settings-website"],
+      ["updates", "Actualizaciones", "settings-updates"],
     ]) {
-      await nav.getByRole("button", { name: button, exact: true }).click();
+      await nav.getByRole("tab", { name: button, exact: true }).click();
       const section = root.locator(`#${id}`);
       await expect(section).toBeVisible();
       sectionLabels[name] = await readable(

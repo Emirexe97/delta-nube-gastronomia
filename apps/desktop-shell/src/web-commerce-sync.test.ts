@@ -78,6 +78,25 @@ test("is unconfigured without secrets and does not open repository", async () =>
   assert.equal(opened, false);
 });
 
+test("hard-disabled sync skips discovery, catalog publish, inbound fetch, and forced/manual retry", async () => {
+  let opened = false;
+  let clientCreated = false;
+  const sync = createWebCommerceSync({
+    getRepository: () => { opened = true; throw new Error("must not open local database"); },
+    env,
+    isEnabled: () => false,
+    makeClient: (() => { clientCreated = true; throw new Error("must not create client"); }) as any,
+  });
+  assert.equal(sync.getStoreId(), null);
+  assert.equal(sync.status().state, "UNCONFIGURED");
+  assert.equal((await sync.run()).state, "UNCONFIGURED");
+  assert.equal((await sync.run(true)).state, "UNCONFIGURED");
+  sync.invalidate();
+  assert.equal((await sync.run(true)).state, "UNCONFIGURED");
+  assert.equal(opened, false);
+  assert.equal(clientCreated, false);
+});
+
 test("passes licensed installation identity only to the main-process client", async () => {
   let capturedInstallation: string | undefined;
   const sync = createWebCommerceSync({

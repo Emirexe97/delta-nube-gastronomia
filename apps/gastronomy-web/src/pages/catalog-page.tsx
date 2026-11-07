@@ -3842,6 +3842,7 @@ function StockModal({
       >
         <Field
           label="Nueva existencia"
+          hintMode={invalidQuantity ? "inline" : "help"}
           hint={
             invalidQuantity
               ? "Ingresá un número mayor o igual a cero con hasta tres decimales."

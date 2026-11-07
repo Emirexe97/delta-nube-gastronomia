@@ -130,6 +130,7 @@ export function licenseAllowsMethod(
     "listPrinters",
     "printCashSessionReport",
     "getLicenseStatus",
+    "signInLicenseAccount",
     "activateLicense",
     "requestLicenseAccess",
     "refreshLicense",

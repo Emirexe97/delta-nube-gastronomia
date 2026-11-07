@@ -105,9 +105,9 @@ export const Button = React.forwardRef<
 >(({ variant = "primary", className, ...props }, ref) => {
   const variants = {
     primary:
-      "bg-brand-700 text-white shadow-sm hover:bg-brand-800 disabled:bg-slate-300 disabled:text-white disabled:shadow-none",
+      "bg-dn-primary text-white shadow-sm hover:bg-dn-primary-hover disabled:bg-slate-300 disabled:text-white disabled:shadow-none",
     secondary:
-      "border border-slate-200 bg-white text-slate-700 hover:border-brand-200 hover:bg-slate-50 hover:text-brand-700 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400",
+      "border border-dn-border bg-dn-surface text-dn-body hover:border-brand-200 hover:bg-dn-surface-2 hover:text-dn-primary disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400",
     ghost:
       "bg-transparent text-slate-600 hover:bg-slate-50 hover:text-slate-900 disabled:text-slate-300",
     danger:
@@ -117,7 +117,7 @@ export const Button = React.forwardRef<
     <button
       ref={ref}
       className={cn(
-        "inline-flex h-10 max-w-full min-w-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 text-[13px] font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 disabled:cursor-not-allowed shrink-0",
+        "dn-button inline-flex h-10 max-w-full min-w-0 items-center justify-center gap-2 whitespace-nowrap rounded-[var(--dn-radius-control)] px-3 text-[13px] font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 disabled:cursor-not-allowed shrink-0",
         variants[variant],
         className,
       )}
@@ -134,7 +134,7 @@ export const Input = React.forwardRef<
   <input
     ref={ref}
     className={cn(
-      "h-10 w-full min-w-0 max-w-full rounded-lg border border-slate-200 bg-white px-3 text-[13px] font-medium text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-brand-300 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400",
+      "dn-input h-10 w-full min-w-0 max-w-full rounded-[var(--dn-radius-control)] border border-dn-border bg-dn-surface px-3 text-[13px] font-medium text-dn-body outline-none transition placeholder:text-slate-400 focus:border-brand-300 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400",
       className,
     )}
     {...props}
@@ -149,7 +149,7 @@ export const Select = React.forwardRef<
   <select
     ref={ref}
     className={cn(
-      "h-10 w-full min-w-0 max-w-full rounded-lg border border-slate-200 bg-white px-3 text-[13px] font-medium text-slate-700 outline-none transition focus:border-brand-300 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400",
+      "dn-input h-10 w-full min-w-0 max-w-full rounded-[var(--dn-radius-control)] border border-dn-border bg-dn-surface px-3 text-[13px] font-medium text-dn-body outline-none transition focus:border-brand-300 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400",
       className,
     )}
     {...props}
@@ -164,7 +164,7 @@ export const Textarea = React.forwardRef<
   <textarea
     ref={ref}
     className={cn(
-      "min-h-24 w-full min-w-0 max-w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-3 text-[13px] font-medium text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-brand-300 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400",
+      "dn-input min-h-24 w-full min-w-0 max-w-full resize-y rounded-[var(--dn-radius-control)] border border-dn-border bg-dn-surface px-3 py-3 text-[13px] font-medium text-dn-body outline-none transition placeholder:text-slate-400 focus:border-brand-300 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400",
       className,
     )}
     {...props}
@@ -177,35 +177,228 @@ export function Card(props: React.ComponentPropsWithoutRef<"div">) {
     <div
       {...props}
       className={cn(
-        "rounded-xl border border-slate-200 bg-white shadow-sm",
+        "dn-card rounded-[var(--dn-radius-card)] border border-dn-border bg-dn-surface",
         props.className,
       )}
     />
   );
 }
 
+/** Compact, keyboard/touch-accessible contextual help, rendered outside clipped containers. */
+export function HelpTip({
+  children,
+  label = "Más información",
+}: {
+  children: React.ReactNode;
+  label?: string;
+}) {
+  const id = React.useId();
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  const [open, setOpen] = React.useState(false);
+  const [position, setPosition] = React.useState<React.CSSProperties>({});
+  const pinned = React.useRef(false);
+  const hovered = React.useRef(false);
+  const focused = React.useRef(false);
+  const closeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workspaceActive = useWorkspaceActive();
+  const updatePosition = React.useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = Math.min(320, window.innerWidth - 24);
+    const left = Math.max(
+      12,
+      Math.min(rect.left, window.innerWidth - width - 12),
+    );
+    // Position above when the lower edge would leave too little room.
+    const estimatedHeight = panelRef.current?.offsetHeight ?? 80;
+    const top =
+      rect.bottom + estimatedHeight + 12 > window.innerHeight
+        ? Math.max(12, rect.top - estimatedHeight - 8)
+        : rect.bottom + 8;
+    setPosition({
+      position: "fixed",
+      zIndex: 10000,
+      top,
+      left,
+      width,
+      maxHeight: "calc(100dvh - 24px)",
+      overflowY: "auto",
+    });
+  }, []);
+  React.useEffect(() => {
+    if (!open) return;
+    updatePosition();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false);
+        pinned.current = false;
+      }
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !triggerRef.current?.contains(event.target) &&
+        !panelRef.current?.contains(event.target)
+      ) {
+        pinned.current = false;
+        setOpen(false);
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        pinned.current = false;
+        setOpen(false);
+      }
+    };
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [open, updatePosition]);
+  React.useEffect(() => {
+    if (workspaceActive && document.visibilityState !== "hidden") return;
+    pinned.current = false;
+    hovered.current = false;
+    focused.current = false;
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    setOpen(false);
+  }, [workspaceActive]);
+  React.useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    },
+    [],
+  );
+  const closeIfIdle = () => {
+    if (!pinned.current && !hovered.current && !focused.current) {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+      closeTimer.current = setTimeout(() => setOpen(false), 120);
+    }
+  };
+  const cancelClose = () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  };
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="dn-help-trigger inline-grid h-6 w-6 shrink-0 place-items-center rounded-full text-[12px] font-bold text-slate-500 transition-colors hover:bg-orange-50 hover:text-brand-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600"
+        aria-label={label}
+        aria-describedby={open ? id : undefined}
+        aria-expanded={open}
+        onMouseEnter={() => {
+          cancelClose();
+          hovered.current = true;
+          setOpen(true);
+        }}
+        onMouseLeave={() => {
+          hovered.current = false;
+          closeIfIdle();
+        }}
+        onFocus={() => {
+          cancelClose();
+          focused.current = true;
+          setOpen(true);
+        }}
+        onBlur={() => {
+          focused.current = false;
+          closeIfIdle();
+        }}
+        onClick={() => {
+          pinned.current = !pinned.current;
+          setOpen(pinned.current);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ")
+            event.stopPropagation();
+        }}
+      >
+        <svg
+          aria-hidden="true"
+          width="15"
+          height="15"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+        >
+          <circle cx="10" cy="10" r="8" />
+          <path d="M10 9v5" strokeLinecap="round" />
+          <circle cx="10" cy="6" r=".8" fill="currentColor" stroke="none" />
+        </svg>
+      </button>
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={panelRef}
+              id={id}
+              role="tooltip"
+              style={position}
+              className="rounded-xl border border-dn-border bg-dn-surface px-3 py-2 text-xs font-normal leading-5 text-dn-body shadow-lg"
+              onMouseEnter={() => {
+                cancelClose();
+                hovered.current = true;
+              }}
+              onMouseLeave={() => {
+                hovered.current = false;
+                closeIfIdle();
+              }}
+            >
+              {children}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
 export function Field({
   label,
   hint,
+  hintMode = "help",
   children,
   className,
 }: {
   label: string;
   hint?: string;
+  hintMode?: "help" | "inline";
   children: React.ReactNode;
   className?: string;
 }) {
   return (
-    <label
-      className={cn(
-        "grid content-start gap-1.5 text-[12px] font-semibold text-slate-600",
-        className,
-      )}
-    >
-      <span>{label}</span>
-      {children}
-      {hint ? <span className="font-normal text-slate-600">{hint}</span> : null}
-    </label>
+    <div data-has-help={Boolean(hint?.trim() && hintMode === "help")} className={cn("dn-field relative grid content-start gap-1.5", className)}>
+      <label className="grid content-start gap-1.5 text-[12px] font-semibold text-slate-600">
+        <span className={cn("dn-field-caption", hint?.trim() && hintMode === "help" && "pr-7")}>
+          {label}
+        </span>
+        {children}
+      </label>
+      {hint?.trim() && hintMode === "inline" ? (
+        <span className="text-[12px] font-normal text-slate-600" role="status">
+          {hint}
+        </span>
+      ) : null}
+      {hint?.trim() && hintMode === "help" ? (
+        <span className="dn-field-help absolute right-0 top-0 inline-grid h-6 w-6 place-items-center">
+          <HelpTip label={`Ayuda: ${label}`}>{hint}</HelpTip>
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -228,7 +421,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center whitespace-nowrap shrink-0 rounded-md px-2 py-1 text-[12px] font-bold uppercase tracking-wide",
+        "dn-badge inline-flex items-center whitespace-nowrap shrink-0 rounded-full px-2 py-1 text-[12px] font-semibold",
         tones[tone],
       )}
     >

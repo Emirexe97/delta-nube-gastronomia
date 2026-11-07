@@ -23,7 +23,7 @@ import {
   type LicenseLease,
   type DeviceProof,
 } from "@gastronomy/licensing";
-import { verifyPanelPassword } from "./panel-auth.js";
+import { hashAccountPassword, verifyAccountPassword, verifyPanelPassword } from "./panel-auth.js";
 import { issueWebSiteTicket } from "@gastronomy/web-orders/provision";
 
 const MAX_BODY = 16 * 1024;
@@ -49,6 +49,7 @@ type LicenseRow = {
   activation_hash: string;
   installation_id: string | null;
 };
+type AccountRow = { email: string; password_hash: string; license_id: string; status: "ACTIVE" };
 type RateEntry = { count: number; reset: number; blockedUntil: number };
 type DeviceStatus = "PENDING" | "APPROVED" | "REJECTED";
 type DeviceRequestRow = {
@@ -185,6 +186,10 @@ export function createLicenseServer(
       revision INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('ACTIVE','SUSPENDED')),
       activation_hash TEXT NOT NULL UNIQUE, installation_id TEXT UNIQUE, created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS accounts (
+      email TEXT PRIMARY KEY, password_hash TEXT NOT NULL, license_id TEXT NOT NULL UNIQUE REFERENCES licenses(id),
+      status TEXT NOT NULL CHECK(status = 'ACTIVE'), created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS renewals (
       idempotency_key TEXT PRIMARY KEY, license_id TEXT NOT NULL REFERENCES licenses(id),
       paid_through TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL
@@ -247,6 +252,18 @@ export function createLicenseServer(
       for (const [k, v] of rates)
         if (now >= v.reset && now >= v.blockedUntil) rates.delete(k);
     return false;
+  };
+  // Bound expensive account scrypt operations even when an attacker rotates IPs.
+  let accountHashJobs = 0;
+  const accountHashSlot = (): boolean => {
+    if (accountHashJobs >= 4) return false;
+    accountHashJobs++;
+    return true;
+  };
+  const releaseAccountHashSlot = () => { accountHashJobs = Math.max(0, accountHashJobs - 1); };
+  const normalizeEmail = (value: unknown): string | null => {
+    if (typeof value !== "string" || value.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return null;
+    return value.trim().toLowerCase();
   };
   const issueToken = (row: LicenseRow, installationId: string): string => {
     const paid = Date.parse(row.paid_through);
@@ -366,6 +383,7 @@ export function createLicenseServer(
         )
         .get(row.id) as { key_fingerprint: string } | undefined
     )?.key_fingerprint ?? null,
+    accountEmail: (db.prepare("SELECT email FROM accounts WHERE license_id = ? AND status = 'ACTIVE'").get(row.id) as { email: string } | undefined)?.email ?? null,
   });
   const handlePanel = async (
     req: IncomingMessage,
@@ -535,6 +553,36 @@ export function createLicenseServer(
       }
       if (mutating && !isJson(req)) {
         json(res, 415, { error: "unsupported_media_type" });
+        return true;
+      }
+      if (req.method === "POST" && url.pathname === "/manage/api/accounts") {
+        const b = await body(req);
+        const email = normalizeEmail(b.email);
+        const reason = typeof b.reason === "string" ? b.reason.trim() : "";
+        if (!email || typeof b.password !== "string" || b.password.length < 15 || b.password.length > 128 || Buffer.byteLength(b.password, "utf8") > 512 || !validId(b.licenseId) || !reason || reason.length > 500) {
+          json(res, 400, { error: "invalid_account" });
+          return true;
+        }
+        if (!accountHashSlot()) { json(res, 429, { error: "rate_limited" }); return true; }
+        let passwordHash: string;
+        try { passwordHash = await hashAccountPassword(b.password); }
+        catch { json(res, 400, { error: "invalid_account" }); return true; }
+        finally { releaseAccountHashSlot(); }
+        const refreshedSession = sessionFor(req);
+        const refreshedCsrf = req.headers["x-panel-csrf"];
+        if (!refreshedSession || refreshedSession.username !== session.username || typeof refreshedCsrf !== "string" || !safeEqual(refreshedCsrf, refreshedSession.csrf_token)) { json(res, 401, { error: "unauthorized" }); return true; }
+        const license = rowById(b.licenseId);
+        if (!license) { json(res, 404, { error: "not_found" }); return true; }
+        const priorEmail = db.prepare("SELECT license_id FROM accounts WHERE email = ?").get(email) as { license_id: string } | undefined;
+        const priorLicense = db.prepare("SELECT email FROM accounts WHERE license_id = ?").get(license.id) as { email: string } | undefined;
+        if ((priorEmail && priorEmail.license_id !== license.id) || (priorLicense && priorLicense.email !== email)) { json(res, 409, { error: "account_binding_conflict" }); return true; }
+        const now = new Date().toISOString();
+        withTransaction(() => {
+          db.prepare("INSERT INTO accounts(email,password_hash,license_id,status,created_at,updated_at) VALUES(?,?,?,'ACTIVE',?,?) ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,status='ACTIVE',updated_at=excluded.updated_at")
+            .run(email, passwordHash, license.id, now, now);
+          writeAudit("ACCOUNT_CREDENTIALS_SET", license.id, null, reason, now);
+        });
+        json(res, priorEmail ? 200 : 201, { account: { email, licenseId: license.id } });
         return true;
       }
       const approve = url.pathname.match(
@@ -839,6 +887,32 @@ export function createLicenseServer(
         const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
         if (!safeEqual(provided, env.adminToken))
           return json(res, 401, { error: "unauthorized" });
+        if (req.method === "POST" && url.pathname === "/admin/accounts") {
+          if (!isJson(req)) return json(res, 415, { error: "unsupported_media_type" });
+          const b = await body(req);
+          const email = normalizeEmail(b.email);
+          if (!email || typeof b.password !== "string" || b.password.length < 15 || b.password.length > 128 || Buffer.byteLength(b.password, "utf8") > 512 || !validId(b.licenseId))
+            return json(res, 400, { error: "invalid_account" });
+          if (!accountHashSlot()) return json(res, 429, { error: "rate_limited" });
+          let passwordHash: string;
+          try { passwordHash = await hashAccountPassword(b.password); }
+          catch { return json(res, 400, { error: "invalid_account" }); }
+          finally { releaseAccountHashSlot(); }
+          const latestAdmin = req.headers.authorization ?? "";
+          if (!latestAdmin.startsWith("Bearer ") || !safeEqual(latestAdmin.slice(7), env.adminToken)) return json(res, 401, { error: "unauthorized" });
+          const license = rowById(b.licenseId);
+          if (!license) return json(res, 404, { error: "not_found" });
+          const priorEmail = db.prepare("SELECT license_id FROM accounts WHERE email = ?").get(email) as { license_id: string } | undefined;
+          const priorLicense = db.prepare("SELECT email FROM accounts WHERE license_id = ?").get(license.id) as { email: string } | undefined;
+          if ((priorEmail && priorEmail.license_id !== license.id) || (priorLicense && priorLicense.email !== email)) return json(res, 409, { error: "account_binding_conflict" });
+          const now = new Date().toISOString();
+          withTransaction(() => {
+            db.prepare("INSERT INTO accounts(email,password_hash,license_id,status,created_at,updated_at) VALUES(?,?,?,'ACTIVE',?,?) ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,status='ACTIVE',updated_at=excluded.updated_at")
+              .run(email, passwordHash, license.id, now, now);
+            writeAudit("ACCOUNT_CREDENTIALS_SET", license.id, null, `Cuenta ${email} configurada`, now);
+          });
+          return json(res, priorEmail ? 200 : 201, { account: { email, licenseId: license.id } });
+        }
         if (req.method === "POST" && url.pathname === "/admin/licenses") {
           if (!isJson(req))
             return json(res, 415, { error: "unsupported_media_type" });
@@ -1085,6 +1159,7 @@ export function createLicenseServer(
           return json(res, 200, {
             request: panelRequestShape(device),
             ...deviceCredentials(license, device.installation_id),
+            account: (db.prepare("SELECT email FROM accounts WHERE license_id = ? AND status = 'ACTIVE'").get(license.id) as { email: string } | undefined) ? { email: (db.prepare("SELECT email FROM accounts WHERE license_id = ? AND status = 'ACTIVE'").get(license.id) as { email: string }).email } : undefined,
           });
         }
         const businessName = (b.businessName as string).trim();
@@ -1148,6 +1223,75 @@ export function createLicenseServer(
             Object.assign(response, deviceCredentials(license, requestRow.installation_id));
         }
         return json(res, 200, response);
+      }
+      if (req.method === "POST" && url.pathname === "/v2/accounts/activate") {
+        if (throttled(`account-ip:${ip}`)) return json(res, 429, { error: "rate_limited" });
+        if (!isJson(req)) return json(res, 415, { error: "unsupported_media_type" });
+        const b = await body(req);
+        const email = normalizeEmail(b.email);
+        const password = typeof b.password === "string" ? b.password : "";
+        if (email && throttled(`account-email:${email}`)) return json(res, 429, { error: "rate_limited" });
+        if (!email || password.length > 128 || Buffer.byteLength(password, "utf8") > 512 || !validId(b.installationId) || typeof b.publicKey !== "string" || b.publicKey.length < 40 || b.publicKey.length > 2048 || !validId(b.challengeId) || typeof b.signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(b.signature)) return json(res, 400, { error: "invalid_account_request" });
+        const installationId = b.installationId as string;
+        const publicKey = b.publicKey as string;
+        if (!accountHashSlot()) return json(res, 429, { error: "rate_limited" });
+        try {
+          const account = db.prepare("SELECT * FROM accounts WHERE email = ? AND status = 'ACTIVE'").get(email) as AccountRow | undefined;
+          const dummyHash = "account-scrypt-v1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+          const validPassword = await verifyAccountPassword(password, account?.password_hash ?? dummyHash);
+          if (!account || !validPassword) return json(res, 401, { error: "invalid_credentials" });
+          let fingerprint: string;
+          try { fingerprint = devicePublicKeyFingerprint(publicKey); } catch { return json(res, 401, { error: "invalid_credentials" }); }
+          const challenge = db.prepare("SELECT * FROM device_challenges WHERE id = ?").get(b.challengeId) as ChallengeRow | undefined;
+          if (challenge?.used_at) return json(res, 409, { error: "challenge_replayed" });
+          if (!challenge || Date.parse(challenge.expires_at) <= Date.now() || challenge.purpose !== "lease" || challenge.installation_id !== installationId || challenge.key_fingerprint !== fingerprint || challenge.public_key !== publicKey) return json(res, 401, { error: "invalid_credentials" });
+          const proof: DeviceProof = { purpose: "lease", challengeId: challenge.id, nonce: challenge.nonce, installationId: challenge.installation_id, keyFingerprint: fingerprint };
+          if (!verifyDeviceProof(proof, b.signature, challenge.public_key)) return json(res, 401, { error: "invalid_credentials" });
+          let activated: { device: DeviceRequestRow; license: LicenseRow };
+          try {
+            activated = withTransaction(() => {
+              const latestAccount = db.prepare("SELECT * FROM accounts WHERE email = ? AND status = 'ACTIVE'").get(email) as AccountRow | undefined;
+              if (!latestAccount || latestAccount.license_id !== account.license_id || latestAccount.password_hash !== account.password_hash)
+                throw Object.assign(new Error("credentials_changed"), { accountStatus: 401 });
+              const now = new Date().toISOString();
+              const consumed = db.prepare("UPDATE device_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?").run(now, challenge.id, now);
+              if (Number(consumed.changes) !== 1) throw Object.assign(new Error("challenge_replayed"), { accountStatus: 409 });
+              const license = rowById(account.license_id);
+              if (!license || license.status !== "ACTIVE" || Date.parse(license.paid_through) <= Date.now())
+                throw Object.assign(new Error("license_unavailable"), { accountStatus: 403 });
+              if (license.installation_id && license.installation_id !== challenge.installation_id)
+                throw Object.assign(new Error("installation_mismatch"), { accountStatus: 409 });
+              const approvedForLicense = db.prepare("SELECT * FROM device_requests WHERE license_id = ? AND status = 'APPROVED'").all(license.id) as DeviceRequestRow[];
+              if (approvedForLicense.some((row) => row.installation_id !== challenge.installation_id || row.key_fingerprint !== fingerprint || row.public_key !== publicKey))
+                throw Object.assign(new Error("installation_mismatch"), { accountStatus: 409 });
+              const approvedAtInstallation = db.prepare("SELECT * FROM device_requests WHERE installation_id = ? AND status = 'APPROVED'").all(challenge.installation_id) as DeviceRequestRow[];
+              if (approvedAtInstallation.some((row) => row.license_id !== license.id || row.key_fingerprint !== fingerprint || row.public_key !== publicKey))
+                throw Object.assign(new Error("installation_mismatch"), { accountStatus: 409 });
+              const existingKey = db.prepare("SELECT * FROM device_requests WHERE key_fingerprint = ?").get(fingerprint) as DeviceRequestRow | undefined;
+              if (existingKey && (existingKey.installation_id !== challenge.installation_id || existingKey.public_key !== publicKey || (existingKey.license_id && existingKey.license_id !== license.id)))
+                throw Object.assign(new Error("installation_mismatch"), { accountStatus: 409 });
+              const existing = db.prepare("SELECT * FROM device_requests WHERE installation_id = ? AND key_fingerprint = ?").get(challenge.installation_id, fingerprint) as DeviceRequestRow | undefined;
+              let device: DeviceRequestRow;
+              if (existing?.status === "APPROVED" && existing.license_id === license.id) device = existing;
+              else if (existing?.status === "PENDING" && (!existing.license_id || existing.license_id === license.id)) {
+                db.prepare("UPDATE device_requests SET business_name = ?, public_key = ?, status = 'APPROVED', license_id = ?, updated_at = ? WHERE id = ?").run(license.business_name, publicKey, license.id, now, existing.id);
+                device = db.prepare("SELECT * FROM device_requests WHERE id = ?").get(existing.id) as DeviceRequestRow;
+              } else if (!existing) {
+                const id = randomBytes(18).toString("base64url");
+                db.prepare("INSERT INTO device_requests(id,installation_id,business_name,key_fingerprint,public_key,status,license_id,created_at,updated_at) VALUES(?,?,?,?,?,'APPROVED',?,?,?)").run(id, challenge.installation_id, license.business_name, fingerprint, publicKey, license.id, now, now);
+                device = db.prepare("SELECT * FROM device_requests WHERE id = ?").get(id) as DeviceRequestRow;
+              } else throw Object.assign(new Error("installation_mismatch"), { accountStatus: 409 });
+              if (!license.installation_id) db.prepare("UPDATE licenses SET installation_id = ? WHERE id = ? AND installation_id IS NULL").run(challenge.installation_id, license.id);
+              writeAudit("ACCOUNT_DEVICE_ACTIVATED", license.id, device.id, `Cuenta ${email} activó instalación ${challenge.installation_id}`, now);
+              return { device, license: rowById(license.id)! };
+            });
+          } catch (error) {
+            const status = typeof error === "object" && error !== null && "accountStatus" in error ? Number((error as { accountStatus: unknown }).accountStatus) : 409;
+            const code = error instanceof Error ? error.message : "installation_mismatch";
+            return json(res, status, { error: status === 403 ? "license_unavailable" : status === 401 ? "invalid_credentials" : code === "challenge_replayed" ? code : "installation_mismatch" });
+          }
+          return json(res, 200, { request: panelRequestShape(activated.device), ...deviceCredentials(activated.license, installationId), account: { email } });
+        } finally { releaseAccountHashSlot(); }
       }
       if (
         req.method === "POST" &&

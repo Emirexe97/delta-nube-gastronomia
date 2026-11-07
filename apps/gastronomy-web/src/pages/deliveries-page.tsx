@@ -906,6 +906,7 @@ function SettlementModal({
           <Field
             label="Medio de pago de la liquidación"
             hint="Se aplicará a todos los movimientos seleccionados."
+            hintMode="inline"
           >
             <Select
               value={paymentMethodCode}

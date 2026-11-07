@@ -25,7 +25,7 @@ type RelayRequest = {
   receiptConsumed?: boolean;
 };
 type Challenge = { storeId: string; terminalId: string; expiresAt: number };
-type Session = { storeId: string; terminalId: string; expiresAt: number };
+type Session = { storeId: string; terminalId: string; expiresAt: number; validUntil?: "CASH_CLOSE"; cashSessionId?: string };
 type RelayError = { code: string; message?: string };
 const digest = (v: string) => createHash("sha256").update(v).digest("hex");
 const MAX_BODY = 64 * 1024;
@@ -35,6 +35,7 @@ const STORE_REQUEST_LIMIT = 64;
 const TOTAL_REQUEST_LIMIT = 512;
 const QUEUE_TTL_MS = 120_000;
 const SESSION_TTL_MS = 8 * 60 * 60_000;
+const SESSION_LIMIT = 10_000;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const RPC_METHODS = new Set([
   "waiter.getState",
@@ -143,7 +144,7 @@ export class WaiterRelay {
     for (const [k, v] of this.requests)
       if (v.expiresAt <= now) this.requests.delete(k);
     for (const [k, v] of this.sessions)
-      if (v.expiresAt <= now) this.sessions.delete(k);
+      if (v.validUntil !== "CASH_CLOSE" && v.expiresAt <= now) this.sessions.delete(k);
     for (const [k, v] of this.rates) if (v.reset <= now) this.rates.delete(k);
   }
   private rate(key: string, cap: number, windowMs = 60_000) {
@@ -181,7 +182,7 @@ export class WaiterRelay {
     const token = bearer(req);
     const hash = token ? digest(token) : "";
     const value = this.sessions.get(hash);
-    if (!token || !value || value.expiresAt <= Date.now())
+    if (!token || !value || (value.validUntil !== "CASH_CLOSE" && value.expiresAt <= Date.now()))
       fail(401, "unauthorized");
     return { token, hash, value };
   }
@@ -362,6 +363,13 @@ export class WaiterRelay {
       const scope = this.terminal(req);
       if (!scope.receiveInstallationId) fail(401, "unauthorized");
       const terminalId = scope.receiveInstallationId;
+      const cashSessionHeader = req.headers["x-pos-cash-session"];
+      if (cashSessionHeader !== undefined) {
+        if (typeof cashSessionHeader !== "string" || (cashSessionHeader !== "" && !validId(cashSessionHeader))) fail(400, "bad_request");
+        for (const [key, session] of this.sessions)
+          if (session.storeId === scope.storeId && session.terminalId === terminalId && session.validUntil === "CASH_CLOSE" && session.cashSessionId !== cashSessionHeader)
+            this.sessions.delete(key);
+      }
       const requests = [...this.requests.values()]
         .filter(
           (x) =>
@@ -409,28 +417,51 @@ export class WaiterRelay {
       if (b.error !== undefined) current.error = b.error as RelayError;
       else {
         current.result = b.result;
+        if (current.kind === "rpc" && current.method === "waiter.getState" && current.sessionHash) {
+          const state = b.result as { expiresAt?: unknown; validUntil?: unknown; cashSessionId?: unknown };
+          const session = this.sessions.get(current.sessionHash);
+          const invalidCashExpiry = (state?.expiresAt === null || state?.validUntil === "CASH_CLOSE") &&
+            (state?.expiresAt !== null || state?.validUntil !== "CASH_CLOSE" || !validId(state?.cashSessionId));
+          const changedCashSession = session?.validUntil === "CASH_CLOSE" &&
+            (state?.expiresAt !== null || state?.validUntil !== "CASH_CLOSE" || state?.cashSessionId !== session.cashSessionId);
+          if (invalidCashExpiry || changedCashSession) {
+            this.sessions.delete(current.sessionHash);
+            current.result = undefined;
+            current.error = { code: "session_revoked" };
+          }
+        }
         if (current.kind === "pair") {
           const result = b.result as {
             sessionToken?: unknown;
             expiresAt?: unknown;
+            validUntil?: unknown;
+            cashSessionId?: unknown;
           };
+          const cashClose = result?.expiresAt === null && result?.validUntil === "CASH_CLOSE" && validId(result?.cashSessionId);
+          const finiteExpiry = typeof result?.expiresAt === "string" && Number.isFinite(Date.parse(result.expiresAt)) && result.expiresAt.length > 0 && result?.validUntil === undefined && result?.cashSessionId === undefined;
           if (
             typeof result?.sessionToken !== "string" ||
             result.sessionToken.length < 32 ||
-            result.sessionToken.length > 256
+            result.sessionToken.length > 256 ||
+            (!cashClose && !finiteExpiry) ||
+            (cashClose && Object.keys(result).some((k) => !["sessionToken", "expiresAt", "validUntil", "cashSessionId", "waiter"].includes(k))) ||
+            this.sessions.size >= SESSION_LIMIT
           ) {
             current.result = undefined;
             current.error = { code: "pair_failed" };
-          } else
+          } else if (cashClose)
+            this.sessions.set(digest(result.sessionToken), {
+              storeId: current.storeId, terminalId: current.terminalId,
+              expiresAt: Number.POSITIVE_INFINITY, validUntil: "CASH_CLOSE",
+              cashSessionId: result.cashSessionId as string,
+            });
+          else
             this.sessions.set(digest(result.sessionToken), {
               storeId: current.storeId,
               terminalId: current.terminalId,
               expiresAt: Math.min(
                 Date.now() + SESSION_TTL_MS,
-                typeof result.expiresAt === "string" &&
-                  Number.isFinite(Date.parse(result.expiresAt))
-                  ? Date.parse(result.expiresAt)
-                  : Date.now() + SESSION_TTL_MS,
+                Date.parse(result.expiresAt as string),
               ),
             });
         }

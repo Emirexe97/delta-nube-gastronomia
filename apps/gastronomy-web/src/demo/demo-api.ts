@@ -6717,6 +6717,9 @@ export function createDemoApi(
     async activateLicense() {
       return this.getLicenseStatus();
     },
+    async signInLicenseAccount() {
+      throw new Error("La demostración no inicia sesión en cuentas reales.");
+    },
     async requestLicenseAccess(_input) { return this.getLicenseStatus(); },
     async refreshLicense() {
       return this.getLicenseStatus();

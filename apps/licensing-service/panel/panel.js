@@ -230,6 +230,7 @@
       business.append(
         el("span", "secondary-line", `Licencia · ${license.id || "—"}`),
       );
+      if (license.accountEmail) business.append(el("span", "secondary-line", `Cuenta · ${license.accountEmail}`));
       tableCell(row, business);
       tableCell(
         row,
@@ -258,6 +259,7 @@
           openRenewDialog(license),
         ),
       );
+      actions.append(makeButton(license.accountEmail ? "Restablecer contraseña" : "Crear cuenta", "button-small button-outline", () => openAccountDialog(license)));
       actionCell.append(actions);
       row.append(actionCell);
       body.append(row);
@@ -271,6 +273,8 @@
     LICENSE_SUSPENDED: "Licencia suspendida",
     LICENSE_REACTIVATED: "Licencia reactivada",
     LICENSE_RENEWED: "Vigencia renovada",
+    ACCOUNT_CREDENTIALS_SET: "Credenciales de cuenta actualizadas",
+    ACCOUNT_DEVICE_ACTIVATED: "Equipo activado con cuenta",
   };
   function renderAudit() {
     const list = $("#auditList");
@@ -582,6 +586,28 @@
       },
     });
   }
+  function openAccountDialog(license) {
+    configureDialog({
+      eyebrow: "CUENTA DEL PROGRAMA",
+      title: license.accountEmail ? "Restablecer contraseña" : "Crear cuenta de licencia",
+      description: `${license.businessName} · Una cuenta y una PC por licencia. No cambia el equipo vinculado ni la vigencia. Verificá la identidad del titular antes de restablecer su contraseña.`,
+      submitLabel: "Guardar cuenta",
+      action: null,
+    });
+    const email = addField("Correo de la cuenta", "email", "email", "Esta cuenta es independiente del catálogo web y de los PIN del personal.");
+    email.required = true; email.maxLength = 254;
+    email.value = license.accountEmail || ""; email.readOnly = !!license.accountEmail;
+    const password = addField("Nueva contraseña", "accountPassword", "password", "De 15 a 128 caracteres. Compartila con el titular por un canal seguro. No se podrá consultar después.");
+    password.required = true; password.minLength = 15; password.maxLength = 128; password.autocomplete = "new-password";
+    const repeat = addField("Repetir contraseña", "passwordConfirm", "password");
+    repeat.required = true; repeat.autocomplete = "new-password"; repeat.maxLength = 128;
+    addReasonField();
+    state.dialogAction = (form) => {
+      if (password.value !== repeat.value) throw new Error("Las contraseñas no coinciden.");
+      return { path: "/accounts", payload: { licenseId: license.id, email: email.value.trim().toLowerCase(), password: password.value, reason: readReason(form) } };
+    };
+    email.focus();
+  }
   function openRenewDialog(license) {
     configureDialog({
       eyebrow: "VIGENCIA",
@@ -708,9 +734,11 @@
       cancel.disabled = false;
     } finally {
       state.busy = false;
+      for (const field of dialogFields.querySelectorAll('input[type="password"]')) field.value = "";
     }
   });
   actionDialog.addEventListener("close", () => {
+    for (const field of dialogFields.querySelectorAll('input[type="password"]')) field.value = "";
     state.dialogAction = null;
     state.busy = false;
   });

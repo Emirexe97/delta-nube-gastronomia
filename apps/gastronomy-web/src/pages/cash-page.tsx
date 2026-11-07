@@ -840,7 +840,7 @@ function CloseCashModal({
             </div>
           ) : null}
           <div className="grid gap-3 rounded-xl border border-slate-200 p-4 sm:grid-cols-2">
-            <Field label="Total contado en caja" hint="Incluí el cambio final en este total; se mostrará separado en el informe.">
+            <Field label="Total contado en caja" hint="Incluí el cambio final en este total; se mostrará separado en el informe." hintMode="inline">
               <Input
                 autoFocus
                 value={counted}

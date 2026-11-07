@@ -117,9 +117,7 @@ test("backup creation failure preserves the previous copy byte for byte", async 
     { profile, nativeModule },
   );
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Copias de seguridad", exact: true })
-    .click();
+  await page.getByRole("tab", { name: "Copias de seguridad", exact: true }).click();
   await page
     .getByRole("button", { name: "Crear copia local", exact: true })
     .click();
@@ -205,9 +203,7 @@ test("successful replacement publishes a valid current SQLite copy without chang
     }),
   );
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Copias de seguridad", exact: true })
-    .click();
+  await page.getByRole("tab", { name: "Copias de seguridad", exact: true }).click();
   await page
     .getByRole("button", { name: "Crear copia local", exact: true })
     .click();

@@ -115,6 +115,7 @@ test("comercio activo abre, copia y descarga su QR; respeta la cancelación", as
     // Keep native APIs at the OS boundary mocked; do not use the host clipboard,
     // browser, or a real save dialog during the test.
     await page.getByRole("link", { name: "Configuración" }).click();
+    await page.getByRole("tab", { name: "Página web", exact: true }).click();
     await expect(
       page.locator("#settings-website").getByText("Activa", { exact: true }),
     ).toBeVisible();

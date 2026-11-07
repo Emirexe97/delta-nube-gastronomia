@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   NavLink,
   Navigate,
@@ -33,23 +33,25 @@ import { useBootstrap } from "./api";
 import { OrderPrintStatus } from "./components/order-print-status";
 import { formatMoney } from "./lib";
 import { DashboardPage } from "./pages/dashboard-page";
-import { TablesPage } from "./pages/tables-page";
-import { OrdersPage } from "./pages/orders-page";
-import { CatalogPage } from "./pages/catalog-page";
-import { PurchasesPage } from "./pages/purchases-page";
-import { CustomersPage } from "./pages/customers-page";
-import { CashPage } from "./pages/cash-page";
-import { ReportsPage } from "./pages/reports-page";
-import { FinancePage } from "./pages/finance-page";
-import { SettingsPage } from "./pages/settings-page";
-import { DeliveriesPage } from "./pages/deliveries-page";
-import { UsersPage } from "./pages/users-page";
-import { AuditPage } from "./pages/audit-page";
-import { resetDemoData } from "./demo/demo-api";
+const TablesPage = lazy(() => import("./pages/tables-page").then(m => ({ default: m.TablesPage })));
+const OrdersPage = lazy(() => import("./pages/orders-page").then(m => ({ default: m.OrdersPage })));
+const CatalogPage = lazy(() => import("./pages/catalog-page").then(m => ({ default: m.CatalogPage })));
+const PurchasesPage = lazy(() => import("./pages/purchases-page").then(m => ({ default: m.PurchasesPage })));
+const CustomersPage = lazy(() => import("./pages/customers-page").then(m => ({ default: m.CustomersPage })));
+const CashPage = lazy(() => import("./pages/cash-page").then(m => ({ default: m.CashPage })));
+const ReportsPage = lazy(() => import("./pages/reports-page").then(m => ({ default: m.ReportsPage })));
+const FinancePage = lazy(() => import("./pages/finance-page").then(m => ({ default: m.FinancePage })));
+const SettingsPage = lazy(() => import("./pages/settings-page").then(m => ({ default: m.SettingsPage })));
+const DeliveriesPage = lazy(() => import("./pages/deliveries-page").then(m => ({ default: m.DeliveriesPage })));
+const UsersPage = lazy(() => import("./pages/users-page").then(m => ({ default: m.UsersPage })));
+const AuditPage = lazy(() => import("./pages/audit-page").then(m => ({ default: m.AuditPage })));
 import { isDemoMode } from "./demo/install-demo";
 import { useEnterNavigation } from "./hooks/use-enter-navigation";
-import { useLicenseStatus } from "./components/license-panel";
-import { useAppUpdateStatus } from "./components/app-update-panel";
+import { useLicenseStatus } from "./hooks/use-license-status";
+import { useAppUpdateStatus } from "./hooks/use-app-update-status";
+import { HeaderClock } from "./components/header-clock";
+import { RouteErrorBoundary } from "./components/route-error-boundary";
+import { resetDemoAndReload } from "./demo/startup";
 
 const navigation = [
   { to: "/resumen", label: "Resumen", icon: ChartPieSlice, group: "General" },
@@ -104,6 +106,7 @@ const navigation = [
 export function App() {
   const waiterQueryClient = useQueryClient();
   const [waiterNotice,setWaiterNotice] = useState("");
+  const [demoResetError, setDemoResetError] = useState<string | null>(null);
   useEffect(() => window.gastronomy?.onWaiterOrderChanged?.((notice) => {
     if (notice) setWaiterNotice(notice);
     void waiterQueryClient.invalidateQueries({ queryKey: ["bootstrap"] });
@@ -114,11 +117,12 @@ export function App() {
   const license = useLicenseStatus();
   const appUpdate = useAppUpdateStatus();
   const location = useLocation();
+  const currentLocationRef = useRef(location);
+  currentLocationRef.current = location;
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("gastronomy.sidebar.collapsed") === "true",
   );
-  const [clock, setClock] = useState(new Date());
   const [navigationNotice, setNavigationNotice] = useState<string | null>(null);
   const [visitedSalon, setVisitedSalon] = useState(() =>
     location.pathname.startsWith("/salon"),
@@ -143,10 +147,6 @@ export function App() {
     if (location.pathname.startsWith("/pedidos")) setVisitedOrders(true);
   }, [location.pathname]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(new Date()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0, left: 0 });
@@ -274,6 +274,16 @@ export function App() {
         event.preventDefault();
         event.stopPropagation();
         showBlockedNotice("Esperá a que termine la operación en curso.");
+        return;
+      }
+      // Settings tabs share one form. Replace its fragment rather than adding
+      // entries behind the unsaved-changes history guard.
+      if (destination.origin === window.location.origin &&
+          currentLocationRef.current.pathname === "/configuracion" &&
+          destination.hash.slice(1).split(/[?#]/)[0] === "/configuracion") {
+        event.preventDefault();
+        event.stopPropagation();
+        navigate(destination.hash.slice(1), { replace: true });
         return;
       }
       if (
@@ -422,7 +432,7 @@ export function App() {
   return (
     <div
       className={cn(
-        "flex h-full min-h-0 bg-slate-50 text-slate-950 max-sm:[--app-navigation-width:56px]",
+        "dn-app flex h-full min-h-0 text-slate-950 max-sm:[--app-navigation-width:56px]",
         collapsed
           ? "[--app-navigation-width:64px]"
           : "[--app-navigation-width:214px]",
@@ -440,7 +450,7 @@ export function App() {
       <aside
         data-app-navigation="true"
         className={cn(
-          "relative flex shrink-0 flex-col border-r border-slate-200 bg-white transition-[width] duration-200 max-sm:w-14",
+          "dn-sidebar relative flex shrink-0 flex-col border-r border-slate-200 bg-white transition-[width] duration-200 max-sm:w-14",
           collapsed ? "w-16" : "w-[214px]",
         )}
       >
@@ -472,7 +482,7 @@ export function App() {
           {groups.map((group) => (
             <div key={group} className="mb-4">
               {!collapsed ? (
-                <p className="mb-1 px-2 text-xs font-bold uppercase tracking-[.18em] text-slate-600 max-sm:hidden">
+                <p className="mb-1.5 px-3 text-xs font-medium text-slate-500 max-sm:hidden">
                   {group}
                 </p>
               ) : null}
@@ -488,9 +498,9 @@ export function App() {
                       title={item.label}
                       className={({ isActive }) =>
                         cn(
-                          "mb-0.5 flex h-10 items-center gap-3 rounded-lg px-3 text-[12px] font-semibold transition max-sm:justify-center max-sm:px-0",
+                          "dn-nav-link mb-1 flex h-10 items-center gap-3 rounded-xl px-3 text-[13px] font-semibold transition max-sm:justify-center max-sm:px-0",
                           isActive
-                            ? "bg-brand-50 text-brand-700"
+                            ? "bg-dn-primary-soft text-dn-primary"
                             : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
                         )
                       }
@@ -522,15 +532,12 @@ export function App() {
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 max-sm:px-3">
+        <header className="dn-app-header flex h-16 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 max-sm:px-3">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[.16em] text-slate-600">
-              Operación local
-            </p>
             <h1
               ref={routeHeadingRef}
               tabIndex={-1}
-              className="text-base font-bold text-slate-950 outline-none"
+              className="text-lg font-semibold tracking-tight text-slate-950 outline-none"
             >
               {current?.label ?? "Gastronomía"}
             </h1>
@@ -540,30 +547,21 @@ export function App() {
               <button
                 type="button"
                 title="Borra los cambios de prueba y recupera los datos iniciales"
-                onClick={() => {
-                  resetDemoData();
-                  window.location.reload();
-                }}
-                className="hidden items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-extrabold uppercase tracking-[.08em] text-amber-800 transition hover:bg-amber-100 md:flex"
+                onClick={() => void resetDemoAndReload(
+                  async () => (await import("./demo/demo-api")).resetDemoData,
+                  () => window.location.reload(),
+                  () => setDemoResetError("No se pudieron restablecer los datos de demostración. No se recargó la aplicación."),
+                )}
+                className="hidden items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 md:flex"
               >
                 <ArrowCounterClockwise size={15} weight="bold" />
                 Modo demostración · Restablecer
               </button>
             ) : null}
+            {demoResetError ? <span role="alert" className="text-xs font-semibold text-rose-700">{demoResetError}</span> : null}
             <div className="hidden items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 xl:flex">
               <Clock size={15} />
-              <span>
-                {clock.toLocaleDateString("es-AR", {
-                  weekday: "short",
-                  day: "2-digit",
-                  month: "short",
-                })}{" "}
-                ·{" "}
-                {clock.toLocaleTimeString("es-AR", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </span>
+              <HeaderClock />
             </div>
             {bootstrap.data.cashSession ? (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5">
@@ -641,6 +639,8 @@ export function App() {
           ref={contentRef}
           className="min-h-0 flex-1 overflow-auto p-4 lg:p-5"
         >
+          <RouteErrorBoundary key={location.pathname}>
+          <Suspense fallback={<div role="status" className="p-4 text-sm text-slate-500">Cargando sección…</div>}>
           <Routes>
             <Route path="/" element={<Navigate to="/resumen" replace />} />
             <Route
@@ -701,16 +701,26 @@ export function App() {
             />
             <Route path="*" element={<Navigate to="/resumen" replace />} />
           </Routes>
+          </Suspense>
+          </RouteErrorBoundary>
           {visitedSalon ? (
             <PreservedWorkspace active={location.pathname.startsWith("/salon")}>
+              <RouteErrorBoundary>
+              <Suspense fallback={<div role="status" className="p-4 text-sm text-slate-500">Cargando salón…</div>}>
               <TablesPage data={bootstrap.data} />
+              </Suspense>
+              </RouteErrorBoundary>
             </PreservedWorkspace>
           ) : null}
           {visitedOrders ? (
             <PreservedWorkspace
               active={location.pathname.startsWith("/pedidos")}
             >
+              <RouteErrorBoundary>
+              <Suspense fallback={<div role="status" className="p-4 text-sm text-slate-500">Cargando pedidos…</div>}>
               <OrdersPage data={bootstrap.data} />
+              </Suspense>
+              </RouteErrorBoundary>
             </PreservedWorkspace>
           ) : null}
         </div>

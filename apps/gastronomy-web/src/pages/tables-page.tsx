@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import type {
   BootstrapDto,
   OrderDto,
@@ -32,6 +33,7 @@ import {
 import { useApiMutation } from "../api";
 import { OrderEditor } from "../components/order-editor";
 import { TableFloorPlan } from "../components/table-floor-plan";
+import { DelayedWaiterInbox, DelayedWaiterCount, canReviewDelayedWaiters } from "../components/delayed-waiter-inbox";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { getTopVisibleDialog } from "../hooks/use-enter-navigation";
 import {
@@ -85,6 +87,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
     }
   }, [view]);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [salonTab, setSalonTab] = useState<"TABLES" | "WAITERS">("TABLES");
   const [selectedOrderSnapshot, setSelectedOrderSnapshot] =
     useState<OrderDto | null>(null);
   const [openingTable, setOpeningTable] = useState<RestaurantTableDto | null>(
@@ -108,6 +111,18 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
   const canManageTables =
     data.currentUser.permissions.includes("tables.manage") ||
     data.currentUser.permissions.includes("*");
+  const canReviewWaiters = canReviewDelayedWaiters(data);
+  const activeSalonTab = salonTab === "WAITERS" && canReviewWaiters ? "WAITERS" : "TABLES";
+  const onSalonTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const tabs = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []);
+    const index = tabs.indexOf(event.currentTarget);
+    let next = -1;
+    if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+    if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = tabs.length - 1;
+    if (next >= 0) { event.preventDefault(); tabs[next]?.focus(); tabs[next]?.click(); }
+  };
 
   const getScrollContainer = (): HTMLElement | null => {
     let parent = pageRef.current?.parentElement;
@@ -220,15 +235,19 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
     <div ref={pageRef} className="panel-enter mx-auto max-w-[1500px] space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-extrabold">Salón</h2>
-          <p className="text-xs text-slate-600">
-            Abrí una mesa y asigná quién la atiende
-          </p>
+          <h2 className="text-lg font-extrabold tracking-tight">Salón</h2>
         </div>
         <Badge tone="orange">
           {occupiedCount} ocupadas · {tables.length - occupiedCount} libres
         </Badge>
       </div>
+
+      <div className="flex gap-1 border-b border-slate-100 p-2" role="tablist" aria-label="Salón">
+        <button id="salon-tab-mesas" aria-controls="salon-panel-mesas" type="button" role="tab" aria-selected={activeSalonTab === "TABLES"} tabIndex={activeSalonTab === "TABLES" ? 0 : -1} onKeyDown={onSalonTabKeyDown} onClick={() => setSalonTab("TABLES")} className={`rounded-lg px-3 py-2 text-xs font-bold ${activeSalonTab === "TABLES" ? "bg-brand-700 text-white" : "bg-slate-100 text-slate-700"}`}>Mesas</button>
+        {canReviewWaiters && <button id="salon-tab-mozos" aria-controls="salon-panel-mozos" type="button" role="tab" aria-selected={activeSalonTab === "WAITERS"} tabIndex={activeSalonTab === "WAITERS" ? 0 : -1} onKeyDown={onSalonTabKeyDown} onClick={() => setSalonTab("WAITERS")} className={`rounded-lg px-3 py-2 text-xs font-bold ${activeSalonTab === "WAITERS" ? "bg-brand-700 text-white" : "bg-slate-100 text-slate-700"}`}>Mozos <DelayedWaiterCount data={data} active={workspaceActive} /></button>}
+      </div>
+
+      {activeSalonTab === "WAITERS" ? <div id="salon-panel-mozos" role="tabpanel" aria-labelledby="salon-tab-mozos"><DelayedWaiterInbox data={data} active={workspaceActive} /></div> : <div id="salon-panel-mesas" role="tabpanel" aria-labelledby="salon-tab-mesas">
 
       {error && !openingTable ? (
         <div
@@ -560,6 +579,7 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
           </div>
         </form>
       </Modal>
+      </div>}
     </div>
   );
 }

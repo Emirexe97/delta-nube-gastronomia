@@ -24,6 +24,7 @@ type Persisted = {
   maxSeenWallClock: number;
   lastVerifiedAt: string | null;
   revision: number;
+  accountEmail?: string | null;
 };
 type Config = { serverUrl?: string; publicKey?: string };
 type Options = {
@@ -35,6 +36,7 @@ type Options = {
   config?: Config;
   configPath?: string;
   allowLoopbackHttp?: boolean;
+  enforceLicense?: boolean;
   safeStorage?: { isAvailable?: () => boolean; encryptString(value: string): Buffer; decryptString(value: Buffer): string };
 };
 type DeviceIdentity = { schema: 1; publicKey: string; encryptedPrivateKey: string; enrollment?: NonNullable<LicenseStatusDto["enrollment"]> };
@@ -145,6 +147,7 @@ export class DesktopLicensing {
       )
         return false;
       const url = new URL(this.config.serverUrl);
+      if (url.username || url.password) return false;
       return (
         url.protocol === "https:" ||
         (this.options.allowLoopbackHttp === true &&
@@ -199,7 +202,7 @@ export class DesktopLicensing {
   }
   async getStatus(): Promise<LicenseStatusDto> {
     await this.persistClockIfChanged();
-    if (!this.options.isPackaged)
+    if (!this.options.isPackaged && !this.options.enforceLicense)
       return this.dto(
         "DEVELOPMENT",
         true,
@@ -267,7 +270,7 @@ export class DesktopLicensing {
     if (this.lastFailure === "invalid")
       return "El servidor devolvió una licencia inválida. Contactá a soporte.";
     return fallback === "UNACTIVATED"
-      ? "Activá Delta Nube con el código de licencia de tu negocio."
+      ? "Ingresá con la cuenta de tu negocio en Configuración → Licencia para activar este equipo."
       : fallback;
   }
   private safeLease(): LicenseLease | null {
@@ -304,6 +307,7 @@ export class DesktopLicensing {
           VERIFICATION_INTERVAL_MS,
       message,
       enrollment: { ...this.enrollment },
+      account: this.state.accountEmail ? { email: this.state.accountEmail } : null,
     };
   }
   activate(code: string) {
@@ -313,6 +317,53 @@ export class DesktopLicensing {
     this.webSiteProvisioner = handlers.provision; this.getWebSiteChoice = handlers.getChoice; this.selectWebSiteChoice = handlers.selectChoice; this.getWebSiteStatus = handlers.getStatus;
   }
   hasEnrollmentIdentity() { return !!(this.identity && this.identityPrivateKey); }
+  signInAccount(input: { email: string; password: string }): Promise<LicenseStatusDto> {
+    return this.enqueue(() => this.performAccountSignIn(input));
+  }
+  private async performAccountSignIn(input: { email: string; password: string }): Promise<LicenseStatusDto> {
+    const email = input.email.trim().toLowerCase();
+    if (!/^[^\s@]{1,128}@[^\s@.]{1,128}(?:\.[^\s@.]{1,63})+$/.test(email) || email.length > 254 || typeof input.password !== "string" || input.password.length < 1 || input.password.length > 1024) throw new Error("Ingresá un email y contraseña válidos.");
+    if (!this.configured) throw new Error("La licencia aún no está configurada. Conectate con soporte.");
+    if (this.identityLoadError) throw new Error(this.identityLoadError);
+    try {
+      await this.ensureDeviceIdentity();
+      const keyFingerprint = devicePublicKeyFingerprint(this.identity!.publicKey);
+      const challenge = await this.postEnrollment("/v2/devices/challenge", { installationId: this.state.installationId, publicKey: this.identity!.publicKey, purpose: "lease" });
+      this.validateChallenge(challenge);
+      const signature = signDeviceProof({ purpose: "lease", challengeId: challenge.challengeId, nonce: challenge.nonce, installationId: this.state.installationId, keyFingerprint }, this.identityPrivateKey!);
+      const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      let response: Response; let raw: string;
+      try {
+        response = await this.fetcher(new URL("/v2/accounts/activate", this.config.serverUrl), { method: "POST", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password: input.password, installationId: this.state.installationId, publicKey: this.identity!.publicKey, challengeId: challenge.challengeId, signature }), signal: controller.signal });
+        raw = await this.readBoundedBody(response, controller.signal);
+      } finally { clearTimeout(timer); }
+      if (!response.ok) { let code = ""; try { code = String((JSON.parse(raw) as any).error ?? ""); } catch {} throw new Error(`account:${accountError(code, response.status)}`); }
+      const result = JSON.parse(raw) as any;
+      this.validateRequest(result, keyFingerprint);
+      if (result.request.status !== "APPROVED" || typeof result.token !== "string" || result.account?.email?.toLowerCase() !== email) throw new ResponseProblem("invalid");
+      const verifiedLease = verifyLease(result.token, this.config.publicKey!, this.state.installationId);
+      if (result.request.licenseId !== verifiedLease.licenseId || typeof result.account?.email !== "string" || result.account.email.length > 254 || result.account.email.toLowerCase() !== email) throw new ResponseProblem("invalid");
+      if (result.webSiteTicket !== undefined && (typeof result.webSiteTicket !== "string" || !/^[A-Za-z0-9._~+\/-]{20,4096}={0,2}$/.test(result.webSiteTicket))) throw new ResponseProblem("invalid");
+      await this.acceptToken(result.token);
+      this.state.accountEmail = email; await this.persist();
+      this.enrollment = { requestId: result.request.id, status: "APPROVED", keyFingerprint, businessName: result.request.businessName };
+      this.identity!.enrollment = this.enrollment; await this.persistIdentity();
+      if (typeof result.webSiteTicket === "string") await this.acceptWebSiteTicket(result.webSiteTicket);
+      return this.getStatus();
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("account:")) throw new Error(error.message.slice(8));
+      if (error instanceof Error && error.message.includes("almacenamiento seguro")) throw error;
+      if (error instanceof ResponseProblem && error.kind === "invalid") throw new Error("El servidor devolvió una respuesta de licencia inválida. Contactá a soporte.");
+      throw new Error("No se pudo conectar con el servidor. Revisá internet e intentá nuevamente; la licencia guardada se conserva.");
+    } finally { input.password = ""; }
+  }
+  private async ensureDeviceIdentity() {
+    if (this.identity && this.identityPrivateKey) return;
+    if (!this.options.safeStorage || this.options.safeStorage.isAvailable?.() === false) throw new Error("El almacenamiento seguro del sistema no está disponible.");
+    const pair = generateKeyPairSync("ed25519"); const publicKey = pair.publicKey.export({ type: "spki", format: "pem" }).toString(); const privateKey = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    this.identity = { schema: 1, publicKey, encryptedPrivateKey: this.options.safeStorage.encryptString(privateKey).toString("base64") }; this.identityPrivateKey = privateKey;
+    await mkdir(dirname(this.identityFile), { recursive: true }); await this.persistIdentity();
+  }
   async registerWebSite(signup: WebSiteChoice) {
     if (!this.identity || !this.selectWebSiteChoice || !this.getWebSiteStatus) throw new Error("Para habilitar una tienda, andá a Configuración → Licencia → Solicitar habilitación y esperá la aprobación sobre tu licencia existente.");
     if (this.getWebSiteStatus().state === "ACTIVE") throw new Error("Ya hay una tienda registrada; no se puede registrar otra.");
@@ -391,7 +442,7 @@ export class DesktopLicensing {
   refresh() {
     return this.enqueue(() => {
       this.lastFailure = null;
-      if (this.identity && this.identityPrivateKey) return this.refreshEnrollmentLease();
+      if (this.identity && this.identityPrivateKey && (this.enrollment.status === "PENDING" || this.enrollment.status === "APPROVED")) return this.refreshEnrollmentLease();
       return this.online("/v1/verify", {});
     });
   }
@@ -560,6 +611,8 @@ export class DesktopLicensing {
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let bytes = 0;
+    const cancelOnAbort = () => { void reader.cancel().catch(() => undefined); };
+    signal.addEventListener("abort", cancelOnAbort, { once: true });
     try {
       while (true) {
         if (signal.aborted) throw new ResponseProblem("offline");
@@ -573,6 +626,7 @@ export class DesktopLicensing {
         chunks.push(value);
       }
     } finally {
+      signal.removeEventListener("abort", cancelOnAbort);
       reader.releaseLock();
     }
     const merged = new Uint8Array(bytes);
@@ -595,4 +649,12 @@ class ResponseProblem extends Error {
     super(kind);
     this.kind = kind;
   }
+}
+
+function accountError(code: string, status: number): string {
+  if (code === "invalid_credentials") return "Email o contraseña incorrectos.";
+  if (code === "installation_mismatch") return "Esta cuenta no puede activarse en esta instalación. Contactá a soporte.";
+  if (code === "rate_limited" || status === 429) return "Demasiados intentos. Esperá un momento y volvé a intentar.";
+  if (status >= 500) return "El servicio no está disponible. Intentá nuevamente más tarde.";
+  return "No se pudo activar la cuenta. Revisá los datos e intentá nuevamente.";
 }

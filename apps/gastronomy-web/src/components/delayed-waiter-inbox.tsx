@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { BootstrapDto, DelayedWaiterBatch } from "@gastronomy/contracts";
-import { Button } from "@gastronomy/ui";
+import { Button, HelpTip } from "@gastronomy/ui";
 import { humanError } from "../lib";
 
 export const delayedWaiterKey = ["delayed-waiter-batches"] as const;
@@ -34,16 +34,16 @@ export function DelayedWaiterInbox({ data, active }: { data: BootstrapDto; activ
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const selected = entries.data?.find((e) => e.requestId === selectedId);
-  if (!canReviewDelayedWaiters(data)) return <p className="p-4">Sólo caja o un responsable puede revisar tandas demoradas.</p>;
+  if (!canReviewDelayedWaiters(data)) return null;
   async function resolve(entry: DelayedWaiterBatch, accept: boolean) {
     setBusy(true); setError(""); setNotice("");
     try {
       if (accept) {
         await window.gastronomy.confirmDelayedWaiterBatch({ requestId: entry.requestId });
-        setNotice("Tanda incorporada al pedido. Revisá el estado de la comanda si hubo un fallo de impresión.");
+        setNotice("Pedido incorporado a la mesa. Revisá que haya salido la comanda.");
       } else {
         await window.gastronomy.rejectDelayedWaiterBatch({ requestId: entry.requestId });
-        setNotice("Tanda descartada. No se creó pedido ni comanda.");
+        setNotice("Pedido descartado. No se creó el pedido.");
       }
       select(null);
       await client.invalidateQueries({ queryKey: delayedWaiterKey });
@@ -51,30 +51,33 @@ export function DelayedWaiterInbox({ data, active }: { data: BootstrapDto; activ
     } catch (e) { setError(humanError(e)); }
     finally { setBusy(false); }
   }
-  return <section className="space-y-3 p-4" aria-label="Tandas de mozos demoradas">
-    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
-      <h3 className="font-extrabold">Demorados · pendientes de confirmar en caja</h3>
-      <p>Estas tandas llegaron más de 60 segundos después del envío o sin una hora verificable. No se incorporaron a la mesa ni se imprimieron.</p>
-      <p className="mt-1 font-semibold">Consultá con el mozo si ya se cargaron manualmente antes de confirmar.</p>
+  return <section className="space-y-3 p-4" aria-label="Pedidos de mozos">
+    <div className="space-y-1">
+      <h3 className="text-sm font-bold">Pedidos de mozos <HelpTip label="Pedidos enviados desde el teléfono">Revisalos antes de agregarlos a la mesa.</HelpTip></h3>
     </div>
-    <p className="text-xs text-slate-600">La revisión es local y no necesita Internet. Si cambió el turno o la mesa, no se confirma automáticamente.</p>
-    {entries.isLoading && <p>Cargando tandas…</p>}
+    {!!entries.data?.length && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
+      <h3 className="font-extrabold">Revisá antes de confirmar</h3>
+      <p>Estos pedidos todavía no se agregaron a la mesa ni se enviaron a cocina.</p>
+      <p className="mt-1 font-semibold">Antes de confirmar, consultá con el mozo si ya los cargó manualmente.</p>
+    </div>}
+    {entries.isLoading && <p>Cargando pedidos…</p>}
     {entries.error && <p role="alert">{humanError(entries.error)} <Button onClick={() => void entries.refetch()}>Reintentar</Button></p>}
     {error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
     {notice && <p role="status" className="text-sm text-emerald-800">{notice}</p>}
-    {entries.data?.length === 0 && <p>No hay tandas demoradas pendientes.</p>}
+    {entries.data?.length === 0 && <div className="rounded-lg border border-dashed p-4 text-sm text-slate-600"><p>No hay pedidos pendientes de revisión.</p><p className="mt-1">Los pedidos ya aceptados aparecen dentro de su mesa.</p></div>}
     <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_2fr]">
-      <ul className="space-y-2" aria-label="Mozos demorados">
+      <ul className="space-y-2" aria-label="Pedidos por aprobar">
         {entries.data?.map((entry) => <li key={entry.requestId}>
           <button type="button" disabled={busy} aria-pressed={entry.requestId === selectedId}
             className="w-full rounded-lg border p-3 text-left hover:bg-amber-50"
             onClick={() => { select(entry.requestId); setError(""); setNotice(""); }}>
             <strong>Mesa {entry.tableNumber} · {entry.waiterName}</strong>
             <p className="text-xs">Enviado: {date(entry.submittedAt)}</p>
-            <p className="text-xs">Recibido: {date(entry.receivedAt)}</p>
+            <span className="mt-2 inline-block text-xs font-bold text-brand-700">Ver detalle →</span>
           </button>
         </li>)}
       </ul>
+      {!selected && !!entries.data?.length && <p className="rounded-lg border border-dashed p-4 text-sm text-slate-600">Elegí un pedido para ver sus productos.</p>}
       {selected && <article className="space-y-3 rounded-lg border p-4">
         <h4 className="font-bold">Mesa {selected.tableNumber} · {selected.waiterName}</h4>
         <p className="text-xs">Enviado: {date(selected.submittedAt)} · Recibido: {date(selected.receivedAt)}</p>
@@ -84,12 +87,11 @@ export function DelayedWaiterInbox({ data, active }: { data: BootstrapDto; activ
             {line.note && <p className="text-sm text-slate-600">{line.note}</p>}
           </li>)}
         </ul>
-        <p className="text-xs text-slate-600">Al confirmar se validan la mesa, el turno, los productos y los precios actuales de caja.</p>
         <div className="flex flex-wrap gap-2">
-          <Button disabled={busy || data.cashSession?.status !== "OPEN"} onClick={() => void resolve(selected, true)}>Confirmar e imprimir tanda</Button>
-          <Button variant="secondary" disabled={busy} onClick={() => void resolve(selected, false)}>Descartar · ya se resolvió / no corresponde</Button>
+          <Button disabled={busy || data.cashSession?.status !== "OPEN"} onClick={() => void resolve(selected, true)}>Aprobar y enviar a cocina</Button>
+          <Button variant="secondary" disabled={busy} onClick={() => void resolve(selected, false)}>Descartar pedido</Button>
         </div>
-        {data.cashSession?.status !== "OPEN" && <p className="text-sm">No se puede confirmar una tanda con la caja cerrada.</p>}
+        {data.cashSession?.status !== "OPEN" && <p className="text-sm">Abrí caja para aprobar pedidos.</p>}
       </article>}
     </div>
   </section>;

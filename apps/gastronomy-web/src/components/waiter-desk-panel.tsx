@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Button, Card, Field, Select } from "@gastronomy/ui";
+import { Button, Card, Field, HelpTip, Select } from "@gastronomy/ui";
 import type { BootstrapDto } from "@gastronomy/contracts";
 import { humanError } from "../lib";
 
@@ -57,11 +57,9 @@ export function WaiterDeskPanel({ data }: { data: BootstrapDto }) {
   return (
     <Card id="settings-waiter" className="scroll-mt-20 space-y-3 p-4">
       <div>
-        <h3 className="text-sm font-extrabold">Modo Mozo · teléfonos</h3>
+        <h3 className="text-sm font-extrabold">Vincular teléfonos de mozos <HelpTip label="Código QR">Vence en 2 minutos y se usa una sola vez.</HelpTip></h3>
         <p className="text-xs text-slate-600">
-          Vinculá un teléfono en caja para tomar pedidos con Wi-Fi o datos. El
-          QR es personal, vence en 2 minutos y se usa una sola vez. No lo
-          compartas a distancia.
+          Elegí al mozo y generá un QR para vincular su teléfono desde esta caja.
         </p>
       </div>
       {!cashOpen && (
@@ -76,14 +74,12 @@ export function WaiterDeskPanel({ data }: { data: BootstrapDto }) {
       )}
       {status.data && !status.data.configured && (
         <p className="text-xs">
-          Falta configurar el conector seguro de pedidos para esta caja. El
-          servicio de pedidos debe tener habilitado Modo Mozo.
+          El servicio para recibir pedidos desde el teléfono no está listo. Consultá con soporte.
         </p>
       )}
       {status.data && !status.data.printerReady && (
         <p className="text-xs">
-          En Impresión, elegí una impresora específica para Comanda de cocina,
-          seleccioná Impresión directa y guardá los cambios.
+          Configurá una impresora para enviar las comandas a cocina desde Impresión.
         </p>
       )}
       {!waiters.length && (
@@ -92,7 +88,7 @@ export function WaiterDeskPanel({ data }: { data: BootstrapDto }) {
         </p>
       )}
       {status.data?.connectionError && (
-        <p role="status">{status.data.connectionError} Podés seguir cargando y cobrando pedidos desde esta PC. Las tandas demoradas se revisan en Pedidos → Mozos demorados.</p>
+        <p role="status">No hay conexión con los teléfonos de los mozos. Podés seguir trabajando desde esta PC. Los pedidos pendientes se revisan en Salón → Mozos.</p>
       )}
       {status.error && <p role="alert">{humanError(status.error)}</p>}
       <div className="flex flex-wrap items-end gap-3">
@@ -122,7 +118,7 @@ export function WaiterDeskPanel({ data }: { data: BootstrapDto }) {
             })
           }
         >
-          Generar QR presencial
+          Vincular teléfono
         </Button>
       </div>
       {qr && cashOpen && (
@@ -134,19 +130,18 @@ export function WaiterDeskPanel({ data }: { data: BootstrapDto }) {
             alt="QR de vinculación del teléfono del mozo seleccionado"
           />
           <p className="text-xs">
-            Escaneá e ingresá tu PIN. Vence a las {clock(qr.expiresAt)}.
+            Escaneá el código e ingresá tu PIN. Vence a las {clock(qr.expiresAt)} y se usa una sola vez.
           </p>
           <Button variant="secondary" onClick={() => setQr(null)}>
             Ocultar QR
           </Button>
         </div>
       )}
-      <p className="text-xs text-slate-600">
-        El acceso dura 15 minutos y se renueva en caja con otro QR y PIN. No
-        verifica ubicación entre renovaciones. Revocá el acceso si el mozo se
-        retira.
-      </p>
-      <h4 className="text-xs font-bold">Accesos activos</h4>
+      <div className="flex items-center gap-1 text-xs font-bold">
+        Accesos activos
+        <HelpTip label="Accesos de los teléfonos">Podés revocar el acceso si el mozo se retira. El sistema no comprueba si el teléfono sigue dentro del local.</HelpTip>
+      </div>
+      <p className="text-xs text-slate-600">Los accesos duran hasta el cierre de caja.</p>
       {status.data && !status.data.sessions.length && (
         <p className="text-xs">Ningún teléfono vinculado.</p>
       )}
@@ -156,7 +151,7 @@ export function WaiterDeskPanel({ data }: { data: BootstrapDto }) {
           className="flex items-center justify-between gap-3 text-sm"
         >
           <span>
-            {s.name} · hasta {clock(s.expiresAt)}
+            {s.name} · {s.expiresAt === null ? "hasta el cierre de caja" : `hasta ${clock(s.expiresAt)}`}
           </span>
           <Button
             variant="secondary"

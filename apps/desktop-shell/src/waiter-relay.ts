@@ -10,6 +10,7 @@ export type RelayRequest = {
 type Reply = { result: unknown } | { error: { code: string; message: string } };
 type Config = {
   origin: string;
+  publicOrigin?: string;
   storeId: string;
   installation: string;
   token: string;
@@ -40,6 +41,14 @@ export function waiterRelayConfig(
       !/^[\w-]{1,128}$/.test(installation)
     )
       return null;
+    // Explicitly configured mobile entry point, never a URL supplied by the relay response.
+    // Allows a private loopback connector plus a separate HTTPS ingress in a local pilot.
+    const publicUrl = env.GASTRONOMY_WAITER_PUBLIC_URL;
+    if (publicUrl) {
+      const p = new URL(publicUrl);
+      if (p.protocol !== "https:" || p.username || p.password || p.hash || p.search || p.pathname !== "/") return null;
+      return { origin: u.origin, publicOrigin: p.origin, storeId, installation, token };
+    }
     return { origin: u.origin, storeId, installation, token };
   } catch {
     return null;
@@ -48,6 +57,8 @@ export function waiterRelayConfig(
 
 type Options = {
   config(): Config | null;
+  /** Present only in shift-aware desktops; null is an explicitly closed cash. */
+  cashSessionId?(): string | null;
   process(request: RelayRequest): Promise<unknown>;
   fetch?: typeof fetch;
   now?: () => number;
@@ -62,7 +73,7 @@ export function createWaiterRelay(options: Options) {
   let connectionError: string | null = null;
   // Retain completed responses until acknowledgement: never re-execute pairing or print on a lost ACK.
   const replies = new Map<string, { until: number; reply: Reply }>();
-  async function request(config: Config, path: string, body?: unknown) {
+  async function request(config: Config, path: string, body?: unknown, extraHeaders: Record<string, string> = {}) {
     const res = await fetcher(new URL(path, config.origin), {
       method: body === undefined ? "GET" : "POST",
       redirect: "error",
@@ -71,6 +82,7 @@ export function createWaiterRelay(options: Options) {
         authorization: "Bearer " + config.token,
         "x-pos-installation": config.installation,
         "x-expected-store-id": config.storeId,
+        ...extraHeaders,
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -110,7 +122,7 @@ export function createWaiterRelay(options: Options) {
         !Number.isFinite(Date.parse(value.expiresAt))
       )
         throw new Error("El servicio devolvió una invitación inválida.");
-      const url = new URL("/waiter", config.origin);
+      const url = new URL("/waiter", config.publicOrigin ?? config.origin);
       url.hash = new URLSearchParams({
         tenant: config.storeId,
         terminal: config.installation,
@@ -127,13 +139,20 @@ export function createWaiterRelay(options: Options) {
     async tick() {
       const config = options.config(),
         generation = epoch;
-      if (running || !config || now() >= activeUntil || now() < backoff) return;
+      if (running || !config || now() < backoff) return;
       running = true;
       try {
+        const cashSessionId = options.cashSessionId?.();
+        // Keep serving an open shift, even after 18 minutes or a PC restart.
+        // The short tail also reports closure and drains already queued replies.
+        if (cashSessionId) activeUntil = now() + 120_000;
+        if (now() >= activeUntil) return;
         for (const [id, v] of replies) if (v.until <= now()) replies.delete(id);
         const { requests } = await request(
           config,
           "/v1/waiter/terminal/requests",
+          undefined,
+          options.cashSessionId ? { "x-pos-cash-session": cashSessionId ?? "" } : {},
         );
         if (!Array.isArray(requests)) throw new Error("Respuesta inválida");
         for (const req of requests.slice(0, 32) as RelayRequest[]) {

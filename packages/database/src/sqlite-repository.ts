@@ -294,11 +294,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       }
       const cashSession = this.requireOpenCashSessionRow();
       const token = randomUUID() + randomUUID();
-      const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+      const createdAt = nowIso();
       this.db.prepare("DELETE FROM waiter_challenges WHERE id=?").run(challengeHash);
-      this.db.prepare("INSERT INTO waiter_sessions(token_hash,user_id,cash_session_id,expires_at,created_at) VALUES(?,?,?,?,?)")
-        .run(createHash("sha256").update(token).digest("hex"), waiter.id, cashSession.id, expiresAt, nowIso());
-      return { sessionToken: token, expiresAt, waiter: { id: String(waiter.id), name: String(waiter.full_name) } };
+      // Keep the legacy NOT NULL column for FK-compatible migrations. An old
+      // binary fails closed rather than granting an unbounded timed session.
+      this.db.prepare("INSERT INTO waiter_sessions(token_hash,user_id,cash_session_id,expires_at,created_at,expires_on_cash_close) VALUES(?,?,?,?,?,1)")
+        .run(createHash("sha256").update(token).digest("hex"), waiter.id, cashSession.id, createdAt, createdAt);
+      return { sessionToken: token, expiresAt: null, validUntil: "CASH_CLOSE" as const, cashSessionId: String(cashSession.id), waiter: { id: String(waiter.id), name: String(waiter.full_name) } };
     });
     try { return run(); } catch (error) {
       if (error instanceof Error && error.message === "PIN de mozo incorrecto.")
@@ -313,7 +315,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const hash = createHash("sha256").update(token).digest("hex");
     const row = this.db.prepare(`SELECT s.*,u.full_name,u.active,r.code AS role_code FROM waiter_sessions s
       JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.token_hash=?`).get(hash) as Row | undefined;
-    if (!row || row.revoked_at || String(row.expires_at) <= nowIso() || !Number(row.active) || row.role_code !== "WAITER")
+    if (!row || row.revoked_at || (!flag(row.expires_on_cash_close) && String(row.expires_at) <= nowIso()) || !Number(row.active) || row.role_code !== "WAITER")
       throw new Error("La sesión de mozo venció o fue revocada.");
     const openShift = this.requireOpenCashSessionRow();
     if (String(openShift.id) !== String(row.cash_session_id)) throw new Error("La sesión de mozo pertenece a otro turno.");
@@ -332,7 +334,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       FROM restaurant_tables t LEFT JOIN orders o ON o.table_id=t.id AND o.operational_status NOT IN ('DELIVERED','CANCELLED')
       WHERE t.active=1 ORDER BY t.number`).all() as Row[];
     return {
-      waiter: { id: String(session.user_id), name: String(session.full_name) }, expiresAt: String(session.expires_at), cashSessionId: String(session.cash_session_id),
+      serverNow: nowIso(),
+      waiter: { id: String(session.user_id), name: String(session.full_name) },
+      expiresAt: flag(session.expires_on_cash_close) ? null : String(session.expires_at),
+      validUntil: flag(session.expires_on_cash_close) ? "CASH_CLOSE" as const : "TIME" as const,
+      cashSessionId: String(session.cash_session_id),
       menu: { categories: categories.map((c) => ({ id: String(c.id), name: String(c.name), sortOrder: Number(c.sort_order) })),
         products: products.map((p) => ({ id: String(p.id), categoryId: String(p.category_id), name: String(p.name), priceMinor: Number(p.amount_minor), printDestination: p.print_destination == null ? null : String(p.print_destination) })) },
       tables: tables.map((t) => ({ id: String(t.id), number: Number(t.number), name: t.name == null ? `Mesa ${Number(t.number)}` : String(t.name), status: String(t.status), ...(t.open_order_id ? { openOrderId: String(t.open_order_id) } : {}) })),
@@ -347,11 +353,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   listWaiterDevices() {
     assertPermission(this.currentUser().permissions, "settings.manage");
-    assertPermission(this.currentUser().permissions, "settings.manage");
-    return (this.db.prepare(`SELECT s.token_hash AS id,u.full_name AS name,s.expires_at AS expiresAt FROM waiter_sessions s
+    return (this.db.prepare(`SELECT s.token_hash AS id,u.full_name AS name,s.expires_at AS expiresAt,s.expires_on_cash_close FROM waiter_sessions s
       JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id JOIN cash_sessions cs ON cs.id=s.cash_session_id
-      WHERE s.revoked_at IS NULL AND s.expires_at>? AND u.active=1 AND r.code='WAITER' AND cs.status='OPEN' ORDER BY s.created_at DESC`).all(nowIso()) as Row[])
-      .map((row) => ({ id: String(row.id), name: String(row.name), expiresAt: String(row.expiresAt) }));
+      WHERE s.revoked_at IS NULL AND (s.expires_on_cash_close=1 OR s.expires_at>?) AND u.active=1 AND r.code='WAITER' AND cs.status='OPEN' ORDER BY s.created_at DESC`).all(nowIso()) as Row[])
+      .map((row) => ({ id: String(row.id), name: String(row.name), expiresAt: flag(row.expires_on_cash_close) ? null : String(row.expiresAt) }));
+  }
+
+  /** Lightweight authoritative scope for the outbound waiter worker. */
+  getWaiterCashSessionId(): string | null {
+    const cash = this.getOpenCashSessionRow();
+    return cash ? String(cash.id) : null;
   }
 
   revokeWaiterDevice(sessionId: string) {
@@ -568,7 +579,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           ),
       );
       this.migrate();
-      this.db.prepare("UPDATE waiter_sessions SET revoked_at=? WHERE revoked_at IS NULL").run(nowIso());
+      // Preserve only new cash-bound credentials for the same still-open shift.
+      // Legacy timed sessions never gain new lifetime through an upgrade.
+      this.db.prepare(`UPDATE waiter_sessions SET revoked_at=? WHERE revoked_at IS NULL
+        AND (expires_on_cash_close=0 OR cash_session_id NOT IN (SELECT id FROM cash_sessions WHERE status='OPEN'))`).run(nowIso());
+      this.db.prepare("DELETE FROM waiter_challenges").run();
       this.recoverInterruptedPrintClaims();
       this.seed(options);
     } catch (error) {
@@ -1692,6 +1707,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const cashRemovedAmountMinor = reconciliation.cashRemovedAmountMinor;
           const floatDifferenceMinor = reconciliation.floatDifferenceMinor;
           const closedAt = nowIso();
+          // Revoke in the same transaction as closing: failed closure rolls back
+          // both operations, and a future shift cannot revive these credentials.
+          this.db.prepare("UPDATE waiter_sessions SET revoked_at=? WHERE cash_session_id=? AND revoked_at IS NULL").run(closedAt, session.id);
+          this.db.prepare("DELETE FROM waiter_challenges WHERE cash_session_id=?").run(session.id);
           this.db
             .prepare(
               `UPDATE cash_sessions SET closed_at = ?, closed_by_user_id = ?, expected_amount_minor = ?,

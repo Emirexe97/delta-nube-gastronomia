@@ -1165,4 +1165,11 @@ CREATE TABLE waiter_pending_batch_lines (
   note TEXT
 );`
   },
+  {
+    version: 47,
+    name: "waiter_access_until_cash_close",
+    sql: String.raw`
+ALTER TABLE waiter_sessions ADD COLUMN expires_on_cash_close INTEGER NOT NULL DEFAULT 0 CHECK(expires_on_cash_close IN (0,1));
+`,
+  },
 ];

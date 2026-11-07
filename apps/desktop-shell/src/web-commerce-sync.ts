@@ -23,6 +23,8 @@ export interface WebCommerceSyncOptions {
   getRepository: () => WebCommerceRepository;
   env?: NodeJS.ProcessEnv;
   getInstallationId?: () => string | undefined;
+  /** Optional hard stop for every sync entry point. Defaults to enabled. */
+  isEnabled?: () => boolean;
   makeClient?: (
     url: string,
     token: string,
@@ -35,6 +37,7 @@ export interface WebCommerceSyncOptions {
 export function createWebCommerceSync(options: WebCommerceSyncOptions) {
   const env = options.env ?? process.env;
   const now = options.now ?? Date.now;
+  const enabled = () => options.isEnabled?.() !== false;
   let inFlight: Promise<WebSyncStatus> | null = null;
   let lastCatalogHash: string | null = null;
   let lastSuccessAt: string | null = null;
@@ -51,6 +54,7 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
     storeId: env.GASTRONOMY_WEB_ORDERS_STORE_ID?.trim() ?? "",
   });
   const configured = () => {
+    if (!enabled()) return false;
     const { url, token, storeId } = config();
     if (
       !/^[A-Za-z0-9_-]{43,128}$/.test(token) ||
@@ -104,6 +108,7 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
   };
 
   async function execute(): Promise<WebSyncStatus> {
+    if (!enabled()) return { state: "UNCONFIGURED", lastSyncedAt: null, message: "Sincronización web deshabilitada para este perfil" };
     const { url, token, storeId } = config();
     if (!configured()) {
       lastError = "Conector web sin configurar";
@@ -211,7 +216,7 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
     },
     status,
     getStoreId(): string | null {
-      return configured() ? config().storeId : null;
+      return enabled() && configured() ? config().storeId : null;
     },
     invalidate(): void {
       catalogGeneration++;

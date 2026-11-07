@@ -1,4 +1,5 @@
 import type { BootstrapDto } from "@gastronomy/contracts";
+import { useMemo } from "react";
 import {
   ArrowRight,
   ClockCountdown,
@@ -6,7 +7,7 @@ import {
   Receipt,
   TrendUp,
 } from "@phosphor-icons/react";
-import { Badge, Card } from "@gastronomy/ui";
+import { Badge, Card, HelpTip } from "@gastronomy/ui";
 import { Link } from "react-router-dom";
 import {
   formatMoney,
@@ -18,29 +19,28 @@ import {
 } from "../lib";
 
 export function DashboardPage({ data }: { data: BootstrapDto }) {
-  const activeOrders = data.orders.filter(
+  const activeOrders = useMemo(() => data.orders.filter(
     (order) =>
       order.type !== "DINE_IN" &&
       !["DELIVERED", "CANCELLED"].includes(order.operationalStatus),
-  );
-  const pendingTableOrders = data.orders.filter(
+  ), [data.orders]);
+  const pendingTableOrders = useMemo(() => data.orders.filter(
     (order) =>
       order.type === "DINE_IN" &&
       order.paymentStatus !== "PAID" &&
       !["DELIVERED", "CANCELLED"].includes(order.operationalStatus),
-  );
+  ), [data.orders]);
   const pendingTableTotal = pendingTableOrders.reduce(
     (total, order) => total + order.totalMinor - order.paidMinor,
     0,
   );
   const summary = data.dashboard;
-  const recentSales = paidOrdersForSession(data.orders, data.cashSession);
+  const recentSales = useMemo(() => paidOrdersForSession(data.orders, data.cashSession), [data.orders, data.cashSession]);
   const stats = [
     {
       label: "Pagos registrados",
       value: formatMoney(summary.salesTotalMinor),
       detail: `${summary.orderCount} pedido${summary.orderCount === 1 ? "" : "s"} con pago · día comercial`,
-      note: "Incluye pagos parciales y cuenta corriente",
       icon: TrendUp,
       tone: "text-emerald-600 bg-emerald-50",
     },
@@ -75,22 +75,23 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
   ];
   return (
     <div className="panel-enter mx-auto max-w-[1500px] space-y-4">
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <section aria-label="Estado de la operación" className="dn-summary-metrics grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {stats.map(({ label, value, detail, note, icon: Icon, tone }) => (
-          <Card key={label} className="flex items-center gap-3 p-4">
-            <div
-              className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${tone}`}
-            >
-              <Icon size={20} weight="duotone" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs font-bold uppercase tracking-[.1em] text-slate-600">
+          <Card key={label} className="min-w-0 p-4 lg:p-5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="flex min-w-0 items-center text-xs font-semibold text-slate-600">
                 {label}
+                {label === "Pagos registrados" ? <HelpTip label="Pagos registrados">Incluye pagos parciales y ventas a cuenta corriente.</HelpTip> : null}
               </p>
-              <p className="truncate text-xl font-extrabold tracking-tight text-slate-950">
+              <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${tone}`}>
+                <Icon size={18} weight="regular" aria-hidden="true" />
+              </span>
+            </div>
+            <div className="mt-3 min-w-0">
+              <p className="dn-metric-value font-semibold tracking-tight text-slate-950">
                 {value}
               </p>
-              <p className="text-xs leading-4 text-slate-600">{detail}</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">{detail}</p>
               {note ? (
                 <p className="mt-1 text-xs leading-4 text-slate-600">
                   {note}
@@ -100,72 +101,6 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
           </Card>
         ))}
       </section>
-      <Card className="overflow-hidden">
-        <div className="border-b border-slate-100 px-4 py-3">
-          <h2 className="text-sm font-bold">Pedidos con pagos registrados</h2>
-          <p className="text-xs text-slate-600">
-            {data.cashSession ? "Caja actual · " : ""}Incluye pagos parciales y
-            cuenta corriente
-          </p>
-        </div>
-        {recentSales.length ? (
-          <div className="overflow-auto">
-            <table className="dn-table">
-              <thead>
-                <tr>
-                  <th>Pedido</th>
-                  <th>Canal</th>
-                  <th>Mesa / cliente</th>
-                  <th>Medios</th>
-                  <th>Estado</th>
-                  <th className="text-right">Pago registrado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentSales.slice(0, 12).map((order) => (
-                  <tr key={order.id}>
-                    <td className="font-bold">#{order.number}</td>
-                    <td>
-                      <Badge
-                        tone={
-                          order.type === "DELIVERY"
-                            ? "blue"
-                            : order.type === "TAKEAWAY"
-                              ? "orange"
-                              : "green"
-                        }
-                      >
-                        {typeLabels[order.type]}
-                      </Badge>
-                    </td>
-                    <td>
-                      {order.tableNumber
-                        ? `Mesa ${order.tableNumber}`
-                        : order.customerNameSnapshot || "Sin cliente"}
-                    </td>
-                    <td>{paymentText(order)}</td>
-                    <td>
-                      <Badge tone="green">
-                        {order.type === "DINE_IN" &&
-                        order.operationalStatus === "DELIVERED"
-                          ? "Mesa cerrada"
-                          : statusLabels[order.operationalStatus]}
-                      </Badge>
-                    </td>
-                    <td className="text-right font-bold">
-                      {formatMoney(order.paidMinor)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="p-8 text-center text-sm text-slate-500">
-            Todavía no hay pagos registrados en esta caja.
-          </p>
-        )}
-      </Card>
       <section className="grid gap-4 xl:grid-cols-[2fr_1fr]">
         <Card className="overflow-hidden">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
@@ -245,7 +180,7 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
             ) : (
               <div className="grid h-52 place-items-center text-center">
                 <div>
-                  <ForkKnife className="mx-auto text-slate-300" size={34} />
+                  <ForkKnife className="mx-auto text-slate-300" size={28} />
                   <p className="mt-2 text-sm font-semibold text-slate-500">
                     No hay retiros ni envíos abiertos
                   </p>
@@ -277,7 +212,7 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-slate-100">
                     <div
-                      className="h-full rounded-full bg-gradient-to-r from-brand-600 to-amber-400"
+                      className="h-full rounded-full bg-dn-primary"
                       style={{ width: `${percent}%` }}
                     />
                   </div>
@@ -289,7 +224,7 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
             })}
           </div>
           <div className="mt-6 border-t border-slate-100 pt-4">
-            <h3 className="text-xs font-bold uppercase tracking-[.12em] text-slate-600">
+            <h3 className="text-xs font-semibold text-slate-600">
               Atajos rápidos
             </h3>
             <div className="mt-2 grid grid-cols-2 gap-2 text-xs font-semibold text-slate-500">
@@ -309,6 +244,69 @@ export function DashboardPage({ data }: { data: BootstrapDto }) {
           </div>
         </Card>
       </section>
+      <Card className="overflow-hidden">
+        <div className="border-b border-slate-100 px-4 py-3">
+          <h2 className="text-sm font-bold">Pedidos con pagos registrados <HelpTip label="Pagos registrados">Incluye pagos parciales y cuenta corriente.</HelpTip></h2>
+          {data.cashSession ? <p className="text-xs text-slate-600">Caja actual</p> : null}
+        </div>
+        {recentSales.length ? (
+          <div className="overflow-auto">
+            <table className="dn-table">
+              <thead>
+                <tr>
+                  <th>Pedido</th>
+                  <th>Canal</th>
+                  <th>Mesa / cliente</th>
+                  <th>Medios</th>
+                  <th>Estado</th>
+                  <th className="text-right">Pago registrado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentSales.slice(0, 12).map((order) => (
+                  <tr key={order.id}>
+                    <td className="font-bold">#{order.number}</td>
+                    <td>
+                      <Badge
+                        tone={
+                          order.type === "DELIVERY"
+                            ? "blue"
+                            : order.type === "TAKEAWAY"
+                              ? "orange"
+                              : "green"
+                        }
+                      >
+                        {typeLabels[order.type]}
+                      </Badge>
+                    </td>
+                    <td>
+                      {order.tableNumber
+                        ? `Mesa ${order.tableNumber}`
+                        : order.customerNameSnapshot || "Sin cliente"}
+                    </td>
+                    <td>{paymentText(order)}</td>
+                    <td>
+                      <Badge tone="green">
+                        {order.type === "DINE_IN" &&
+                        order.operationalStatus === "DELIVERED"
+                          ? "Mesa cerrada"
+                          : statusLabels[order.operationalStatus]}
+                      </Badge>
+                    </td>
+                    <td className="text-right font-bold">
+                      {formatMoney(order.paidMinor)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="p-8 text-center text-sm text-slate-500">
+            Todavía no hay pagos registrados en esta caja.
+          </p>
+        )}
+      </Card>
     </div>
   );
 }

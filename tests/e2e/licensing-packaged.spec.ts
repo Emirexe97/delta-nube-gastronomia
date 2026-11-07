@@ -334,9 +334,7 @@ test("packaged runtime enforces expired writes, preserves read access, and resum
   await packagedPage
     .getByRole("link", { name: "Configuración", exact: true })
     .click();
-  await packagedPage
-    .getByRole("button", { name: "Licencia", exact: true })
-    .click();
+  await packagedPage.getByRole("tab", { name: "Licencia", exact: true }).click();
   const licensePanel = packagedPage.locator("#settings-license");
   await expect(
     licensePanel.getByText("Vencida", { exact: true }),
@@ -477,7 +475,7 @@ test("owner panel approves a packaged device without codes, suspends it and pres
     BrowserWindow.getAllWindows().forEach((w) => w.hide()),
   );
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
-  await page.getByRole("button", { name: "Licencia", exact: true }).click();
+  await page.getByRole("tab", { name: "Licencia", exact: true }).click();
   const client = page.locator("#settings-license");
   await expect(client.getByPlaceholder("Código de activación")).toHaveCount(0);
   await client.getByPlaceholder("Nombre del negocio").fill("E2E Panel Café");

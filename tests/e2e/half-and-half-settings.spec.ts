@@ -76,6 +76,7 @@ test("settings persist the half-and-half toggle, block all new entry points and 
   });
   await page.reload();
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
+  await page.getByRole("tab", { name: "General", exact: true }).click();
   let toggle = page.getByRole("checkbox", {
     name: "Habilitar pizzas mitad y mitad",
     exact: true,
@@ -166,6 +167,7 @@ test("settings persist the half-and-half toggle, block all new entry points and 
   await expect(editor).toHaveCount(0);
 
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
+  await page.getByRole("tab", { name: "General", exact: true }).click();
   await expect(toggle).not.toBeChecked();
   await expect(pricing).toHaveValue("MOST_EXPENSIVE");
   await toggle.check();

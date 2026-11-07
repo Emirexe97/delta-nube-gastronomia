@@ -1,7 +1,8 @@
 export interface WaiterDevice {
   id: string;
   name: string;
-  expiresAt: string;
+  /** null means valid until the current cash session closes or is revoked. */
+  expiresAt: string | null;
 }
 
 export interface WaiterDeskStatus {

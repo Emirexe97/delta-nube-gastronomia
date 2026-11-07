@@ -10,6 +10,24 @@ export function rewindPurchaseTestSchema(
   db: InstanceType<typeof Database>,
   targetVersion: number,
 ) {
+  if (targetVersion < 44) {
+    db.exec(`DROP TABLE IF EXISTS web_order_acks;
+      DROP TABLE IF EXISTS web_order_cursors;
+      DROP TABLE IF EXISTS web_order_inbox;`);
+    const products = db.prepare("PRAGMA table_info(products)").all() as Array<{
+      name: string;
+    }>;
+    if (products.some((column) => column.name === "web_published"))
+      db.exec("ALTER TABLE products DROP COLUMN web_published");
+  }
+  if (targetVersion < 42) {
+    db.exec("DROP INDEX IF EXISTS print_jobs_kitchen_baseline_idx");
+    const printJobs = db.prepare("PRAGMA table_info(print_jobs)").all() as Array<{
+      name: string;
+    }>;
+    if (printJobs.some((column) => column.name === "kitchen_snapshot_json"))
+      db.exec("ALTER TABLE print_jobs DROP COLUMN kitchen_snapshot_json");
+  }
   if (targetVersion < 43) {
     db.exec("DROP INDEX IF EXISTS orders_cash_session_shift_number_idx");
     const orders = db.prepare("PRAGMA table_info(orders)").all() as Array<{
