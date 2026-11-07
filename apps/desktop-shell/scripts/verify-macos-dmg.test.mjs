@@ -8,6 +8,12 @@ const workflow = await readFile(
   `${project}/.github/workflows/build-macos.yml`,
   "utf8",
 );
+test("clean Mac build generates workspace dependencies before the renderer", () => {
+  const buildStep = workflow.split("- name: Build web and workspace")[1]?.split("- name:")[0];
+  assert.ok(buildStep, "The clean build step must exist");
+  assert.match(buildStep, /pnpm build/);
+  assert.doesNotMatch(buildStep, /pnpm --filter @gastronomy\/web build/);
+});
 const verifier = await readFile(
   new URL("./verify-macos-dmg.mjs", import.meta.url),
   "utf8",
