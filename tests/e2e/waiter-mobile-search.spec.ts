@@ -43,6 +43,12 @@ test("buscador móvil de mozos busca sin tildes en todas las categorías y permi
     await page.goto(`http://127.0.0.1:${address.port}/waiter`);
     const search = page.getByRole("searchbox", { name: "Buscar productos" });
     await expect(search).toBeVisible();
+    await expect(page.locator("#catalogSearch")).toHaveJSProperty("hidden", false);
+    expect(await page.evaluate(() => {
+      const search = document.querySelector("#catalogSearch");
+      const products = document.querySelector("#products");
+      return Boolean(search && products && products.previousElementSibling === search);
+    })).toBe(true);
     const searchBounds = await search.boundingBox();
     expect(searchBounds).not.toBeNull();
     expect(searchBounds!.y).toBeGreaterThanOrEqual(0);

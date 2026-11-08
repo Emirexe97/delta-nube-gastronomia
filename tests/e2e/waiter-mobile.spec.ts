@@ -169,6 +169,13 @@ test("QR sin impresora, tandas con y sin comandero y revocación", async ({
     await phone.locator("#pin").fill("5731");
     await phone.getByRole("button", { name: "Vincular", exact: true }).click();
     await expect(phone.locator("#table")).toBeVisible({ timeout: 15000 });
+    // A new tab has no JS bearer. Use the real pairing cookie and relay for
+    // every remaining operation, including order submission and revocation.
+    await phone.evaluate(() => sessionStorage.clear());
+    await phone.reload();
+    await expect(phone.locator("#table")).toBeVisible({ timeout: 15000 });
+    await expect(phone.locator("#pin")).toBeHidden();
+    expect(await phone.evaluate(() => sessionStorage.getItem("waiter:session:v1"))).toBeNull();
     await phone.locator("#table").selectOption(table.id);
     await expect(phone.locator("#openMenu")).toBeVisible();
     await phone.locator("#openMenu").click();

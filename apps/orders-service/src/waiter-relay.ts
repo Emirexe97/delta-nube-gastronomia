@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { DatabaseSync } from "node:sqlite";
 
 type Scope = {
   storeId: string;
@@ -36,6 +37,8 @@ const TOTAL_REQUEST_LIMIT = 512;
 const QUEUE_TTL_MS = 120_000;
 const SESSION_TTL_MS = 8 * 60 * 60_000;
 const SESSION_LIMIT = 10_000;
+const SESSION_COOKIE = "waiter_session";
+const SESSION_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const RPC_METHODS = new Set([
   "waiter.getState",
@@ -97,6 +100,11 @@ function bearer(req: IncomingMessage) {
   if (typeof h !== "string") return undefined;
   return /^Bearer ([A-Za-z0-9_-]{43,128})$/.exec(h)?.[1];
 }
+function waiterCookie(req: IncomingMessage): string | undefined {
+  return typeof req.headers.cookie === "string"
+    ? new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([A-Za-z0-9_-]{43,128})(?:;|$)`).exec(req.headers.cookie)?.[1]
+    : undefined;
+}
 function validId(v: unknown): v is string {
   return typeof v === "string" && ID.test(v);
 }
@@ -123,6 +131,7 @@ export class WaiterRelay {
     private readonly authenticateTerminal: (token: string) => Scope | undefined,
     publicBaseUrl: string,
     private readonly waiterHtml: string,
+    private readonly sessionDb?: DatabaseSync,
   ) {
     const base = new URL(publicBaseUrl);
     const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
@@ -139,6 +148,40 @@ export class WaiterRelay {
     )
       throw new Error("Invalid waiter public URL");
     this.publicBaseUrl = `${base.origin}/`;
+    if (sessionDb) {
+      sessionDb.exec(`CREATE TABLE IF NOT EXISTS waiter_relay_sessions (
+        token_hash TEXT PRIMARY KEY, store_id TEXT NOT NULL, terminal_id TEXT NOT NULL,
+        expires_at INTEGER, valid_until TEXT, cash_session_id TEXT
+      )`);
+      const rows = sessionDb.prepare("SELECT token_hash, store_id, terminal_id, expires_at, valid_until, cash_session_id FROM waiter_relay_sessions").all() as Array<{token_hash:string;store_id:string;terminal_id:string;expires_at:number|null;valid_until:string|null;cash_session_id:string|null}>;
+      for (const row of rows) {
+        if (!/^[a-f0-9]{64}$/.test(row.token_hash) || (row.valid_until === "CASH_CLOSE" && (!validId(row.cash_session_id) || row.expires_at !== null))) {
+          sessionDb.prepare("DELETE FROM waiter_relay_sessions WHERE token_hash=?").run(row.token_hash);
+          continue;
+        }
+        const value: Session = { storeId: row.store_id, terminalId: row.terminal_id, expiresAt: row.expires_at ?? Number.POSITIVE_INFINITY,
+          ...(row.valid_until === "CASH_CLOSE" ? { validUntil: "CASH_CLOSE" as const, cashSessionId: row.cash_session_id! } : {}) };
+        if (value.validUntil !== "CASH_CLOSE" && (!Number.isFinite(value.expiresAt) || value.expiresAt <= Date.now())) {
+          sessionDb.prepare("DELETE FROM waiter_relay_sessions WHERE token_hash=?").run(row.token_hash);
+          continue;
+        }
+        this.sessions.set(row.token_hash, value);
+      }
+    }
+  }
+  private setSession(hash: string, value: Session) {
+    this.sessions.set(hash, value);
+    this.sessionDb?.prepare(`INSERT INTO waiter_relay_sessions(token_hash,store_id,terminal_id,expires_at,valid_until,cash_session_id)
+      VALUES(?,?,?,?,?,?) ON CONFLICT(token_hash) DO UPDATE SET store_id=excluded.store_id,terminal_id=excluded.terminal_id,expires_at=excluded.expires_at,valid_until=excluded.valid_until,cash_session_id=excluded.cash_session_id`)
+      .run(hash, value.storeId, value.terminalId, value.validUntil === "CASH_CLOSE" ? null : value.expiresAt, value.validUntil ?? null, value.cashSessionId ?? null);
+  }
+  private deleteSession(hash: string) {
+    this.sessions.delete(hash);
+    this.sessionDb?.prepare("DELETE FROM waiter_relay_sessions WHERE token_hash=?").run(hash);
+  }
+  private cookie(token: string, clear = false) {
+    const secure = new URL(this.publicBaseUrl).protocol === "https:" ? "; Secure" : "";
+    return `${SESSION_COOKIE}=${clear ? "" : token}; Path=/v1/waiter; HttpOnly; SameSite=Strict${secure}; Max-Age=${clear ? 0 : SESSION_COOKIE_MAX_AGE}`;
   }
   private sweep(now = Date.now()) {
     for (const [k, v] of this.challenges)
@@ -146,7 +189,7 @@ export class WaiterRelay {
     for (const [k, v] of this.requests)
       if (v.expiresAt <= now) this.requests.delete(k);
     for (const [k, v] of this.sessions)
-      if (v.validUntil !== "CASH_CLOSE" && v.expiresAt <= now) this.sessions.delete(k);
+      if (v.validUntil !== "CASH_CLOSE" && v.expiresAt <= now) this.deleteSession(k);
     for (const [k, v] of this.rates) if (v.reset <= now) this.rates.delete(k);
   }
   private rate(key: string, cap: number, windowMs = 60_000) {
@@ -181,12 +224,27 @@ export class WaiterRelay {
     hash: string;
     value: Session;
   } {
-    const token = bearer(req);
+    const authToken = bearer(req);
+    const cookieToken = waiterCookie(req);
+    const token = authToken ?? cookieToken;
     const hash = token ? digest(token) : "";
     const value = this.sessions.get(hash);
+    if (!authToken && cookieToken && req.method === "POST" && req.headers.origin !== new URL(this.publicBaseUrl).origin) fail(403, "forbidden");
+    if (!authToken && cookieToken && req.method === "GET" && req.headers["sec-fetch-site"] !== undefined && req.headers["sec-fetch-site"] !== "same-origin") fail(403, "forbidden");
     if (!token || !value || (value.validUntil !== "CASH_CLOSE" && value.expiresAt <= Date.now()))
       fail(401, "unauthorized");
     return { token, hash, value };
+  }
+  private sessionResponse(req: IncomingMessage, res: ServerResponse) {
+    try { return this.session(req); }
+    catch (error) {
+      const cookieToken = waiterCookie(req), headerToken = bearer(req);
+      if (cookieToken && (!headerToken || headerToken === cookieToken) && (error as { code?: string }).code === "unauthorized") {
+        send(res, 401, { error: "unauthorized" }, { "set-cookie": this.cookie("", true) });
+        return undefined;
+      }
+      throw error;
+    }
   }
   private add(
     req: Omit<RelayRequest, "id" | "createdAt" | "expiresAt">,
@@ -354,7 +412,9 @@ export class WaiterRelay {
       )
         fail(401, "unauthorized");
       const status = this.requestStatus(pair[1]!);
-      send(res, 200, status);
+      const pairedToken = status.status === "completed" && typeof (status.result as {sessionToken?: unknown})?.sessionToken === "string"
+        ? (status.result as {sessionToken: string}).sessionToken : undefined;
+      send(res, 200, status, pairedToken ? { "set-cookie": this.cookie(pairedToken) } : {});
       if (status.status === "completed") {
         r.result = undefined;
         r.receiptConsumed = true;
@@ -370,7 +430,7 @@ export class WaiterRelay {
         if (typeof cashSessionHeader !== "string" || (cashSessionHeader !== "" && !validId(cashSessionHeader))) fail(400, "bad_request");
         for (const [key, session] of this.sessions)
           if (session.storeId === scope.storeId && session.terminalId === terminalId && session.validUntil === "CASH_CLOSE" && session.cashSessionId !== cashSessionHeader)
-            this.sessions.delete(key);
+            this.deleteSession(key);
       }
       const requests = [...this.requests.values()]
         .filter(
@@ -427,7 +487,7 @@ export class WaiterRelay {
           const changedCashSession = session?.validUntil === "CASH_CLOSE" &&
             (state?.expiresAt !== null || state?.validUntil !== "CASH_CLOSE" || state?.cashSessionId !== session.cashSessionId);
           if (invalidCashExpiry || changedCashSession) {
-            this.sessions.delete(current.sessionHash);
+            this.deleteSession(current.sessionHash);
             current.result = undefined;
             current.error = { code: "session_revoked" };
           }
@@ -452,13 +512,13 @@ export class WaiterRelay {
             current.result = undefined;
             current.error = { code: "pair_failed" };
           } else if (cashClose)
-            this.sessions.set(digest(result.sessionToken), {
+            this.setSession(digest(result.sessionToken), {
               storeId: current.storeId, terminalId: current.terminalId,
               expiresAt: Number.POSITIVE_INFINITY, validUntil: "CASH_CLOSE",
               cashSessionId: result.cashSessionId as string,
             });
           else
-            this.sessions.set(digest(result.sessionToken), {
+            this.setSession(digest(result.sessionToken), {
               storeId: current.storeId,
               terminalId: current.terminalId,
               expiresAt: Math.min(
@@ -476,11 +536,12 @@ export class WaiterRelay {
           (current.error &&
             ["unauthorized", "session_revoked"].includes(current.error.code)))
       )
-        this.sessions.delete(current.sessionHash);
+        this.deleteSession(current.sessionHash);
       return (send(res, 200, { ok: true }), true);
     }
     if (method === "POST" && pathname === "/v1/waiter/rpc") {
-      const s = this.session(req);
+      const s = this.sessionResponse(req, res);
+      if (!s) return true;
       const b = await body(req);
       if (
         Object.keys(b).some(
@@ -524,10 +585,19 @@ export class WaiterRelay {
       pathname,
     );
     if (method === "GET" && rpcStatus) {
-      const s = this.session(req);
+      const s = this.sessionResponse(req, res);
+      if (!s) return true;
       const r = this.requests.get(rpcStatus[1]!);
       if (!r || r.sessionHash !== s.hash) fail(404, "not_found");
-      return (send(res, 200, this.requestStatus(r.id)), true);
+      const status = this.requestStatus(r.id);
+      const cookieHeaders: Record<string, string> = r.method === "waiter.revoke" && status.status === "completed"
+        ? { "set-cookie": this.cookie("", true) }
+        : r.method === "waiter.getState" && status.status === "completed"
+          ? (!waiterCookie(req) || waiterCookie(req) === s.token ? { "set-cookie": this.cookie(s.token) } : {})
+          : status.status === "failed" && status.error?.code === "unauthorized"
+            ? { "set-cookie": this.cookie("", true) }
+            : {};
+      return (send(res, 200, status, cookieHeaders), true);
     }
     return (send(res, 404, { error: "not_found" }), true);
   }

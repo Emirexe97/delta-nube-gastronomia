@@ -42,7 +42,6 @@ test("mozo conserva catálogo, foco y notas al editar cantidades y refleja cambi
   try {
     await page.goto(`http://127.0.0.1:${address.port}/waiter`);
     await expect(page.locator("#products .product")).toHaveCount(100);
-    await page.locator("#products .product").last().scrollIntoViewIfNeeded();
     await expect(page.getByRole("searchbox", {name:"Buscar productos"})).toBeInViewport();
     const node = await page.locator("#products .product").first().elementHandle();
     await page.evaluate(() => {

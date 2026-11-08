@@ -183,7 +183,7 @@ export function createOrdersServer(options: OrdersServerOptions): {
     : undefined;
   const waiterPublicBaseUrl = options.waiterPublicBaseUrl ?? (options.provisioning ? `https://pedidos.${options.provisioning.baseDomain}/` : undefined);
   const waiterRelay = waiterPublicBaseUrl
-    ? new WaiterRelay((credential) => store.authenticateWaiter(credential) ?? store.authenticate(credential), waiterPublicBaseUrl, waiterHtml)
+    ? new WaiterRelay((credential) => store.authenticateWaiter(credential) ?? store.authenticate(credential), waiterPublicBaseUrl, waiterHtml, store.db)
     : undefined;
   // Periodic work, not an O(n) sweep on every request at capacity.
   const rateSweep = setInterval(() => {

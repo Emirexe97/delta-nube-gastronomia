@@ -12,7 +12,7 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const call = (
   port,
   path,
-  { method = "GET", body, auth, origin, terminal, challenge, cashSession } = {},
+  { method = "GET", body, auth, origin, terminal, challenge, cashSession, cookie } = {},
 ) =>
   new Promise((resolveCall, reject) => {
     const data =
@@ -24,6 +24,7 @@ const call = (
         path,
         method,
         headers: {
+          connection: "close",
           host: `127.0.0.1:${port}`,
           ...(data
             ? {
@@ -32,6 +33,7 @@ const call = (
               }
             : {}),
           ...(auth ? { authorization: `Bearer ${auth}` } : {}),
+          ...(cookie ? { cookie } : {}),
           ...(terminal ? { "x-pos-installation": "terminal1" } : {}),
           ...(challenge ? { "x-waiter-challenge": challenge } : {}),
           ...(cashSession !== undefined ? { "x-pos-cash-session": cashSession } : {}),
@@ -56,7 +58,7 @@ const call = (
         });
       },
     );
-    req.on("error", reject);
+    req.on("error", (e) => reject(new Error(`${path}: ${e.message}`)));
     if (data) req.write(data);
     req.end();
   });
@@ -366,4 +368,56 @@ test("waiter relay pairs, queues and returns per-request RPC responses without p
     ).status,
     401,
   );
+});
+
+test("cash-close waiter sessions survive relay restart in SQLite and authenticate through a same-origin HttpOnly cookie", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "waiter-relay-restart-"));
+  const dbPath = resolve(dir, "orders.sqlite");
+  const terminalToken = token();
+  const net = await import("node:net");
+  const probe = net.createServer();
+  await new Promise((r) => probe.listen(0, "127.0.0.1", r));
+  const port = probe.address().port;
+  await new Promise((r) => probe.close(r));
+  const create = () => createOrdersServer({ dbPath, stores: [{ id: "shop1", whatsappNumber: "5491112345678", receiveTokenHash: hash(terminalToken), receiveInstallationId: "terminal1", sites: [{ id: "site", submitTokenHash: hash(token()) }] }], waiterPublicBaseUrl: `http://127.0.0.1:${port}/` });
+  let service = create();
+  t.after(async () => { await service.close().catch(() => {}); await rm(dir, { recursive: true, force: true }); });
+  await new Promise((r) => service.server.listen(port, "127.0.0.1", r));
+  const challengeId = token();
+  await call(port, "/v1/waiter/invitations", { method: "POST", auth: terminalToken, terminal: true, body: { challengeId } });
+  const queuedPair = await call(port, "/v1/waiter/pair", { method: "POST", origin: `http://127.0.0.1:${port}`, body: { tenantId: "shop1", terminalId: "terminal1", challengeId, pin: "1234" } });
+  const queue = await call(port, "/v1/waiter/terminal/requests", { auth: terminalToken, terminal: true, cashSession: "cash1" });
+  const sessionToken = token();
+  await call(port, `/v1/waiter/terminal/requests/${queuedPair.json.requestId}/response`, { method: "POST", auth: terminalToken, terminal: true, body: { result: { sessionToken, expiresAt: null, validUntil: "CASH_CLOSE", cashSessionId: "cash1" } } });
+  const paired = await call(port, `/v1/waiter/pair/${queuedPair.json.requestId}`, { challenge: challengeId });
+  assert.equal(paired.status, 200);
+  assert.match(paired.headers["set-cookie"][0], /^waiter_session=.*; Path=\/v1\/waiter; HttpOnly; SameSite=Strict/);
+  assert.equal(paired.json.result.sessionToken, sessionToken);
+  assert.equal(queue.status, 200);
+  await service.close();
+  const { DatabaseSync } = await import("node:sqlite");
+  const snapshot = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const rows = snapshot.prepare("SELECT * FROM waiter_relay_sessions").all();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].token_hash, hash(sessionToken));
+    assert.equal(rows[0].cash_session_id, "cash1");
+    assert.ok(!JSON.stringify(rows).includes(sessionToken), "no plaintext bearer in the session record");
+  } finally { snapshot.close(); }
+  service = create();
+  await new Promise((r) => service.server.listen(port, "127.0.0.1", r));
+  const cookie = paired.headers["set-cookie"][0].split(";")[0];
+  assert.equal((await call(port, `/v1/waiter/requests/00000000-0000-4000-8000-000000000000`, { cookie })).status, 404, "same-origin GET without Origin may authenticate with the cookie");
+  assert.equal((await call(port, "/v1/waiter/rpc", { method: "POST", origin: `http://127.0.0.1:${port}`, cookie, body: { requestId: token(), method: "waiter.getState", params: {} } })).status, 202);
+  assert.equal((await call(port, "/v1/waiter/rpc", { method: "POST", origin: "http://attacker.example", cookie, body: { requestId: token(), method: "waiter.getState", params: {} } })).status, 403);
+  const revoke = await call(port, "/v1/waiter/rpc", { method: "POST", origin: `http://127.0.0.1:${port}`, cookie, body: { requestId: token(), method: "waiter.revoke", params: {} } });
+  const work = (await call(port, "/v1/waiter/terminal/requests", { auth: terminalToken, terminal: true })).json.requests.find((x) => x.requestId === revoke.json.requestId);
+  assert.ok(work);
+  await call(port, `/v1/waiter/terminal/requests/${work.requestId}/response`, { method: "POST", auth: terminalToken, terminal: true, body: { result: { revoked: true } } });
+  const revoked = await call(port, `/v1/waiter/requests/${work.requestId}`, { cookie });
+  assert.equal(revoked.status, 401);
+  assert.match(revoked.headers["set-cookie"][0], /waiter_session=;.*Max-Age=0/);
+  const persisted = new DatabaseSync(dbPath, { readOnly: true });
+  assert.equal(persisted.prepare("SELECT COUNT(*) AS n FROM waiter_relay_sessions WHERE token_hash=?").get(hash(sessionToken)).n, 0, "revoke deletes the persisted session");
+  persisted.close();
 });

@@ -1,7 +1,7 @@
 import { sharedThemeCss } from '@gastronomy/ui/theme';
 
-/** Mobile-first companion UI for floor staff. Session credentials stay in tab memory;
- * only the unsent draft and an uncertain batch's stable request id are persisted. */
+/** Mobile-first companion UI. Resumable access uses an HttpOnly cookie; the
+ * browser never writes a PIN or bearer token to localStorage. */
 export const waiterHtml = String.raw`<!doctype html>
 <html lang="es">
   <head>
@@ -121,7 +121,8 @@ export const waiterHtml = String.raw`<!doctype html>
         letter-spacing: 0.2em;
         text-align: center;
       }
-      .menu-search { max-width: 568px; margin: 8px auto 0; }
+      .menu-search { margin: 8px 0 12px; }
+      #myTables { display: flex; flex-wrap: wrap; gap: 8px; }
       #productSearch { border-color: var(--dn-color-primary); }
       #categories { scroll-margin-top: 166px; }
       .product-count { display: block; font-size: 13px; font-weight: 700; margin-top: 3px; color: var(--dn-color-primary-hover); }
@@ -248,15 +249,11 @@ export const waiterHtml = String.raw`<!doctype html>
         <small id="connection">Sin vincular</small>
       </div>
       <small id="sessionExpiry" class="muted"></small>
-      <div class="row menu-search" id="catalogSearch" role="search" hidden>
-        <input type="search" id="productSearch" aria-label="Buscar productos" placeholder="Buscar productos por nombre" autocomplete="off" />
-        <button type="button" class="secondary" id="clearSearch" hidden>Limpiar</button>
-      </div>
     </header>
     <main>
       <section id="pairing" class="card">
         <h2>Ingresar como mozo</h2>
-        <p class="muted">Escaneá el QR en caja e ingresá tu PIN.</p>
+        <p class="muted" id="pairGuide">Escaneá el QR en caja e ingresá tu PIN.</p>
         <div id="qrbox" hidden><div class="muted" id="qrtext"></div></div>
         <form id="pairForm">
           <div class="row split"><label class="muted" for="pin">PIN</label><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda sobre el PIN" aria-expanded="false" aria-controls="help-pin">?</button><span class="help-popover" id="help-pin" role="tooltip" hidden>Usá el PIN que te dieron en caja. Si no lo tenés, pedí que te vinculen.</span></span></div>
@@ -273,6 +270,7 @@ export const waiterHtml = String.raw`<!doctype html>
           </div>
         </form>
         <div id="pairMessage" class="status" tabindex="-1" hidden></div>
+        <button id="retrySession" type="button" hidden>Reintentar conexión</button>
       </section>
       <section id="app" hidden>
         <div class="card">
@@ -285,6 +283,10 @@ export const waiterHtml = String.raw`<!doctype html>
           <div id="appMessage" class="status" role="status" tabindex="-1" hidden></div>
           <div class="row split"><label class="muted" for="table">Mesa</label><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda para elegir mesa" aria-expanded="false" aria-controls="help-table">?</button><span class="help-popover" id="help-table" role="tooltip" hidden>Elegí la mesa antes de agregar productos. El pedido se prepara para esa mesa.</span></span></div>
           <select id="table"></select>
+          <section id="myTablesSection" aria-labelledby="myTablesTitle" hidden>
+            <h3 id="myTablesTitle">Mis mesas</h3>
+            <div id="myTables"></div>
+          </section>
         </div>
         <div id="pendingCard" class="card" role="status" aria-live="polite" tabindex="-1" hidden>
           <h2 id="pendingTitle">Pedido por confirmar</h2>
@@ -305,6 +307,10 @@ export const waiterHtml = String.raw`<!doctype html>
         <div class="card" id="menuCard">
           <div class="row split"><h2>Menú</h2><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda sobre el menú" aria-expanded="false" aria-controls="help-menu">?</button><span class="help-popover" id="help-menu" role="tooltip" hidden>Buscá por nombre en todo el menú o elegí una categoría. Usá + para sumar el producto al pedido.</span></span></div>
           <div id="categories" class="categories"></div>
+          <div class="row menu-search" id="catalogSearch" role="search" hidden>
+            <input type="search" id="productSearch" aria-label="Buscar productos" placeholder="Buscar productos por nombre" autocomplete="off" />
+            <button type="button" class="secondary" id="clearSearch" hidden>Limpiar</button>
+          </div>
           <div id="products"></div>
           <p id="noResults" class="muted" role="status" hidden>No se encontraron productos.</p>
         </div>
@@ -451,8 +457,17 @@ export const waiterHtml = String.raw`<!doctype html>
             } catch {}
           };
         const fragment = new URLSearchParams(location.hash.slice(1));
-        let tenantId = fragment.get('tenant') || safeGet(sessionStorage, 'waiter:tenant:v1') || '',
-          terminalId = fragment.get('terminal') || safeGet(sessionStorage, 'waiter:terminal:v1') || '',
+        const DEVICE_KEY = 'waiter:device:v1';
+        const readDevice = () => {
+          try { return JSON.parse(safeGet(localStorage, DEVICE_KEY) || 'null'); } catch { return null; }
+        };
+        let device = readDevice(), tabReplaced = false;
+        const TAB_GENERATION = 'waiter:tab-generation:v1';
+        if (device?.generation && safeGet(sessionStorage, TAB_GENERATION) !== device.generation)
+          safeRemove(sessionStorage, TOKEN_KEY);
+        const tabToken = safeGet(sessionStorage, TOKEN_KEY);
+        let tenantId = fragment.get('tenant') || (tabToken && safeGet(sessionStorage, 'waiter:tenant:v1')) || device?.tenantId || '',
+          terminalId = fragment.get('terminal') || (tabToken && safeGet(sessionStorage, 'waiter:terminal:v1')) || device?.terminalId || '',
           challengeId = fragment.get('challenge') || '';
         if (challengeId) safeRemove(sessionStorage, TOKEN_KEY);
         if (tenantId && terminalId) {
@@ -471,6 +486,9 @@ export const waiterHtml = String.raw`<!doctype html>
         let tableDetail = null, tableError = '', detailVersion = 0, menuOpen = false, printIntent = null;
         const el = (id) => document.getElementById(id),
           request = async (path, opts = {}) => {
+            if (tabReplaced || (!challengeId && device?.generation && readDevice()?.generation !== device.generation)) {
+              replaceTab(); throw new Error('La vinculación cambió en otra pestaña.');
+            }
             const headers = {
               accept: 'application/json',
               ...(opts.body ? { 'content-type': 'application/json' } : {}),
@@ -540,16 +558,34 @@ export const waiterHtml = String.raw`<!doctype html>
               });
               return await waitRequest(queued.requestId);
             } catch (error) {
-              if (error.status === 401 || error.code === 'unauthorized') {
-                token = ''; state = null; safeRemove(sessionStorage, TOKEN_KEY);
-                if (watchTimer) clearTimeout(watchTimer);
-                setAppVisible(false); el('sendBar').hidden = true;
-                el('pairing').hidden = false; el('connection').textContent = 'Sin vincular';
-                setMsg('pairMessage','Tu acceso venció o fue revocado. Escaneá un QR nuevo en caja para continuar.','warn');
+              if (accessEnded(error)) {
+                endAccess('Tu acceso venció o fue revocado. Escaneá un QR nuevo en caja para continuar.');
               }
               throw error;
             }
           };
+        function accessEnded(error) {
+          return error.status === 401 || ['unauthorized','session_revoked'].includes(error.code);
+        }
+        function endAccess(message, forget = true) {
+          if (forget && (!device?.generation || readDevice()?.generation === device.generation))
+            safeRemove(localStorage, DEVICE_KEY);
+          device = null; token = ''; state = null;
+          safeRemove(sessionStorage, TOKEN_KEY);
+          safeRemove(sessionStorage, TAB_GENERATION);
+          clearTimeout(watchTimer); clearTimeout(resumeTimer);
+          setAppVisible(false); el('sendBar').hidden = true; el('pairing').hidden = false;
+          el('retrySession').hidden = true; el('pairForm').hidden = false; el('pairGuide').hidden = false;
+          el('connection').textContent = 'Sin vincular';
+          setMsg('pairMessage',message,'warn');
+        }
+        function replaceTab() {
+          tabReplaced = true;
+          endAccess('Cambió el acceso de este teléfono. Volvé a abrir la página para continuar.', false);
+        }
+        window.addEventListener('storage', e => {
+          if (e.key === DEVICE_KEY && !challengeId && device?.generation && readDevice()?.generation !== device.generation) replaceTab();
+        });
         function loadDraft() {
           try {
             const v = JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}');
@@ -613,18 +649,7 @@ export const waiterHtml = String.raw`<!doctype html>
         function updateMenu() {
           if (state) renderMenu(busy || !!pending());
         }
-        el('productSearch').oninput = () => {
-          if (state?.waiterTableWorkflow && tableDetail && !menuOpen) {
-            menuOpen = true; render();
-          }
-          updateMenu();
-          if (el('productSearch').value.trim()) {
-            const categories = el('categories');
-            const top = categories.getBoundingClientRect().top;
-            if (top < document.querySelector('header').getBoundingClientRect().bottom || top > (window.visualViewport?.height ?? innerHeight) / 2)
-              categories.scrollIntoView({ block: 'start' });
-          }
-        };
+        el('productSearch').oninput = updateMenu;
         el('clearSearch').onclick = () => {
           el('productSearch').value = '';
           updateMenu();
@@ -728,7 +753,7 @@ export const waiterHtml = String.raw`<!doctype html>
           el('tableCard').hidden = !enabled || !draft.tableId;
           const catalog = !enabled || (tableDetail && menuOpen);
           el('menuCard').hidden = !catalog;
-          el('catalogSearch').hidden = enabled && !tableDetail;
+          el('catalogSearch').hidden = !catalog;
           el('draftCard').hidden = enabled && !catalog && !draft.lines.length;
           el('draftTitle').textContent = enabled ? 'Para confirmar' : 'Para enviar';
           if (!enabled || !draft.tableId) return;
@@ -811,6 +836,19 @@ export const waiterHtml = String.raw`<!doctype html>
           sel.disabled =
             locked || Boolean(state.waiterTableWorkflow && draft.lines.length) ||
             Boolean(draft.lines.length && !ts.some((t) => String(t.id) === String(draft.tableId)));
+          const mine = ts.filter(t => t.servedByMe && t.openOrderId);
+          el('myTablesSection').hidden = !mine.length;
+          const list = el('myTables');
+          renderIfChanged(list, JSON.stringify(mine.map(t => [t.id,t.name,t.number])), () => {
+            list.replaceChildren(...mine.map(t => {
+              const b = document.createElement('button');
+              b.type = 'button'; b.className = 'secondary';
+              b.textContent = t.name || 'Mesa ' + (t.number ?? t.id);
+              b.onclick = () => { if (!sel.disabled) { sel.value = String(t.id); sel.onchange(); } };
+              return b;
+            }));
+          });
+          for (const button of list.children) button.disabled = sel.disabled;
           renderTableDetail(locked);
           renderMenu(locked);
           const box = el('draft');
@@ -986,7 +1024,19 @@ export const waiterHtml = String.raw`<!doctype html>
         }
         async function refresh() {
           try {
-            state = await rpc('waiter.getState');
+            const nextState = await rpc('waiter.getState');
+            if (tabReplaced) return;
+            if (device?.waiterId && (device.waiterId !== nextState.waiter?.id || device.cashSessionId !== nextState.cashSessionId)) {
+              replaceTab(); return;
+            }
+            state = nextState;
+            const nextDevice = {tenantId, terminalId, waiterId: state.waiter?.id, cashSessionId: state.cashSessionId,
+              generation: device?.generation || newRequestId()};
+            if (safeSet(localStorage, DEVICE_KEY, JSON.stringify(nextDevice))) {
+              device = nextDevice;
+              safeSet(sessionStorage, TAB_GENERATION, nextDevice.generation);
+            }
+            resumeDelay = 3000;
             serverClockAnchor = createServerClockAnchor(state?.serverNow, performance.now(), Date.now());
             const scope =
               encodeURIComponent(tenantId) +
@@ -1025,9 +1075,9 @@ export const waiterHtml = String.raw`<!doctype html>
             if (p) await checkPending();
             else if (readWatch()) await checkPrint();
           } catch (e) {
+            if (tabReplaced) return;
             el('connection').textContent = 'Desconectado';
-            const unauthorized =
-              e.status === 401 || e.code === 'unauthorized';
+            const unauthorized = accessEnded(e);
             setMsg(
               'appMessage',
               unauthorized
@@ -1041,6 +1091,12 @@ export const waiterHtml = String.raw`<!doctype html>
               state = null;
               setAppVisible(false);
               el('pairing').hidden = false;
+            } else if (!state && !challengeId && (token || device)) {
+              el('pairing').hidden = false;
+              el('pairForm').hidden = true; el('pairGuide').hidden = true;
+              el('retrySession').hidden = false;
+              setMsg('pairMessage', 'No pudimos conectar con caja. Tu vínculo se conserva; no necesitás otro QR.', 'warn');
+              scheduleResume();
             }
           }
         }
@@ -1061,6 +1117,9 @@ export const waiterHtml = String.raw`<!doctype html>
             });
             const result = await waitPair(queued.requestId);
             token = result.sessionToken;
+            const pairedDevice = {tenantId, terminalId, generation: newRequestId()};
+            device = safeSet(localStorage, DEVICE_KEY, JSON.stringify(pairedDevice)) ? pairedDevice : null;
+            safeSet(sessionStorage, TAB_GENERATION, pairedDevice.generation);
             safeSet(sessionStorage, TOKEN_KEY, token);
             el('pin').value = '';
             challengeId = '';
@@ -1092,7 +1151,6 @@ export const waiterHtml = String.raw`<!doctype html>
         el('openMenu').onclick = () => {
           menuOpen = true; render();
           el('productSearch').focus();
-          el('menuCard').scrollIntoView({block:'start'});
         };
         el('confirmOnly').onclick = () => sendBatch('NONE');
         el('reprint').onclick = () => askPrint('copy');
@@ -1141,7 +1199,7 @@ export const waiterHtml = String.raw`<!doctype html>
         };
         el('reconnect').onclick = refresh;
         async function sendBatch(printMode) {
-          if (!state || !token || busy || pending() || !draft.lines.length) return;
+          if (!state || busy || pending() || !draft.lines.length) return;
           if (state.waiterTableWorkflow && (!tableDetail || (tableDetail.orderId || null) !== draft.expectedOrderId ||
               !['NONE','FULL','ADDED'].includes(printMode) || (printMode !== 'NONE' && !tableDetail.canPrint))) return;
           if (
@@ -1216,7 +1274,7 @@ export const waiterHtml = String.raw`<!doctype html>
           draft.lines = draft.lines.filter((x) => !accepted.has(String(x.lineId)));
           if (sameCashSession && d.orderId) {
             const table = (state.tables || []).find((t) => String(t.id) === String(record.tableId));
-            if (table) table.openOrderId = d.orderId;
+            if (table) { table.openOrderId = d.orderId; if (state.waiterTableWorkflow) table.servedByMe = true; }
             if (String(draft.tableId) === String(record.tableId)) draft.expectedOrderId = d.orderId;
           }
           saveDraft();
@@ -1384,7 +1442,7 @@ export const waiterHtml = String.raw`<!doctype html>
         }
         function schedulePrintCheck() {
           if (watchTimer) clearTimeout(watchTimer);
-          if (token && state && readWatch()) watchTimer = setTimeout(checkPrint, 5000);
+          if (state && readWatch()) watchTimer = setTimeout(checkPrint, 5000);
         }
         async function checkPending(reveal = false) {
           const p = pending();
@@ -1447,18 +1505,36 @@ export const waiterHtml = String.raw`<!doctype html>
         el('logout').onclick = async () => {
           try {
             await rpc('waiter.revoke');
-          } catch {}
-          token = '';
-          safeRemove(sessionStorage, TOKEN_KEY);
-          state = null;
-          setAppVisible(false);
-          el('sendBar').hidden = true;
-          el('pairing').hidden = false;
-          el('connection').textContent = 'Sin vincular';
-          if (watchTimer) clearTimeout(watchTimer);
+          } catch (e) {
+            if (!accessEnded(e)) {
+              setMsg('appMessage', 'No se confirmó la desvinculación. Reintentá con conexión o revocá el acceso desde caja.', 'warn');
+              return;
+            }
+          }
+          endAccess('Dispositivo desvinculado. Escaneá un QR nuevo para volver a ingresar.');
         };
         token = safeGet(sessionStorage, TOKEN_KEY) || '';
-        if (token) refresh();
+        let resuming = false, resumeTimer = null, resumeDelay = 3000;
+        function scheduleResume() {
+          clearTimeout(resumeTimer);
+          if (!document.hidden) {
+            resumeTimer = setTimeout(resume, resumeDelay);
+            resumeDelay = Math.min(30000, resumeDelay * 2);
+          }
+        }
+        async function resume() {
+          if (resuming || tabReplaced || challengeId || !(token || device)) return;
+          clearTimeout(resumeTimer);
+          resuming = true;
+          el('pairForm').hidden = true; el('pairGuide').hidden = true;
+          el('retrySession').hidden = true;
+          setMsg('pairMessage','Reconectando con caja…');
+          try { await refresh(); } finally { resuming = false; }
+        }
+        el('retrySession').onclick = resume;
+        window.addEventListener('online', () => { if (!state) void resume(); });
+        document.addEventListener('visibilitychange', () => { if (!document.hidden && !state) void resume(); });
+        if (!challengeId && (token || device)) void resume();
         else loadChallenge();
       })();
     </script>

@@ -120,6 +120,7 @@ test("waiter batch requires a live session and persists idempotent receipt", () 
     const accepted = repository.submitWaiterBatch(sessionToken, input);
     assert.equal(accepted.status, "QUEUED");
     assert.equal(accepted.created, true);
+    assert.equal(repository.getWaiterSessionState(sessionToken).tables.find((entry) => entry.id === table.id)?.servedByMe, true);
     assert.deepEqual(repository.getWaiterBatch(sessionToken, input.requestId)?.acceptedLineIds, [input.lines[0]!.lineId]);
     assert.deepEqual(repository.submitWaiterBatch(sessionToken, input).acceptedLineIds, [input.lines[0]!.lineId]);
     assert.equal(repository.submitWaiterBatch(sessionToken, input).created, false);
@@ -154,6 +155,29 @@ test("waiter batch requires a live session and persists idempotent receipt", () 
     assert.equal(repository.getWaiterBatch(renewed.sessionToken, second.requestId)?.orderId, openOrderId);
     assert.equal(repository.submitWaiterBatch(renewed.sessionToken, second).created, false);
     assert.equal(Number((repository.db.prepare("SELECT COUNT(*) AS n FROM waiter_batch_lines").get() as { n: number }).n), 2);
+  });
+});
+
+test("waiter snapshot marks only open tables assigned to this waiter in this shift", () => {
+  withRepository((repository) => {
+    const previousCash = repository.openCashSession({ openingAmountMinor: 0 });
+    repository.closeCashSession({ countedAmountMinor: 0 });
+    const cash = repository.openCashSession({ openingAmountMinor: 0 });
+    const waiter = repository.createUser({ fullName: "Moza Uno", roleCode: "WAITER", pin: "1357", authorizerPin: "2468" });
+    const other = repository.createUser({ fullName: "Mozo Dos", roleCode: "WAITER", pin: "2469", authorizerPin: "2468" });
+    const token = repository.pairWaiterSession({ challengeId: repository.createWaiterChallenge(waiter.id).challengeId, pin: "1357" }).sessionToken;
+    const table = repository.ensureTable(98);
+    const accepted = repository.submitWaiterBatch(token, { requestId: `served-${randomUUID()}`, tableId: table.id,
+      submittedAt: new Date().toISOString(), lines: [{ lineId: `line-${randomUUID()}`, productId: "starter-muzza-grande", quantity: 1 }] });
+    assert.ok(accepted.orderId);
+    const snapshot = () => repository.getWaiterSessionState(token).tables.find((entry) => entry.id === table.id)!;
+    assert.equal(snapshot().servedByMe, true);
+    repository.db.prepare("UPDATE orders SET waiter_user_id=? WHERE id=?").run(other.id, accepted.orderId);
+    assert.equal(snapshot().servedByMe, false, "open orders assigned to another waiter do not count");
+    repository.db.prepare("UPDATE orders SET waiter_user_id=?,cash_session_created_id=? WHERE id=?").run(waiter.id, previousCash.id, accepted.orderId);
+    assert.equal(snapshot().servedByMe, false, "orders from another shift do not count");
+    repository.db.prepare("UPDATE orders SET cash_session_created_id=?,operational_status='DELIVERED' WHERE id=?").run(cash.id, accepted.orderId);
+    assert.equal(snapshot().servedByMe, false, "closed orders do not count");
   });
 });
 

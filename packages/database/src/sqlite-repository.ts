@@ -439,9 +439,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const categories = this.db.prepare("SELECT id,name,sort_order FROM categories WHERE active=1 ORDER BY sort_order,name").all() as Row[];
     const products = this.db.prepare(waiterMenuSql + " ORDER BY c.sort_order,p.sort_order,p.name").all() as Row[];
     const tables = this.db.prepare(`SELECT t.id,t.number,t.name,
-      CASE WHEN o.id IS NULL THEN 'AVAILABLE' ELSE 'OCCUPIED' END AS status,o.id AS open_order_id
+      CASE WHEN o.id IS NULL THEN 'AVAILABLE' ELSE 'OCCUPIED' END AS status,o.id AS open_order_id,
+      CASE WHEN o.waiter_user_id=? AND o.cash_session_created_id=? THEN 1 ELSE 0 END AS served_by_me
       FROM restaurant_tables t LEFT JOIN orders o ON o.table_id=t.id AND o.operational_status NOT IN ('DELIVERED','CANCELLED')
-      WHERE t.active=1 ORDER BY t.number`).all() as Row[];
+      WHERE t.active=1 ORDER BY t.number`).all(session.user_id, session.cash_session_id) as Row[];
     return {
       waiterTableWorkflow: true,
       serverNow: nowIso(),
@@ -452,7 +453,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       menu: { halfAndHalfEnabled: this.getSettings().halfAndHalfEnabled ?? true,
         categories: categories.map((c) => ({ id: String(c.id), name: String(c.name), sortOrder: Number(c.sort_order) })),
         products: products.map((p) => ({ id: String(p.id), categoryId: String(p.category_id), name: String(p.name), priceMinor: Number(p.amount_minor), printDestination: p.print_destination == null ? null : String(p.print_destination), halfEligible: waiterPizza(p) })) },
-      tables: tables.map((t) => ({ id: String(t.id), number: Number(t.number), name: t.name == null ? `Mesa ${Number(t.number)}` : String(t.name), status: String(t.status), ...(t.open_order_id ? { openOrderId: String(t.open_order_id) } : {}) })),
+      tables: tables.map((t) => ({ id: String(t.id), number: Number(t.number), name: t.name == null ? `Mesa ${Number(t.number)}` : String(t.name), status: String(t.status), servedByMe: flag(t.served_by_me), ...(t.open_order_id ? { openOrderId: String(t.open_order_id) } : {}) })),
     };
   }
 
