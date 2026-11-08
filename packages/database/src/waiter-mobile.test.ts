@@ -45,6 +45,40 @@ test("waiter challenge is short-lived, pairing binds a real waiter to the open s
   });
 });
 
+test("waiter menu exposes half eligibility and persists a two-pizza line through receipt and delayed review", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const waiter = repository.createUser({ fullName: "Moza Pizza", roleCode: "WAITER", pin: "1357", authorizerPin: "2468" });
+    const token = repository.pairWaiterSession({ challengeId: repository.createWaiterChallenge(waiter.id).challengeId, pin: "1357" }).sessionToken;
+    const state = repository.getWaiterSessionState(token);
+    assert.equal(state.menu.halfAndHalfEnabled, true);
+    const pizza = state.menu.products.find((product) => product.id === "starter-muzza-grande")!;
+    assert.equal(pizza.halfEligible, true);
+    const table = repository.ensureTable(97);
+    const settings = repository.getSettings();
+    settings.printing.kitchen.deviceName = "Kitchen Test";
+    settings.printing.kitchen.mode = "SYSTEM_DIRECT";
+    repository.saveSettings(settings);
+    const requestId = `half-${randomUUID()}`;
+    const submittedAt = new Date(Date.now() - 61_000).toISOString();
+    const input = { requestId, tableId: table.id, submittedAt, lines: [{ lineId: `line-${randomUUID()}`, productId: "starter-muzza-grande", secondProductId: "starter-napo-grande", quantity: 1, note: "Sin aceitunas" }] };
+    assert.equal(repository.submitWaiterBatch(token, input).status, "PENDING_REVIEW");
+    const pending = repository.listDelayedWaiterBatches().find((batch) => batch.requestId === requestId)!;
+    assert.equal(pending.lines[0]!.secondProductId, "starter-napo-grande");
+    assert.match(pending.lines[0]!.name, /mitad .+ \/ mitad .+/);
+    assert.equal(pending.lines[0]!.note, "Sin aceitunas");
+    const result = repository.confirmDelayedWaiterBatch({ requestId });
+    assert.equal(result.created, true);
+    const order = repository.getOrder(result.orderId!);
+    assert.equal(order.items.length, 1);
+    assert.equal(order.items[0]!.halves.length, 2);
+    assert.deepEqual(order.items[0]!.halves.map((half) => half.productId), ["starter-muzza-grande", "starter-napo-grande"]);
+    const ticket = repository.getPrintOrder(result.printJobId!);
+    assert.equal(ticket.items[0]!.notes, "Sin aceitunas");
+    assert.equal(ticket.items[0]!.halves.length, 2);
+  });
+});
+
 test("cash-bound access survives a long shift but close and next shift invalidate reads and writes", (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-06T10:00:00Z") });
   withRepository((repository) => {

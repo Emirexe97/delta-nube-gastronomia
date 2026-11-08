@@ -121,6 +121,11 @@ export const waiterHtml = String.raw`<!doctype html>
         letter-spacing: 0.2em;
         text-align: center;
       }
+      .menu-search { max-width: 568px; margin: 8px auto 0; }
+      #productSearch { border-color: var(--dn-color-primary); }
+      #categories { scroll-margin-top: 166px; }
+      .product-count { display: block; font-size: 13px; font-weight: 700; margin-top: 3px; color: var(--dn-color-primary-hover); }
+      #addedToast { position: fixed; bottom: calc(84px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 4; background: var(--dn-color-text); color: white; border-radius: var(--dn-radius-control); padding: 10px 16px; width: max-content; max-width: calc(100% - 32px); overflow-wrap: anywhere; pointer-events: none; }
       .categories {
         display: flex;
         overflow: auto;
@@ -190,6 +195,12 @@ export const waiterHtml = String.raw`<!doctype html>
       .sticky button {
         width: min(568px, 100%);
       }
+      .sticky { gap: 8px; }
+      .sticky button.secondary { width: auto; }
+      #printDialog { width: min(380px, calc(100% - 24px)); border: 1px solid var(--dn-color-border); border-radius: var(--dn-radius-card); padding: 18px; }
+      #printDialog::backdrop { background: rgb(0 0 0 / 45%); }
+      #printDialog button { display: block; width: 100%; margin-top: 8px; }
+      #tableSummary li { margin-block: 6px; overflow-wrap: anywhere; }
       #pendingCard { border-color: #fdba74; background: var(--dn-color-primary-soft); }
       #pendingCard .row { flex-wrap: wrap; }
       #pendingCard, #printCard, #pairMessage, #appMessage { scroll-margin-block: 96px; }
@@ -197,6 +208,11 @@ export const waiterHtml = String.raw`<!doctype html>
       .row h2 { margin: 0; }
       .card > .row + .muted { margin-top: 8px; }
       .product > span { font-weight: 600; line-height: 1.35; }
+      .stepper .with-note { width: auto; padding-inline: 10px; font-size: 14px; }
+      #itemDialog { width: min(420px, calc(100% - 24px)); border: 1px solid var(--dn-color-border); border-radius: var(--dn-radius-card); padding: 20px; color: inherit; }
+      #itemDialog::backdrop { background: rgb(0 0 0 / 45%); }
+      #itemDialog label, .line label { display: block; margin: 12px 0 4px; }
+      #itemDialog .row { justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
       #table { font-weight: 650; }
       #draft:has(.line) { border-top: 1px solid var(--dn-color-border); margin-top: 10px; }
       .line textarea { margin-top: 9px; min-height: 44px; resize: vertical; }
@@ -232,6 +248,10 @@ export const waiterHtml = String.raw`<!doctype html>
         <small id="connection">Sin vincular</small>
       </div>
       <small id="sessionExpiry" class="muted"></small>
+      <div class="row menu-search" id="catalogSearch" role="search" hidden>
+        <input type="search" id="productSearch" aria-label="Buscar productos" placeholder="Buscar productos por nombre" autocomplete="off" />
+        <button type="button" class="secondary" id="clearSearch" hidden>Limpiar</button>
+      </div>
     </header>
     <main>
       <section id="pairing" class="card">
@@ -275,14 +295,22 @@ export const waiterHtml = String.raw`<!doctype html>
             <button id="closeOldPending" class="secondary" type="button" hidden>Quitar aviso anterior</button>
           </div>
         </div>
-        <div class="card">
-          <div class="row split"><h2>Menú</h2><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda sobre el menú" aria-expanded="false" aria-controls="help-menu">?</button><span class="help-popover" id="help-menu" role="tooltip" hidden>Elegí una categoría y usá + para sumar productos al pedido.</span></span></div>
+        <div class="card" id="tableCard" hidden>
+          <h2 id="tableTitle">Detalle de mesa</h2>
+          <p class="muted" id="tableCount" role="status"></p>
+          <ul id="tableSummary"></ul>
+          <button id="openMenu" type="button">Agregar productos</button>
+          <button id="reprint" class="secondary" type="button" hidden>Reimprimir comanda</button>
+        </div>
+        <div class="card" id="menuCard">
+          <div class="row split"><h2>Menú</h2><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda sobre el menú" aria-expanded="false" aria-controls="help-menu">?</button><span class="help-popover" id="help-menu" role="tooltip" hidden>Buscá por nombre en todo el menú o elegí una categoría. Usá + para sumar el producto al pedido.</span></span></div>
           <div id="categories" class="categories"></div>
           <div id="products"></div>
+          <p id="noResults" class="muted" role="status" hidden>No se encontraron productos.</p>
         </div>
-        <div class="card">
+        <div class="card" id="draftCard">
           <div class="row split">
-            <h2>Para enviar</h2>
+            <h2 id="draftTitle">Para enviar</h2>
             <button id="clearDraft" class="secondary" type="button">
               Vaciar
             </button>
@@ -298,8 +326,36 @@ export const waiterHtml = String.raw`<!doctype html>
         </button>
       </section>
     </main>
+    <dialog id="itemDialog" aria-labelledby="itemTitle">
+      <form id="itemForm">
+        <h2 id="itemTitle"></h2>
+        <div id="pizzaOptions">
+          <label for="pizzaMode">Tipo de pizza</label>
+          <select id="pizzaMode"><option value="whole">Entera</option><option value="half">Mitad y mitad</option></select>
+          <div id="secondChoice" hidden>
+            <label for="secondProduct">Otra mitad</label>
+            <select id="secondProduct"></select>
+          </div>
+        </div>
+        <label for="itemNote">Observaciones</label>
+        <textarea id="itemNote" maxlength="300" placeholder="Por ejemplo: sin cebolla"></textarea>
+        <div class="row">
+          <button type="button" class="secondary" id="cancelItem">Cancelar</button>
+          <button type="submit">Agregar al pedido</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="printDialog" aria-labelledby="scopeTitle">
+      <h2 id="scopeTitle">¿Qué querés imprimir?</h2>
+      <p class="muted" id="scopeHint"></p>
+      <button type="button" id="scopeFull">Comanda completa</button>
+      <button type="button" id="scopeAdded">Sólo lo último agregado</button>
+      <button type="button" class="secondary" id="scopeCancel">Cancelar</button>
+    </dialog>
+    <div id="addedToast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
     <div id="sendBar" class="sticky" hidden>
       <button id="send" type="button">Enviar pedido</button>
+      <button id="confirmOnly" class="secondary" type="button" hidden>Confirmar</button>
     </div>
     <script>
       (() => {
@@ -412,6 +468,7 @@ export const waiterHtml = String.raw`<!doctype html>
           oldShiftNotFoundSessionId = '',
           busy = false,
           checkingPending = false;
+        let tableDetail = null, tableError = '', detailVersion = 0, menuOpen = false, printIntent = null;
         const el = (id) => document.getElementById(id),
           request = async (path, opts = {}) => {
             const headers = {
@@ -486,7 +543,7 @@ export const waiterHtml = String.raw`<!doctype html>
               if (error.status === 401 || error.code === 'unauthorized') {
                 token = ''; state = null; safeRemove(sessionStorage, TOKEN_KEY);
                 if (watchTimer) clearTimeout(watchTimer);
-                el('app').hidden = true; el('sendBar').hidden = true;
+                setAppVisible(false); el('sendBar').hidden = true;
                 el('pairing').hidden = false; el('connection').textContent = 'Sin vincular';
                 setMsg('pairMessage','Tu acceso venció o fue revocado. Escaneá un QR nuevo en caja para continuar.','warn');
               }
@@ -550,10 +607,154 @@ export const waiterHtml = String.raw`<!doctype html>
         function allProducts() {
           return state?.menu?.products || [];
         }
+        function normalizeName(value) {
+          return value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        }
+        function updateMenu() {
+          if (state) renderMenu(busy || !!pending());
+        }
+        el('productSearch').oninput = () => {
+          if (state?.waiterTableWorkflow && tableDetail && !menuOpen) {
+            menuOpen = true; render();
+          }
+          updateMenu();
+          if (el('productSearch').value.trim()) {
+            const categories = el('categories');
+            const top = categories.getBoundingClientRect().top;
+            if (top < document.querySelector('header').getBoundingClientRect().bottom || top > (window.visualViewport?.height ?? innerHeight) / 2)
+              categories.scrollIntoView({ block: 'start' });
+          }
+        };
+        el('clearSearch').onclick = () => {
+          el('productSearch').value = '';
+          updateMenu();
+          el('productSearch').focus();
+        };
+        function renderMenu(locked) {
+          const search = el('productSearch');
+          const query = normalizeName(search.value);
+          el('clearSearch').hidden = !search.value;
+          const cats = state.menu?.categories || [];
+          if (!selectedCategory || !cats.some((c) => String(c.id ?? c) === selectedCategory))
+            selectedCategory = String(cats[0]?.id ?? cats[0] ?? '');
+          const cs = el('categories');
+          const categorySignature = JSON.stringify(cats.map((c) => [String(c.id ?? c), c.name || String(c)]));
+          renderIfChanged(cs, categorySignature, () => {
+            cs.replaceChildren();
+            for (const c of cats) {
+              const id = String(c.id ?? c), b = document.createElement('button');
+              b.textContent = c.name || String(c);
+              b.onclick = () => { selectedCategory = id; search.value = ''; updateMenu(); };
+              cs.append(b);
+            }
+          });
+          Array.from(cs.children).forEach((button, index) => {
+            button.className = !query && String(cats[index]?.id ?? cats[index]) === selectedCategory ? 'active' : '';
+          });
+          const ps = el('products');
+          const visibleProducts = allProducts().filter((p) => query
+            ? normalizeName(p.name || p.label || String(p.id)).includes(query)
+            : !p.categoryId || String(p.categoryId) === selectedCategory);
+          el('noResults').hidden = !query || visibleProducts.length > 0;
+          const productSignature = JSON.stringify([selectedCategory, state.menu?.halfAndHalfEnabled, visibleProducts]);
+          const focusedProductId = document.activeElement?.dataset?.productId || '';
+          renderIfChanged(ps, productSignature, () => {
+            ps.replaceChildren();
+            for (const p of visibleProducts) {
+              const row = document.createElement('div'); row.className = 'product';
+              const info = document.createElement('span'); info.textContent = p.name || p.label || String(p.id);
+              const control = document.createElement('div'); control.className = 'stepper';
+              const add = document.createElement('button'); add.textContent = '+';
+              add.dataset.productId = String(p.id ?? p.productId);
+              add.setAttribute('aria-label', 'Agregar ' + info.textContent);
+              const count = document.createElement('small');
+              count.className = 'product-count';
+              count.dataset.countFor = add.dataset.productId;
+              info.append(count);
+              const withNote = document.createElement('button');
+              withNote.className = 'secondary with-note';
+              withNote.textContent = 'Nota';
+              withNote.setAttribute('aria-label', 'Agregar con observaciones: ' + info.textContent);
+              withNote.onclick = () => openItem(p);
+              add.onclick = () => state.menu.halfAndHalfEnabled && p.halfEligible ? openItem(p) : addLine(p);
+              if (!(state.menu.halfAndHalfEnabled && p.halfEligible)) control.append(withNote);
+              control.append(add); row.append(info, control); ps.append(row);
+            }
+          });
+          const quantities = new Map();
+          for (const line of draft.lines)
+            quantities.set(line.productId, (quantities.get(line.productId) || 0) + line.quantity);
+          for (const count of ps.querySelectorAll('.product-count')) {
+            const quantity = quantities.get(count.dataset.countFor) || 0;
+            const label = quantity ? quantity + ' en pedido' : '';
+            if (count.textContent !== label) count.textContent = label;
+            count.hidden = !quantity;
+          }
+          for (const button of ps.querySelectorAll('.stepper button')) button.disabled = locked;
+          if (focusedProductId) {
+            const matchingButton = Array.from(ps.querySelectorAll('.stepper button')).find((button) => button.dataset.productId === focusedProductId);
+            if (matchingButton && document.activeElement !== matchingButton) matchingButton.focus({ preventScroll: true });
+          }
+        }
+        function setAppVisible(visible) {
+          el('app').hidden = !visible;
+          el('catalogSearch').hidden = !visible;
+          if (!visible) {
+            el('addedToast').hidden = true;
+            tableDetail = null; detailVersion++; menuOpen = false;
+            if (el('printDialog').open) el('printDialog').close();
+          }
+        }
+        async function loadTable() {
+          const id = draft.tableId, version = ++detailVersion;
+          tableDetail = null; tableError = '';
+          render();
+          if (!id || !state?.waiterTableWorkflow) return;
+          try {
+            const result = await rpc('waiter.getTable', { tableId: id });
+            if (version !== detailVersion || draft.tableId !== id || !state) return;
+            if (!result || result.tableId !== id || !Array.isArray(result.items)) throw new Error();
+            tableDetail = result;
+            const table = state.tables.find((t) => String(t.id) === id);
+            if (table) table.openOrderId = result.orderId || null;
+          } catch {
+            if (version !== detailVersion || !state) return;
+            tableError = 'No se pudo abrir esta mesa. Revisá la asignación en caja o tocá Actualizar.';
+          }
+          render();
+        }
+        function renderTableDetail(locked) {
+          const enabled = state.waiterTableWorkflow === true;
+          el('tableCard').hidden = !enabled || !draft.tableId;
+          const catalog = !enabled || (tableDetail && menuOpen);
+          el('menuCard').hidden = !catalog;
+          el('catalogSearch').hidden = enabled && !tableDetail;
+          el('draftCard').hidden = enabled && !catalog && !draft.lines.length;
+          el('draftTitle').textContent = enabled ? 'Para confirmar' : 'Para enviar';
+          if (!enabled || !draft.tableId) return;
+          el('tableTitle').textContent = el('table').selectedOptions[0]?.textContent || 'Detalle de mesa';
+          const rows = tableDetail?.items || [];
+          const total = rows.reduce((n, item) => n + item.quantity, 0);
+          el('tableCount').textContent = tableDetail
+            ? (total ? total + (total === 1 ? ' unidad confirmada' : ' unidades confirmadas') : 'Mesa sin productos confirmados.') +
+              (tableDetail.canPrint ? '' : ' Sin comandero disponible: podés usar Confirmar.')
+            : tableError || 'Consultando mesa…';
+          renderIfChanged(el('tableSummary'), JSON.stringify(rows), () => {
+            el('tableSummary').replaceChildren(...rows.map((item) => {
+              const li = document.createElement('li');
+              li.textContent = item.quantity + ' × ' + item.name + (item.note ? ' · ' + item.note : '');
+              return li;
+            }));
+          });
+          el('openMenu').disabled = !tableDetail || locked;
+          el('reprint').hidden = !tableDetail?.canReprint;
+          el('reprint').textContent = tableDetail?.hasPrinted === false ? 'Imprimir comanda' : 'Reimprimir comanda';
+          el('reprint').disabled = locked || !tableDetail?.canPrint;
+        }
         function render() {
           if (!state) return;
           el('pairing').hidden = true;
-          el('app').hidden = false;
+          setAppVisible(true);
           el('sendBar').hidden = false;
           el('sessionExpiry').textContent = state.validUntil === 'CASH_CLOSE' && state.cashSessionId
             ? 'Hasta el cierre de caja'
@@ -567,9 +768,10 @@ export const waiterHtml = String.raw`<!doctype html>
           const previousDraftTableId = draft.tableId;
           const availableTable = (id) => ts.some((t) => String(t.id) === String(id));
           const missingTable = !!(draft.lines.length && !availableTable(draft.tableId));
-          const tableSignature = JSON.stringify([ts, missingTable ? draft.tableId : null]);
+          const tableSignature = JSON.stringify([ts, state.waiterTableWorkflow, missingTable ? draft.tableId : null]);
           renderIfChanged(sel, tableSignature, () => {
             sel.replaceChildren();
+            if (state.waiterTableWorkflow) sel.add(new Option('Elegí una mesa', ''));
             for (const t of ts) {
               const o = document.createElement('option');
               o.value = String(t.id);
@@ -592,6 +794,8 @@ export const waiterHtml = String.raw`<!doctype html>
               'La mesa del borrador ya no está disponible. No se cambió automáticamente.',
               'warn',
             );
+          } else if (state.waiterTableWorkflow) {
+            draft.tableId = ''; sel.value = '';
           } else if (ts.length) {
             draft.tableId = String(ts[0].id);
             sel.value = draft.tableId;
@@ -605,46 +809,10 @@ export const waiterHtml = String.raw`<!doctype html>
             }
           }
           sel.disabled =
-            locked ||
+            locked || Boolean(state.waiterTableWorkflow && draft.lines.length) ||
             Boolean(draft.lines.length && !ts.some((t) => String(t.id) === String(draft.tableId)));
-          const cats = state.menu?.categories || [];
-          if (!selectedCategory || !cats.some((c) => String(c.id ?? c) === selectedCategory))
-            selectedCategory = String(cats[0]?.id ?? cats[0] ?? '');
-          const cs = el('categories');
-          const categorySignature = JSON.stringify(cats.map((c) => [String(c.id ?? c), c.name || String(c)]));
-          renderIfChanged(cs, categorySignature, () => {
-            cs.replaceChildren();
-            for (const c of cats) {
-              const id = String(c.id ?? c), b = document.createElement('button');
-              b.textContent = c.name || String(c);
-              b.onclick = () => { selectedCategory = id; render(); };
-              cs.append(b);
-            }
-          });
-          Array.from(cs.children).forEach((button, index) => {
-            button.className = String(cats[index]?.id ?? cats[index]) === selectedCategory ? 'active' : '';
-          });
-          const ps = el('products');
-          const visibleProducts = allProducts().filter((p) => !p.categoryId || String(p.categoryId) === selectedCategory);
-          const productSignature = JSON.stringify([selectedCategory, visibleProducts]);
-          const focusedProductId = document.activeElement?.dataset?.productId || '';
-          renderIfChanged(ps, productSignature, () => {
-            ps.replaceChildren();
-            for (const p of visibleProducts) {
-              const row = document.createElement('div'); row.className = 'product';
-              const info = document.createElement('span'); info.textContent = p.name || p.label || String(p.id);
-              const control = document.createElement('div'); control.className = 'stepper';
-              const add = document.createElement('button'); add.textContent = '+';
-              add.dataset.productId = String(p.id ?? p.productId);
-              add.setAttribute('aria-label', 'Agregar ' + info.textContent);
-              add.onclick = () => change(p, 1); control.append(add); row.append(info, control); ps.append(row);
-            }
-          });
-          for (const button of ps.querySelectorAll('.stepper button')) button.disabled = locked;
-          if (focusedProductId) {
-            const matchingButton = Array.from(ps.querySelectorAll('.stepper button')).find((button) => button.dataset.productId === focusedProductId);
-            if (matchingButton && document.activeElement !== matchingButton) matchingButton.focus({ preventScroll: true });
-          }
+          renderTableDetail(locked);
+          renderMenu(locked);
           const box = el('draft');
           box.replaceChildren();
           if (!draft.lines.length) {
@@ -660,31 +828,35 @@ export const waiterHtml = String.raw`<!doctype html>
             const head = document.createElement('div');
             head.className = 'row split';
             const name = document.createElement('strong');
-            name.textContent = (p?.name || line.name || line.productId) + ' × ' + line.quantity;
+            const lineName = displayLineName(line, p);
+            name.textContent = lineName + ' × ' + line.quantity;
             const step = document.createElement('div');
             step.className = 'stepper';
             const minus = document.createElement('button');
             minus.textContent = '−';
             minus.disabled = locked;
-            minus.onclick = () => change({ id: line.productId }, -1);
+            minus.onclick = () => changeQuantity(line, -1);
             const plus = document.createElement('button');
             plus.textContent = '+';
             plus.disabled = locked;
-            plus.onclick = () => change({ id: line.productId }, 1);
+            plus.onclick = () => changeQuantity(line, 1);
             step.append(minus, plus);
             head.append(name, step);
             row.append(head);
             const note = document.createElement('textarea');
             note.maxLength = 300;
             note.placeholder = 'Nota para cocina (opcional)';
-            note.setAttribute('aria-label', 'Nota para cocina de ' + (p?.name || line.name || 'este producto'));
+            note.id = 'note-' + line.lineId;
+            const label = document.createElement('label');
+            label.htmlFor = note.id; label.className = 'muted'; label.textContent = 'Observaciones para cocina';
+            note.setAttribute('aria-label', 'Nota para cocina de ' + lineName);
             note.value = line.note || '';
             note.disabled = locked;
             note.oninput = () => {
               line.note = note.value;
               saveDraft();
             };
-            row.append(note);
+            row.append(label, note);
             box.append(row);
           }
           el('clearDraft').disabled = locked;
@@ -692,13 +864,60 @@ export const waiterHtml = String.raw`<!doctype html>
           el('send').disabled = action.disabled;
           el('send').textContent = action.label;
           el('checkPending').disabled = checkingPending;
-          el('send').onclick = pending() ? () => checkPending(true) : sendBatch;
+          el('send').onclick = pending() ? () => checkPending(true) : () => sendBatch();
+          const modern = state.waiterTableWorkflow && !pending();
+          el('confirmOnly').hidden = !modern;
+          if (modern) {
+            el('sendBar').hidden = !draft.lines.length;
+            const changed = !tableDetail || (tableDetail.orderId || null) !== draft.expectedOrderId;
+            el('send').textContent = busy ? 'Procesando…' : 'Confirmar e imprimir';
+            el('send').disabled = action.disabled || changed || !tableDetail?.canPrint;
+            el('confirmOnly').disabled = action.disabled || changed;
+            el('send').onclick = () => askPrint('confirm');
+            if (changed && tableDetail && draft.lines.length)
+              setMsg('appMessage', 'El pedido de la mesa cambió. Revisalo en caja o vaciá el borrador antes de continuar.', 'warn');
+          }
         }
-        function change(product, delta) {
-          if (pending()) return;
-          const id = String(product.id ?? product.productId);
-          let line = draft.lines.find((x) => x.productId === id);
-          if (!line && delta > 0) {
+        const productId = (p) => String(p.id ?? p.productId);
+        let editingProductId = '';
+        function openItem(product) {
+          editingProductId = productId(product);
+          const others = state.menu.halfAndHalfEnabled && product.halfEligible
+            ? allProducts().filter((p) => p.halfEligible && productId(p) !== editingProductId) : [];
+          el('itemTitle').textContent = product.name || product.label;
+          el('pizzaOptions').hidden = !others.length;
+          el('pizzaMode').value = 'whole';
+          el('secondChoice').hidden = true;
+          const select = el('secondProduct');
+          select.replaceChildren(new Option('Elegí la otra mitad', ''));
+          for (const p of others) select.add(new Option(p.name || p.label, productId(p)));
+          select.required = false;
+          el('itemNote').value = '';
+          el('itemDialog').showModal();
+        }
+        el('pizzaMode').onchange = () => {
+          const half = el('pizzaMode').value === 'half';
+          el('secondChoice').hidden = !half;
+          el('secondProduct').required = half;
+        };
+        el('cancelItem').onclick = () => el('itemDialog').close();
+        el('itemForm').onsubmit = (event) => {
+          event.preventDefault();
+          const first = allProducts().find((p) => productId(p) === editingProductId);
+          const half = !el('pizzaOptions').hidden && el('pizzaMode').value === 'half';
+          const second = half && allProducts().find((p) => productId(p) === el('secondProduct').value && p.halfEligible);
+          el('itemDialog').close();
+          if (!first || (half && !(state?.menu?.halfAndHalfEnabled && first.halfEligible && second))) {
+            setMsg('appMessage', 'El menú cambió. Volvé a elegir el producto.', 'warn');
+            return;
+          }
+          addLine(first, second || null, el('itemNote').value.trim());
+        };
+        function addLine(product, second = null, note = '') {
+          if (!state || busy || pending()) return;
+          const id = productId(product), secondId = second && productId(second);
+          let line = draft.lines.find((x) => x.productId === id && (x.secondProductId || null) === secondId && (x.note || '') === note);
+          if (!line) {
             if (draft.lines.length >= 80) {
               setMsg('appMessage', 'Podés enviar hasta 80 productos diferentes a la vez.', 'warn');
               return;
@@ -707,17 +926,37 @@ export const waiterHtml = String.raw`<!doctype html>
               lineId: newRequestId(),
               productId: id,
               quantity: 0,
-              name: product.name || '',
-              note: '',
+              name: product.name || product.label || '',
+              ...(second ? { secondProductId: secondId, secondName: second.name || second.label } : {}),
+              note,
             };
             draft.lines.push(line);
           }
-          if (line) {
-            line.quantity = Math.max(0, Math.min(99, line.quantity + delta));
-            if (line.quantity <= 0) draft.lines = draft.lines.filter((x) => x !== line);
-          }
+          changeQuantity(line, 1);
+        }
+        function displayLineName(line, first) {
+          const name = first?.name || line.name || line.productId;
+          if (!line.secondProductId) return name;
+          const second = allProducts().find((p) => productId(p) === line.secondProductId);
+          return 'Mitad ' + name + ' / mitad ' + (second?.name || line.secondName || line.secondProductId);
+        }
+        let addedToastTimer;
+        function showAddedToast(line) {
+          const toast = el('addedToast');
+          clearTimeout(addedToastTimer);
+          toast.textContent = 'Agregaste 1 × ' + displayLineName(line, allProducts().find((p) => productId(p) === line.productId));
+          toast.hidden = false;
+          addedToastTimer = setTimeout(() => { toast.hidden = true; }, 3000);
+        }
+        function changeQuantity(line, delta) {
+          if (busy || pending()) return;
+          const previous = line.quantity;
+          line.quantity = Math.max(0, Math.min(99, line.quantity + delta));
+          if (line.quantity === previous) return;
+          if (line.quantity <= 0) draft.lines = draft.lines.filter((x) => x !== line);
           saveDraft();
           render();
+          if (delta > 0) showAddedToast(line);
         }
         function pending() {
           try {
@@ -776,9 +1015,12 @@ export const waiterHtml = String.raw`<!doctype html>
             }
             WATCH_KEY = 'waiter:watch:v1:' + scope;
             draft = loadDraft();
+            tableDetail = null; detailVersion++;
+            if (draft.lines.length) menuOpen = true;
             el('connection').textContent = 'En línea';
             el('appMessage').hidden = true;
             render();
+            if (state.waiterTableWorkflow && draft.tableId) void loadTable();
             const p = pending();
             if (p) await checkPending();
             else if (readWatch()) await checkPrint();
@@ -797,7 +1039,7 @@ export const waiterHtml = String.raw`<!doctype html>
               token = '';
               safeRemove(sessionStorage, TOKEN_KEY);
               state = null;
-              el('app').hidden = true;
+              setAppVisible(false);
               el('pairing').hidden = false;
             }
           }
@@ -835,11 +1077,60 @@ export const waiterHtml = String.raw`<!doctype html>
         };
         el('table').onchange = () => {
           if (busy || pending()) return;
+          if (state.waiterTableWorkflow && draft.lines.length) { render(); return; }
           draft.tableId = el('table').value;
           draft.expectedOrderId =
             (state.tables || []).find((t) => String(t.id) === draft.tableId)?.openOrderId ?? null;
           saveDraft();
+          if (state.waiterTableWorkflow) {
+            menuOpen = false;
+            el('productSearch').value = '';
+            el('printCard').hidden = true;
+            void loadTable();
+          }
         };
+        el('openMenu').onclick = () => {
+          menuOpen = true; render();
+          el('productSearch').focus();
+          el('menuCard').scrollIntoView({block:'start'});
+        };
+        el('confirmOnly').onclick = () => sendBatch('NONE');
+        el('reprint').onclick = () => askPrint('copy');
+        function askPrint(kind) {
+          if (!tableDetail?.canPrint || pending() || busy) return;
+          printIntent = { kind, tableId: draft.tableId, orderId: tableDetail.orderId };
+          el('scopeHint').textContent = kind === 'copy'
+            ? 'Esta impresión usa los productos ya confirmados. No agrega productos a la mesa.'
+            : 'El pedido se confirma una sola vez. Elegí qué recibe cocina.';
+          el('scopeAdded').disabled = kind === 'copy' && tableDetail.canPrintLast === false;
+          el('printDialog').showModal();
+        }
+        el('scopeCancel').onclick = () => el('printDialog').close();
+        el('scopeFull').onclick = () => chooseScope('FULL');
+        el('scopeAdded').onclick = () => chooseScope('ADDED');
+        async function chooseScope(scope) {
+          const intent = printIntent;
+          printIntent = null;
+          el('printDialog').close();
+          if (!intent || busy || pending() || !tableDetail || draft.tableId !== intent.tableId || tableDetail.orderId !== intent.orderId) return;
+          if (intent.kind === 'confirm') return sendBatch(scope);
+          const key = DRAFT_KEY + ':copy:' + intent.orderId + ':' + scope;
+          const requestId = safeGet(sessionStorage, key) || newRequestId();
+          if (!safeSet(sessionStorage, key, requestId)) {
+            setMsg('appMessage', 'No se pudo guardar la solicitud de copia. No se imprimió.', 'error'); return;
+          }
+          busy = true; render();
+          try {
+            const result = await rpc('waiter.reprintTable', { tableId: intent.tableId, orderId: intent.orderId, requestId, scope }, requestId);
+            safeRemove(sessionStorage, key);
+            setMsg('printStatus', result?.status === 'FAILED' ? 'Falló la reimpresión. Consultá en caja.' : 'Solicitud de reimpresión recibida en caja.');
+          } catch (err) {
+            if (err.definitive) safeRemove(sessionStorage, key);
+            setMsg('printStatus', err.definitive ? 'No se pudo reimprimir. Revisá la comanda y la impresora en caja.' : 'No pudimos confirmar la reimpresión. Revisá en caja antes de intentar otra copia.', 'warn');
+          } finally {
+            busy = false; render(); revealOrderStatus();
+          }
+        }
         el('clearDraft').onclick = () => {
           if (busy || pending()) return;
           if (!draft.lines.length || confirm('¿Quitar los productos que todavía no enviaste?')) {
@@ -849,8 +1140,10 @@ export const waiterHtml = String.raw`<!doctype html>
           }
         };
         el('reconnect').onclick = refresh;
-        async function sendBatch() {
+        async function sendBatch(printMode) {
           if (!state || !token || busy || pending() || !draft.lines.length) return;
+          if (state.waiterTableWorkflow && (!tableDetail || (tableDetail.orderId || null) !== draft.expectedOrderId ||
+              !['NONE','FULL','ADDED'].includes(printMode) || (printMode !== 'NONE' && !tableDetail.canPrint))) return;
           if (
             draft.lines.some(
               (x) => x.quantity < 1 || x.quantity > 99 || String(x.note || '').length > 300,
@@ -862,12 +1155,15 @@ export const waiterHtml = String.raw`<!doctype html>
           render();
           const record = {
             requestId: newRequestId(),
+            ...(printMode ? { printMode } : {}),
             // Immutable across retries; the DB uses this to quarantine delayed sends.
             submittedAt: estimateServerTimestamp(serverClockAnchor, performance.now(), Date.now()),
             tableId: draft.tableId,
             expectedOrderId: draft.expectedOrderId ?? null,
             expectedCashSessionId: state.cashSessionId ?? null,
-            lines: draft.lines.map((x) => ({ ...x })),
+            lines: draft.lines.map(({ lineId, productId, secondProductId, quantity, note }) => ({
+              lineId, productId, ...(secondProductId ? { secondProductId } : {}), quantity, note,
+            })),
           };
           try {
             localStorage.setItem(PENDING_KEY, JSON.stringify(record));
@@ -900,6 +1196,7 @@ export const waiterHtml = String.raw`<!doctype html>
               expectedOrderId: record.expectedOrderId,
               expectedCashSessionId: record.expectedCashSessionId ?? null,
               submittedAt: record.submittedAt,
+              ...(record.printMode ? { printMode: record.printMode } : {}),
               lines: record.lines,
             },
             record.requestId,
@@ -952,7 +1249,10 @@ export const waiterHtml = String.raw`<!doctype html>
               : 'Pedido del turno anterior recibido. Preparando la comanda…', '');
             schedulePrintCheck();
           }
-          render();
+          if (sameCashSession && state?.waiterTableWorkflow) {
+            menuOpen = false;
+            void loadTable();
+          } else render();
         }
         function updateBatch(d) {
           const record = pending();
@@ -1063,6 +1363,10 @@ export const waiterHtml = String.raw`<!doctype html>
               status === 'failed' ? 'warn' : '',
             );
             if (status === 'printed' || status === 'failed' || status === 'recorded') {
+              if (status === 'printed' && tableDetail && w.orderId === tableDetail.orderId) {
+                tableDetail.hasPrinted = true;
+                el('reprint').textContent = 'Reimprimir comanda';
+              }
               saveWatch(null);
               if (watchTimer) {
                 clearTimeout(watchTimer);
@@ -1147,7 +1451,7 @@ export const waiterHtml = String.raw`<!doctype html>
           token = '';
           safeRemove(sessionStorage, TOKEN_KEY);
           state = null;
-          el('app').hidden = true;
+          setAppVisible(false);
           el('sendBar').hidden = true;
           el('pairing').hidden = false;
           el('connection').textContent = 'Sin vincular';

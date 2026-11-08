@@ -42,6 +42,8 @@ test("mozo conserva catálogo, foco y notas al editar cantidades y refleja cambi
   try {
     await page.goto(`http://127.0.0.1:${address.port}/waiter`);
     await expect(page.locator("#products .product")).toHaveCount(100);
+    await page.locator("#products .product").last().scrollIntoViewIfNeeded();
+    await expect(page.getByRole("searchbox", {name:"Buscar productos"})).toBeInViewport();
     const node = await page.locator("#products .product").first().elementHandle();
     await page.evaluate(() => {
       (window as any).catalogReplacements=0;
@@ -52,6 +54,7 @@ test("mozo conserva catálogo, foco y notas al editar cantidades y refleja cambi
     await add.focus();
     for(let i=0;i<5;i++)await add.press("Enter");
     await expect(page.locator("#draft strong")).toContainText("Producto 0 × 5");
+    await expect(page.locator("#products .product").first()).toContainText("5 en pedido");
     await expect(add).toBeFocused();
     expect(await node!.evaluate(element=>element.isConnected)).toBe(true);
     expect(await page.evaluate(()=>(window as any).catalogReplacements)).toBe(0);

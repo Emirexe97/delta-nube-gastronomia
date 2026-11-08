@@ -10,6 +10,16 @@ export function rewindPurchaseTestSchema(
   db: InstanceType<typeof Database>,
   targetVersion: number,
 ) {
+  if (targetVersion < 50) {
+    db.exec("DROP TABLE IF EXISTS waiter_reprints");
+    for (const [table, name] of [
+      ["waiter_batches", "kitchen_snapshot_json"], ["waiter_batches", "print_mode"], ["waiter_pending_batches", "print_mode"],
+    ] as const) {
+      const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{name: string}>;
+      if (columns.some((column) => column.name === name))
+        db.exec(`ALTER TABLE ${table} DROP COLUMN ${name}`);
+    }
+  }
   if (targetVersion < 49 && targetVersion >= 48) {
     const books = db.prepare("PRAGMA table_info(price_books)").all() as Array<{
       name: string;

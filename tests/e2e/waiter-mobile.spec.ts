@@ -103,7 +103,7 @@ test("QR sin impresora, tandas con y sin comandero y revocación", async ({
       const table = await api.ensureTable({ number: 88 });
       for (const name of ["Plato piloto uno", "Plato piloto dos"])
         await api.createProduct({
-          categoryId: data.categories[0]!.id,
+          categoryId: data.categories.find(c => c.name === "Otros")!.id,
           name,
           prices: [
             { priceListCode: "SALON", amountMinor: 9900 },
@@ -170,6 +170,8 @@ test("QR sin impresora, tandas con y sin comandero y revocación", async ({
     await phone.getByRole("button", { name: "Vincular", exact: true }).click();
     await expect(phone.locator("#table")).toBeVisible({ timeout: 15000 });
     await phone.locator("#table").selectOption(table.id);
+    await expect(phone.locator("#openMenu")).toBeVisible();
+    await phone.locator("#openMenu").click();
     const tickets = () =>
       app!.evaluate(({ app }) => (app as any).__waiterTickets as string[]);
     // Server accepts the first mobile RPC, then the phone loses the transport receipt.
@@ -189,6 +191,7 @@ test("QR sin impresora, tandas con y sin comandero y revocación", async ({
       "Plato piloto uno",
       "Plato piloto dos",
     ].entries()) {
+      if (index > 0) await phone.locator("#openMenu").click();
       const add = phone.getByRole("button", {
         name: "Agregar " + name,
         exact: true,
@@ -209,6 +212,8 @@ test("QR sin impresora, tandas con y sin comandero y revocación", async ({
         await testInfo.attach("waiter-active-order-mobile", { path: screenshot, contentType: "image/png" });
       }
       await phone.locator("#send").click();
+      await expect(phone.locator("#scopeAdded")).toBeVisible();
+      await phone.locator("#scopeAdded").click();
       await expect
         .poll(async () => (await tickets()).length, { timeout: 15000 })
         .toBe(index + 1);
@@ -226,10 +231,13 @@ test("QR sin impresora, tandas con y sin comandero y revocación", async ({
     await app.evaluate(({ app }) => {
       (app as any).__waiterOffline = true;
     });
+    await phone.locator("#openMenu").click();
     await phone
       .getByRole("button", { name: "Agregar Plato piloto uno", exact: true })
       .click();
     await phone.locator("#send").click();
+    await expect(phone.locator("#scopeAdded")).toBeVisible();
+    await phone.locator("#scopeAdded").click();
     const failed = () =>
       pos.evaluate(async () =>
         (await window.gastronomy.bootstrap()).printJobs.find(
@@ -274,8 +282,11 @@ test("QR sin impresora, tandas con y sin comandero y revocación", async ({
         await route.continue({ postData: JSON.stringify(body) });
       } else await route.continue();
     });
+    await phone.locator("#openMenu").click();
     await phone.getByRole("button", { name: "Agregar Plato piloto dos", exact: true }).click();
     await phone.locator("#send").click();
+    await expect(phone.locator("#scopeAdded")).toBeVisible();
+    await phone.locator("#scopeAdded").click();
     await expect(phone.locator("#pendingTitle")).toContainText("Pedido pendiente de revisión", { timeout: 12000 });
     await expect(phone.locator("#send")).toBeEnabled();
     expect(await tickets()).toHaveLength(3);
@@ -309,8 +320,9 @@ test("QR sin impresora, tandas con y sin comandero y revocación", async ({
       await window.gastronomy.saveSettings(settings);
       return printJobs.length;
     });
+    await phone.locator("#openMenu").click();
     await phone.getByRole("button", { name: "Agregar Plato piloto uno", exact: true }).click();
-    await phone.locator("#send").click();
+    await phone.locator("#confirmOnly").click();
     await expect(phone.locator("#printStatus")).toContainText(/registrado.*sin impresión/i, { timeout: 12000 });
     await expect(phone.locator("#draft")).not.toContainText("Plato piloto uno");
     const digitalOrder = await pos.evaluate((orderId) => window.gastronomy.getOrder({ orderId }), job.orderId);

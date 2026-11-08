@@ -57,9 +57,9 @@ test("catalog and table rendering skips DOM rebuilds for quantity-only rerenders
   assert.equal(rebuilds, 1, "unchanged input keeps the same rendered children");
   renderIfChanged(node, '["table-1","table-2"]', build); // table/catalog input changed
   assert.equal(rebuilds, 2);
-  assert.match(waiterHtml, /const productSignature = JSON\.stringify\(\[selectedCategory, visibleProducts\]\)/);
+  assert.match(waiterHtml, /const productSignature = JSON\.stringify\(\[selectedCategory, state\.menu\?\.halfAndHalfEnabled, visibleProducts\]\)/);
   assert.match(waiterHtml, /const categorySignature = JSON\.stringify\(cats\.map/);
-  assert.match(waiterHtml, /const tableSignature = JSON\.stringify\(\[ts, missingTable \? draft\.tableId : null\]\)/);
+  assert.match(waiterHtml, /const tableSignature = JSON\.stringify\(\[ts, state\.waiterTableWorkflow, missingTable \? draft\.tableId : null\]\)/);
 });
 
 test("waiter page labels cash-close sessions without an artificial expiry", () => {
@@ -213,7 +213,7 @@ test("pending action stays available even without draft lines; only sending disa
   assert.equal(action(false, false, false).disabled, true);
   assert.equal(action(false, false, true).disabled, false);
   assert.deepEqual(action(true, false, true, true), { disabled: true, label: "Consultando…" });
-  assert.match(scriptTokens, /el\('send'\)\.onclick=pending\(\)\?\(\)=>checkPending\(true\):sendBatch/);
+  assert.match(scriptTokens, /el\('send'\)\.onclick=pending\(\)\?\(\)=>checkPending\(true\):\(\)=>sendBatch\(\)/);
   assert.match(waiterHtml, /<button id="send" type="button">Enviar pedido<\/button>/);
 });
 

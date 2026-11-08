@@ -190,6 +190,18 @@ test("waiter relay pairs, queues and returns per-request RPC responses without p
     body: rpcBody,
   });
   assert.equal(rpc.status, 202);
+  for (const [method, params] of [
+    ["waiter.getTable", { tableId: "t1" }],
+    ["waiter.reprintTable", { tableId: "t1", orderId: "o1", requestId: "r".repeat(16), scope: "FULL" }],
+  ]) {
+    const allowed = await call(port, "/v1/waiter/rpc", {
+      method: "POST",
+      auth: sessionToken,
+      origin,
+      body: { requestId: randomBytes(18).toString("base64url"), method, params },
+    });
+    assert.equal(allowed.status, 202, `${method} is in the RPC allowlist`);
+  }
   const retry = await call(port, "/v1/waiter/rpc", {
     method: "POST",
     auth: sessionToken,

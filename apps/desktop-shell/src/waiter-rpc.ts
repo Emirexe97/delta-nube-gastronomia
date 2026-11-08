@@ -1,5 +1,6 @@
 import type { SqliteGastronomyRepository } from "@gastronomy/database";
-import { WaiterRequestError, type RelayRequest } from "./waiter-relay";
+// @ts-ignore Node's native test runner needs the explicit TypeScript extension.
+import { WaiterRequestError, type RelayRequest } from "./waiter-relay.ts";
 
 const id = (v: unknown, min = 1): v is string =>
   typeof v === "string" &&
@@ -15,6 +16,7 @@ function readBatch(p: Record<string, unknown>) {
     !id(p.requestId, 16) ||
     !id(p.tableId) ||
     !(p.expectedOrderId === null || id(p.expectedOrderId)) ||
+    (p.printMode != null && p.printMode !== "FULL" && p.printMode !== "ADDED" && p.printMode !== "NONE") ||
     !Array.isArray(p.lines) ||
     !p.lines.length ||
     p.lines.length > 80
@@ -29,6 +31,7 @@ function readBatch(p: Record<string, unknown>) {
       !row ||
       !id(row.lineId, 8) ||
       !id(row.productId) ||
+      (row.secondProductId != null && !id(row.secondProductId)) ||
       !Number.isSafeInteger(row.quantity) ||
       Number(row.quantity) < 1 ||
       Number(row.quantity) > 99 ||
@@ -43,6 +46,7 @@ function readBatch(p: Record<string, unknown>) {
     return {
       lineId: row.lineId,
       productId: row.productId,
+      ...(id(row.secondProductId) ? { secondProductId: row.secondProductId } : {}),
       quantity: Number(row.quantity),
       ...(typeof row.note === "string" ? { note: row.note } : {}),
     };
@@ -54,6 +58,9 @@ function readBatch(p: Record<string, unknown>) {
       ? { expectedCashSessionId: p.expectedCashSessionId }
       : {}),
     expectedOrderId: p.expectedOrderId,
+    ...(p.printMode === "FULL" || p.printMode === "ADDED" || p.printMode === "NONE"
+      ? { printMode: p.printMode as "FULL" | "ADDED" | "NONE" }
+      : {}),
     // Preserve the phone's original timestamp verbatim across relay retries.
     // Missing/non-string values deliberately remain absent so the repository
     // applies its conservative pending-review fallback.
@@ -89,6 +96,23 @@ export function handleWaiterRequest(
     switch (request.method) {
       case "waiter.getState":
         return repo.getWaiterSessionState(token);
+      case "waiter.getTable": {
+        if (!id(p.tableId)) return fail("invalid_request", "Mesa inválida.");
+        return repo.getWaiterTable(token, { tableId: p.tableId });
+      }
+      case "waiter.reprintTable": {
+        if (!id(p.tableId) || !id(p.orderId) || !id(p.requestId, 16) ||
+            (p.scope !== "FULL" && p.scope !== "ADDED"))
+          return fail("invalid_request", "Solicitud de reimpresión inválida.");
+        const result = repo.reprintWaiterTable(token, {
+          tableId: p.tableId,
+          orderId: p.orderId,
+          requestId: p.requestId,
+          scope: p.scope,
+        });
+        if (result.created && result.printJobId) dispatch(result.printJobId);
+        return result;
+      }
       case "waiter.getBatch": {
         if (!id(p.requestId, 16))
           return fail("invalid_request", "Identificador de tanda inválido.");
@@ -124,7 +148,7 @@ export function handleWaiterRequest(
         "La sesión venció, fue revocada o cambió el turno. Volvé a escanear en caja.",
       );
     if (
-      /mesa|producto|stock|pedido|tanda|impresora|cantidad|comanda|línea|combo/i.test(
+      /mesa|producto|stock|pedido|tanda|impresora|cantidad|comanda|línea|combo|pizza|mitad|elegible/i.test(
         msg,
       ) &&
       !/SQLITE|constraint|SELECT |INSERT |UPDATE |DELETE |file:|[A-Z]:\\/i.test(

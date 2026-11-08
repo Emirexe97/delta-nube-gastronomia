@@ -130,6 +130,12 @@ import { populateRepeatedOrder } from "./repeat-order";
 
 type SqliteDatabase = InstanceType<typeof Database>;
 type Row = Record<string, unknown>;
+
+const waiterMenuSql = `SELECT p.id,p.category_id,p.name,p.print_destination,c.name AS category_name,pp.amount_minor
+  FROM products p JOIN product_prices pp ON pp.product_id=p.id JOIN price_lists pl ON pl.id=pp.price_list_id
+  JOIN categories c ON c.id=p.category_id WHERE p.active=1 AND p.combo_definition_json IS NULL
+  AND c.active=1 AND pl.code='SALON' AND pl.active=1`;
+const waiterPizza = (row: Row) => `${row.category_name} ${row.name}`.toLocaleLowerCase("es-AR").includes("pizza");
 function webInboxEntry(row: Row): WebInboxEntry {
   return {
     original: JSON.parse(String(row.original_json)),
@@ -372,22 +378,21 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   getWaiterSessionState(token: string) {
     const session = this.requireWaiterSession(token);
     const categories = this.db.prepare("SELECT id,name,sort_order FROM categories WHERE active=1 ORDER BY sort_order,name").all() as Row[];
-    const products = this.db.prepare(`SELECT p.id,p.category_id,p.name,p.print_destination,pp.amount_minor FROM products p
-      JOIN product_prices pp ON pp.product_id=p.id JOIN price_lists pl ON pl.id=pp.price_list_id
-      JOIN categories c ON c.id=p.category_id WHERE p.active=1 AND p.combo_definition_json IS NULL AND c.active=1 AND pl.code='SALON' AND pl.active=1
-      ORDER BY c.sort_order,p.sort_order,p.name`).all() as Row[];
+    const products = this.db.prepare(waiterMenuSql + " ORDER BY c.sort_order,p.sort_order,p.name").all() as Row[];
     const tables = this.db.prepare(`SELECT t.id,t.number,t.name,
       CASE WHEN o.id IS NULL THEN 'AVAILABLE' ELSE 'OCCUPIED' END AS status,o.id AS open_order_id
       FROM restaurant_tables t LEFT JOIN orders o ON o.table_id=t.id AND o.operational_status NOT IN ('DELIVERED','CANCELLED')
       WHERE t.active=1 ORDER BY t.number`).all() as Row[];
     return {
+      waiterTableWorkflow: true,
       serverNow: nowIso(),
       waiter: { id: String(session.user_id), name: String(session.full_name) },
       expiresAt: flag(session.expires_on_cash_close) ? null : String(session.expires_at),
       validUntil: flag(session.expires_on_cash_close) ? "CASH_CLOSE" as const : "TIME" as const,
       cashSessionId: String(session.cash_session_id),
-      menu: { categories: categories.map((c) => ({ id: String(c.id), name: String(c.name), sortOrder: Number(c.sort_order) })),
-        products: products.map((p) => ({ id: String(p.id), categoryId: String(p.category_id), name: String(p.name), priceMinor: Number(p.amount_minor), printDestination: p.print_destination == null ? null : String(p.print_destination) })) },
+      menu: { halfAndHalfEnabled: this.getSettings().halfAndHalfEnabled ?? true,
+        categories: categories.map((c) => ({ id: String(c.id), name: String(c.name), sortOrder: Number(c.sort_order) })),
+        products: products.map((p) => ({ id: String(p.id), categoryId: String(p.category_id), name: String(p.name), priceMinor: Number(p.amount_minor), printDestination: p.print_destination == null ? null : String(p.print_destination), halfEligible: waiterPizza(p) })) },
       tables: tables.map((t) => ({ id: String(t.id), number: Number(t.number), name: t.name == null ? `Mesa ${Number(t.number)}` : String(t.name), status: String(t.status), ...(t.open_order_id ? { openOrderId: String(t.open_order_id) } : {}) })),
     };
   }
@@ -440,7 +445,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   listDelayedWaiterBatches() {
     this.assertWaiterBatchReviewAccess();
     const rows = this.db.prepare("SELECT * FROM waiter_pending_batches WHERE status='PENDING_REVIEW' ORDER BY received_at,request_id").all() as Row[];
-    return rows.map((row) => ({ requestId: String(row.request_id), tableId: String(row.table_id), tableNumber: Number(row.table_number), waiterName: String(row.waiter_name), submittedAt: row.submitted_at == null ? null : String(row.submitted_at), receivedAt: String(row.received_at), status: String(row.status), lines: (JSON.parse(String(row.lines_json)) as Array<{ productId: string; name: string; quantity: number; note?: string; lineId: string }>).map(({productId,name,quantity,note})=>({productId,name,quantity,...(note ? {note} : {})})) }));
+    return rows.map((row) => ({ requestId: String(row.request_id), tableId: String(row.table_id), tableNumber: Number(row.table_number), waiterName: String(row.waiter_name), submittedAt: row.submitted_at == null ? null : String(row.submitted_at), receivedAt: String(row.received_at), status: String(row.status), lines: (JSON.parse(String(row.lines_json)) as Array<{ productId: string; secondProductId?: string; name: string; quantity: number; note?: string; lineId: string }>).map(({productId,secondProductId,name,quantity,note})=>({productId,...(secondProductId ? {secondProductId} : {}),name,quantity,...(note ? {note} : {})})) }));
   }
 
   confirmDelayedWaiterBatch(input: { requestId: string }) {
@@ -457,14 +462,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       if (String(pending.cash_session_id) !== String(cashier.id)) throw new Error("La tanda pertenece a otro turno de caja.");
       const waiter = this.db.prepare(`SELECT 1 FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=? AND u.active=1 AND r.code='WAITER'`).get(pending.user_id);
       requireRow(waiter, "El mozo asociado ya no está activo.");
-      const lines = (JSON.parse(String(pending.lines_json)) as Array<{lineId:string;productId:string;quantity:number;note?:string|null}>).map((line) => ({...line, ...(line.note ? {note:line.note} : {note:undefined})}));
+      const lines = (JSON.parse(String(pending.lines_json)) as Array<{lineId:string;productId:string;secondProductId?:string;quantity:number;note?:string|null}>).map((line) => ({...line, ...(line.note ? {note:line.note} : {note:undefined})}));
       this.db.prepare("DELETE FROM waiter_pending_batch_lines WHERE request_id=?").run(input.requestId);
       this.db.prepare("DELETE FROM waiter_pending_batches WHERE request_id=?").run(input.requestId);
       const token = randomUUID() + randomUUID();
       const tokenHash = createHash("sha256").update(token).digest("hex");
       this.db.prepare("INSERT INTO waiter_sessions(token_hash,user_id,cash_session_id,expires_at,created_at) VALUES(?,?,?,?,?)").run(tokenHash,pending.user_id,cashier.id,new Date(Date.now()+60_000).toISOString(),nowIso());
       try {
-        const result = this.submitWaiterBatch(token, { requestId: String(pending.request_id), tableId: String(pending.table_id), expectedOrderId: pending.expected_order_id == null ? null : String(pending.expected_order_id), submittedAt: nowIso(), lines });
+        const result = this.submitWaiterBatch(token, { requestId: String(pending.request_id), tableId: String(pending.table_id), expectedOrderId: pending.expected_order_id == null ? null : String(pending.expected_order_id), submittedAt: nowIso(), ...(pending.print_mode == null ? {} : { printMode: String(pending.print_mode) as "FULL"|"ADDED"|"NONE" }), lines });
         // The mobile retry's payload hash is the original receipt hash; confirmation must not
         // mutate expectedCashSessionId (or otherwise make a lost-ACK retry look like a conflict).
         this.db.prepare("UPDATE waiter_batches SET payload_hash=? WHERE request_id=?").run(pending.payload_hash,input.requestId);
@@ -499,7 +504,65 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       printJobId: row.print_job_id == null ? null : String(row.print_job_id), ...((printJob?.last_error ?? row.error) ? { error: String(printJob?.last_error ?? row.error) } : {}) };
   }
 
-  submitWaiterBatch(token: string, input: { requestId: string; tableId: string; expectedOrderId?: string | null; expectedCashSessionId?: string; submittedAt?: number | string; lines: Array<{ lineId: string; productId: string; quantity: number; note?: string }> }) {
+  getWaiterTable(token: string, input: { tableId: string }) {
+    const session = this.requireWaiterSession(token);
+    requireRow(this.db.prepare("SELECT id FROM restaurant_tables WHERE id=? AND active=1").get(input.tableId) as Row | undefined, "La mesa no existe o está inactiva.");
+    const orders = this.db.prepare("SELECT id,waiter_user_id,cash_session_created_id FROM orders WHERE table_id=? AND operational_status NOT IN ('DELIVERED','CANCELLED') ORDER BY created_at").all(input.tableId) as Row[];
+    if (orders.length > 1) throw new Error("La mesa tiene varios pedidos abiertos; consultá en caja.");
+    const order = orders[0];
+    if (order && String(order.waiter_user_id) !== String(session.user_id)) throw new Error("La mesa está asignada a otro mozo.");
+    if (order && String(order.cash_session_created_id) !== String(session.cash_session_id)) throw new Error("El pedido pertenece a otro turno de caja.");
+    const kitchen = this.getSettings().printing.kitchen;
+    const canPrint = kitchen.mode === "SYSTEM_DIRECT" && Boolean(kitchen.deviceName?.trim());
+    if (!order) return { tableId: input.tableId, orderId: null, items: [], canPrint, canReprint: false, canPrintLast: false, hasPrinted: false };
+    const dto = this.getOrder(String(order.id));
+    if (dto.lifecycleStatus !== "CONFIRMED") throw new Error("El pedido de la mesa todavía no está confirmado en caja.");
+    const hasPrinted = Boolean(this.db.prepare("SELECT 1 FROM print_jobs WHERE order_id=? AND kind='KITCHEN_ORDER' AND status='PRINTED' LIMIT 1").get(order.id));
+    const canPrintLast = Boolean(this.db.prepare("SELECT 1 FROM waiter_batches WHERE order_id=? AND kitchen_snapshot_json IS NOT NULL LIMIT 1").get(order.id));
+    return { tableId: input.tableId, orderId: String(order.id), items: dto.items.map(i => ({ name: i.productNameSnapshot, quantity: i.quantity, note: i.notes ?? "" })), canPrint, canReprint: true, canPrintLast, hasPrinted };
+  }
+
+  reprintWaiterTable(token: string, input: { tableId: string; orderId: string; requestId: string; scope: "FULL" | "ADDED" }) {
+    const session = this.requireWaiterSession(token);
+    if (!input.requestId || !["FULL", "ADDED"].includes(input.scope)) throw new Error("La solicitud de reimpresión no es válida.");
+    return this.db.transaction(() => {
+      this.requireOpenCashSessionRow();
+      requireRow(this.db.prepare("SELECT id FROM restaurant_tables WHERE id=? AND active=1").get(input.tableId) as Row | undefined, "La mesa no existe o está inactiva.");
+      const order = requireRow(this.db.prepare("SELECT * FROM orders WHERE id=? AND table_id=? AND operational_status NOT IN ('DELIVERED','CANCELLED')").get(input.orderId,input.tableId) as Row | undefined, "El pedido ya no está abierto en esa mesa.");
+      if (String(order.waiter_user_id) !== String(session.user_id)) throw new Error("El pedido pertenece a otro mozo.");
+      if (String(order.cash_session_created_id) !== String(session.cash_session_id)) throw new Error("El pedido pertenece a otro turno de caja.");
+      const prior = this.db.prepare("SELECT r.*,j.status AS job_status FROM waiter_reprints r JOIN print_jobs j ON j.id=r.print_job_id WHERE r.request_id=?").get(input.requestId) as Row | undefined;
+      if (prior) {
+        if (String(prior.order_id) !== input.orderId || String(prior.table_id) !== input.tableId || String(prior.scope) !== input.scope) throw new Error("El identificador de reimpresión ya existe con otro contenido.");
+        return { requestId: input.requestId, orderId: input.orderId, printJobId: String(prior.print_job_id), status: String(prior.job_status), created: false };
+      }
+      if (this.db.prepare("SELECT 1 FROM print_jobs WHERE order_id=? AND kind='KITCHEN_ORDER' AND status IN ('QUEUED','RECOVERING','FAILED') LIMIT 1").get(input.orderId)) throw new Error("Hay una comanda pendiente o fallida; resolvela antes de reimprimir.");
+      const kitchen = this.getSettings().printing.kitchen;
+      if (kitchen.mode !== "SYSTEM_DIRECT" || !kitchen.deviceName?.trim()) throw new Error("La impresión directa de cocina no está configurada.");
+      if (order.lifecycle_status !== "CONFIRMED") throw new Error("El pedido de la mesa todavía no está confirmado.");
+      const current = this.getOrder(input.orderId);
+      let dto = current;
+      let quantities: Record<string, number> = Object.fromEntries(current.items.map(i => [i.id, i.quantity]));
+      let isReprint = Boolean(this.db.prepare("SELECT 1 FROM print_jobs WHERE order_id=? AND kind='KITCHEN_ORDER' AND status='PRINTED' LIMIT 1").get(input.orderId));
+      if (input.scope === "ADDED") {
+        const latest = this.db.prepare("SELECT kitchen_snapshot_json,created_at FROM waiter_batches WHERE order_id=? AND kitchen_snapshot_json IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(input.orderId) as Row | undefined;
+        if (!latest) throw new Error("No hay una tanda móvil disponible para imprimir.");
+        const last = JSON.parse(String(latest.kitchen_snapshot_json)) as {order: OrderDto; quantities: Record<string,number>};
+        dto = last.order;
+        quantities = { ...current.kitchenPrintedQuantities };
+        for (const item of dto.items)
+          quantities[item.id] = Math.max(quantities[item.id] ?? 0, last.quantities[item.id] ?? item.quantity);
+        isReprint = Boolean(this.db.prepare("SELECT 1 FROM print_jobs WHERE order_id=? AND kind='KITCHEN_ORDER' AND status='PRINTED' AND created_at>=? LIMIT 1").get(input.orderId,latest.created_at));
+      }
+      const snapshot = JSON.stringify({order: {...dto, kitchenPrintScope: input.scope, isReprint}, quantities});
+      const jobId=randomUUID();
+      this.db.prepare("INSERT INTO print_jobs(id,order_id,kind,status,printer_name,copies,created_at,kitchen_snapshot_json) VALUES(?,?,'KITCHEN_ORDER','QUEUED',?,?,?,?)").run(jobId,input.orderId,kitchen.deviceName,kitchen.copies,nowIso(),snapshot);
+      this.db.prepare("INSERT INTO waiter_reprints(request_id,order_id,table_id,scope,print_job_id,status,created_at) VALUES(?,?,?,?,?,'QUEUED',?)").run(input.requestId,input.orderId,input.tableId,input.scope,jobId,nowIso());
+      return {requestId:input.requestId,orderId:input.orderId,printJobId:jobId,status:"QUEUED",created:true};
+    })();
+  }
+
+  submitWaiterBatch(token: string, input: { requestId: string; tableId: string; expectedOrderId?: string | null; expectedCashSessionId?: string; submittedAt?: number | string; printMode?: "FULL" | "ADDED" | "NONE"; lines: Array<{ lineId: string; productId: string; secondProductId?: string; quantity: number; note?: string }> }) {
     const session = this.requireWaiterSession(token);
     if (input.expectedCashSessionId && input.expectedCashSessionId !== String(session.cash_session_id)) throw new Error("El turno cambió. Actualizá la aplicación antes de enviar.");
     if (!input.requestId || input.requestId.length > 128 || !input.lines.length || input.lines.length > 80)
@@ -510,7 +573,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const submittedAt = validSubmittedAt;
     // Keep the established receipt hash stable: submittedAt is a transport safety signal,
     // not part of the order content, so changing it cannot bypass requestId idempotency.
-    const payloadHash = createHash("sha256").update(JSON.stringify({ tableId: input.tableId, expectedOrderId: input.expectedOrderId ?? null, expectedCashSessionId: input.expectedCashSessionId ?? null, lines: input.lines.map((line) => ({ lineId: line.lineId, productId: line.productId, quantity: line.quantity, note: line.note?.trim() || null })) })).digest("hex");
+    const hashPayload = { tableId: input.tableId, expectedOrderId: input.expectedOrderId ?? null, expectedCashSessionId: input.expectedCashSessionId ?? null, ...(input.printMode !== undefined ? { printMode: input.printMode } : {}), lines: input.lines.map((line) => ({ lineId: line.lineId, productId: line.productId, ...(line.secondProductId ? { secondProductId: line.secondProductId } : {}), quantity: line.quantity, note: line.note?.trim() || null })) };
+    const payloadHash = createHash("sha256").update(JSON.stringify(hashPayload)).digest("hex");
+    const printMode = input.printMode ?? (input.expectedOrderId ? "ADDED" : "FULL");
+    if (!["FULL","ADDED","NONE"].includes(printMode)) throw new Error("El modo de impresión no es válido.");
     const run = this.db.transaction(() => {
       const existing = this.db.prepare("SELECT * FROM waiter_batches WHERE request_id=?").get(input.requestId) as Row | undefined;
       if (existing) {
@@ -533,10 +599,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         if (this.db.prepare(`SELECT 1 FROM waiter_batch_lines WHERE line_id IN (${lineIds.map(() => "?").join(",")})`).get(...lineIds) || this.db.prepare(`SELECT 1 FROM waiter_pending_batch_lines WHERE line_id IN (${lineIds.map(() => "?").join(",")})`).get(...lineIds)) throw new Error("Una o más líneas ya fueron recibidas.");
         const lines = input.lines.map((line) => {
           const product = this.db.prepare("SELECT name FROM products WHERE id=?").get(line.productId) as Row | undefined;
-          return { ...line, name: String(product?.name ?? line.productId), note: line.note?.trim() || null };
+          const second = line.secondProductId ? this.db.prepare("SELECT name FROM products WHERE id=?").get(line.secondProductId) as Row | undefined : undefined;
+          return { ...line, name: line.secondProductId ? `Pizza mitad ${String(product?.name ?? line.productId)} / mitad ${String(second?.name ?? line.secondProductId)}` : String(product?.name ?? line.productId), note: line.note?.trim() || null };
         });
-        this.db.prepare(`INSERT INTO waiter_pending_batches(request_id,user_id,cash_session_id,table_id,table_number,waiter_name,expected_order_id,submitted_at,received_at,payload_hash,status,lines_json)
-          VALUES(?,?,?,?,?,?,?,?,?,?,'PENDING_REVIEW',?)`).run(input.requestId, session.user_id, session.cash_session_id, input.tableId, tableSnapshot.number, session.full_name, input.expectedOrderId ?? null, submittedAt, nowIso(), payloadHash, JSON.stringify(lines));
+        this.db.prepare(`INSERT INTO waiter_pending_batches(request_id,user_id,cash_session_id,table_id,table_number,waiter_name,expected_order_id,submitted_at,received_at,payload_hash,status,lines_json,print_mode)
+          VALUES(?,?,?,?,?,?,?,?,?,?,'PENDING_REVIEW',?,?)`).run(input.requestId, session.user_id, session.cash_session_id, input.tableId, tableSnapshot.number, session.full_name, input.expectedOrderId ?? null, submittedAt, nowIso(), payloadHash, JSON.stringify(lines),input.printMode ?? null);
         for (const line of lines) this.db.prepare("INSERT INTO waiter_pending_batch_lines(line_id,request_id,product_id,name,quantity,note) VALUES(?,?,?,?,?,?)").run(line.lineId,input.requestId,line.productId,line.name,line.quantity,line.note);
         return { requestId: input.requestId, orderId: null, acceptedLineIds: [], printJobId: null, status: "PENDING_REVIEW", created: true };
       }
@@ -549,11 +616,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const duplicate = this.db.prepare(`SELECT line_id FROM waiter_batch_lines WHERE line_id IN (${lineIds.map(() => "?").join(",")})
         UNION ALL SELECT line_id FROM waiter_pending_batch_lines WHERE line_id IN (${lineIds.map(() => "?").join(",")}) LIMIT 1`).get(...lineIds, ...lineIds);
       if (duplicate) throw new Error("Una o más líneas ya fueron recibidas.");
+      const lookupProduct = this.db.prepare(waiterMenuSql + " AND p.id=?");
+      const halfEnabled = this.getSettings().halfAndHalfEnabled ?? true;
       for (const line of input.lines) {
-        const product = this.db.prepare(`SELECT p.id FROM products p JOIN categories c ON c.id=p.category_id
-          JOIN product_prices pp ON pp.product_id=p.id JOIN price_lists pl ON pl.id=pp.price_list_id
-          WHERE p.id=? AND p.active=1 AND p.combo_definition_json IS NULL AND c.active=1 AND pl.code='SALON' AND pl.active=1`).get(line.productId);
-        requireRow(product, "Un producto ya no está disponible en el menú del salón. Actualizá y revisá la tanda.");
+        const first = requireRow(lookupProduct.get(line.productId) as Row | undefined, "Un producto ya no está disponible en el menú del salón. Actualizá y revisá la tanda.");
+        if (!line.secondProductId) continue;
+        if (!halfEnabled) throw new Error("La opción mitad y mitad está deshabilitada.");
+        if (line.secondProductId === line.productId) throw new Error("Elegí dos variedades distintas para la pizza.");
+        const second = requireRow(lookupProduct.get(line.secondProductId) as Row | undefined, "La otra mitad ya no está disponible en el menú del salón.");
+        if (!waiterPizza(first) || !waiterPizza(second)) throw new Error("Ambos productos deben ser variedades de pizza.");
       }
       const openOrders = this.db.prepare("SELECT id,waiter_user_id,lifecycle_status,operational_status FROM orders WHERE table_id=? AND operational_status NOT IN ('DELIVERED','CANCELLED') ORDER BY created_at")
         .all(input.tableId) as Row[];
@@ -568,22 +639,21 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       if (unresolvedMobilePrint) throw new Error("Hay una comanda móvil fallida. Reintentala o resolvela desde la caja antes de enviar otra tanda.");
       const pendingPrint = existingOrder ? this.db.prepare("SELECT id FROM print_jobs WHERE order_id=? AND kind='KITCHEN_ORDER' AND status IN ('QUEUED','RECOVERING') LIMIT 1").get(existingOrder.id) : undefined;
       if (pendingPrint) throw new Error("La comanda anterior todavía se está imprimiendo. Esperá y volvé a enviar la tanda.");
-      this.db.prepare(`INSERT INTO waiter_batches(request_id,session_token_hash,expected_order_id,payload_hash,accepted_line_ids_json,status,created_at) VALUES(?,?,?,?,?,'RECEIVING',?)`)
-        .run(input.requestId, session.tokenHash, input.expectedOrderId ?? null, payloadHash, JSON.stringify(lineIds), nowIso());
+      this.db.prepare(`INSERT INTO waiter_batches(request_id,session_token_hash,expected_order_id,payload_hash,accepted_line_ids_json,status,created_at,print_mode) VALUES(?,?,?,?,?,'RECEIVING',?,?)`)
+        .run(input.requestId, session.tokenHash, input.expectedOrderId ?? null, payloadHash, JSON.stringify(lineIds), nowIso(),printMode);
       const orderId = existingOrder ? String(existingOrder.id) : this.createOrder({ idempotencyKey: input.requestId, terminalId: `waiter-session:${String(session.user_id)}`, type: "DINE_IN", tableId: input.tableId, waiterUserId: String(session.user_id) }).id;
       const kitchen = this.getSettings().printing.kitchen;
       const canPrint = kitchen.mode === "SYSTEM_DIRECT" && Boolean(kitchen.deviceName?.trim());
-      const before = canPrint && existingOrder ? this.getOrder(orderId) : null;
+      if (input.printMode && input.printMode !== "NONE" && !canPrint)
+        throw new Error("La impresora de cocina no está configurada. Actualizá la mesa y usá Confirmar para guardar el pedido.");
+      const before = existingOrder ? this.getOrder(orderId) : null;
       for (const line of input.lines) {
-        this.addOrderItem({ orderId, productId: line.productId, quantity: line.quantity, notes: line.note ?? null });
+        if (line.secondProductId) this.addHalfAndHalfItem({ orderId, firstProductId: line.productId, secondProductId: line.secondProductId, quantity: line.quantity, notes: line.note ?? null });
+        else this.addOrderItem({ orderId, productId: line.productId, quantity: line.quantity, notes: line.note ?? null });
         this.db.prepare("INSERT INTO waiter_batch_lines(line_id,request_id,product_id,quantity,note) VALUES(?,?,?,?,?)")
           .run(line.lineId, input.requestId, line.productId, line.quantity, line.note?.trim() || null);
       }
       if (!existingOrder) this.confirmOrder({ orderId, idempotencyKey: `${input.requestId}:confirm`, terminalId: `waiter-session:${String(session.user_id)}` });
-      if (!canPrint) {
-        this.db.prepare("UPDATE waiter_batches SET order_id=?,status='RECORDED' WHERE request_id=?").run(orderId, input.requestId);
-        return { requestId: input.requestId, orderId, acceptedLineIds: lineIds, printJobId: null, status: "RECORDED", created: true };
-      }
       // Snapshot is immutable and scoped to this batch, not the whole table's prior kitchen history.
       const orderNow = this.getOrder(orderId);
       const oldItems = new Map((before?.items ?? []).map((item) => [item.id, item]));
@@ -593,11 +663,18 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         if (quantity <= 0) return [];
         return [{ ...item, quantity, lineTotalMinor: Math.round(item.lineTotalMinor * quantity / item.quantity) }];
       });
+      const quantities = printMode === "FULL" ? Object.fromEntries(orderNow.items.map(item => [item.id,item.quantity])) : { ...(orderNow.kitchenPrintedQuantities ?? {}) };
+      if (printMode !== "FULL") for (const addition of additions) quantities[addition.id] = (quantities[addition.id] ?? 0) + addition.quantity;
+      const batchSnapshot = JSON.stringify({ order: { ...orderNow, items: additions, kitchenPrintScope: "ADDED", isReprint: false }, quantities });
+      this.db.prepare("UPDATE waiter_batches SET kitchen_snapshot_json=? WHERE request_id=?").run(batchSnapshot,input.requestId);
       if (!additions.length) throw new Error("No se detectaron líneas nuevas para imprimir.");
-      const quantities = { ...(orderNow.kitchenPrintedQuantities ?? {}) };
+      if (!canPrint || printMode === "NONE") {
+        this.db.prepare("UPDATE waiter_batches SET order_id=?,status='RECORDED' WHERE request_id=?").run(orderId, input.requestId);
+        return { requestId: input.requestId, orderId, acceptedLineIds: lineIds, printJobId: null, status: "RECORDED", created: true };
+      }
       const jobId = randomUUID();
-      for (const addition of additions) quantities[addition.id] = (quantities[addition.id] ?? 0) + addition.quantity;
-      const snapshot = JSON.stringify({ order: { ...orderNow, items: additions, kitchenPrintScope: existingOrder ? "ADDED" : "FULL" }, quantities });
+      const ticketItems = printMode === "FULL" ? orderNow.items : additions;
+      const snapshot = JSON.stringify({ order: { ...orderNow, items: ticketItems, kitchenPrintScope: printMode, isReprint: false }, quantities });
       this.db.prepare(`INSERT INTO print_jobs(id,order_id,kind,status,printer_name,copies,created_at,kitchen_snapshot_json)
         VALUES(?,?,'KITCHEN_ORDER','QUEUED',?,?,?,?)`).run(jobId, orderId, kitchen.deviceName, kitchen.copies, nowIso(), snapshot);
       this.db.prepare("UPDATE waiter_batches SET order_id=?,print_job_id=?,status='QUEUED' WHERE request_id=?").run(orderId, jobId, input.requestId);

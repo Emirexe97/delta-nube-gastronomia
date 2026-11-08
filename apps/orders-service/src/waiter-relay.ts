@@ -39,7 +39,9 @@ const SESSION_LIMIT = 10_000;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const RPC_METHODS = new Set([
   "waiter.getState",
+  "waiter.getTable",
   "waiter.submitBatch",
+  "waiter.reprintTable",
   "waiter.getBatch",
   "waiter.revoke",
 ]);

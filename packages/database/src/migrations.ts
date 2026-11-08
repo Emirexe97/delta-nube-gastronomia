@@ -1181,4 +1181,14 @@ CREATE TABLE product_price_book_bases (product_id TEXT PRIMARY KEY REFERENCES pr
 ALTER TABLE price_books ADD COLUMN rounding_increment_minor INTEGER NOT NULL DEFAULT 1 CHECK(rounding_increment_minor IN (1,1000,10000,100000));
 `,
   },
+  {
+    version: 50,
+    name: "waiter_print_modes_and_reprints",
+    sql: String.raw`
+ALTER TABLE waiter_batches ADD COLUMN print_mode TEXT;
+ALTER TABLE waiter_batches ADD COLUMN kitchen_snapshot_json TEXT;
+ALTER TABLE waiter_pending_batches ADD COLUMN print_mode TEXT;
+CREATE TABLE waiter_reprints(request_id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), table_id TEXT NOT NULL, scope TEXT NOT NULL CHECK(scope IN ('FULL','ADDED')), print_job_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL);
+`,
+  },
 ];
