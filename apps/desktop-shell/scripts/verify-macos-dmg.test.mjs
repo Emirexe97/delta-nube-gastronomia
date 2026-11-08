@@ -69,8 +69,13 @@ test("macOS workflow creates explicit ad-hoc signatures and verifies the DMG bef
 test("packaged runtime smoke reads unactivated licensing only in disposable userData", () => {
   assert.match(smoke, /--user-data-dir=/);
   assert.match(smoke, /await realpath\(profile\)/);
+  assert.match(smoke, /getByRole\("heading",\s*\{\s*name: "Configurá el PIN del administrador"/);
+  assert.match(smoke, /isInitialAdminPinSetupRequired\(\)/);
+  assert.match(smoke, /Fresh isolated profile should require initial administrator PIN setup/);
   assert.match(smoke, /getLicenseStatus/);
   assert.match(smoke, /UNACTIVATED/);
+  assert.match(smoke, /assert\.equal\(status\.canOperate, false\)/);
   assert.doesNotMatch(smoke, /activateLicense|refreshLicense/);
+  assert.doesNotMatch(smoke, /setInitialAdminPin/);
   assert.match(smoke, /rm\(profile, \{ recursive: true, force: true \}\)/);
 });

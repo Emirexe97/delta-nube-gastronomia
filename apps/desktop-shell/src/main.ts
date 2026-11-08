@@ -435,7 +435,8 @@ function registerIpcHandlers() {
   handleOperation("gastronomy:isInitialAdminPinSetupRequired", () =>
     services().localRepository.isInitialAdminPinSetupRequired());
   handleOperation("gastronomy:setInitialAdminPin", (_event, input: { currentPin: string; newPin: string }) =>
-    services().localRepository.setInitialAdminPin(input));
+    services().localRepository.withPreparedUserPins(input, () =>
+      services().localRepository.setInitialAdminPin(input)));
   type ForwardedDesktopMethod = Exclude<
     keyof DesktopApi,
     | keyof WaiterDeskApi
@@ -802,9 +803,10 @@ function registerIpcHandlers() {
     "savePriceBook", "assignPriceBooks", "createProduct", "updateProduct", "deleteProduct", "bulkUpdateProducts",
     "updateCategory", "deleteCategory", "configureProductCombo", "adjustStock",
   ]);
+  const userWrites = new Set<string>(["createUser", "createDriver", "updateUser", "deleteUser"]);
   for (const method of methods) {
     handleData(`gastronomy:${method}`, async (_event, payload) => {
-      const { appService } = services();
+      const { appService, localRepository } = services();
       const target = appService[method] as (input?: any) => unknown;
       const idempotentMethods = [
         "repeatOrder",
@@ -844,7 +846,10 @@ function registerIpcHandlers() {
       ) {
         payload.terminalId = require("node:os").hostname();
       }
-      const result = await target.call(appService, payload);
+      const invoke = () => target.call(appService, payload);
+      const result = userWrites.has(method)
+        ? await localRepository.withPreparedUserPins(payload, invoke)
+        : await invoke();
       if (catalogWrites.has(method)) catalogChanged();
       return result;
     });

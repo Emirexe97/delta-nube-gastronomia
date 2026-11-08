@@ -134,7 +134,6 @@ function CreateUserModal({
   const isPinValid = isDriver
     ? pin.length === 0 || pin.length >= 4
     : pin.length >= 4;
-
   const mutation = useApiMutation(
     async (input: {
       staffNumber: number;
@@ -169,14 +168,18 @@ function CreateUserModal({
       onError: (value) => setError(humanError(value)),
     },
   );
+  const closeModal = () => {
+    if (!mutation.isPending) onClose();
+  };
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={closeModal}
+      closeDisabled={mutation.isPending}
       title="Nuevo usuario"
       description="Ingresá el PIN de autorización correspondiente"
     >
-      <div className="grid gap-4">
+      <div className="grid gap-4" aria-busy={mutation.isPending}>
         <Field label="Número de usuario">
           <Input
             inputMode="numeric"
@@ -241,8 +244,17 @@ function CreateUserModal({
             {error}
           </p>
         ) : null}
+        {mutation.isPending ? (
+          <p role="status" className="text-xs font-semibold text-slate-600">
+            Creando usuario…
+          </p>
+        ) : null}
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
+          <Button
+            variant="secondary"
+            onClick={closeModal}
+            disabled={mutation.isPending}
+          >
             Cancelar
           </Button>
           <Button
@@ -265,7 +277,7 @@ function CreateUserModal({
             }
           >
             <UsersThree />
-            Crear usuario
+            {mutation.isPending ? "Creando usuario…" : "Crear usuario"}
           </Button>
         </div>
       </div>
@@ -307,6 +319,9 @@ function EditUserModal({
       window.gastronomy.updateUser(input),
     { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
   );
+  const closeModal = () => {
+    if (!mutation.isPending) onClose();
+  };
   const deleteMutation = useApiMutation(
     (input: Parameters<typeof window.gastronomy.deleteUser>[0]) =>
       window.gastronomy.deleteUser(input),
@@ -317,10 +332,11 @@ function EditUserModal({
   return (
     <Modal
       open={Boolean(user)}
-      onClose={onClose}
+      onClose={closeModal}
+      closeDisabled={mutation.isPending}
       title={`Editar ${user?.fullName ?? "usuario"}`}
     >
-      <div className="grid gap-4">
+      <div className="grid gap-4" aria-busy={mutation.isPending}>
         <Field label="Número de usuario">
           <Input
             inputMode="numeric"
@@ -396,6 +412,11 @@ function EditUserModal({
             {error}
           </p>
         ) : null}
+        {mutation.isPending ? (
+          <p role="status" className="text-xs font-semibold text-slate-600">
+            Guardando usuario…
+          </p>
+        ) : null}
         {deleteOpen && user?.id !== "user-admin" ? (
           <div className="grid gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
             <p className="text-xs font-semibold text-rose-700">
@@ -418,6 +439,7 @@ function EditUserModal({
             <Button
               variant="danger"
               disabled={
+                mutation.isPending ||
                 deleteMutation.isPending ||
                 (deleteOpen &&
                   (deleteConfirmation !== String(user?.staffNumber) ||
@@ -443,7 +465,11 @@ function EditUserModal({
             </Button>
           ) : null}
           <div className="flex-1" />
-          <Button variant="secondary" onClick={onClose}>
+          <Button
+            variant="secondary"
+            onClick={closeModal}
+            disabled={mutation.isPending}
+          >
             Cancelar
           </Button>
           <Button
@@ -456,7 +482,8 @@ function EditUserModal({
               (isChangingFromDriverToPos
                 ? newPin.length < 4
                 : newPin.length > 0 && newPin.length < 4) ||
-              mutation.isPending
+              mutation.isPending ||
+              deleteMutation.isPending
             }
             onClick={() =>
               mutation.mutate({
@@ -470,7 +497,7 @@ function EditUserModal({
               })
             }
           >
-            Guardar cambios
+            {mutation.isPending ? "Guardando…" : "Guardar cambios"}
           </Button>
         </div>
       </div>
