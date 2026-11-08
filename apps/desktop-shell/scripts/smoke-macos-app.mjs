@@ -28,7 +28,10 @@ try {
   });
   const page = await app.firstWindow({ timeout: 30000 });
   await page
-    .getByText("Delta Nube", { exact: true })
+    .getByRole("heading", {
+      name: "Configurá el PIN del administrador",
+      exact: true,
+    })
     .waitFor({ state: "visible", timeout: 30000 });
   assert.equal(
     await app.evaluate(({ app }) => app.isPackaged),
@@ -38,6 +41,13 @@ try {
   assert.equal(
     await realpath(await app.evaluate(({ app }) => app.getPath("userData"))),
     await realpath(profile),
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      window.gastronomy.isInitialAdminPinSetupRequired(),
+    ),
+    true,
+    "Fresh isolated profile should require initial administrator PIN setup",
   );
   const status = await page.evaluate(() =>
     window.gastronomy.getLicenseStatus(),

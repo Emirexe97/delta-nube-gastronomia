@@ -272,11 +272,70 @@ function withoutAuthorizerPin<T extends { authorizerPin?: string }>({authorizerP
 export class SqliteGastronomyRepository implements GastronomyRepository {
   readonly db: SqliteDatabase;
   private readonly adminUserId = "user-admin";
+  private preparedUserPins: {
+    comparisons: Map<string, Map<string, boolean>>;
+    hashes: Map<string, string>;
+  } | null = null;
+
+  /** Yield during expensive bcrypt work, then recheck the credential snapshot
+   * and run the original authorization/write/audit in one synchronous transaction.
+   * Never hold a SQLite transaction across an await or reuse this work later. */
+  async withPreparedUserPins<T>(input: unknown, operation: () => T): Promise<T> {
+    const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const isPin = (value: unknown): value is string => typeof value === "string" && /^\d{4,8}$/.test(value);
+    const pins = [...new Set([fields.authorizerPin, fields.currentPin, fields.pin, fields.newPin].filter(isPin))];
+    const readCredentials = () => this.db.prepare("SELECT id,pin_hash FROM users WHERE active=1 ORDER BY id")
+      .all() as { id: string; pin_hash: string }[];
+    const snapshot = readCredentials();
+    const comparisons = new Map<string, Map<string, boolean>>();
+    const hashes = new Map<string, string>();
+    try {
+      for (const pin of pins) {
+        const results = new Map<string, boolean>();
+        comparisons.set(pin, results);
+        for (const hash of new Set(snapshot.map(user => user.pin_hash)))
+          results.set(hash, await bcrypt.compare(pin, hash));
+      }
+      for (const pin of new Set([fields.pin, fields.newPin].filter(isPin)))
+        hashes.set(pin, await bcrypt.hash(pin, 12));
+      return this.db.transaction(() => {
+        if (JSON.stringify(readCredentials()) !== JSON.stringify(snapshot))
+          throw new Error("Los usuarios cambiaron mientras se verificaba el PIN. Volvé a guardar.");
+        if (this.preparedUserPins) throw new Error("Ya hay un cambio de usuario en curso.");
+        this.preparedUserPins = { comparisons, hashes };
+        try {
+          const result = operation();
+          if (result && typeof (result as { then?: unknown }).then === "function")
+            throw new Error("El guardado del usuario debe ser una operación sincrónica.");
+          return result;
+        } finally { this.preparedUserPins = null; }
+      })();
+    } finally {
+      for (const results of comparisons.values()) results.clear();
+      comparisons.clear();
+      hashes.clear();
+    }
+  }
+
+  private compareUserPin(pin: string, hash: string): boolean {
+    if (!this.preparedUserPins) return bcrypt.compareSync(pin, hash);
+    if (!/^\d{4,8}$/.test(pin)) return false;
+    const result = this.preparedUserPins.comparisons.get(pin)?.get(hash);
+    if (result === undefined) throw new Error("El PIN cambió durante la verificación. Volvé a guardar.");
+    return result;
+  }
+
+  private hashUserPin(pin: string): string {
+    if (!this.preparedUserPins) return bcrypt.hashSync(pin, 12);
+    const hash = this.preparedUserPins.hashes.get(pin);
+    if (!hash) throw new Error("No se pudo preparar el PIN. Volvé a guardar.");
+    return hash;
+  }
 
   private assertPinIsUnique(pin: string, exceptUserId?: string) {
     const rows = this.db.prepare("SELECT id,pin_hash FROM users WHERE active=1 AND id<>COALESCE(?, '')")
       .all(exceptUserId ?? "") as { id: string; pin_hash: string }[];
-    if (rows.some((row) => bcrypt.compareSync(pin, row.pin_hash)))
+    if (rows.some((row) => this.compareUserPin(pin, row.pin_hash)))
       throw new Error("Ese PIN ya está asignado a otro usuario activo.");
   }
 
@@ -295,12 +354,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const row = this.db.prepare("SELECT pin_hash,must_change_pin FROM users WHERE id=? AND active=1")
         .get(this.adminUserId) as { pin_hash: string; must_change_pin: number } | undefined;
       if (!row || !row.must_change_pin) throw new Error("La configuración inicial del PIN ya fue completada.");
-      if (typeof input.currentPin !== "string" || !bcrypt.compareSync(input.currentPin, row.pin_hash))
+      if (typeof input.currentPin !== "string" || !this.compareUserPin(input.currentPin, row.pin_hash))
         throw new Error("El PIN actual es incorrecto.");
-      if (bcrypt.compareSync(input.newPin, row.pin_hash)) throw new Error("El nuevo PIN debe ser distinto del PIN actual.");
+      if (this.compareUserPin(input.newPin, row.pin_hash)) throw new Error("El nuevo PIN debe ser distinto del PIN actual.");
       this.assertPinIsUnique(input.newPin, this.adminUserId);
       this.db.prepare("UPDATE users SET pin_hash=?,must_change_pin=0,updated_at=? WHERE id=? AND must_change_pin=1")
-        .run(bcrypt.hashSync(input.newPin, 12), nowIso(), this.adminUserId);
+        .run(this.hashUserPin(input.newPin), nowIso(), this.adminUserId);
       return { configured: true as const };
     });
     return update();
@@ -2444,7 +2503,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const users = this.db.prepare(
       "SELECT u.*, r.code AS role_code FROM users u JOIN roles r ON r.id=u.role_id WHERE u.active=1",
     ).all() as Row[];
-    const matches = users.filter(user => bcrypt.compareSync(pin, String(user.pin_hash)));
+    const matches = users.filter(user => this.compareUserPin(pin, String(user.pin_hash)));
     if (matches.length > 1) throw new Error("PIN ambiguo: asigná un PIN único a cada usuario autorizante.");
     return matches[0] && !flag(matches[0].must_change_pin) ? matches[0] : undefined;
   }
@@ -9189,7 +9248,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           staffNumber,
           input.fullName.trim(),
           role.id,
-          bcrypt.hashSync(input.pin, 12),
+          this.hashUserPin(input.pin),
           timestamp,
           timestamp,
         );
@@ -9326,7 +9385,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             staffNumber,
             role.id,
             input.active ? 1 : 0,
-            bcrypt.hashSync(input.newPin, 12),
+            this.hashUserPin(input.newPin),
             nowIso(),
             input.userId,
           );
