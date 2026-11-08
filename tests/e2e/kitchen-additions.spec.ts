@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -17,7 +17,7 @@ let currentTableNumber: number | null = null;
 async function launch(dineIn = false) {
   currentTableNumber = dineIn ? 61 : null;
   userData = await mkdtemp(join(tmpdir(), "gastronomy-kitchen-additions-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });

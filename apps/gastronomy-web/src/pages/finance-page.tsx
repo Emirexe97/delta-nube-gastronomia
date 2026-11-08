@@ -65,11 +65,16 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
   const [dueOn, setDueOn] = useState(today);
   const [employeeId, setEmployeeId] = useState("");
   const [note, setNote] = useState("");
+  const [createPin, setCreatePin] = useState("");
   const [repeat, setRepeat] = useState(false);
   const [dayOfMonth, setDayOfMonth] = useState(String(new Date().getDate()));
   const [payingId, setPayingId] = useState<string | null>(null);
   const [payingRevision, setPayingRevision] = useState<number | null>(null);
   const [payMethod, setPayMethod] = useState("CASH");
+  const [paymentPin, setPaymentPin] = useState("");
+  const [recoveryPin, setRecoveryPin] = useState("");
+  const [stopPin, setStopPin] = useState("");
+  const [recurringStopId, setRecurringStopId] = useState<string | null>(null);
   const [fromCash, setFromCash] = useState(false);
   const [productId, setProductId] = useState("");
   const [recovery, setRecovery] = useState<{
@@ -343,6 +348,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
     setCancelReason("");
     setCashCorrectionReason("");
     setCashCorrectionPin("");
+    setRecoveryPin("");
     setClosedConfirmed(false);
     setCorrection({
       kind: item.kind,
@@ -380,19 +386,38 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
     setRecoveryError(null);
     try {
       if (recovery.mode === "monthly-correct") {
+        if (!/^\d{4,8}$/.test(recoveryPin)) {
+          setRecoveryError("Ingresá un PIN de autorización válido.");
+          return;
+        }
         const amountMinor = parseMoneyInput(correction.amount);
         if (amountMinor == null || amountMinor <= 0) {
           setRecoveryError("Ingresá un importe válido."); return;
         }
         await window.gastronomy.correctFinanceMonthlyExpense({
-          expenseId: recovery.item.id, expectedRevision: recovery.revision, idempotencyKey: recovery.key,
-          title: correction.title.trim(), category: correction.category.trim(), amountMinor,
-          dueOn: correction.dueOn, note: correction.note.trim() || null, reason,
+          expenseId: recovery.item.id,
+          expectedRevision: recovery.revision,
+          idempotencyKey: recovery.key,
+          title: correction.title.trim(),
+          category: correction.category.trim(),
+          amountMinor,
+          authorizerPin: recoveryPin,
+          dueOn: correction.dueOn,
+          note: correction.note.trim() || null,
+          reason,
         });
         setMessage("El gasto de este mes fue corregido. La repetición se conserva.");
       } else if (recovery.mode === "monthly-cancel") {
+        if (!/^\d{4,8}$/.test(recoveryPin)) {
+          setRecoveryError("Ingresá un PIN de autorización válido.");
+          return;
+        }
         await window.gastronomy.cancelFinanceMonthlyExpense({
-          expenseId: recovery.item.id, expectedRevision: recovery.revision, idempotencyKey: recovery.key, reason,
+          expenseId: recovery.item.id,
+          expectedRevision: recovery.revision,
+          idempotencyKey: recovery.key,
+          reason,
+          authorizerPin: recoveryPin,
         });
         setMessage("El gasto de este mes fue anulado. Los próximos meses se conservan.");
       } else if (recovery.mode === "closed-payment") {
@@ -422,6 +447,10 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
           "El pago registrado fue corregido. El gasto está pendiente.",
         );
       } else if (recovery.mode === "correct") {
+        if (!/^\d{4,8}$/.test(recoveryPin)) {
+          setRecoveryError("Ingresá un PIN de autorización válido.");
+          return;
+        }
         const amountMinor = parseMoneyInput(correction.amount);
         if (amountMinor == null || amountMinor <= 0) {
           setRecoveryError("Ingresá un importe válido.");
@@ -443,26 +472,38 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
               ? correction.employeeId || null
               : null,
           note: correction.note || null,
+          authorizerPin: recoveryPin,
         });
         setMessage("Gasto corregido.");
       } else if (recovery.mode === "cancel") {
+        if (!/^\d{4,8}$/.test(recoveryPin)) {
+          setRecoveryError("Ingresá un PIN de autorización válido.");
+          return;
+        }
         await window.gastronomy.cancelFinanceExpense({
           expenseId: recovery.item.id,
           expectedRevision: recovery.revision,
           reason,
           idempotencyKey: recovery.key,
+          authorizerPin: recoveryPin,
         });
         setMessage("Gasto anulado.");
       } else {
+        if (!/^\d{4,8}$/.test(recoveryPin)) {
+          setRecoveryError("Ingresá un PIN de autorización válido.");
+          return;
+        }
         await window.gastronomy.unmarkFinanceExpensePayment({
           expenseId: recovery.item.id,
           expectedRevision: recovery.revision,
           reason,
           idempotencyKey: recovery.key,
+          authorizerPin: recoveryPin,
         });
         setMessage("La marca de pago se deshizo. El gasto está pendiente.");
       }
       setRecovery(null);
+      setRecoveryPin("");
       setReload((value) => value + 1);
     } catch (value) {
       setRecoveryError(humanError(value).replace(/^Error:\s*/, ""));
@@ -782,6 +823,10 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                 className="mt-3 grid gap-3"
                 onSubmit={async (event) => {
                   event.preventDefault();
+                  if (!/^\d{4,8}$/.test(createPin)) {
+                    setError("Ingresá un PIN de autorización válido.");
+                    return;
+                  }
                   const amountMinor = parseMoneyInput(amount);
                   if (amountMinor == null || amountMinor <= 0) {
                     setError("Ingresá un importe válido.");
@@ -798,6 +843,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                             dayOfMonth: Number(dayOfMonth),
                             startMonth: incurredOn.slice(0, 7),
                             employeeId: employeeId || null,
+                            authorizerPin: createPin,
                             idempotencyKey: crypto.randomUUID(),
                           }),
                         "Gasto fijo configurado.",
@@ -813,6 +859,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                             dueOn,
                             employeeId: employeeId || null,
                             note: note || null,
+                            authorizerPin: createPin,
                             idempotencyKey: crypto.randomUUID(),
                           }),
                         "Gasto registrado.",
@@ -820,6 +867,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                   if (saved) {
                     setTitle("");
                     setAmount("");
+                    setCreatePin("");
                   }
                 }}
               >
@@ -931,6 +979,19 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                     />
                   </Field>
                 ) : null}
+                <Field label="PIN de autorización">
+                  <Input
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={8}
+                    value={createPin}
+                    onChange={(event) =>
+                      setCreatePin(event.target.value.replace(/\D/g, ""))
+                    }
+                    required
+                  />
+                </Field>
                 <Button type="submit" disabled={busy}>
                   <Plus size={16} />{" "}
                   {repeat ? "Crear gasto mensual" : "Registrar gasto"}
@@ -1013,9 +1074,22 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                                 />{" "}
                                 Desde caja
                               </label>
+                              <Input
+                                aria-label="PIN de autorización"
+                                type="password"
+                                inputMode="numeric"
+                                autoComplete="off"
+                                maxLength={8}
+                                value={paymentPin}
+                                onChange={(event) =>
+                                  setPaymentPin(
+                                    event.target.value.replace(/\D/g, ""),
+                                  )
+                                }
+                              />
                               <Button
                                 type="button"
-                                disabled={busy}
+                                disabled={busy || !/^\d{4,8}$/.test(paymentPin)}
                                 onClick={() =>
                                   void run(
                                     () =>
@@ -1026,12 +1100,14 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                                         expectedRevision:
                                           payingRevision ?? item.revision ?? 0,
                                         idempotencyKey: crypto.randomUUID(),
+                                        authorizerPin: paymentPin,
                                       }),
                                     "Pago registrado.",
                                   ).then((saved) => {
                                     if (saved) {
                                       setPayingId(null);
                                       setPayingRevision(null);
+                                      setPaymentPin("");
                                     }
                                   })
                                 }
@@ -1044,6 +1120,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                                 onClick={() => {
                                   setPayingId(null);
                                   setPayingRevision(null);
+                                  setPaymentPin("");
                                 }}
                               >
                                 Cancelar
@@ -1170,22 +1247,66 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                         </span>
                         <span className="flex items-center gap-2">
                           <b>{formatMoney(item.amountMinor)}</b>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            disabled={busy}
-                            onClick={() =>
-                              void run(
-                                () =>
-                                  window.gastronomy.stopFinanceRecurring({
-                                    recurringId: item.id,
-                                  }),
-                                "Gasto fijo detenido.",
-                              )
-                            }
-                          >
-                            Detener
-                          </Button>
+                          {recurringStopId === item.id ? (
+                            <>
+                              <Input
+                                aria-label="PIN de autorización"
+                                type="password"
+                                inputMode="numeric"
+                                autoComplete="off"
+                                maxLength={8}
+                                value={stopPin}
+                                onChange={(event) =>
+                                  setStopPin(
+                                    event.target.value.replace(/\D/g, ""),
+                                  )
+                                }
+                              />
+                              <Button
+                                type="button"
+                                disabled={busy || !/^\d{4,8}$/.test(stopPin)}
+                                onClick={() =>
+                                  void run(
+                                    () =>
+                                      window.gastronomy.stopFinanceRecurring({
+                                        recurringId: item.id,
+                                        authorizerPin: stopPin,
+                                      }),
+                                    "Gasto fijo detenido.",
+                                  ).then((saved) => {
+                                    if (saved) {
+                                      setRecurringStopId(null);
+                                      setStopPin("");
+                                    }
+                                  })
+                                }
+                              >
+                                Confirmar
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                onClick={() => {
+                                  setRecurringStopId(null);
+                                  setStopPin("");
+                                }}
+                              >
+                                Cancelar
+                              </Button>
+                            </>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              disabled={busy}
+                              onClick={() => {
+                                setRecurringStopId(item.id);
+                                setStopPin("");
+                              }}
+                            >
+                              Detener
+                            </Button>
+                          )}
                         </span>
                       </div>
                     ))
@@ -1636,6 +1757,26 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                   />
                 </Field>
               )}
+              {recovery.mode === "correct" ||
+              recovery.mode === "cancel" ||
+              recovery.mode === "unmark" ||
+              recovery.mode === "monthly-correct" ||
+              recovery.mode === "monthly-cancel" ? (
+                <Field label="PIN de autorización">
+                  <Input
+                    aria-label="PIN de autorización"
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={8}
+                    value={recoveryPin}
+                    onChange={(event) =>
+                      setRecoveryPin(event.target.value.replace(/\D/g, ""))
+                    }
+                    required
+                  />
+                </Field>
+              ) : null}
               <div className="flex flex-wrap justify-end gap-2">
                 <Button
                   type="button"
@@ -1649,12 +1790,21 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                   type="submit"
                   disabled={
                     busy ||
-                    !(recovery.mode === "correct" || recovery.mode === "monthly-correct"
-                      ? correction.reason.trim()
-                      : recovery.mode === "cash-payment" || recovery.mode === "closed-payment"
-                        ? (recovery.mode !== "closed-payment" || closedConfirmed) && cashCorrectionReason.trim() &&
+                    !(recovery.mode === "correct" ||
+                    recovery.mode === "monthly-correct"
+                      ? correction.reason.trim() &&
+                        /^\d{4,8}$/.test(recoveryPin)
+                      : recovery.mode === "cash-payment" ||
+                          recovery.mode === "closed-payment"
+                        ? (recovery.mode !== "closed-payment" ||
+                            closedConfirmed) &&
+                          cashCorrectionReason.trim() &&
                           /^\d{4,8}$/.test(cashCorrectionPin)
-                        : cancelReason.trim())
+                        : recovery.mode === "cancel" ||
+                            recovery.mode === "unmark" ||
+                            recovery.mode === "monthly-cancel"
+                          ? cancelReason.trim() && /^\d{4,8}$/.test(recoveryPin)
+                          : cancelReason.trim())
                   }
                 >
                   {busy

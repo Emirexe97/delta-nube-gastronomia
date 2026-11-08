@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -19,7 +19,7 @@ let userData = "";
 test.describe("foco al entrar a Salón (Electron aislado)", () => {
   test.beforeEach(async () => {
     userData = await mkdtemp(join(tmpdir(), "gastronomy-salon-focus-toast-"));
-    app = await electron.launch({
+    app = await launchConfiguredPos({
       args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
       cwd: process.cwd(),
     });

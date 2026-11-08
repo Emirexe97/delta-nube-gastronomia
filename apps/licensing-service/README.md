@@ -10,6 +10,8 @@ Construir desde la raíz del monorepo con `pnpm install`, `pnpm --filter @gastro
 
 Definir `DB_PATH` como ruta absoluta; `ADMIN_TOKEN_FILE` como ruta a un archivo con secreto de al menos 32 bytes; `LEASE_PRIVATE_KEY_FILE` como ruta a una clave privada Ed25519 PEM; opcionalmente `HOST` y `PORT` (predeterminados `0.0.0.0` y `8097`). Los secretos se leen desde archivos solo en el entrypoint, no se imprimen ni se devuelven. Proteger esos archivos y limitar la red al administrador.
 
+Para aprovisionar sitios públicos y/o la aplicación de mozos, montar secretos aleatorios distintos de `ADMIN_TOKEN` (mínimo 32 bytes) mediante `WEB_SITE_PROVISION_SECRET_FILE` y `WAITER_PROVISION_SECRET_FILE`. El secreto waiter puede omitirse para reutilizar `WEB_SITE_PROVISION_SECRET`; también puede configurarse independientemente sin habilitar aprovisionamiento de sitios. El servicio sólo emite `waiterTicket` junto a credenciales de una licencia activa y vigente después de probar la posesión de la clave de una instalación aprobada; tickets de sitio y de mozos usan audiencias firmadas separadas.
+
 ## Operación manual
 
 Usar `Authorization: Bearer <secreto>` para endpoints `/admin/*`. Para operaciones manuales, usar el CLI: lee el secreto desde el archivo indicado y nunca lo acepta como argumento ni lo imprime. `LICENSE_API_URL` permite configurar otra URL.

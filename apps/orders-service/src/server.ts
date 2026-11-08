@@ -10,13 +10,15 @@ import { OrdersStore } from "./store.js";
 import { loadStores, validateStores, type StoreConfig } from "./config.js";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { verifyWebSiteTicket } from "@gastronomy/web-orders/provision";
+import { verifyWebSiteTicket, verifyWaiterTicket } from "@gastronomy/web-orders/provision";
 import { createTenantStorefront } from "./tenant-storefront.js";
 import { WaiterRelay } from "./waiter-relay.js";
 import { waiterHtml } from "./waiter-page.js";
 
 const MAX_BODY = 64 * 1024;
 const MAX_CATALOG_BODY = 2 * 1024 * 1024;
+// Valid desktop proof refreshes the waiter credential; without refresh it expires.
+const WAITER_CONNECTION_TTL_MS = 48 * 60 * 60 * 1000;
 type Rate = { count: number; reset: number };
 export type OrdersServerOptions = {
   dbPath: string;
@@ -28,6 +30,7 @@ export type OrdersServerOptions = {
     reservedSlugs?: string[];
   };
   waiterPublicBaseUrl?: string;
+  waiterProvisionSecret?: string;
 };
 function json(res: ServerResponse, status: number, payload: unknown): void {
   const data = JSON.stringify(payload);
@@ -132,7 +135,7 @@ export function createOrdersServer(options: OrdersServerOptions): {
   if (typeof options.dbPath !== "string" || !isAbsolute(options.dbPath))
     throw new Error("dbPath must be absolute");
   const stores =
-    options.provisioning &&
+    (options.provisioning || options.waiterProvisionSecret) &&
     Array.isArray(options.stores) &&
     options.stores.length === 0
       ? []
@@ -149,6 +152,8 @@ export function createOrdersServer(options: OrdersServerOptions): {
       ))
   )
     throw new Error("Invalid provisioning configuration");
+  if (options.waiterProvisionSecret && Buffer.byteLength(options.waiterProvisionSecret) < 32)
+    throw new Error("Invalid waiter provisioning configuration");
   const store = new OrdersStore(options.dbPath, stores);
   const limits = new Map<string, Rate>();
   const reservedSlugs = [
@@ -178,7 +183,7 @@ export function createOrdersServer(options: OrdersServerOptions): {
     : undefined;
   const waiterPublicBaseUrl = options.waiterPublicBaseUrl ?? (options.provisioning ? `https://pedidos.${options.provisioning.baseDomain}/` : undefined);
   const waiterRelay = waiterPublicBaseUrl
-    ? new WaiterRelay((credential) => store.authenticate(credential), waiterPublicBaseUrl, waiterHtml)
+    ? new WaiterRelay((credential) => store.authenticateWaiter(credential) ?? store.authenticate(credential), waiterPublicBaseUrl, waiterHtml)
     : undefined;
   // Periodic work, not an O(n) sweep on every request at capacity.
   const rateSweep = setInterval(() => {
@@ -303,6 +308,24 @@ export function createOrdersServer(options: OrdersServerOptions): {
           url: `https://${tenant.slug}.${options.provisioning.baseDomain}`,
           receiveToken,
         });
+      }
+      if (req.method === "POST" && url.pathname === "/v1/waiter-connections") {
+        if (!waiterRelay) error(404, "not_found");
+        const secret = options.waiterProvisionSecret ?? options.provisioning?.secret;
+        if (!secret) error(404, "not_found");
+        if (!isJson(req)) error(415, "unsupported_media_type");
+        const auth = req.headers.authorization;
+        if (typeof auth !== "string" || !/^Bearer [A-Za-z0-9_.-]{20,4096}$/.test(auth)) error(401, "unauthorized");
+        let claims;
+        try { claims = verifyWaiterTicket(auth.slice(7), secret); } catch { error(401, "unauthorized"); }
+        if (stores.some(s => s.receiveInstallationId === claims.installationId))
+          error(409, "idempotency_conflict");
+        const waiterToken = createHmac("sha256", secret)
+          .update(`gastronomy:waiter-connection:v1:${claims.licenseId}:${claims.installationId}`)
+          .digest("base64url");
+        const connection = store.provisionWaiterConnection({ ...claims, waiterToken, expiresAt: Date.now() + WAITER_CONNECTION_TTL_MS });
+        if (!connection) error(409, "idempotency_conflict");
+        return json(res, 201, { storeId: connection.storeId, waiterToken });
       }
       if (
         (req.method === "GET" || req.method === "PATCH") &&
@@ -496,6 +519,13 @@ if (
 ) {
   const dbPath = process.env.WEB_ORDERS_DB_PATH;
   const configFile = process.env.WEB_ORDERS_CONFIG_FILE;
+  if (process.env.WAITER_PROVISION_SECRET && process.env.WAITER_PROVISION_SECRET_FILE)
+    throw new Error("Set only one waiter provisioning secret source");
+  if (process.env.WAITER_PROVISION_SECRET_FILE && !isAbsolute(process.env.WAITER_PROVISION_SECRET_FILE))
+    throw new Error("WAITER_PROVISION_SECRET_FILE must be absolute");
+  const waiterProvisionSecret = process.env.WAITER_PROVISION_SECRET_FILE
+    ? readFileSync(process.env.WAITER_PROVISION_SECRET_FILE, "utf8").trim()
+    : process.env.WAITER_PROVISION_SECRET;
   if (
     process.env.WEB_SITE_PROVISION_SECRET &&
     process.env.WEB_SITE_PROVISION_SECRET_FILE
@@ -513,7 +543,7 @@ if (
     throw new Error("Set a provisioning secret and WEB_SITE_BASE_DOMAIN");
   if (process.env.WAITER_PUBLIC_BASE_URL && !/^https:\/\//i.test(process.env.WAITER_PUBLIC_BASE_URL))
     throw new Error("WAITER_PUBLIC_BASE_URL must use HTTPS");
-  if (!dbPath || (!configFile && !provisionSecret))
+  if (!dbPath || (!configFile && !provisionSecret && !waiterProvisionSecret))
     throw new Error(
       "Set WEB_ORDERS_DB_PATH and WEB_ORDERS_CONFIG_FILE (or enable provisioning)",
     );
@@ -536,6 +566,7 @@ if (
           },
         }
       : {}),
+    ...(waiterProvisionSecret ? { waiterProvisionSecret } : {}),
     ...(process.env.WAITER_PUBLIC_BASE_URL ? { waiterPublicBaseUrl: process.env.WAITER_PUBLIC_BASE_URL } : {}),
     rateLimit: process.env.WEB_ORDERS_RATE_LIMIT
       ? Number(process.env.WEB_ORDERS_RATE_LIMIT)

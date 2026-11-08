@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -15,7 +15,7 @@ let userData: string;
 
 test.beforeAll(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-stock-toggle-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });
@@ -95,7 +95,7 @@ test("edita producto para habilitar el control de stock con existencias", async 
   await editDialog
     .getByLabel("Motivo del cambio")
     .fill("Activar control de stock");
-  await editDialog.getByLabel("PIN de autorización").fill("1234");
+  await editDialog.getByLabel("PIN de autorización").fill("748259");
 
   await editDialog.getByRole("button", { name: "Guardar cambios" }).click();
   await expect(editDialog).not.toBeVisible();
@@ -214,7 +214,7 @@ test("permite desactivar el control de stock desde la categoría y vacía el sto
   await editCatDialog
     .getByLabel("Motivo del cambio")
     .fill("Desactivar control general");
-  await editCatDialog.getByLabel("PIN de autorización").fill("1234");
+  await editCatDialog.getByLabel("PIN de autorización").fill("748259");
   await editCatDialog
     .getByRole("button", { name: "Guardar categoría" })
     .click();

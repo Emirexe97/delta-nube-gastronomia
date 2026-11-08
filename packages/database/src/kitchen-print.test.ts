@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { rmSync } from "node:fs";
@@ -10,7 +11,7 @@ function withRepository(
   run: (repository: SqliteGastronomyRepository, path: string) => void,
 ) {
   const path = join(tmpdir(), `gastronomy-kitchen-${randomUUID()}.sqlite`);
-  let repository = new SqliteGastronomyRepository(path, {
+  let repository = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -132,7 +133,7 @@ test("baseline persiste al reabrir y un éxito legacy sin snapshot produce basel
     const printed = repository.queuePrint(orderId, "KITCHEN_ORDER");
     repository.markPrintJob(printed.jobId, "PRINTED");
     const snapshot = repository.getOrder(orderId).kitchenPrintedQuantities;
-    const reopened = new SqliteGastronomyRepository(path, {
+    const reopened = configuredTestRepository(path, {
       adminPin: "2468",
       seedStarterCatalog: true,
     });

@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Locator,
   type Page,
@@ -22,7 +22,7 @@ let profile = "";
 test.beforeEach(async () => {
   await mkdir(evidence, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), prefix));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -196,7 +196,7 @@ async function seedDelivery() {
     const driver = await api.createDriver({
       fullName:
         "Repartidor fixture US07C4 con apellido extraordinariamente largo",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const draft = await api.createOrder({
       type: "DELIVERY",
@@ -291,7 +291,7 @@ test("Repartidores vacío y con pendiente: ayudas, card y revisión cancelable l
     exact: true,
   });
   await expect(review).toBeVisible();
-  await review.getByLabel("PIN de autorización", { exact: true }).fill("1234");
+  await review.getByLabel("PIN de autorización", { exact: true }).fill("748259");
   await review
     .getByRole("button", { name: "Revisar liquidación", exact: true })
     .click();

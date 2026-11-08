@@ -1,4 +1,5 @@
-import { test, expect, _electron as electron, type Page } from "@playwright/test";
+import { launchConfiguredPos } from "./pos-fixture";
+import { test, expect, type Page } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -18,9 +19,9 @@ async function settle(page: Page) {
 
 test("shell de escritorio conserva tema compartido en Salón y Resumen", async ({}, testInfo) => {
   const profile = await mkdtemp(join(tmpdir(), "gastronomy-shared-visual-"));
-  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let app: Awaited<ReturnType<typeof launchConfiguredPos>> | undefined;
   try {
-    app = await electron.launch({
+    app = await launchConfiguredPos({
       args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
       cwd: process.cwd(),
     });

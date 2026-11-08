@@ -19,6 +19,7 @@ const setup = async () => {
   const api = createDemoApi(storage);
   const date = (await api.bootstrap()).cashSession!.businessDate;
   const expense = await api.createFinanceExpense({
+    authorizerPin: "1234",
     title: "Pago manual",
     category: "Pruebas",
     kind: "GENERAL",
@@ -34,7 +35,7 @@ const revision = (expense: { revision?: number }) => expense.revision ?? 0;
 describe("desmarcar pagos de gastos en demo", () => {
   it("no ofrece deshacer pago a un egreso de caja mostrado en el informe", async () => {
     const {api,date}=await setup();
-    await api.registerCashMovement({type:"EXPENSE",amountMinor:500,paymentMethodCode:"CASH",reason:"Egreso manual no financiero"});
+    await api.registerCashMovement({ authorizerPin: "1234",type:"EXPENSE",amountMinor:500,paymentMethodCode:"CASH",reason:"Egreso manual no financiero"});
     const report=await api.getFinanceReport({from:date,to:date});
     const synthetic=report.expenses.find(e=>e.id.startsWith("cash-"))!;
     expect(synthetic).toBeDefined();
@@ -43,6 +44,7 @@ describe("desmarcar pagos de gastos en demo", () => {
   it("rechaza la misma clave en otra operación y conserva snapshots completos del pago", async () => {
     const { storage, api, expense } = await setup();
     const paid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
@@ -51,7 +53,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     });
     const beforeAttempt = storage.getItem(DEMO_STORAGE_KEY);
     await expect(
-      api.unmarkFinanceExpensePayment({
+      api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: paid.revision!,
         reason: "No reutilizar clave",
@@ -76,7 +78,7 @@ describe("desmarcar pagos de gastos en demo", () => {
       methodCode: "TRANSFER",
       fromCash: false,
     });
-    const undone = await api.unmarkFinanceExpensePayment({expenseId:expense.id,expectedRevision:paid.revision!,reason:"Marca equivocada",idempotencyKey:"new-undo"});
+    const undone = await api.unmarkFinanceExpensePayment({ authorizerPin: "1234",expenseId:expense.id,expectedRevision:paid.revision!,reason:"Marca equivocada",idempotencyKey:"new-undo"});
     const undoAudit = (await api.getAuditLog({search:expense.id,limit:20})).find(a=>a.action==="FINANCE_EXPENSE_PAYMENT_UNMARKED")!;
     expect(undoAudit).toMatchObject({reason:"Marca equivocada",permissionUsed:"finance.manage"});
     expect(JSON.parse(undoAudit.beforeJson!)).toEqual(paid);
@@ -85,13 +87,14 @@ describe("desmarcar pagos de gastos en demo", () => {
   it("reproduce recibo de pago historico sin volver a pagar tras desmarcar", async () => {
     const { storage, api, expense } = await setup();
     const paid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
       expectedRevision: 0,
       idempotencyKey: "pay-once",
     });
-    const undone = await api.unmarkFinanceExpensePayment({
+    const undone = await api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
       expenseId: expense.id,
       expectedRevision: revision(paid),
       reason: "Carga equivocada",
@@ -104,6 +107,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     });
     const recreated = createDemoApi(storage);
     const replay = await recreated.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
@@ -131,11 +135,12 @@ describe("desmarcar pagos de gastos en demo", () => {
   it("exige revisión actual después del primer desmarcado y permite luego un nuevo pago", async () => {
     const { api, expense } = await setup();
     const paid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: false,
     });
-    const undone = await api.unmarkFinanceExpensePayment({
+    const undone = await api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
       expenseId: expense.id,
       expectedRevision: revision(paid),
       reason: "Error de carga",
@@ -143,6 +148,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     });
     await expect(
       api.payFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         paymentMethodCode: "CASH",
         fromCash: false,
@@ -150,6 +156,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     ).rejects.toThrow(/cambió/i);
     await expect(
       api.payFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         paymentMethodCode: "CASH",
         fromCash: false,
@@ -157,6 +164,7 @@ describe("desmarcar pagos de gastos en demo", () => {
       }),
     ).rejects.toThrow(/cambió/i);
     const repaid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: false,
@@ -164,7 +172,7 @@ describe("desmarcar pagos de gastos en demo", () => {
       idempotencyKey: "repay",
     });
     await expect(
-      api.unmarkFinanceExpensePayment({
+      api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: revision(undone),
         reason: "repetir",
@@ -180,13 +188,14 @@ describe("desmarcar pagos de gastos en demo", () => {
   it("valida motivo, revisión, permisos e inelegibilidad sin mutar estado", async () => {
     const { storage, api, expense } = await setup();
     const paid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: false,
     });
     const exact = storage.getItem(DEMO_STORAGE_KEY);
     await expect(
-      api.unmarkFinanceExpensePayment({
+      api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: 99,
         reason: "motivo valido",
@@ -195,7 +204,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     ).rejects.toThrow(/cambió/i);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(exact);
     await expect(
-      api.unmarkFinanceExpensePayment({
+      api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: revision(paid),
         reason: " ",
@@ -209,12 +218,13 @@ describe("desmarcar pagos de gastos en demo", () => {
     for (const paymentMethodCode of ["CASH", "TRANSFER"] as const) {
       const { api, expense } = await setup();
       const paid = await api.payFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         paymentMethodCode,
         fromCash: true,
       });
       await expect(
-        api.unmarkFinanceExpensePayment({
+        api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
           expenseId: expense.id,
           expectedRevision: revision(paid),
           reason: "Deshacer",
@@ -227,11 +237,12 @@ describe("desmarcar pagos de gastos en demo", () => {
   it("aplica permiso finance.manage antes de replay y excluye gastos recurrentes", async () => {
     const { storage, api, expense } = await setup();
     const paid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
     });
-    const undone = await api.unmarkFinanceExpensePayment({
+    const undone = await api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
       expenseId: expense.id,
       expectedRevision: revision(paid),
       reason: "Prueba",
@@ -242,7 +253,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(saved));
     const withoutPermission = createDemoApi(storage);
     await expect(
-      withoutPermission.unmarkFinanceExpensePayment({
+      withoutPermission.unmarkFinanceExpensePayment({ authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: revision(paid),
         reason: "Prueba",
@@ -251,6 +262,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     ).rejects.toThrow(/permiso/i);
     await expect(
       withoutPermission.payFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         paymentMethodCode: "TRANSFER",
         fromCash: false,
@@ -260,6 +272,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     expect(undone.paidAt).toBeNull();
 
     const recurring = await api.createFinanceRecurring({
+      authorizerPin: "1234",
       title: "Fijo",
       category: "Pruebas",
       kind: "FIXED",
@@ -271,12 +284,13 @@ describe("desmarcar pagos de gastos en demo", () => {
       await api.getFinanceReport({ from: "2025-01-01", to: "2025-01-31" })
     ).expenses.find((item) => item.recurringId === recurring.id)!;
     const recurringPaid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: recurringExpense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
     });
     await expect(
-      api.unmarkFinanceExpensePayment({
+      api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
         expenseId: recurringExpense.id,
         expectedRevision: revision(recurringPaid),
         reason: "No aplica",
@@ -288,13 +302,14 @@ describe("desmarcar pagos de gastos en demo", () => {
   it("rechaza claves de pago reutilizadas con payload distinto y replay undo no cambia el estado", async () => {
     const { storage, api, expense } = await setup();
     const paid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
       expectedRevision: 0,
       idempotencyKey: "pay-key",
     });
-    const undone = await api.unmarkFinanceExpensePayment({
+    const undone = await api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
       expenseId: expense.id,
       expectedRevision: revision(paid),
       reason: "Error",
@@ -303,6 +318,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     const snapshot = storage.getItem(DEMO_STORAGE_KEY);
     await expect(
       api.payFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         paymentMethodCode: "CASH",
         fromCash: false,
@@ -312,7 +328,7 @@ describe("desmarcar pagos de gastos en demo", () => {
     ).rejects.toThrow(/idempotencia/i);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(snapshot);
     expect(
-      await api.unmarkFinanceExpensePayment({
+      await api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: revision(paid),
         reason: "Error",

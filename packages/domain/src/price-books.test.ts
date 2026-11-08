@@ -12,6 +12,20 @@ test("las derivadas redondean al centavo y el precio propio no sigue la principa
   assert.throws(() => calculateBookPrice(100, 0, -1));
 });
 
+test("redondea directamente al incremento en minor units con empate hacia arriba", () => {
+  assert.equal(calculateBookPrice(10499, 0, undefined, 1000), 10000);
+  assert.equal(calculateBookPrice(10500, 0, undefined, 1000), 11000);
+  assert.equal(calculateBookPrice(14999, 0, undefined, 10000), 10000);
+  assert.equal(calculateBookPrice(15000, 0, undefined, 10000), 20000);
+  // Raw result is 499.5 minor units: rounding it to 500 first would make the
+  // subsequent nearest-1000 rounding a tie (and incorrectly produce 1000).
+  assert.equal(calculateBookPrice(333, 5000, undefined, 1000), 0);
+  assert.equal(calculateBookPrice(10500, 0, 12345, 100000), 12345);
+  assert.equal(calculateBookPrice(150000, 0, undefined, 100000), 200000);
+  assert.equal(calculateBookPrice(150000, 0, 0, 100000), 0);
+  assert.throws(() => calculateBookPrice(1, 0, undefined, 10 as never));
+});
+
 test("el lote respeta herencia y calcula selecciones simultáneas sobre los valores anteriores", () => {
   const books = [
     { id: "p", name: "Principal", adjustmentBps: 0, isBase: true },
@@ -28,5 +42,10 @@ test("el lote respeta herencia y calcula selecciones simultáneas sobre los valo
     { baseMinor: 10100, overrides: { f: 7000, d: 11100 } },
   );
   assert.throws(() => applyBookAdjustment(prior, books, ["f"], "FIXED", -7001));
+  const roundedBook = { ...books[1]!, roundingIncrementMinor: 10000 as const };
+  assert.deepEqual(
+    applyBookAdjustment(prior, [roundedBook], ["d"], "FIXED", 125),
+    { baseMinor: 10000, overrides: { f: 7000, d: 10125 } },
+  );
   assert.deepEqual(prior, { baseMinor: 10000, overrides: { f: 7000 } });
 });

@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -13,7 +13,7 @@ let page: Page;
 let profile = "";
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-explicit-collector-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -51,11 +51,11 @@ async function fixture(assigned = true) {
     const cash = await api.openCashSession({ openingAmountMinor: 100_000 });
     const a = await api.createDriver({
       fullName: "Chofer inicial",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const driver = await api.createDriver({
       fullName: "Chofer elegido en cobro",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const order = await api.createOrder({
       type: "DELIVERY",

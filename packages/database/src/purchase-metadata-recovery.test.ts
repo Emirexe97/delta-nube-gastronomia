@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -11,7 +12,7 @@ import { latestSchemaVersion, removeNewNullablePurchaseColumns, rewindPurchaseTe
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-metadata-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  const repo = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   const db = new Database(path);
   try { run(repo, db); }
   finally {
@@ -134,7 +135,7 @@ test("purchase correction requires an authorized purchases PIN and session permi
 test("migration adds zero revision to existing purchases without changing any historical fields", () => {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-metadata-"));
   const path = join(dir, "test.sqlite");
-  let repo = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  let repo = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   let db = new Database(path);
   try {
     const { purchase } = setup(repo);
@@ -144,7 +145,7 @@ test("migration adds zero revision to existing purchases without changing any hi
     const businessBefore = protectedState(db);
     const receiptsBefore = db.prepare("SELECT * FROM command_receipts ORDER BY rowid").all();
     db.close(); repo.close();
-    repo = new SqliteGastronomyRepository(path, { adminPin: "2468" }); db = new Database(path);
+    repo = configuredTestRepository(path, { adminPin: "2468" }); db = new Database(path);
     const row = db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id) as any;
     const { revision, ...historical } = row;
     assert.equal(revision, 0); assert.deepEqual(removeNewNullablePurchaseColumns(historical), before);

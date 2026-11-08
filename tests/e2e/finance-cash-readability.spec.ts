@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Locator,
   type Page,
@@ -39,7 +39,7 @@ async function stableScreenshot(file: string) {
 test.beforeEach(async () => {
   await mkdir(out, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-us07b1-readability-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -252,6 +252,7 @@ for (const width of [1100, 1366]) {
           });
         } else {
           await api.createFinanceExpense({
+            authorizerPin: "748259",
             title: "US07B1 gasto explícito",
             category: "Prueba aislada",
             kind: "GENERAL",

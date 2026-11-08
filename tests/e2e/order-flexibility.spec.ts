@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -15,7 +15,7 @@ let userData = "";
 
 test.beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-order-flex-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });
@@ -56,7 +56,7 @@ async function seedOrder(type: "TAKEAWAY" | "DELIVERY", feeMinor = 0) {
         type === "DELIVERY"
           ? await api.createDriver({
               fullName: "Repartidor flex E2E",
-              authorizerPin: "1234",
+              authorizerPin: "748259",
             })
           : null;
       const order = await api.createOrder({
@@ -273,7 +273,7 @@ test("el cambio de modalidad cobrado requiere PIN y devuelve exactamente el exce
     }
     const surcharge = await api.updateDraftOrder({
       ...input,
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const completedSurcharge = await api.payOrder({
       orderId: id,
@@ -290,7 +290,7 @@ test("el cambio de modalidad cobrado requiere PIN y devuelve exactamente el exce
       deliveryAddress: null,
       deliveryFeeMinor: 0,
       reason: "Volver a retiro E2E",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       refunds: [
         {
           paymentId: completedSurcharge.payments.at(-1)!.id,
@@ -341,7 +341,7 @@ test("el editor cobrado exige PIN y motivo para pasar a envío, cobrar saldo y d
   await editModal
     .getByLabel("Motivo del cambio (obligatorio)")
     .fill("Cliente cambia a envío");
-  await editModal.getByLabel("PIN de autorización (obligatorio)").fill("1234");
+  await editModal.getByLabel("PIN de autorización (obligatorio)").fill("748259");
   await editModal
     .getByRole("button", { name: "Guardar y volver al pedido" })
     .click();
@@ -380,7 +380,7 @@ test("el editor cobrado exige PIN y motivo para pasar a envío, cobrar saldo y d
   await editModal
     .getByLabel("Motivo del cambio (obligatorio)")
     .fill("Cliente vuelve a retirar");
-  await editModal.getByLabel("PIN de autorización (obligatorio)").fill("1234");
+  await editModal.getByLabel("PIN de autorización (obligatorio)").fill("748259");
   const cashRefund = editModal.getByLabel(/Efectivo · máximo/).first();
   await cashRefund.fill("2499");
   await expect(
@@ -448,7 +448,7 @@ test("la sección Repartidores permite liquidar y revertir una rendición desde 
     .click();
   const review = page.getByRole("dialog", { name: "Revisar pago o rendición" });
   await review.getByLabel("Motivo").fill("Rendición E2E");
-  await review.getByLabel("PIN de autorización").fill("1234");
+  await review.getByLabel("PIN de autorización").fill("748259");
   await review.getByRole("button", { name: "Revisar liquidación" }).click();
   const confirm = page.getByRole("dialog", {
     name: "Confirmar movimiento de caja",
@@ -483,7 +483,7 @@ test("la sección Repartidores permite liquidar y revertir una rendición desde 
     name: "Revertir liquidación del repartidor",
   });
   await reverse.getByLabel("Motivo de la reversión").fill("Reversión E2E");
-  await reverse.getByLabel("PIN de autorización").fill("1234");
+  await reverse.getByLabel("PIN de autorización").fill("748259");
   await reverse.locator('input[type="checkbox"]').check();
   await reverse.getByRole("button", { name: "Confirmar reversión" }).click();
   const final = await page.evaluate(async ({ id }) => {
@@ -524,7 +524,7 @@ test("una devolución parcial después de liquidar revierte caja y conserva la r
     await api.settleDelivery({
       ledgerIds: [ledger.id],
       reason: "Pago de envío normal",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const afterSettlement = await api.bootstrap();
     const expectedAfterSettlement =
@@ -536,7 +536,7 @@ test("una devolución parcial después de liquidar revierte caja y conserva la r
         paymentId: paid.payments[0]!.id,
         amountMinor: 100_000,
         reason: "Devolución sin reversión",
-        authorizerPin: "1234",
+        authorizerPin: "748259",
       });
     } catch (error) {
       missingReversalError =
@@ -547,7 +547,7 @@ test("una devolución parcial después de liquidar revierte caja y conserva la r
       paymentId: paid.payments[0]!.id,
       amountMinor: 100_000,
       reason: "Devolución parcial luego de liquidar",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       reverseDeliverySettlement: true,
     });
     const afterRefund = await api.bootstrap();
@@ -579,7 +579,7 @@ test("un pedido cancelado no admite cambios de modalidad como bypass", async () 
     await api.cancelOrder({
       orderId: order.id,
       reason: "Cancelación E2E",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     let error = "";
     try {
@@ -613,7 +613,7 @@ test("seña del 100% permite entregar con saldo cero sin cobro extra", async () 
     await api.applyOrderDeposit({
       orderId: id,
       depositMinor: order.subtotalMinor + order.deliveryFeeMinor,
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const zero = (await api.bootstrap()).orders.find(
       (candidate) => candidate.id === id,
@@ -660,7 +660,7 @@ test("la liquidación de envío bloquea el cambio hasta anularla con reversión 
       promisedAt: null,
       scheduled: false,
       reason: "Volver a retiro E2E",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       refunds: [
         {
           paymentId: (await api.bootstrap()).orders.find(

@@ -1,4 +1,5 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
+import { launchConfiguredPos } from "./pos-fixture";
+import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -9,7 +10,7 @@ let profile = '';
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), 'gastronomy-shift-pending-e2e-'));
-  app = await electron.launch({ args: ['apps/desktop-shell', `--user-data-dir=${profile}`], cwd: process.cwd() });
+  app = await launchConfiguredPos({ args: ['apps/desktop-shell', `--user-data-dir=${profile}`], cwd: process.cwd() });
   page = await app.firstWindow();
   await expect(page.getByText('Delta Nube', { exact: true })).toBeVisible();
 });
@@ -39,7 +40,7 @@ async function createOldShift() {
     const delivery = await api.createOrder({ type: 'DELIVERY', customerName: 'Reparto A', customerPhone: '1155550032', deliveryAddress: 'Calle A 31' });
     await api.addOrderItem({ orderId: delivery.id, productId: data.products[0]!.id });
     await api.confirmOrder({ orderId: delivery.id });
-    await api.closeCashSession({ countedAmountMinor: (await api.bootstrap()).cashSession!.expectedAmountMinor, force: true, reason: 'Pendientes históricos del turno A', authorizerPin: '1234' });
+    await api.closeCashSession({ countedAmountMinor: (await api.bootstrap()).cashSession!.expectedAmountMinor, force: true, reason: 'Pendientes históricos del turno A', authorizerPin: '748259' });
     const sessionB = await api.openCashSession({ openingAmountMinor: 10000 });
     return { tableOrderId: tableOrder.id, takeawayId: takeaway.id, deliveryId: delivery.id, tableNumber: table.number, sessionAId: sessionA.id, sessionBId: sessionB.id };
   });

@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -21,7 +21,7 @@ test.use({ actionTimeout: 5000 });
 async function launch(tag: string) {
   await mkdir(evidenceDir, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), `gastronomy-us18a-${tag}-`));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -81,6 +81,7 @@ async function seed(title: string, amountMinor = 1_234_500) {
       });
       const date = (await api.bootstrap()).cashSession!.businessDate;
       const expense = await api.createFinanceExpense({
+        authorizerPin: "748259",
         title,
         category: "US18A prueba",
         kind: "GENERAL",
@@ -164,6 +165,7 @@ test("permite corregir gasto manual impago con motivo, prefill, auditoría y led
     form.getByRole("button", { name: "Guardar corrección", exact: true }),
   ).toBeDisabled();
   await reason.fill("Importe transcripto incorrectamente");
+  await form.getByLabel("PIN de autorización").fill("748259");
   await form
     .getByRole("button", { name: "Guardar corrección", exact: true })
     .click();
@@ -215,6 +217,7 @@ test("anula sin borrar, excluye de total y exportación CSV activa", async () =>
   const fixture = await seed("US18A anular prueba");
   const preserved = await page.evaluate(async (date) => {
     const active = await window.gastronomy.createFinanceExpense({
+      authorizerPin: "748259",
       title: "US18A gasto activo CSV",
       category: "US18A",
       kind: "GENERAL",
@@ -224,6 +227,7 @@ test("anula sin borrar, excluye de total y exportación CSV activa", async () =>
       idempotencyKey: crypto.randomUUID(),
     });
     const paid = await window.gastronomy.createFinanceExpense({
+      authorizerPin: "748259",
       title: "US18A gasto pagado CSV",
       category: "US18A",
       kind: "GENERAL",
@@ -233,6 +237,7 @@ test("anula sin borrar, excluye de total y exportación CSV activa", async () =>
       idempotencyKey: crypto.randomUUID(),
     });
     await window.gastronomy.payFinanceExpense({
+      authorizerPin: "748259",
       expenseId: paid.id,
       paymentMethodCode: "CASH",
       fromCash: false,
@@ -250,6 +255,7 @@ test("anula sin borrar, excluye de total y exportación CSV activa", async () =>
     dialog.getByRole("button", { name: "Confirmar anulación", exact: true }),
   ).toBeDisabled();
   await reason.fill("Duplicado de carga");
+  await dialog.getByLabel("PIN de autorización").fill("748259");
   await capture("cancel-confirmation", { expense: fixture.expense });
   await dialog
     .getByRole("button", { name: "Confirmar anulación", exact: true })
@@ -346,6 +352,7 @@ test("rechaza pago concurrente al guardar corrección y protege gastos pagados/r
   const created = await page.evaluate(async (date) => {
     const api = window.gastronomy;
     const paid = await api.createFinanceExpense({
+      authorizerPin: "748259",
       title: "US18A ya pagado",
       category: "US18A",
       kind: "GENERAL",
@@ -355,6 +362,7 @@ test("rechaza pago concurrente al guardar corrección y protege gastos pagados/r
       idempotencyKey: crypto.randomUUID(),
     });
     const recurring = await api.createFinanceRecurring({
+      authorizerPin: "748259",
       title: "US18A mensual",
       category: "US18A",
       kind: "FIXED",
@@ -369,6 +377,7 @@ test("rechaza pago concurrente al guardar corrección y protege gastos pagados/r
     );
     return {
       paid: await api.payFinanceExpense({
+        authorizerPin: "748259",
         expenseId: paid.id,
         paymentMethodCode: "CASH",
         fromCash: false,
@@ -392,12 +401,23 @@ test("rechaza pago concurrente al guardar corrección y protege gastos pagados/r
       name: /^(Corregir|Anular)$/,
     }),
   ).toHaveCount(0);
-  await expect(expenseArticle("US18A mensual").getByRole("button", { name: "Corregir este mes", exact: true })).toBeVisible();
-  await expect(expenseArticle("US18A mensual").getByRole("button", { name: "Anular este mes", exact: true })).toBeVisible();
+  await expect(
+    expenseArticle("US18A mensual").getByRole("button", {
+      name: "Corregir este mes",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    expenseArticle("US18A mensual").getByRole("button", {
+      name: "Anular este mes",
+      exact: true,
+    }),
+  ).toBeVisible();
   const paidRejected = await page.evaluate(
     async ({ id }) => {
       try {
         await window.gastronomy.correctFinanceExpense({
+          authorizerPin: "748259",
           expenseId: id,
           expectedRevision: 0,
           reason: "prueba",
@@ -421,6 +441,7 @@ test("rechaza pago concurrente al guardar corrección y protege gastos pagados/r
     async ({ id }) => {
       try {
         await window.gastronomy.cancelFinanceExpense({
+          authorizerPin: "748259",
           expenseId: id,
           expectedRevision: 0,
           reason: "prueba",
@@ -445,6 +466,7 @@ test("rechaza pago concurrente al guardar corrección y protege gastos pagados/r
   await page.evaluate(
     async ({ id }) =>
       window.gastronomy.payFinanceExpense({
+        authorizerPin: "748259",
         expenseId: id,
         paymentMethodCode: "CASH",
         fromCash: true,
@@ -455,6 +477,7 @@ test("rechaza pago concurrente al guardar corrección y protege gastos pagados/r
   await form
     .getByLabel("Motivo de la corrección", { exact: true })
     .fill("Evitar conflicto con pago");
+  await form.getByLabel("PIN de autorización").fill("748259");
   await form
     .getByRole("button", { name: "Guardar corrección", exact: true })
     .click();

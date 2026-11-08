@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -20,7 +20,7 @@ let profile: string;
 test.beforeEach(async () => {
   await mkdir(out, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-us02-labels-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -94,7 +94,7 @@ for (const width of [1280, 1100, 1366]) {
             await api.applyOrderDeposit({
               orderId: order.id,
               depositMinor: 300_000,
-              authorizerPin: "1234",
+              authorizerPin: "748259",
             });
           if (
             ["partial", "cash", "account", "receipt", "refund"].includes(
@@ -138,7 +138,7 @@ for (const width of [1280, 1100, 1366]) {
                 paymentId: paid.payments[0]!.id,
                 amountMinor: scenario === "partial" ? 1_000_000 : 300_000,
                 reason: "US02 devolución aislada",
-                authorizerPin: "1234",
+                authorizerPin: "748259",
                 idempotencyKey: crypto.randomUUID(),
               });
             if (scenario === "receipt")

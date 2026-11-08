@@ -1,3 +1,4 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import { test, expect, _electron as electron } from "@playwright/test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -14,7 +15,7 @@ for (const width of [1100, 1366]) {
     const profile = await mkdtemp(
       join(tmpdir(), "gastronomy-background-probe-"),
     );
-    const app = await electron.launch({
+    const app = await launchConfiguredPos({
       args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
       cwd: process.cwd(),
       timeout: 10_000,
@@ -130,7 +131,7 @@ for (const width of [1100, 1366]) {
 test("Oculto: vista previa real y cancelación sin imprimir ni activar ventanas", async () => {
   expect(process.env.GASTRONOMY_E2E_BACKGROUND).toBe("1");
   const profile = await mkdtemp(join(tmpdir(), "gastronomy-background-probe-"));
-  const app = await electron.launch({
+  const app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });

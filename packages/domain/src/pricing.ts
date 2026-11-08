@@ -2,6 +2,7 @@ import type {
   HalfAndHalfPricingMode,
   ModifierScope,
 } from "@gastronomy/contracts";
+import { isPriceBookRoundingIncrementMinor, type PriceBookRoundingIncrementMinor } from "@gastronomy/contracts";
 import { nonNegativeMoney, roundHalfUp } from "./money";
 
 export function calculateHalfAndHalfBase(
@@ -85,6 +86,7 @@ export function calculateBookPrice(
   baseMinor: number,
   adjustmentBps: number,
   overrideMinor?: number,
+  roundingIncrementMinor: PriceBookRoundingIncrementMinor = 1,
 ): number {
   if (
     !Number.isSafeInteger(baseMinor) ||
@@ -94,13 +96,18 @@ export function calculateBookPrice(
     adjustmentBps > 100000
   )
     throw new Error("El precio o el porcentaje de lista no es válido.");
+  if (!isPriceBookRoundingIncrementMinor(roundingIncrementMinor))
+    throw new Error("El redondeo de lista no es válido.");
   if (overrideMinor !== undefined) {
     if (!Number.isSafeInteger(overrideMinor) || overrideMinor < 0)
       throw new Error("El precio propio no es válido.");
     return overrideMinor;
   }
-  const cents =
-    (BigInt(baseMinor) * BigInt(10000 + adjustmentBps) + 5000n) / 10000n;
+  const increment = BigInt(roundingIncrementMinor);
+  const numerator = BigInt(baseMinor) * BigInt(10000 + adjustmentBps);
+  const denominator = 10000n * increment;
+  const units = (numerator + denominator / 2n) / denominator;
+  const cents = units * increment;
   if (cents > BigInt(Number.MAX_SAFE_INTEGER))
     throw new Error("El precio calculado es demasiado alto.");
   return Number(cents);
@@ -138,6 +145,7 @@ export function applyBookAdjustment(
           current.baseMinor,
           book.adjustmentBps,
           current.overrides[book.id],
+          book.roundingIncrementMinor,
         );
     const after =
       mode === "PERCENTAGE" ? calculateBookPrice(before, bps) : before + value;
@@ -151,6 +159,7 @@ export function applyBookAdjustment(
       result.baseMinor,
       book.adjustmentBps,
       result.overrides[book.id],
+      book.roundingIncrementMinor,
     );
   return result;
 }

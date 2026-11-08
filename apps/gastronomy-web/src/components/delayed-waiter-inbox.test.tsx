@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { BootstrapDto, DelayedWaiterBatch } from "@gastronomy/contracts";
-import { canReviewDelayedWaiters, DelayedWaiterInbox, delayedWaiterKey } from "./delayed-waiter-inbox";
+import { canReviewDelayedWaiters, DelayedWaiterInbox, delayedWaiterKey, waiterReceiptNotice } from "./delayed-waiter-inbox";
 
 const data = {
   currentUser: { id: "cashier", roleCode: "CASHIER", permissions: ["orders.create"] },
@@ -41,6 +41,14 @@ describe("cashier review of delayed waiter batches", () => {
     expect(render([])).toContain("No hay pedidos pendientes de revisión");
     expect(render([])).toContain("Los pedidos ya aceptados aparecen dentro de su mesa");
     expect(render([])).not.toContain("Antes de confirmar");
+  });
+  it("uses the receipt status for approval confirmation", () => {
+    expect(waiterReceiptNotice("RECORDED")).toBe("Pedido registrado en la mesa, sin impresión.");
+    expect(waiterReceiptNotice("QUEUED")).toBe("Pedido incorporado a la mesa. Comanda en preparación.");
+    expect(waiterReceiptNotice("QUEUED")).not.toContain("salió la comanda");
+    const source = readFileSync(resolve(process.cwd(), "src/components/delayed-waiter-inbox.tsx"), "utf8");
+    expect(source).toContain(">Aprobar pedido</Button>");
+    expect(source).not.toContain("Aprobar y enviar a cocina");
   });
   it("places the permission-gated waiter tab in Salon, not Orders", () => {
     const root = resolve(process.cwd(), "src/pages");

@@ -5,6 +5,11 @@ import { Button, HelpTip } from "@gastronomy/ui";
 import { humanError } from "../lib";
 
 export const delayedWaiterKey = ["delayed-waiter-batches"] as const;
+export function waiterReceiptNotice(status: string) {
+  if (status.toUpperCase() === "RECORDED") return "Pedido registrado en la mesa, sin impresión.";
+  if (status.toUpperCase() === "QUEUED") return "Pedido incorporado a la mesa. Comanda en preparación.";
+  return "Pedido incorporado a la mesa.";
+}
 export function canReviewDelayedWaiters(data: BootstrapDto) {
   return ["ADMIN", "MANAGER", "CASHIER"].includes(data.currentUser.roleCode) &&
     data.currentUser.permissions.includes("orders.create");
@@ -39,8 +44,8 @@ export function DelayedWaiterInbox({ data, active }: { data: BootstrapDto; activ
     setBusy(true); setError(""); setNotice("");
     try {
       if (accept) {
-        await window.gastronomy.confirmDelayedWaiterBatch({ requestId: entry.requestId });
-        setNotice("Pedido incorporado a la mesa. Revisá que haya salido la comanda.");
+        const receipt = await window.gastronomy.confirmDelayedWaiterBatch({ requestId: entry.requestId });
+        setNotice(waiterReceiptNotice(receipt.status));
       } else {
         await window.gastronomy.rejectDelayedWaiterBatch({ requestId: entry.requestId });
         setNotice("Pedido descartado. No se creó el pedido.");
@@ -88,7 +93,7 @@ export function DelayedWaiterInbox({ data, active }: { data: BootstrapDto; activ
           </li>)}
         </ul>
         <div className="flex flex-wrap gap-2">
-          <Button disabled={busy || data.cashSession?.status !== "OPEN"} onClick={() => void resolve(selected, true)}>Aprobar y enviar a cocina</Button>
+          <Button disabled={busy || data.cashSession?.status !== "OPEN"} onClick={() => void resolve(selected, true)}>Aprobar pedido</Button>
           <Button variant="secondary" disabled={busy} onClick={() => void resolve(selected, false)}>Descartar pedido</Button>
         </div>
         {data.cashSession?.status !== "OPEN" && <p className="text-sm">Abrí caja para aprobar pedidos.</p>}

@@ -540,14 +540,19 @@ test("account activation signs a device lease challenge, persists only email and
       assert.equal(body.email, "owner@example.com"); assert.equal(body.password, "secret-not-on-disk");
       return new Response(JSON.stringify({
         request: { id: "request-account", installationId: body.installationId, businessName: "Cafe Norte", keyFingerprint: devicePublicKeyFingerprint(body.publicKey), status: "APPROVED", licenseId: "license_123", createdAt: new Date(now).toISOString() },
-        token: responseToken(body.installationId, now, privateKey), account: { email: "owner@example.com" },
+        token: responseToken(body.installationId, now, privateKey), account: { email: "owner@example.com" }, waiterTicket: "waiter-ticket-account-1234567890",
       }));
     };
     const make = async (fetch: typeof globalThis.fetch) => { const value = new DesktopLicensing({ userDataPath: dir, isPackaged: true, now: () => now, config: { serverUrl: "https://example.test", publicKey }, safeStorage, fetch }); await value.initialize(); return value; };
     const license = await make(fetcher);
+    const provisioned: unknown[] = [];
+    license.setWaiterProvisioner(async (ticket, identity) => { provisioned.push({ ticket, identity }); throw new Error("waiter service offline"); });
     const input = { email: " Owner@Example.com ", password: "secret-not-on-disk" };
     const status = await license.signInAccount(input);
     assert.equal(status.state, "ACTIVE"); assert.deepEqual(status.account, { email: "owner@example.com" });
+    assert.deepEqual(license.waiterIdentity(), { installationId: status.installationId, licenseId: "license_123" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(provisioned, [{ ticket: "waiter-ticket-account-1234567890", identity: { installationId: status.installationId, licenseId: "license_123" } }]);
     assert.deepEqual(calls, ["/v2/devices/challenge", "/v2/accounts/activate"]);
     const disk = await readFile(join(dir, "license-state.json"), "utf8") + await readFile(join(dir, "device-identity.json"), "utf8");
     assert.doesNotMatch(disk, /secret-not-on-disk/); assert.match(disk, /owner@example.com/); assert.doesNotMatch(disk, /BEGIN PRIVATE KEY/);

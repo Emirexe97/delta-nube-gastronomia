@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { rmSync } from "node:fs";
@@ -27,7 +28,7 @@ function takeout(repository: SqliteGastronomyRepository, suffix: string) {
 
 function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
   const path = join(tmpdir(), `gastronomy-order-shift-${randomUUID()}.sqlite`);
-  const repository = new SqliteGastronomyRepository(path, {
+  const repository = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -101,7 +102,7 @@ test("migración v42 conserva pedidos legacy y siembra contador de caja abierta 
     tmpdir(),
     `gastronomy-order-shift-v42-${randomUUID()}.sqlite`,
   );
-  let repository = new SqliteGastronomyRepository(path, {
+  let repository = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -130,7 +131,7 @@ test("migración v42 conserva pedidos legacy y siembra contador de caja abierta 
     legacy.close();
   }
 
-  repository = new SqliteGastronomyRepository(path, {
+  repository = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -174,14 +175,14 @@ test("el contador de turno persiste tras reiniciar la aplicación", () => {
     tmpdir(),
     `gastronomy-order-shift-restart-${randomUUID()}.sqlite`,
   );
-  let repository = new SqliteGastronomyRepository(path, {
+  let repository = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
   const session = repository.openCashSession({ openingAmountMinor: 0 });
   const first = takeout(repository, "Persistido");
   repository.close();
-  repository = new SqliteGastronomyRepository(path, {
+  repository = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });

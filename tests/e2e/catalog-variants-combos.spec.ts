@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -15,7 +15,7 @@ let profile = "";
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-catalog-combos-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -67,7 +67,7 @@ test("las variantes respetan los controles individuales y globales incluso al bu
       active: false,
       prices: child.prices,
       reason: "Filtro QA",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
   });
   await page.reload();
@@ -181,7 +181,7 @@ test("Combos crea y edita combos completos desde su pestaña sin botones en cada
   expect(
     (await page.evaluate(() => window.gastronomy.bootstrap())).products,
   ).toHaveLength(fixture.count);
-  await dialog.getByLabel("PIN de autorización", { exact: true }).fill("1234");
+  await dialog.getByLabel("PIN de autorización", { exact: true }).fill("748259");
   await testInfo.attach("nuevo-combo", {
     body: await dialog.screenshot(),
     contentType: "image/png",
@@ -216,7 +216,7 @@ test("Combos crea y edita combos completos desde su pestaña sin botones en cada
   });
   await dialog.getByLabel("Cantidad de opción 1", { exact: true }).fill("2");
   await dialog.getByLabel("Motivo", { exact: true }).fill("Dos unidades QA");
-  await dialog.getByLabel("PIN de autorización", { exact: true }).fill("1234");
+  await dialog.getByLabel("PIN de autorización", { exact: true }).fill("748259");
   await expect(dialog.getByRole("button", { name: "Guardar combo", exact: true })).toBeEnabled();
   await dialog
     .getByRole("button", { name: "Guardar combo", exact: true })
@@ -242,7 +242,7 @@ test("las listas derivadas y overrides afectan canales nuevos, no el precio de p
     const derived = await api.savePriceBook({
       name: "Delivery E2E",
       adjustmentBps: 1500,
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       reason: "Prueba de lista derivada",
     });
     const book = derived.books.find((entry) => entry.name === "Delivery E2E")!;
@@ -281,12 +281,12 @@ test("las listas derivadas y overrides afectan canales nuevos, no el precio de p
       id: book.id,
       name: book.name,
       adjustmentBps: 3000,
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       reason: "Cambio de porcentaje",
     });
     await api.assignPriceBooks({
       assignments: { SALON: base.id, TAKEAWAY: book.id, DELIVERY: book.id },
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       reason: "Asignar listas por modo",
     });
     const after = await api.getPriceBooks();

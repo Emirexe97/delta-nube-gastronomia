@@ -1,3 +1,4 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   installInteractionDiagnostics,
   attachInteractionDiagnostics,
@@ -5,7 +6,6 @@ import {
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -19,7 +19,7 @@ let userData: string;
 
 test.beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-e2e-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });
@@ -170,7 +170,7 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
     name: "Devolver o anular pago",
   });
   await refundDialog.getByLabel("Motivo").fill("Cobro duplicado E2E");
-  await refundDialog.getByLabel("PIN de autorización").fill("1234");
+  await refundDialog.getByLabel("PIN de autorización").fill("748259");
   await refundDialog
     .getByRole("button", { name: "Confirmar devolución" })
     .click();
@@ -186,7 +186,7 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   await page.getByRole("link", { name: "Repartidores" }).click();
   await page.getByRole("button", { name: /Nuevo repartidor/ }).click();
   await page.getByLabel("Nombre completo").fill("Repartidor E2E");
-  await page.getByLabel("PIN de autorización del responsable").fill("1234");
+  await page.getByLabel("PIN de autorización del responsable").fill("748259");
   await page.getByRole("button", { name: "Crear repartidor" }).click();
   await expect(
     page.getByRole("cell", { name: "Repartidor E2E" }),
@@ -355,7 +355,7 @@ test("asigna un mesero al abrir una mesa", async () => {
   await page.getByLabel("Nombre completo").fill("Mesero E2E");
   await page.getByLabel("Rol").selectOption("WAITER");
   await page.getByLabel("PIN del usuario").fill("2468");
-  await page.getByLabel("PIN de autorización").fill("1234");
+  await page.getByLabel("PIN de autorización").fill("748259");
   await page.getByRole("button", { name: "Crear usuario" }).click();
   await expect(
     page.getByRole("cell", { name: "Mesero E2E", exact: true }),
@@ -450,7 +450,7 @@ test("edita precios de producto con autorización e historial", async () => {
     dialog.getByAltText("Vista previa del producto"),
   ).toHaveAttribute("src", /^data:image\/webp;base64,/);
   await dialog.getByLabel("Motivo del cambio").fill("Actualización E2E");
-  await dialog.getByLabel("PIN de autorización").fill("1234");
+  await dialog.getByLabel("PIN de autorización").fill("748259");
   await dialog.getByRole("button", { name: "Guardar cambios" }).click();
   await expect(
     page.getByRole("cell", { name: "Muzzarella E2E", exact: true }),
@@ -490,7 +490,7 @@ test("edita precios de producto con autorización e historial", async () => {
   await bulkDialog.getByLabel("Ajustar precios").check();
   await bulkDialog.getByLabel("Variación (%)", { exact: true }).fill("10");
   await bulkDialog.getByLabel("Motivo").fill("Aumento masivo E2E");
-  await bulkDialog.getByLabel("PIN de autorización").fill("1234");
+  await bulkDialog.getByLabel("PIN de autorización").fill("748259");
   await bulkDialog
     .getByRole("button", { name: "Aplicar a seleccionados" })
     .click();
@@ -506,7 +506,7 @@ test("carga una mesa y agrega productos desde el editor con teclado", async () =
       fullName: "Mesero teclado E2E",
       roleCode: "WAITER",
       pin: "2468",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     }),
   );
   await page.getByRole("link", { name: "Salón" }).click();
@@ -575,7 +575,7 @@ test("carga una mesa y agrega productos desde el editor con teclado", async () =
   await soda.getByRole("button", { name: "Agregar a la mesa" }).press("Enter");
   await expect(soda.getByRole("alert")).toContainText("PIN incorrecto");
   await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveCount(0);
-  await soda.getByLabel("PIN para autorizar el precio manual").fill("1234");
+  await soda.getByLabel("PIN para autorizar el precio manual").fill("748259");
   await soda.getByRole("button", { name: "Agregar a la mesa" }).press("Enter");
   await expect(soda).toBeHidden();
   await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveValue("1");
@@ -680,9 +680,9 @@ test("protege modales anidados y completa atajos y recuperación por teclado", a
     "20000",
   );
   await refund.getByLabel("Motivo").fill("Restaurar estado E2E");
-  await refund.getByLabel("PIN de autorización").fill("1234");
+  await refund.getByLabel("PIN de autorización").fill("748259");
   await expect(refund.getByLabel("Motivo")).toHaveValue("Restaurar estado E2E");
-  await expect(refund.getByLabel("PIN de autorización")).toHaveValue("1234");
+  await expect(refund.getByLabel("PIN de autorización")).toHaveValue("748259");
   await expect(
     refund.getByRole("button", { name: "Confirmar devolución" }),
   ).toBeEnabled();

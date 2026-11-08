@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -7,7 +8,7 @@ import { SqliteGastronomyRepository } from "./sqlite-repository";
 
 test("createCombo atomically creates prices and definition, and is idempotent", () => {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-create-combo-"));
-  const repo = new SqliteGastronomyRepository(join(dir, "test.sqlite"), {
+  const repo = configuredTestRepository(join(dir, "test.sqlite"), {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -41,7 +42,7 @@ test("createCombo atomically creates prices and definition, and is idempotent", 
 
 test("combo configuration and item preserve component snapshots and calculate the configured price", () => {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-combo-"));
-  const repo = new SqliteGastronomyRepository(join(dir, "test.sqlite"), {
+  const repo = configuredTestRepository(join(dir, "test.sqlite"), {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -164,7 +165,7 @@ test("combo configuration and item preserve component snapshots and calculate th
 
 test("combo stock follows component quantity through confirm, add, quantity, remove and cancel; extras and COGS are snapshotted", () => {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-combo-stock-"));
-  const repo = new SqliteGastronomyRepository(join(dir, "test.sqlite"), {
+  const repo = configuredTestRepository(join(dir, "test.sqlite"), {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -316,7 +317,7 @@ test("combo stock follows component quantity through confirm, add, quantity, rem
 
 test("insufficient component stock rolls back confirmation and nested/half-and-half combo routes are rejected", () => {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-combo-rollback-"));
-  const repo = new SqliteGastronomyRepository(join(dir, "test.sqlite"), {
+  const repo = configuredTestRepository(join(dir, "test.sqlite"), {
     adminPin: "2468",
     seedStarterCatalog: true,
   });

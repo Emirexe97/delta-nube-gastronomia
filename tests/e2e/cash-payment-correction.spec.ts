@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -21,7 +21,7 @@ test.use({ actionTimeout: 5000 });
 async function launch(tag: string) {
   await mkdir(evidenceDir, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), `gastronomy-us18b2a-${tag}-`));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -82,6 +82,7 @@ async function seed(title: string, amountMinor = 1_234_500) {
       });
       const date = (await api.bootstrap()).cashSession!.businessDate;
       const expense = await api.createFinanceExpense({
+        authorizerPin: "748259",
         title,
         category: "US18A prueba",
         kind: "GENERAL",
@@ -123,6 +124,7 @@ async function paidFixture(method: string) {
     const session = await api.openCashSession({ openingAmountMinor: 100000 });
     const date = session.businessDate;
     const expense = await api.createFinanceExpense({
+      authorizerPin: "748259",
       title: "US18B2A pago de caja",
       category: "Prueba",
       kind: "GENERAL",
@@ -136,7 +138,7 @@ async function paidFixture(method: string) {
       expectedRevision: expense.revision ?? 0,
       idempotencyKey: "original-pay",
     };
-    const paid = await api.payFinanceExpense(payInput);
+    const paid = await api.payFinanceExpense({ authorizerPin: "748259", ...payInput });
     return {
       date,
       session,
@@ -190,7 +192,7 @@ for (const method of ["CASH", "TRANSFER"])
     await expect(dialog.getByLabel("Motivo", { exact: true })).toHaveValue(
       "Pago cargado sin entregar dinero",
     );
-    await dialog.getByLabel("PIN de autorización").fill("1234");
+    await dialog.getByLabel("PIN de autorización").fill("748259");
     await capture("confirm-" + method, data);
     await confirm.click();
     await expect(dialog).toHaveCount(0);
@@ -239,7 +241,7 @@ test("Escape devuelve foco y caja cerrada durante confirmación rechaza sin perd
   await expect(trigger).toBeFocused();
   dialog = await openCorrection();
   await dialog.getByLabel("Motivo", { exact: true }).fill("Nunca entregado");
-  await dialog.getByLabel("PIN de autorización").fill("1234");
+  await dialog.getByLabel("PIN de autorización").fill("748259");
   await page.evaluate(async () => {
     await window.gastronomy.closeCashSession({
       countedAmountMinor: 76550,
@@ -273,14 +275,15 @@ test("replay histórico no corrige un segundo pago y caja distinta queda excluid
       expenseId: d.expense.id,
       expectedRevision: d.paid.revision ?? 0,
       reason: "Primer error",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "first-correction",
     };
     const first = await api.correctFinanceExpenseCashPayment(input);
     const replay = await api.correctFinanceExpenseCashPayment(input);
-    await api.payFinanceExpense(d.payInput);
+    await api.payFinanceExpense({ authorizerPin: "748259", ...d.payInput });
     const pending = await api.getFinanceReport({ from: d.date, to: d.date });
     const second = await api.payFinanceExpense({
+      authorizerPin: "748259",
       ...d.payInput,
       expectedRevision: first.revision,
       idempotencyKey: "second-pay",
@@ -342,7 +345,7 @@ test("modal utilizable en 1100, 1366 y zoom 200%; cancelar no cambia datos", asy
     await dialog
       .getByLabel("Motivo", { exact: true })
       .fill("Cancelar sin cambios");
-    await dialog.getByLabel("PIN de autorización").fill("1234");
+    await dialog.getByLabel("PIN de autorización").fill("748259");
     const rect = await dialog.evaluate((el) => ({
       left: el.getBoundingClientRect().left,
       right: el.getBoundingClientRect().right,

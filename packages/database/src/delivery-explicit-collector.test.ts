@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { rmSync } from "node:fs";
@@ -11,7 +12,7 @@ function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
     tmpdir(),
     `gastronomy-explicit-collector-${randomUUID()}.sqlite`,
   );
-  const repository = new SqliteGastronomyRepository(path, {
+  const repository = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });

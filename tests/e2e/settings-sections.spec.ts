@@ -1,4 +1,5 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import { launchConfiguredPos } from "./pos-fixture";
+import { test, expect, type ElectronApplication, type Page } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -9,7 +10,7 @@ let profile = "";
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-settings-sections-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });

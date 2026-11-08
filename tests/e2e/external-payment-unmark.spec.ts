@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -21,7 +21,7 @@ test.use({ actionTimeout: 5000 });
 async function launch(tag: string) {
   await mkdir(evidenceDir, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), `gastronomy-us18b1-${tag}-`));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -82,6 +82,7 @@ async function seed(title: string, amountMinor = 1_234_500) {
       });
       const date = (await api.bootstrap()).cashSession!.businessDate;
       const expense = await api.createFinanceExpense({
+        authorizerPin: "748259",
         title,
         category: "US18A prueba",
         kind: "GENERAL",
@@ -125,6 +126,7 @@ async function paidFixture(withCash: boolean) {
     const date =
       session?.businessDate ?? new Date().toLocaleDateString("en-CA");
     const expense = await api.createFinanceExpense({
+      authorizerPin: "748259",
       title: "US18B1 pago externo",
       category: "US18B1",
       kind: "GENERAL",
@@ -138,7 +140,10 @@ async function paidFixture(withCash: boolean) {
       expectedRevision: 0,
       idempotencyKey: "b1-original-payment",
     };
-    const paid = await api.payFinanceExpense(payInput);
+    const paid = await api.payFinanceExpense({
+      authorizerPin: "748259",
+      ...payInput,
+    });
     return {
       date,
       expense,
@@ -179,6 +184,7 @@ for (const withCash of [false, true])
     });
     await expect(confirm).toBeDisabled();
     await dialog.getByLabel("Motivo").fill("Marcado por equivocación");
+    await dialog.getByLabel("PIN de autorización").fill("748259");
     await capture("unmark-confirm-" + withCash, data);
     await confirm.click();
     await expect(dialog).toHaveCount(0);
@@ -254,6 +260,7 @@ test("viejo intento de pago abierto no vuelve a pagar un gasto modificado", asyn
   const undone = await page.evaluate(
     async (paid) =>
       await window.gastronomy.unmarkFinanceExpensePayment({
+        authorizerPin: "748259",
         expenseId: paid.id,
         expectedRevision: paid.revision!,
         reason: "Preparar pendiente",
@@ -264,9 +271,11 @@ test("viejo intento de pago abierto no vuelve a pagar un gasto modificado", asyn
   await openFinance(data.date);
   const row = expenseArticle(data.paid.title);
   await row.getByRole("button", { name: "Marcar pagado", exact: true }).click();
+  await row.getByLabel("PIN de autorización").fill("748259");
   await page.evaluate(
     async ({ undone, date }) =>
       await window.gastronomy.correctFinanceExpense({
+        authorizerPin: "748259",
         expenseId: undone.id,
         expectedRevision: undone.revision!,
         reason: "Cambio después de abrir pago",
@@ -305,6 +314,7 @@ test("cancelar, teclado y zoom no cambian la marca externa; pagos desde caja no 
     const api = window.gastronomy;
     for (const method of ["CASH", "TRANSFER"]) {
       const e = await api.createFinanceExpense({
+        authorizerPin: "748259",
         title: "US18B1 vinculado " + method,
         category: "US18B1",
         kind: "GENERAL",
@@ -312,6 +322,7 @@ test("cancelar, teclado y zoom no cambian la marca externa; pagos desde caja no 
         incurredOn: date,
       });
       await api.payFinanceExpense({
+        authorizerPin: "748259",
         expenseId: e.id,
         paymentMethodCode: method,
         fromCash: true,
@@ -382,20 +393,30 @@ test("reintentos históricos no deshacen un segundo pago ni vuelven a pagar tras
       reason: "Primer pago equivocado",
       idempotencyKey: "b1-undo-once",
     };
-    const undone = await api.unmarkFinanceExpensePayment(input);
-    const oldPayReceipt = await api.payFinanceExpense(data.payInput);
+    const undone = await api.unmarkFinanceExpensePayment({
+      authorizerPin: "748259",
+      ...input,
+    });
+    const oldPayReceipt = await api.payFinanceExpense({
+      authorizerPin: "748259",
+      ...data.payInput,
+    });
     const pending = await api.getFinanceReport({
       from: data.date,
       to: data.date,
     });
     const repaid = await api.payFinanceExpense({
+      authorizerPin: "748259",
       expenseId: data.paid.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
       expectedRevision: undone.revision!,
       idempotencyKey: "b1-fresh-pay",
     });
-    const oldUndoReceipt = await api.unmarkFinanceExpensePayment(input);
+    const oldUndoReceipt = await api.unmarkFinanceExpensePayment({
+      authorizerPin: "748259",
+      ...input,
+    });
     const current = await api.getFinanceReport({
       from: data.date,
       to: data.date,
@@ -417,23 +438,60 @@ test("reintentos históricos no deshacen un segundo pago ni vuelven a pagar tras
 test("caja cerrada queda intacta y un deshacer obsoleto conserva motivo sin quitar un pago nuevo", async () => {
   const data = await paidFixture(true);
   const closed = await page.evaluate(async (id) => {
-    await window.gastronomy.closeCashSession({countedAmountMinor:100000,closingFloatAmountMinor:5000});
-    return window.gastronomy.getCashSessionReport({cashSessionId:id});
+    await window.gastronomy.closeCashSession({
+      countedAmountMinor: 100000,
+      closingFloatAmountMinor: 5000,
+    });
+    return window.gastronomy.getCashSessionReport({ cashSessionId: id });
   }, data.session!.id);
   await openFinance(data.date);
   const dialog = await openUnmark();
-  await dialog.getByLabel("Motivo", {exact:true}).fill("Motivo conservado tras conflicto");
+  await dialog
+    .getByLabel("Motivo", { exact: true })
+    .fill("Motivo conservado tras conflicto");
+  await dialog.getByLabel("PIN de autorización").fill("748259");
   const repaid = await page.evaluate(async (paid) => {
     const api = window.gastronomy;
-    const pending = await api.unmarkFinanceExpensePayment({expenseId:paid.id,expectedRevision:paid.revision!,reason:"Otro usuario corrigió",idempotencyKey:"concurrent-undo"});
-    return api.payFinanceExpense({expenseId:paid.id,paymentMethodCode:"TRANSFER",fromCash:false,expectedRevision:pending.revision!,idempotencyKey:"concurrent-new-pay"});
+    const pending = await api.unmarkFinanceExpensePayment({
+      authorizerPin: "748259",
+      expenseId: paid.id,
+      expectedRevision: paid.revision!,
+      reason: "Otro usuario corrigió",
+      idempotencyKey: "concurrent-undo",
+    });
+    return api.payFinanceExpense({
+      authorizerPin: "748259",
+      expenseId: paid.id,
+      paymentMethodCode: "TRANSFER",
+      fromCash: false,
+      expectedRevision: pending.revision!,
+      idempotencyKey: "concurrent-new-pay",
+    });
   }, data.paid);
-  await dialog.getByRole("button", {name:"Deshacer marca de pago",exact:true}).click();
-  await expect(dialog.getByRole("alert")).toContainText("El gasto fue modificado");
-  await expect(dialog.getByLabel("Motivo",{exact:true})).toHaveValue("Motivo conservado tras conflicto");
-  const after = await page.evaluate(async ({date,id}) => ({cash:await window.gastronomy.getCashSessionReport({cashSessionId:id}),report:await window.gastronomy.getFinanceReport({from:date,to:date}),active:(await window.gastronomy.bootstrap()).cashSession}),{date:data.date,id:data.session!.id});
+  await dialog
+    .getByRole("button", { name: "Deshacer marca de pago", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "El gasto fue modificado",
+  );
+  await expect(dialog.getByLabel("Motivo", { exact: true })).toHaveValue(
+    "Motivo conservado tras conflicto",
+  );
+  const after = await page.evaluate(
+    async ({ date, id }) => ({
+      cash: await window.gastronomy.getCashSessionReport({ cashSessionId: id }),
+      report: await window.gastronomy.getFinanceReport({
+        from: date,
+        to: date,
+      }),
+      active: (await window.gastronomy.bootstrap()).cashSession,
+    }),
+    { date: data.date, id: data.session!.id },
+  );
   expect(after.cash).toEqual(closed);
   expect(after.active).toBeNull();
-  expect(after.report.expenses.find(x=>x.id===data.paid.id)).toMatchObject({paidAt:repaid.paidAt,revision:repaid.revision});
-  await capture("closed-session-stale-undo-preserved",after);
+  expect(
+    after.report.expenses.find((x) => x.id === data.paid.id),
+  ).toMatchObject({ paidAt: repaid.paidAt, revision: repaid.revision });
+  await capture("closed-session-stale-undo-preserved", after);
 });

@@ -1,7 +1,7 @@
 import type { PriceBookDto } from "@gastronomy/contracts";
 import { calculateBookPrice } from "@gastronomy/domain";
 import { Field, Input } from "@gastronomy/ui";
-import { formatMoney, parsePriceInput } from "../lib";
+import { formatMoney, moneyInputValue, parsePriceInput } from "../lib";
 
 type Props = {
   books: PriceBookDto[];
@@ -16,7 +16,7 @@ function safeCalculatedPrice(
   book: PriceBookDto,
 ): number | null {
   try {
-    return calculateBookPrice(baseMinor, book.adjustmentBps);
+    return calculateBookPrice(baseMinor, book.adjustmentBps, undefined, book.roundingIncrementMinor);
   } catch {
     return null;
   }
@@ -73,7 +73,7 @@ export function PriceBookPricingEditor({
               const next = { ...overrides };
               if (checked) {
                 next[book.id] =
-                  calculated == null ? "" : String(calculated / 100);
+                  calculated == null ? "" : moneyInputValue(calculated);
               } else {
                 delete next[book.id];
               }
@@ -93,7 +93,7 @@ export function PriceBookPricingEditor({
                   <p className="text-xs text-slate-500">
                     {ownPrice
                       ? "Precio propio fijo"
-                      : `Calculado: ${book.adjustmentBps >= 0 ? "+" : ""}${(book.adjustmentBps / 100).toLocaleString("es-AR")}% sobre Principal`}
+                      : `Calculado: ${book.adjustmentBps >= 0 ? "+" : ""}${(book.adjustmentBps / 100).toLocaleString("es-AR")}% sobre Principal${book.roundingIncrementMinor && book.roundingIncrementMinor > 1 ? ` · Al múltiplo de ${formatMoney(book.roundingIncrementMinor)} más cercano` : ""}`}
                   </p>
                 </div>
                 <label className="flex items-center gap-2 text-xs font-medium text-slate-700">

@@ -60,6 +60,9 @@ export const AUDIT_FILTER_ACTIONS = [
   "ORDER_COMBO_ADDED",
   "ORDER_REPEATED",
   "PRODUCTS_BULK_UPDATED",
+  "PRICE_BOOK_CREATED",
+  "PRICE_BOOK_UPDATED",
+  "PRICE_BOOKS_ASSIGNED",
   "STOCK_ADJUSTED",
   "PURCHASE_METADATA_CORRECTED",
   "PURCHASE_ITEM_QUANTITY_CORRECTED",
@@ -199,11 +202,17 @@ export interface CategoryDto {
 }
 
 export type PriceChannel = "SALON" | "TAKEAWAY" | "DELIVERY";
+export const PRICE_BOOK_ROUNDING_INCREMENT_MINOR_VALUES = [1, 1000, 10000, 100000] as const;
+export type PriceBookRoundingIncrementMinor = typeof PRICE_BOOK_ROUNDING_INCREMENT_MINOR_VALUES[number];
+export function isPriceBookRoundingIncrementMinor(value: unknown): value is PriceBookRoundingIncrementMinor {
+  return typeof value === "number" && PRICE_BOOK_ROUNDING_INCREMENT_MINOR_VALUES.includes(value as PriceBookRoundingIncrementMinor);
+}
 export interface PriceBookDto {
   id: Id;
   name: string;
   adjustmentBps: number;
   isBase: boolean;
+  roundingIncrementMinor?: PriceBookRoundingIncrementMinor;
 }
 export interface PriceBooksDto {
   books: PriceBookDto[];
@@ -219,6 +228,9 @@ export interface SavePriceBookInput {
   adjustmentBps: number;
   reason: string;
   authorizerPin: string;
+  roundingIncrementMinor?: PriceBookRoundingIncrementMinor;
+  /** Patch keyed by product id: fixed minor-unit price, or null to clear. */
+  productOverrides?: Record<Id, number | null>;
 }
 export interface AssignPriceBooksInput {
   assignments: Record<PriceChannel, Id>;
@@ -886,6 +898,7 @@ export interface CashMovementInput extends IdempotentRequest {
   amountMinor: MoneyMinor;
   reason: string;
   paymentMethodCode?: string;
+  authorizerPin?: string;
 }
 
 export interface CloseCashSessionInput extends IdempotentRequest {
@@ -1241,6 +1254,7 @@ export interface CreateFinanceExpenseInput extends IdempotentRequest {
   dueOn?: string;
   employeeId?: Id | null;
   note?: string | null;
+  authorizerPin: string;
 }
 
 export interface CorrectFinanceExpenseInput extends CreateFinanceExpenseInput {
@@ -1253,12 +1267,14 @@ export interface CancelFinanceExpenseInput extends IdempotentRequest {
   expenseId: Id;
   expectedRevision: number;
   reason: string;
+  authorizerPin: string;
 }
 
 export interface UnmarkFinanceExpensePaymentInput extends IdempotentRequest {
   expenseId: Id;
   expectedRevision: number;
   reason: string;
+  authorizerPin: string;
 }
 
 export interface CorrectFinanceExpenseCashPaymentInput extends IdempotentRequest {
@@ -1277,6 +1293,7 @@ export interface CorrectFinanceMonthlyExpenseInput extends IdempotentRequest {
   amountMinor: MoneyMinor;
   dueOn?: string;
   note?: string | null;
+  authorizerPin: string;
 }
 
 export interface CorrectFinanceExpenseClosedCashPaymentInput extends CorrectFinanceExpenseCashPaymentInput {
@@ -1288,6 +1305,7 @@ export interface PayFinanceExpenseInput extends IdempotentRequest {
   paymentMethodCode: string;
   fromCash: boolean;
   expectedRevision?: number;
+  authorizerPin: string;
 }
 
 export interface ReceiveFinanceExpenseReturnInput extends IdempotentRequest {
@@ -1307,6 +1325,7 @@ export interface CreateFinanceRecurringInput extends IdempotentRequest {
   dayOfMonth: number;
   startMonth: string;
   employeeId?: Id | null;
+  authorizerPin: string;
 }
 
 export interface SettleCustomerAccountInput extends IdempotentRequest {
@@ -1363,6 +1382,8 @@ import type { WebCommerceApi } from "./web-commerce";
 export * from "./waiter-desk";
 import type { WaiterDeskApi } from "./waiter-desk";
 export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
+  isInitialAdminPinSetupRequired(): Promise<boolean>;
+  setInitialAdminPin(input: { currentPin: string; newPin: string }): Promise<{ configured: true }>;
   askPosAssistantAi(input: PosAssistantAiInput): Promise<PosAssistantAiResult>;
   listIngredients(): Promise<IngredientDto[]>;
   saveIngredient(input: SaveIngredientInput): Promise<IngredientDto>;
@@ -1594,6 +1615,7 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   ): Promise<FinanceRecurringDto>;
   stopFinanceRecurring(input: {
     recurringId: Id;
+    authorizerPin: string;
   }): Promise<FinanceRecurringDto>;
   setFinanceProductCost(input: {
     productId: Id;
@@ -1699,7 +1721,7 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
     offset?: number;
   }): Promise<AuditEntryDto[]>;
   createBackup(): Promise<{ path: string | null }>;
-  restoreBackup(): Promise<{ path: string | null; restored: boolean }>;
+  restoreBackup(pin: string): Promise<{ path: string | null; restored: boolean }>;
   listPrinters(): Promise<PrinterDeviceDto[]>;
   testPrinter(input: {
     kind: "KITCHEN_ORDER" | "CUSTOMER_BILL";

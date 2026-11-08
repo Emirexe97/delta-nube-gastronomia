@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -20,7 +21,7 @@ function withFrozenDate<T>(iso: string, run: () => T): T {
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-monthly-recovery-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  const repo = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   const db = new Database(path);
   try { run(repo, db); }
   finally {
@@ -40,6 +41,7 @@ function dateRange(date: string) {
 
 function monthlyOccurrence(repo: SqliteGastronomyRepository, kind: "FIXED" | "PAYROLL", incurredOn: string, title = `Mensual ${kind}`) {
   const recurring = repo.createFinanceRecurring({
+    authorizerPin: "2468",
     title, category: "Servicios", kind, amountMinor: 12500,
     dayOfMonth: Number(incurredOn.slice(8, 10)), startMonth: incurredOn.slice(0, 7),
     ...(kind === "PAYROLL" ? { employeeId: repo.bootstrap().currentUser.id } : {}),
@@ -52,10 +54,10 @@ function monthlyOccurrence(repo: SqliteGastronomyRepository, kind: "FIXED" | "PA
 }
 
 function correct(repo: SqliteGastronomyRepository, input: Record<string, unknown>) {
-  return (repo as any).correctFinanceMonthlyExpense(input);
+  return (repo as any).correctFinanceMonthlyExpense({ authorizerPin: "2468", ...input });
 }
 function cancel(repo: SqliteGastronomyRepository, input: Record<string, unknown>) {
-  return (repo as any).cancelFinanceMonthlyExpense(input);
+  return (repo as any).cancelFinanceMonthlyExpense({ authorizerPin: "2468", ...input });
 }
 
 test("corrects one incurred monthly occurrence, preserving identity, rule, neighboring months, and current cash", () =>
@@ -109,7 +111,7 @@ test("FIXED active and stopped-rule occurrences are eligible only after incurred
     const today = session.businessDate;
     const { recurring, expense } = monthlyOccurrence(repo, "FIXED", today, "Alquiler mensual");
     assert.equal(expense.canRecoverMonthlyExpense, true);
-    repo.stopFinanceRecurring({ recurringId: recurring.id });
+    repo.stopFinanceRecurring({ authorizerPin: "2468", recurringId: recurring.id });
     const stopped = repo.getFinanceReport(dateRange(today)).expenses.find((row) => row.id === expense.id)!;
     assert.equal(stopped.canRecoverMonthlyExpense, true, "stopping future repetition does not remove an incurred obligation");
     const input = { expenseId: expense.id, expectedRevision: stopped.revision ?? 0, reason: "Mes actual con importe equivocado",
@@ -206,14 +208,14 @@ test("rejects paid, manual, cash-linked, and cancelled rows without mutating rel
     const session = repo.openCashSession({ openingAmountMinor: 100000 });
     const today = session.businessDate;
     const { expense: paid } = monthlyOccurrence(repo, "FIXED", today, "Pago mensual");
-    const paidExpense = repo.payFinanceExpense({ expenseId: paid.id, paymentMethodCode: "CASH", fromCash: true });
+    const paidExpense = repo.payFinanceExpense({ authorizerPin: "2468", expenseId: paid.id, paymentMethodCode: "CASH", fromCash: true });
     const { expense: linkedLegacy } = monthlyOccurrence(repo, "PAYROLL", today, "Vínculo histórico mensual");
-    repo.payFinanceExpense({ expenseId: linkedLegacy.id, paymentMethodCode: "CASH", fromCash: true });
+    repo.payFinanceExpense({ authorizerPin: "2468", expenseId: linkedLegacy.id, paymentMethodCode: "CASH", fromCash: true });
     // Simulate legacy/corrupt state: displayed unpaid but a cash link remains.
     // Keep its own unique movement; never alias the paid row's UNIQUE link.
     db.prepare("UPDATE finance_expenses SET paid_at=NULL WHERE id=?").run(linkedLegacy.id);
     const { expense: manual } = (() => {
-      const e = repo.createFinanceExpense({ title: "Manual", category: "Servicios", kind: "GENERAL", amountMinor: 5000, incurredOn: today });
+      const e = repo.createFinanceExpense({ authorizerPin: "2468", title: "Manual", category: "Servicios", kind: "GENERAL", amountMinor: 5000, incurredOn: today });
       return { expense: e };
     })();
     const { expense: cancelled } = monthlyOccurrence(repo, "FIXED", today, "Fila mensual anulada");
@@ -241,11 +243,11 @@ test("requires current revision to pay after monthly correction and historic rec
     const input = { expenseId: expense.id, expectedRevision: expense.revision ?? 0, reason: "Ajustar concepto",
       title: "Gasto revisado", category: "Servicios", amountMinor: 14000, idempotencyKey: "monthly-receipt" };
     const corrected = correct(repo, input);
-    assert.throws(() => repo.payFinanceExpense({ expenseId: expense.id, paymentMethodCode: "CASH", fromCash: true }), /revisión|actualiz/i);
-    assert.throws(() => repo.payFinanceExpense({ expenseId: expense.id, paymentMethodCode: "CASH", fromCash: true,
+    assert.throws(() => repo.payFinanceExpense({ authorizerPin: "2468", expenseId: expense.id, paymentMethodCode: "CASH", fromCash: true }), /revisión|actualiz/i);
+    assert.throws(() => repo.payFinanceExpense({ authorizerPin: "2468", expenseId: expense.id, paymentMethodCode: "CASH", fromCash: true,
       expectedRevision: expense.revision ?? 0 }), /revisión|actualiz/i);
     assert.equal((db.prepare("SELECT paid_at FROM finance_expenses WHERE id=?").get(expense.id) as any).paid_at, null);
-    const paid = repo.payFinanceExpense({ expenseId: expense.id, paymentMethodCode: "CASH", fromCash: true,
+    const paid = repo.payFinanceExpense({ authorizerPin: "2468", expenseId: expense.id, paymentMethodCode: "CASH", fromCash: true,
       expectedRevision: corrected.revision, idempotencyKey: "monthly-real-payment" });
     assert.ok(paid.paidAt);
     const paidState = db.prepare("SELECT * FROM finance_expenses WHERE id=?").get(expense.id);

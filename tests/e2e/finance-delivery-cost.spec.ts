@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -20,7 +20,7 @@ let profile = "";
 async function launch(tag: string) {
   await mkdir(out, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), `gastronomy-us19-fix-${tag}-`));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -66,7 +66,7 @@ test("Finanzas descuenta el envío una vez en ambos circuitos sin alterar caja",
         });
         const driver = await api.createDriver({
           fullName: `US19 ${mode}`,
-          authorizerPin: "1234",
+          authorizerPin: "748259",
         });
         const draft = await api.createOrder({
           type: "DELIVERY",
@@ -140,7 +140,7 @@ test("Finanzas descuenta el envío una vez en ambos circuitos sin alterar caja",
       });
       await review
         .getByLabel("PIN de autorización", { exact: true })
-        .fill("1234");
+        .fill("748259");
       await review
         .getByRole("button", { name: "Revisar liquidación", exact: true })
         .click();

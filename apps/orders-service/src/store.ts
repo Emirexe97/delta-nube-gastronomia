@@ -67,6 +67,13 @@ export class OrdersStore {
         design_mode TEXT NOT NULL DEFAULT 'STANDARD' CHECK(design_mode IN ('STANDARD','CUSTOM')),
         template_key TEXT, receive_hash TEXT NOT NULL UNIQUE
       );
+      CREATE TABLE IF NOT EXISTS waiter_connections (
+        license_id TEXT PRIMARY KEY,
+        installation_id TEXT NOT NULL UNIQUE,
+        store_id TEXT NOT NULL REFERENCES stores(id),
+        waiter_hash TEXT NOT NULL UNIQUE,
+        expires_at INTEGER NOT NULL DEFAULT 0
+      );
     `);
     const syncStore = this.db.prepare(
       "INSERT INTO stores(id,whatsapp_number) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET whatsapp_number=excluded.whatsapp_number",
@@ -111,6 +118,47 @@ export class OrdersStore {
           role: "receive",
         }
       : undefined;
+  }
+  authenticateWaiter(token: string): AuthScope | undefined {
+    const row = this.db.prepare(
+      "SELECT store_id,installation_id FROM waiter_connections WHERE waiter_hash=? AND expires_at>?",
+    ).get(digest(token), Date.now()) as { store_id: string; installation_id: string } | undefined;
+    return row ? { storeId: row.store_id, receiveInstallationId: row.installation_id, siteId: null, role: "receive" } : undefined;
+  }
+  provisionWaiterConnection(input: { licenseId: string; installationId: string; waiterToken: string; expiresAt: number }): { storeId: string } | undefined {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const tenant = this.db.prepare(
+        "SELECT license_id,installation_id,store_id FROM tenant_sites WHERE license_id=? OR installation_id=?",
+      ).get(input.licenseId, input.installationId) as { license_id: string; installation_id: string; store_id: string } | undefined;
+      const waiterExisting = this.db.prepare(
+        "SELECT license_id,installation_id,store_id FROM waiter_connections WHERE license_id=? OR installation_id=?",
+      ).get(input.licenseId, input.installationId) as { license_id: string; installation_id: string; store_id: string } | undefined;
+      if (tenant && (tenant.license_id !== input.licenseId || tenant.installation_id !== input.installationId)) {
+        this.db.exec("ROLLBACK");
+        return undefined;
+      }
+      const existing = waiterExisting;
+      if (existing && (existing.license_id !== input.licenseId || existing.installation_id !== input.installationId || (tenant && existing.store_id !== tenant.store_id)))
+        throw Object.assign(new Error("conflict"), { status: 409 });
+      let storeId: string;
+      if (!existing) {
+        storeId = tenant?.store_id ?? `waiter_${randomUUID().replaceAll("-", "")}`;
+        if (!tenant) this.db.prepare("INSERT INTO stores(id,whatsapp_number) VALUES(?,?)").run(storeId, "");
+        this.db.prepare(
+          "INSERT INTO waiter_connections(license_id,installation_id,store_id,waiter_hash,expires_at) VALUES(?,?,?,?,?)",
+        ).run(input.licenseId, input.installationId, storeId, digest(input.waiterToken), input.expiresAt);
+      } else if (tenant && existing.store_id !== tenant.store_id) throw Object.assign(new Error("conflict"), { status: 409 });
+      else {
+        storeId = existing.store_id;
+        this.db.prepare("UPDATE waiter_connections SET waiter_hash=?,expires_at=? WHERE license_id=?").run(digest(input.waiterToken), input.expiresAt, input.licenseId);
+      }
+      this.db.exec("COMMIT");
+      return { storeId };
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch {}
+      throw e;
+    }
   }
   provisionTenant(input: {
     licenseId: string;
@@ -167,7 +215,12 @@ export class OrdersStore {
           .get(input.slug)
       )
         throw Object.assign(new Error("conflict"), { status: 409 });
-      const storeId = `tenant_${randomUUID().replaceAll("-", "")}`;
+      const waiter = this.db.prepare(
+        "SELECT license_id,installation_id,store_id FROM waiter_connections WHERE license_id=? OR installation_id=?",
+      ).get(input.licenseId, input.installationId) as { license_id: string; installation_id: string; store_id: string } | undefined;
+      if (waiter && (waiter.license_id !== input.licenseId || waiter.installation_id !== input.installationId))
+        throw Object.assign(new Error("conflict"), { status: 409 });
+      const storeId = waiter?.store_id ?? `tenant_${randomUUID().replaceAll("-", "")}`;
       if (
         this.db
           .prepare("SELECT 1 FROM stores WHERE lower(id)=?")
@@ -176,7 +229,7 @@ export class OrdersStore {
         throw Object.assign(new Error("conflict"), { status: 409 });
       const displayName = input.businessName.trim().slice(0, 80) || input.slug;
       this.db
-        .prepare("INSERT INTO stores(id,whatsapp_number) VALUES(?,?)")
+        .prepare("INSERT INTO stores(id,whatsapp_number) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET whatsapp_number=excluded.whatsapp_number")
         .run(storeId, input.whatsappNumber);
       this.db
         .prepare("INSERT INTO sites(store_id,id) VALUES(?,?)")

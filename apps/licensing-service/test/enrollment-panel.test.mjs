@@ -11,8 +11,9 @@ import {
   verifyLease,
 } from "@gastronomy/licensing";
 import { hashPanelPassword } from "../dist/panel-auth.js";
-import { verifyWebSiteTicket } from "@gastronomy/web-orders/provision";
+import { verifyWebSiteTicket, verifyWaiterTicket } from "@gastronomy/web-orders/provision";
 const webSiteProvisionSecret = randomBytes(32).toString("hex");
+const waiterProvisionSecret = randomBytes(32).toString("hex");
 
 const origin = "https://owner.example.test";
 const password = "private-owner-password-2026";
@@ -163,6 +164,7 @@ before(async () => {
     privateKey,
     rateLimit: 500,
     webSiteProvisionSecret,
+    waiterProvisionSecret,
     panelAuth: { username: "owner", passwordHash, origin, secureCookies: true },
   });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
@@ -259,6 +261,7 @@ test("v2 challenge is purpose/key/id bound, one-use, and pending requests never 
   );
   assert.equal("token" in data, false);
   assert.equal("webSiteTicket" in data, false);
+  assert.equal("waiterTicket" in data, false);
 
   const replay = await api("/v2/devices/request", {
     method: "POST",
@@ -341,6 +344,9 @@ test("owner explicitly approves a matching existing license; signed lease works 
   assert.deepEqual(verifyWebSiteTicket(lease.webSiteTicket, webSiteProvisionSecret), {
     licenseId: existingLicense.id, installationId: "install-existing-001", businessName: "Existing paid business",
   });
+  assert.deepEqual(verifyWaiterTicket(lease.waiterTicket, waiterProvisionSecret), {
+    licenseId: existingLicense.id, installationId: "install-existing-001",
+  });
   assert.equal(
     verifyLease(lease.token, publicKey, "install-existing-001").licenseId,
     existingLicense.id,
@@ -359,6 +365,9 @@ test("owner explicitly approves a matching existing license; signed lease works 
   assert.deepEqual(activatedBody.account, { email: "pilot@example.test" });
   assert.equal(activatedBody.request.status, "APPROVED");
   assert.equal(verifyLease(activatedBody.token, publicKey, "install-existing-001").licenseId, existingLicense.id);
+  assert.deepEqual(verifyWaiterTicket(activatedBody.waiterTicket, waiterProvisionSecret), {
+    licenseId: existingLicense.id, installationId: "install-existing-001",
+  });
   assert.equal(JSON.stringify(activatedBody).includes(accountPassword), false);
   const replay = await api("/v2/accounts/activate", { method: "POST", data: { ...accountProof, email: "pilot@example.test", password: accountPassword } });
   assert.equal(replay.status, 409);
@@ -478,7 +487,7 @@ test("account activation atomically claims a fresh license/device and one of two
 
   await new Promise((resolve) => app.server.close(resolve));
   app.close();
-  app = createLicenseServer({ dbPath: join(dir, "licenses.sqlite"), adminToken: admin, privateKey, rateLimit: 500, webSiteProvisionSecret, panelAuth: { username: "owner", passwordHash, origin, secureCookies: true } });
+  app = createLicenseServer({ dbPath: join(dir, "licenses.sqlite"), adminToken: admin, privateKey, rateLimit: 500, webSiteProvisionSecret, waiterProvisionSecret, panelAuth: { username: "owner", passwordHash, origin, secureCookies: true } });
   await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${app.server.address().port}`;
   const afterRestart = await api("/v2/accounts/activate", { method: "POST", data: { ...(await deviceLeaseProof(firstPair, firstProof.installationId)), email, password: "pilot reset password 2026!" } });

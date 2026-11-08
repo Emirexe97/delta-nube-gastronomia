@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
   type Locator,
@@ -50,7 +50,7 @@ async function selectedProductIndex(editor: Locator) {
 
 test.beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-product-search-arrows-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });

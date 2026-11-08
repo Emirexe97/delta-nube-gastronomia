@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Locator,
   type Page,
@@ -22,7 +22,7 @@ let profile = "";
 test.beforeEach(async () => {
   await mkdir(evidence, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-us07b2-readability-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -459,7 +459,7 @@ test("Historial de Compras poblado muestra metadata legible y cancelar revisión
       supplierName: "Proveedor US07B2",
       invoiceNumber: "FAC-US07B2",
       notes: "Control de lectura",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       items: [
         { productId: product.id, quantityMinor: 2500, unitCostMinor: 10000 },
       ],

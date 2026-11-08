@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
 } from "@playwright/test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type AddressInfo } from "node:net";
 
-test("QR de caja → teléfono → dos tandas a un solo comandero y revocación", async ({
+test("QR sin impresora, tandas con y sin comandero y revocación", async ({
   page: phone,
 }, testInfo) => {
   test.setTimeout(100_000);
@@ -57,7 +57,7 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
         revision: 0,
       }),
     );
-    app = await electron.launch({
+    app = await launchConfiguredPos({
       args: ["apps/desktop-shell", "--user-data-dir=" + dir],
       env: {
         ...process.env,
@@ -98,7 +98,7 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
         fullName: "Moza piloto",
         roleCode: "WAITER",
         pin: "5731",
-        authorizerPin: "1234",
+        authorizerPin: "748259",
       });
       const table = await api.ensureTable({ number: 88 });
       for (const name of ["Plato piloto uno", "Plato piloto dos"])
@@ -115,6 +115,16 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     });
     await pos.reload();
     await pos.getByRole("link", { name: "Configuración" }).click();
+    await pos.getByRole("tab", { name: "Modo Mozo", exact: true }).click();
+    const panel = pos.locator("#settings-waiter");
+    expect((await pos.evaluate(() => window.gastronomy.getWaiterDeskStatus())).printerReady).toBe(false);
+    await panel.locator("select").selectOption(waiter.id);
+    await panel.getByRole("button", { name: "Vincular teléfono" }).click();
+    const img = panel.locator("img");
+    await expect(img).toBeVisible();
+    const image = await img.getAttribute("src");
+    const address = decodeWebSiteQr(Buffer.from(image!.split(",")[1]!, "base64"));
+    expect(address).toContain(origin + "/waiter#");
     await pos.getByRole("tab", { name: "Impresión", exact: true }).click();
     const kitchen = pos.getByRole("region", {
       name: "Comanda de cocina",
@@ -142,17 +152,6 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     await pos
       .getByRole("button", { name: "Guardar configuración", exact: true })
       .click();
-    await pos.getByRole("tab", { name: "Modo Mozo", exact: true }).click();
-    const panel = pos.locator("#settings-waiter");
-    await panel.locator("select").selectOption(waiter.id);
-    await panel.getByRole("button", { name: "Vincular teléfono" }).click();
-    const img = panel.locator("img");
-    await expect(img).toBeVisible();
-    const image = await img.getAttribute("src");
-    const address = decodeWebSiteQr(
-      Buffer.from(image!.split(",")[1]!, "base64"),
-    );
-    expect(address).toContain(origin + "/waiter#");
     await phone.setViewportSize({ width: 375, height: 812 });
     // A physical phone can be ahead of the PC. Immediate orders must use the PC time anchor,
     // not quarantine every send as a future timestamp. Only this isolated browser clock changes.
@@ -290,7 +289,7 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     await pos.getByRole("tab", { name: /Mozos/ }).click();
     await pos.getByRole("button", { name: /Mesa 88.*Moza piloto/ }).click();
     await expect(pos.getByText("1 × Plato piloto dos", { exact: true })).toBeVisible();
-    await pos.getByRole("button", { name: "Aprobar y enviar a cocina", exact: true }).click();
+    await pos.getByRole("button", { name: "Aprobar pedido", exact: true }).click();
     await expect.poll(async () => (await tickets()).length, { timeout: 12000 }).toBe(4);
     const once = await pos.evaluate((requestId) => window.gastronomy.confirmDelayedWaiterBatch({ requestId }), delayedPayload.requestId);
     expect(once.created).toBe(false);
@@ -300,6 +299,23 @@ test("QR de caja → teléfono → dos tandas a un solo comandero y revocación"
     await phone.locator("#checkPending").click();
     await expect(phone.locator("#draft")).not.toContainText("Plato piloto dos");
     await expect(pos.getByText("No hay pedidos pendientes de revisión.")).toBeVisible();
+    // No configured kitchen device: subsequent orders still reach the same table
+    // and clear the phone draft without a spool job, a retry or a print error.
+    await phone.unroute("**/v1/waiter/rpc");
+    const jobsBeforeDigital = await pos.evaluate(async () => {
+      const { settings, printJobs } = await window.gastronomy.bootstrap();
+      settings.printing.kitchen.mode = "SYSTEM_DIALOG";
+      settings.printing.kitchen.deviceName = "";
+      await window.gastronomy.saveSettings(settings);
+      return printJobs.length;
+    });
+    await phone.getByRole("button", { name: "Agregar Plato piloto uno", exact: true }).click();
+    await phone.locator("#send").click();
+    await expect(phone.locator("#printStatus")).toContainText(/registrado.*sin impresión/i, { timeout: 12000 });
+    await expect(phone.locator("#draft")).not.toContainText("Plato piloto uno");
+    const digitalOrder = await pos.evaluate((orderId) => window.gastronomy.getOrder({ orderId }), job.orderId);
+    expect(digitalOrder.items.reduce((sum, i) => sum + i.quantity, 0)).toBe(5);
+    expect((await pos.evaluate(() => window.gastronomy.bootstrap())).printJobs).toHaveLength(jobsBeforeDigital);
     await pos.getByRole("link", { name: "Configuración", exact: true }).click();
     await pos.getByRole("tab", { name: "Modo Mozo", exact: true }).click();
     await panel.getByRole("button", { name: "Revocar", exact: true }).click();

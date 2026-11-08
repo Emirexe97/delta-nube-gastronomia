@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -17,7 +17,7 @@ test.beforeEach(async () => {
   userData = await mkdtemp(
     join(tmpdir(), "gastronomy-driver-late-assignment-"),
   );
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });
@@ -50,7 +50,7 @@ test("cuenta un delivery asignado al cerrar aunque se cree el repartidor despué
     });
     const driver = await window.gastronomy.createDriver({
       fullName: "Repartidor tardío E2E",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     await window.gastronomy.assignDeliveryDriver({
       orderId: confirmed.id,

@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -43,7 +43,7 @@ async function seedOrder(customerName: string) {
 
 test.beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-audit-fixes-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });
@@ -143,6 +143,7 @@ test("Finanzas rechaza abc y exporta gastos filtrados con fórmula neutralizada"
       ["Fuera de período E2E", "2025-01-01", 99900],
     ] as const) {
       await window.gastronomy.createFinanceExpense({
+        authorizerPin: "748259",
         title,
         category: "Servicios",
         kind: "GENERAL",
@@ -169,6 +170,7 @@ test("Finanzas rechaza abc y exporta gastos filtrados con fórmula neutralizada"
   await page.getByLabel("Categoría", { exact: true }).fill("Prueba inválida");
   await page.getByLabel("Concepto", { exact: true }).fill("No debe guardar");
   await page.getByLabel("Importe", { exact: true }).fill("abc");
+  await page.getByLabel("PIN de autorización", { exact: true }).fill("748259");
   await page
     .getByRole("button", { name: "Registrar gasto", exact: true })
     .click();
@@ -189,7 +191,9 @@ test("Finanzas rechaza abc y exporta gastos filtrados con fórmula neutralizada"
       });
     });
   }, exportPath);
-  await page.getByRole("button", { name: "Exportar gastos (CSV)", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Exportar gastos (CSV)", exact: true })
+    .click();
   await expect
     .poll(
       () =>

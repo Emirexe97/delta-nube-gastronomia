@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,7 +15,7 @@ function fixture(
 ) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-expense-recovery-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, {
+  const repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -43,8 +44,9 @@ const expenseInput = {
 
 test("corrige un gasto manual sin pago, conserva revisión y audita antes/después", () =>
   fixture((repo, db) => {
-    const before = repo.createFinanceExpense(expenseInput);
+    const before = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const corrected = repo.correctFinanceExpense({
+      authorizerPin: "2468",
       ...expenseInput,
       expenseId: before.id,
       expectedRevision: 0,
@@ -96,8 +98,9 @@ test("corrige un gasto manual sin pago, conserva revisión y audita antes/despu�
 
 test("cancela sin borrar historial ni crear movimiento, excluye el gasto de todos los totales", () =>
   fixture((repo, db) => {
-    const original = repo.createFinanceExpense(expenseInput);
+    const original = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const cancelled = repo.cancelFinanceExpense({
+      authorizerPin: "2468",
       expenseId: original.id,
       expectedRevision: 0,
       reason: "Carga duplicada",
@@ -136,6 +139,7 @@ test("cancela sin borrar historial ni crear movimiento, excluye el gasto de todo
     assert.throws(
       () =>
         repo.cancelFinanceExpense({
+          authorizerPin: "2468",
           expenseId: original.id,
           expectedRevision: 1,
           reason: "Repetida",
@@ -146,6 +150,7 @@ test("cancela sin borrar historial ni crear movimiento, excluye el gasto de todo
     assert.throws(
       () =>
         repo.payFinanceExpense({
+          authorizerPin: "2468",
           expenseId: original.id,
           paymentMethodCode: "CASH",
           fromCash: false,
@@ -156,7 +161,7 @@ test("cancela sin borrar historial ni crear movimiento, excluye el gasto de todo
 
 test("replays idempotently and rejects a stale revision", () =>
   fixture((repo) => {
-    const original = repo.createFinanceExpense(expenseInput);
+    const original = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const input = {
       ...expenseInput,
       expenseId: original.id,
@@ -165,11 +170,12 @@ test("replays idempotently and rejects a stale revision", () =>
       amountMinor: 15000,
       idempotencyKey: "same-correction",
     };
-    const first = repo.correctFinanceExpense(input);
-    assert.deepEqual(repo.correctFinanceExpense(input), first);
+    const first = repo.correctFinanceExpense({ authorizerPin: "2468", ...input });
+    assert.deepEqual(repo.correctFinanceExpense({ authorizerPin: "2468", ...input }), first);
     assert.throws(
       () =>
         repo.cancelFinanceExpense({
+          authorizerPin: "2468",
           expenseId: original.id,
           expectedRevision: 0,
           reason: "stale",
@@ -181,8 +187,9 @@ test("replays idempotently and rejects a stale revision", () =>
 
 test("rechaza cancelar/corregir gastos pagados y recurrentes", () =>
   fixture((repo) => {
-    const paid = repo.createFinanceExpense(expenseInput);
+    const paid = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: paid.id,
       paymentMethodCode: "CASH",
       fromCash: false,
@@ -190,6 +197,7 @@ test("rechaza cancelar/corregir gastos pagados y recurrentes", () =>
     assert.throws(
       () =>
         repo.correctFinanceExpense({
+          authorizerPin: "2468",
           ...expenseInput,
           expenseId: paid.id,
           expectedRevision: 0,
@@ -201,6 +209,7 @@ test("rechaza cancelar/corregir gastos pagados y recurrentes", () =>
     assert.throws(
       () =>
         repo.cancelFinanceExpense({
+          authorizerPin: "2468",
           expenseId: paid.id,
           expectedRevision: 0,
           reason: "No",
@@ -209,6 +218,7 @@ test("rechaza cancelar/corregir gastos pagados y recurrentes", () =>
       /pagado|revisión|modificado/i,
     );
     const recurring = repo.createFinanceRecurring({
+      authorizerPin: "2468",
       title: "Alquiler",
       category: "Local",
       kind: "FIXED",
@@ -223,6 +233,7 @@ test("rechaza cancelar/corregir gastos pagados y recurrentes", () =>
     assert.throws(
       () =>
         repo.correctFinanceExpense({
+          authorizerPin: "2468",
           ...expenseInput,
           expenseId: materialized!.id,
           expectedRevision: 0,
@@ -234,6 +245,7 @@ test("rechaza cancelar/corregir gastos pagados y recurrentes", () =>
     assert.throws(
       () =>
         repo.cancelFinanceExpense({
+          authorizerPin: "2468",
           expenseId: materialized!.id,
           expectedRevision: 0,
           reason: "No",
@@ -245,8 +257,9 @@ test("rechaza cancelar/corregir gastos pagados y recurrentes", () =>
 
 test("un pago invalida la revisión previa para corrección posterior", () =>
   fixture((repo) => {
-    const e = repo.createFinanceExpense(expenseInput);
+    const e = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: e.id,
       paymentMethodCode: "CASH",
       fromCash: false,
@@ -254,6 +267,7 @@ test("un pago invalida la revisión previa para corrección posterior", () =>
     assert.throws(
       () =>
         repo.correctFinanceExpense({
+          authorizerPin: "2468",
           ...expenseInput,
           expenseId: e.id,
           expectedRevision: 0,
@@ -266,7 +280,7 @@ test("un pago invalida la revisión previa para corrección posterior", () =>
 
 test("valida motivo, fechas, longitudes y permisos de finanzas", () =>
   fixture((repo, db) => {
-    const e = repo.createFinanceExpense(expenseInput);
+    const e = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const base = {
       ...expenseInput,
       expenseId: e.id,
@@ -275,15 +289,15 @@ test("valida motivo, fechas, longitudes y permisos de finanzas", () =>
       idempotencyKey: "invalid-case",
     };
     assert.throws(
-      () => repo.correctFinanceExpense({ ...base, reason: "   " }),
+      () => repo.correctFinanceExpense({ authorizerPin: "2468", ...base, reason: "   " }),
       /motivo|razón|válid/i,
     );
     assert.throws(
-      () => repo.correctFinanceExpense({ ...base, incurredOn: "2026-02-30" }),
+      () => repo.correctFinanceExpense({ authorizerPin: "2468", ...base, incurredOn: "2026-02-30" }),
       /fecha|válid/i,
     );
     assert.throws(
-      () => repo.correctFinanceExpense({ ...base, title: "x".repeat(161) }),
+      () => repo.correctFinanceExpense({ authorizerPin: "2468", ...base, title: "x".repeat(161) }),
       /título|largo|válid/i,
     );
     db.prepare(
@@ -292,6 +306,7 @@ test("valida motivo, fechas, longitudes y permisos de finanzas", () =>
     assert.throws(
       () =>
         repo.cancelFinanceExpense({
+          authorizerPin: "2468",
           expenseId: e.id,
           expectedRevision: 0,
           reason: "sin permiso",
@@ -304,11 +319,13 @@ test("valida motivo, fechas, longitudes y permisos de finanzas", () =>
 test("los gastos fijos y de nómina actualizan sus totales y el mensual al corregirlos", () =>
   fixture((repo) => {
     const e = repo.createFinanceExpense({
+      authorizerPin: "2468",
       ...expenseInput,
       kind: "GENERAL",
       amountMinor: 10000,
     });
     const changed = repo.correctFinanceExpense({
+      authorizerPin: "2468",
       ...expenseInput,
       expenseId: e.id,
       expectedRevision: 0,
@@ -329,6 +346,7 @@ test("los gastos fijos y de nómina actualizan sus totales y el mensual al corre
       22000,
     );
     repo.correctFinanceExpense({
+      authorizerPin: "2468",
       ...expenseInput,
       expenseId: e.id,
       expectedRevision: 1,
@@ -351,18 +369,20 @@ test("la migración de recuperación agrega columnas sin alterar gastos pagados 
     join(tmpdir(), "gastronomy-expense-recovery-migration-"),
   );
   const path = join(dir, "test.sqlite");
-  let repo = new SqliteGastronomyRepository(path, {
+  let repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
   const db = new Database(path);
-  const paid = repo.createFinanceExpense(expenseInput);
+  const paid = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
   repo.payFinanceExpense({
+    authorizerPin: "2468",
     expenseId: paid.id,
     paymentMethodCode: "CASH",
     fromCash: false,
   });
   const recurring = repo.createFinanceRecurring({
+    authorizerPin: "2468",
     title: "Alquiler",
     category: "Local",
     kind: "FIXED",
@@ -379,7 +399,7 @@ test("la migración de recuperación agrega columnas sin alterar gastos pagados 
   db.close();
   repo.close();
   try {
-    repo = new SqliteGastronomyRepository(path, {
+    repo = configuredTestRepository(path, {
       adminPin: "2468",
       seedStarterCatalog: true,
     });
@@ -405,7 +425,7 @@ test("la migración de recuperación agrega columnas sin alterar gastos pagados 
 
 test("revalida permiso en replay y no confunde corregir con anular al reutilizar clave", () =>
   fixture((repo, db) => {
-    const e = repo.createFinanceExpense(expenseInput);
+    const e = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const input = {
       ...expenseInput,
       expenseId: e.id,
@@ -413,18 +433,19 @@ test("revalida permiso en replay y no confunde corregir con anular al reutilizar
       reason: "corregir",
       idempotencyKey: "shared-intent",
     };
-    repo.correctFinanceExpense(input);
-    assert.throws(() => repo.cancelFinanceExpense(input), /clave|diferentes/i);
+    repo.correctFinanceExpense({ authorizerPin: "2468", ...input });
+    assert.throws(() => repo.cancelFinanceExpense({ authorizerPin: "2468", ...input }), /clave|diferentes/i);
     db.prepare(
       "DELETE FROM role_permissions WHERE role_id=(SELECT role_id FROM users WHERE id=?) AND permission_code IN ('*','finance.manage')",
     ).run(repo.bootstrap().currentUser.id);
-    assert.throws(() => repo.correctFinanceExpense(input), /permiso/i);
+    assert.throws(() => repo.correctFinanceExpense({ authorizerPin: "2468", ...input }), /permiso/i);
   }));
 test("bloquea vínculo a caja aunque estado legado figure impago", () =>
   fixture((repo, db) => {
     repo.openCashSession({ openingAmountMinor: 100000 });
-    const e = repo.createFinanceExpense(expenseInput);
+    const e = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: e.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -436,6 +457,7 @@ test("bloquea vínculo a caja aunque estado legado figure impago", () =>
     assert.throws(
       () =>
         repo.cancelFinanceExpense({
+          authorizerPin: "2468",
           expenseId: e.id,
           expectedRevision: row.revision,
           reason: "legacy",
@@ -446,6 +468,7 @@ test("bloquea vínculo a caja aunque estado legado figure impago", () =>
     assert.throws(
       () =>
         repo.correctFinanceExpense({
+          authorizerPin: "2468",
           ...expenseInput,
           expenseId: e.id,
           expectedRevision: row.revision,

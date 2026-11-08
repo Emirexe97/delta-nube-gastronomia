@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -13,7 +13,7 @@ let page: Page;
 let profile = "";
 test("reinicia pedidos de retiro, delivery y salón por turno sin cambiar identidad ni mesas", async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-shift-number-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -54,7 +54,7 @@ test("reinicia pedidos de retiro, delivery y salón por turno sin cambiar identi
       closingFloatAmountMinor: 0,
       force: true,
       reason: "Prueba aislada de numeración",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const second = await api.openCashSession({ openingAmountMinor: 0 });
     const d = await api.createOrder({

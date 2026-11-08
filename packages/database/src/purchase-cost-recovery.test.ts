@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -11,7 +12,7 @@ import { latestSchemaVersion, removeNewNullablePurchaseColumns, rewindPurchaseTe
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-cost-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  const repo = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   const db = new Database(path);
   try { run(repo, db); }
   finally { db.close(); repo.close(); assert.equal(dirname(resolve(dir)), resolve(tmpdir())); assert.ok(basename(dir).startsWith("gastronomy-purchase-cost-")); rmSync(dir, { recursive: true, force: true }); }
@@ -167,11 +168,11 @@ test("manual product cost remains preferred over purchase correction; new purcha
 
 test("migration from schema 35 creates empty append-only correction ledger without changing historical purchase rows", () => {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-cost-")); const path = join(dir, "test.sqlite");
-  let repo = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true }); let db = new Database(path);
+  let repo = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true }); let db = new Database(path);
   try {
     const { purchase } = setup(repo); const before = removeNewNullablePurchaseColumns(db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id) as any);
     rewindPurchaseTestSchema(db, 35);
-    db.close(); repo.close(); repo = new SqliteGastronomyRepository(path, { adminPin: "2468" }); db = new Database(path);
+    db.close(); repo.close(); repo = configuredTestRepository(path, { adminPin: "2468" }); db = new Database(path);
     assert.deepEqual(removeNewNullablePurchaseColumns(db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id) as any), before);
     assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, latestSchemaVersion);
     assert.deepEqual(db.prepare("SELECT version FROM schema_migrations WHERE version>=35 ORDER BY version").all(), migrations.filter((migration) => migration.version >= 35).map(({ version }) => ({ version })));

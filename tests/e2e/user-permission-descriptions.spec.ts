@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -20,7 +20,7 @@ let profile = "";
 test.beforeEach(async () => {
   await mkdir(evidence, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-user-permissions-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -128,13 +128,13 @@ test("muestra capacidades reales del usuario sin conteos a 1100, 1366 y 200%", a
         fullName: "US11 " + roleCode,
         roleCode,
         pin: "4321",
-        authorizerPin: "1234",
+        authorizerPin: "748259",
       });
     }
     await api.createDriver({
       staffNumber: 103,
       fullName: "US11 Repartidor",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     return api.bootstrap();
   });

@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -20,7 +20,7 @@ let profile = "";
 test.beforeEach(async () => {
   await mkdir(out, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-us05-open-orders-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -110,7 +110,7 @@ for (const width of [1280, 1100, 1366])
           await api.cancelOrder({
             orderId: cancelled.id,
             reason: "US05 cancelado de prueba",
-            authorizerPin: "1234",
+            authorizerPin: "748259",
           });
           const delivered = await create("TAKEAWAY");
           await api.completeOrder({

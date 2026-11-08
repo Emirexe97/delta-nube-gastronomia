@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -20,7 +20,7 @@ let profile = "";
 test.beforeEach(async () => {
   await mkdir(evidence, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-finance-period-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -98,6 +98,7 @@ test("Mes representa el período completo y nunca conserva un mes obsoleto en ra
       ["US12 marzo", "2024-03-01", 67890],
     ] as const) {
       await window.gastronomy.createFinanceExpense({
+        authorizerPin: "748259",
         title,
         category: "US12",
         kind: "GENERAL",

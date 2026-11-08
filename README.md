@@ -135,13 +135,18 @@ En un pedido para retirar o envío, elegir **Fecha y hora** conserva el horario 
 
 ## Autorizaciones locales
 
-El modo standalone no presenta login. El PIN se usa únicamente para autorizar
-operaciones sensibles; el administrador inicial usa temporalmente `1234` y se
-puede sustituir antes del primer inicio:
+El modo standalone no presenta login por turno. **Antes de operar por primera
+vez**, el administrador debe reemplazar su PIN inicial por uno propio. El PIN
+inicial es `1234` salvo que se haya configurado otro al crear la base. El cambio
+se hace también en instalaciones existentes que aún tienen el PIN pendiente;
+no se vuelve a pedir en cada arranque. Cada persona debe usar su propio PIN.
 
-```powershell
-$env:GASTRONOMY_ADMIN_PIN="PIN-SEGURO"
-```
+Los retiros, ajustes negativos y egresos manuales de caja, y las operaciones
+de gastos de Finanzas, exigen el PIN de una persona con el permiso
+correspondiente. En **Auditoría → Operador / autorizante** se puede consultar
+quién autorizó el movimiento. Los registros anteriores no se reatribuyen.
+Para restaurar una copia de seguridad la caja debe estar cerrada y el PIN debe
+pertenecer a un administrador activo **de la base en uso**, no de la copia.
 
 Nunca se persiste el PIN en claro; SQLite guarda un hash bcrypt con costo 12.
 Cuando el módulo se integre con Delta Nube POS, deberá reutilizar su login,

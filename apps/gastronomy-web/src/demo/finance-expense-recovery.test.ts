@@ -26,6 +26,7 @@ const setup = async () => {
   const api = createDemoApi(storage);
   const date = (await api.bootstrap()).cashSession!.businessDate;
   const expense = await api.createFinanceExpense({
+    authorizerPin: "1234",
     title: "Gasto de prueba",
     category: "Pruebas",
     kind: "GENERAL",
@@ -49,6 +50,7 @@ describe("recuperación de gastos demo", () => {
       p.stockMinor,
     ]);
     const corrected = await api.correctFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       expectedRevision: 0,
       reason: "Importe mal cargado",
@@ -99,6 +101,7 @@ describe("recuperación de gastos demo", () => {
   it("anula conservando DTO y excludes anulados de totales", async () => {
     const { api, date, expense } = await setup();
     const cancelled = await api.cancelFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       expectedRevision: 0,
       reason: "Duplicado",
@@ -143,11 +146,11 @@ describe("recuperación de gastos demo", () => {
       note: null,
       idempotencyKey: "stable-key",
     };
-    const first = await api.correctFinanceExpense(input);
-    const replay = await api.correctFinanceExpense(input);
+    const first = await api.correctFinanceExpense({ authorizerPin: "1234", ...input });
+    const replay = await api.correctFinanceExpense({ authorizerPin: "1234", ...input });
     expect(replay).toEqual(first);
     await expect(
-      api.correctFinanceExpense({ ...input, title: "Alterado" }),
+      api.correctFinanceExpense({ authorizerPin: "1234", ...input, title: "Alterado" }),
     ).rejects.toThrow(/idempotencia/i);
     expect(
       (await api.getFinanceReport({ from: date, to: date })).expensesMinor,
@@ -162,6 +165,7 @@ describe("recuperación de gastos demo", () => {
   it("rechaza revisión obsoleta y no permite pagar un gasto anulado", async () => {
     const { api, expense, date } = await setup();
     await api.correctFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       expectedRevision: 0,
       reason: "Primera corrección",
@@ -175,6 +179,7 @@ describe("recuperación de gastos demo", () => {
     });
     await expect(
       api.cancelFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: 0,
         reason: "Vieja revisión",
@@ -182,6 +187,7 @@ describe("recuperación de gastos demo", () => {
       }),
     ).rejects.toThrow(/cambió/i);
     await api.cancelFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       expectedRevision: 1,
       reason: "Cancelado",
@@ -192,6 +198,7 @@ describe("recuperación de gastos demo", () => {
     });
     await expect(
       api.payFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         paymentMethodCode: "CASH",
         fromCash: true,
@@ -210,6 +217,7 @@ describe("recuperación de gastos demo", () => {
     const api = createDemoApi(storage);
     await expect(
       api.correctFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: 0,
         reason: "No autorizado",
@@ -224,6 +232,7 @@ describe("recuperación de gastos demo", () => {
     ).rejects.toThrow(/permiso/i);
     await expect(
       api.cancelFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: 0,
         reason: "No autorizado",
@@ -236,6 +245,7 @@ describe("recuperación de gastos demo", () => {
     const { api, date, expense } = await setup();
     await expect(
       api.correctFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: 0,
         reason: "Fecha inválida",
@@ -250,6 +260,7 @@ describe("recuperación de gastos demo", () => {
     ).rejects.toThrow(/datos válidos/i);
     await expect(
       api.correctFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: 0,
         reason: "x".repeat(501),

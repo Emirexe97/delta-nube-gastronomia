@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -21,7 +21,7 @@ let profile: string;
 test.beforeEach(async () => {
   await mkdir(out, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-us01-contrast-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -86,6 +86,7 @@ for (const { width, state, zoom } of scenarios) {
         await api.confirmOrder({ orderId: order.id });
       } else if (state === "negative") {
         await api.createFinanceExpense({
+          authorizerPin: "748259",
           title: "US01 gasto de prueba",
           category: "Prueba aislada",
           kind: "GENERAL",

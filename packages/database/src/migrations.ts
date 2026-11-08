@@ -400,22 +400,13 @@ CREATE INDEX IF NOT EXISTS payment_refunds_cash_idx ON payment_refunds(cash_sess
     version: 7,
     name: "unify_takeaway_and_delivery_prices",
     sql: String.raw`
-UPDATE product_prices
-SET amount_minor = (
-  SELECT takeaway.amount_minor
-  FROM product_prices takeaway
-  JOIN price_lists takeaway_list ON takeaway_list.id = takeaway.price_list_id
-  WHERE takeaway.product_id = product_prices.product_id
-    AND takeaway_list.code = 'TAKEAWAY'
-)
-WHERE price_list_id = (SELECT id FROM price_lists WHERE code = 'DELIVERY')
-  AND EXISTS (
-    SELECT 1
-    FROM product_prices takeaway
-    JOIN price_lists takeaway_list ON takeaway_list.id = takeaway.price_list_id
-    WHERE takeaway.product_id = product_prices.product_id
-      AND takeaway_list.code = 'TAKEAWAY'
-  );
+-- Direct upgrades from before v7 must not overwrite an explicit delivery price
+-- before the price-books conversion can read it. Applied migrations never rerun.
+INSERT OR IGNORE INTO product_prices(product_id, price_list_id, amount_minor, updated_at)
+SELECT pp.product_id, delivery.id, pp.amount_minor, pp.updated_at
+FROM product_prices pp
+JOIN price_lists takeaway ON takeaway.id=pp.price_list_id AND takeaway.code='TAKEAWAY'
+JOIN price_lists delivery ON delivery.code='DELIVERY';
 `,
   },
   {
@@ -1182,5 +1173,12 @@ CREATE TABLE price_book_assignments (channel TEXT PRIMARY KEY CHECK(channel IN (
 CREATE TABLE product_price_book_overrides (product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE, book_id TEXT NOT NULL REFERENCES price_books(id) ON DELETE CASCADE, amount_minor INTEGER NOT NULL CHECK(amount_minor >= 0), PRIMARY KEY(product_id,book_id));
 CREATE TABLE product_price_book_bases (product_id TEXT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE, amount_minor INTEGER NOT NULL CHECK(amount_minor >= 0));
 `
+  },
+  {
+    version: 49,
+    name: "price_book_rounding_increment",
+    sql: String.raw`
+ALTER TABLE price_books ADD COLUMN rounding_increment_minor INTEGER NOT NULL DEFAULT 1 CHECK(rounding_increment_minor IN (1,1000,10000,100000));
+`,
   },
 ];

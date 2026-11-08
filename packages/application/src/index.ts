@@ -71,6 +71,7 @@ import type {
   SettleCustomerAccountInput,
   TableSectorDto,
 } from "@gastronomy/contracts";
+import { isPriceBookRoundingIncrementMinor } from "@gastronomy/contracts";
 import {
   assertMoneyMinor,
   assertAppSettings,
@@ -354,7 +355,7 @@ export interface GastronomyRepository {
   createFinanceRecurring(
     input: CreateFinanceRecurringInput,
   ): FinanceRecurringDto;
-  stopFinanceRecurring(input: { recurringId: Id }): FinanceRecurringDto;
+  stopFinanceRecurring(input: { recurringId: Id; authorizerPin: string }): FinanceRecurringDto;
   setFinanceProductCost(input: {
     productId: Id;
     unitCostMinor: MoneyMinor | null;
@@ -969,6 +970,13 @@ export class GastronomyApplication {
       input.adjustmentBps > 100000
     )
       throw new Error("La variación debe estar entre -100% y 1000%.");
+    if (input.roundingIncrementMinor !== undefined &&
+      !isPriceBookRoundingIncrementMinor(input.roundingIncrementMinor))
+      throw new Error("El redondeo de lista no es válido.");
+    if (input.productOverrides !== undefined &&
+      (!input.productOverrides || typeof input.productOverrides !== "object" || Array.isArray(input.productOverrides) ||
+       Object.values(input.productOverrides).some((price) => price !== null && (!Number.isSafeInteger(price) || price < 0))))
+      throw new Error("Los precios propios de la lista no son válidos.");
     return this.repository.savePriceBook({
       ...input,
       name: input.name.trim(),
@@ -1208,7 +1216,7 @@ export class GastronomyApplication {
     return this.repository.createFinanceRecurring(input);
   }
 
-  stopFinanceRecurring(input: { recurringId: Id }) {
+  stopFinanceRecurring(input: { recurringId: Id; authorizerPin: string }) {
     return this.repository.stopFinanceRecurring(input);
   }
 

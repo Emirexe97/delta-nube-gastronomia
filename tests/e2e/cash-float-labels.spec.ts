@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -15,7 +15,7 @@ let page: Page;
 let profile = "";
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-us04-float-labels-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -77,6 +77,7 @@ for (const width of [1280, 1100, 1366]) {
           openingAmountMinor: state === "zero-float" ? 0 : 5_000_000,
         });
         await api.registerCashMovement({
+          authorizerPin: "748259",
           type: state === "negative-net" ? "WITHDRAWAL" : "INCOME",
           amountMinor: state === "negative-net" ? 600_000 : 2_350_000,
           reason: "US04 aislado",

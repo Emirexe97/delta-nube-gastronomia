@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -13,7 +13,7 @@ let page: Page;
 let userData: string;
 test.beforeAll(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-purchases-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });
@@ -63,7 +63,7 @@ test("registra una compra e incrementa el stock", async () => {
   await dialog.getByLabel("Producto").selectOption(before.productId);
   await dialog.getByLabel("Cantidad").fill("2,5");
   await dialog.getByLabel("Costo unit.").fill("100");
-  await dialog.getByLabel("PIN autorizador").fill("1234");
+  await dialog.getByLabel("PIN autorizador").fill("748259");
   await dialog.getByRole("button", { name: "Confirmar ingreso" }).click();
 
   await expect(page.getByText("Proveedor E2E", { exact: true })).toBeVisible();

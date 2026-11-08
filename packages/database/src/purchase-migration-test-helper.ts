@@ -10,6 +10,13 @@ export function rewindPurchaseTestSchema(
   db: InstanceType<typeof Database>,
   targetVersion: number,
 ) {
+  if (targetVersion < 49 && targetVersion >= 48) {
+    const books = db.prepare("PRAGMA table_info(price_books)").all() as Array<{
+      name: string;
+    }>;
+    if (books.some((column) => column.name === "rounding_increment_minor"))
+      db.exec("ALTER TABLE price_books DROP COLUMN rounding_increment_minor");
+  }
   if (targetVersion < 48)
     db.exec(`DROP TABLE IF EXISTS product_price_book_overrides;
       DROP TABLE IF EXISTS product_price_book_bases;

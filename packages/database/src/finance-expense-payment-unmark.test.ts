@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,7 +15,7 @@ function fixture(
 ) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-expense-unmark-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, {
+  const repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -43,15 +44,16 @@ const range = { from: "2026-10-01", to: "2026-10-31" };
 
 test("desmarca pago externo manual con motivo, versión y auditoría inmutable, sin cambiar importe del informe", () =>
   fixture((repo, db) => {
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
     });
     assert.equal(paid.canUnmarkPayment, true);
     const reportBefore = repo.getFinanceReport(range);
-    const result = repo.unmarkFinanceExpensePayment({
+    const result = repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
       expenseId: expense.id,
       expectedRevision: paid.revision ?? 0,
       reason: "Se marcó por error",
@@ -95,7 +97,7 @@ test("desmarca pago externo manual con motivo, versión y auditoría inmutable, 
 
 test("replay de pago previo no restaura y replay de deshacer tampoco revierte un pago posterior", () =>
   fixture((repo) => {
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const payInput = {
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
@@ -103,21 +105,22 @@ test("replay de pago previo no restaura y replay de deshacer tampoco revierte un
       expectedRevision: 0,
       idempotencyKey: "pay-once",
     };
-    const receipt = repo.payFinanceExpense(payInput);
+    const receipt = repo.payFinanceExpense({ authorizerPin: "2468", ...payInput });
     const undoInput = {
       expenseId: expense.id,
       expectedRevision: receipt.revision ?? 0,
       reason: "Error",
       idempotencyKey: "undo-once",
     };
-    const undone = repo.unmarkFinanceExpensePayment(undoInput);
-    assert.deepEqual(repo.payFinanceExpense(payInput), receipt);
+    const undone = repo.unmarkFinanceExpensePayment({ authorizerPin: "2468", ...undoInput });
+    assert.deepEqual(repo.payFinanceExpense({ authorizerPin: "2468", ...payInput }), receipt);
     assert.equal(
       repo.getFinanceReport(range).expenses.find((e) => e.id === expense.id)
         ?.paidAt,
       null,
     );
     const repaid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
@@ -125,7 +128,7 @@ test("replay de pago previo no restaura y replay de deshacer tampoco revierte un
       idempotencyKey: "pay-again",
     });
     assert.ok(repaid.paidAt);
-    assert.deepEqual(repo.unmarkFinanceExpensePayment(undoInput), undone);
+    assert.deepEqual(repo.unmarkFinanceExpensePayment({ authorizerPin: "2468", ...undoInput }), undone);
     assert.ok(
       repo.getFinanceReport(range).expenses.find((e) => e.id === expense.id)
         ?.paidAt,
@@ -134,15 +137,16 @@ test("replay de pago previo no restaura y replay de deshacer tampoco revierte un
 
 test("unauthorized, stale/missing revision, invalid reason y estados fuera de alcance se rechazan", () =>
   fixture((repo, db) => {
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
     });
     assert.throws(
       () =>
-        repo.unmarkFinanceExpensePayment({
+        repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
           expenseId: expense.id,
           expectedRevision: paid.revision ?? 0,
           reason: " ",
@@ -152,7 +156,7 @@ test("unauthorized, stale/missing revision, invalid reason y estados fuera de al
     );
     assert.throws(
       () =>
-        repo.unmarkFinanceExpensePayment({
+        repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
           expenseId: expense.id,
           expectedRevision: (paid.revision ?? 0) - 1,
           reason: "Motivo",
@@ -165,7 +169,7 @@ test("unauthorized, stale/missing revision, invalid reason y estados fuera de al
     ).run(repo.bootstrap().currentUser.id);
     assert.throws(
       () =>
-        repo.unmarkFinanceExpensePayment({
+        repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
           expenseId: expense.id,
           expectedRevision: paid.revision ?? 0,
           reason: "Sin permiso",
@@ -177,13 +181,14 @@ test("unauthorized, stale/missing revision, invalid reason y estados fuera de al
 
 test("un pago posterior a un deshacer exige revisión; la marca permite reintento vigente y rechaza omitida", () =>
   fixture((repo) => {
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const legacyReceipt = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
     });
-    const undone = repo.unmarkFinanceExpensePayment({
+    const undone = repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
       expenseId: expense.id,
       expectedRevision: legacyReceipt.revision ?? 0,
       reason: "Corrección",
@@ -192,6 +197,7 @@ test("un pago posterior a un deshacer exige revisión; la marca permite reintent
     assert.throws(
       () =>
         repo.payFinanceExpense({
+          authorizerPin: "2468",
           expenseId: expense.id,
           paymentMethodCode: "TRANSFER",
           fromCash: false,
@@ -199,6 +205,7 @@ test("un pago posterior a un deshacer exige revisión; la marca permite reintent
       /revisión|versión|required|obligatoria/i,
     );
     const repaid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
@@ -211,8 +218,9 @@ test("un pago posterior a un deshacer exige revisión; la marca permite reintent
 test("rechaza pagos ligados a caja, recurrentes y cancelados para deshacer", () =>
   fixture((repo, db) => {
     repo.openCashSession({ openingAmountMinor: 100000 });
-    const linked = repo.createFinanceExpense(expenseInput);
+    const linked = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: linked.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -222,7 +230,7 @@ test("rechaza pagos ligados a caja, recurrentes y cancelados para deshacer", () 
       .get(linked.id) as { revision: number };
     assert.throws(
       () =>
-        repo.unmarkFinanceExpensePayment({
+        repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
           expenseId: linked.id,
           expectedRevision: linkedRow.revision,
           reason: "No",
@@ -231,10 +239,12 @@ test("rechaza pagos ligados a caja, recurrentes y cancelados para deshacer", () 
       /caja|efectivo/i,
     );
     const canceled = repo.createFinanceExpense({
+      authorizerPin: "2468",
       ...expenseInput,
       title: "Cancelado",
     });
     repo.cancelFinanceExpense({
+      authorizerPin: "2468",
       expenseId: canceled.id,
       expectedRevision: 0,
       reason: "Duplicado",
@@ -242,7 +252,7 @@ test("rechaza pagos ligados a caja, recurrentes y cancelados para deshacer", () 
     });
     assert.throws(
       () =>
-        repo.unmarkFinanceExpensePayment({
+        repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
           expenseId: canceled.id,
           expectedRevision: 1,
           reason: "No",
@@ -251,6 +261,7 @@ test("rechaza pagos ligados a caja, recurrentes y cancelados para deshacer", () 
       /cancelad/i,
     );
     const recurring = repo.createFinanceRecurring({
+      authorizerPin: "2468",
       title: "Alquiler",
       category: "Local",
       kind: "FIXED",
@@ -262,13 +273,14 @@ test("rechaza pagos ligados a caja, recurrentes y cancelados para deshacer", () 
       .getFinanceReport(range)
       .expenses.find((e) => e.recurringId === recurring.id)!;
     repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: recurringExpense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
     });
     assert.throws(
       () =>
-        repo.unmarkFinanceExpensePayment({
+        repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
           expenseId: recurringExpense.id,
           expectedRevision: recurringExpense.revision ?? 1,
           reason: "No",
@@ -277,12 +289,13 @@ test("rechaza pagos ligados a caja, recurrentes y cancelados para deshacer", () 
       /recurrente/i,
     );
     const pending = repo.createFinanceExpense({
+      authorizerPin: "2468",
       ...expenseInput,
       title: "Pendiente",
     });
     assert.throws(
       () =>
-        repo.unmarkFinanceExpensePayment({
+        repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
           expenseId: pending.id,
           expectedRevision: 0,
           reason: "No",
@@ -297,14 +310,15 @@ test("migration31 conserva pagos externos legados, agrega guard default 0 y el p
     join(tmpdir(), "gastronomy-expense-unmark-migration-"),
   );
   const path = join(dir, "test.sqlite");
-  let repo = new SqliteGastronomyRepository(path, {
+  let repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
   let db = new Database(path);
   try {
-    const legacy = repo.createFinanceExpense(expenseInput);
+    const legacy = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: legacy.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
@@ -314,7 +328,7 @@ test("migration31 conserva pagos externos legados, agrega guard default 0 y el p
     );
     db.close();
     repo.close();
-    repo = new SqliteGastronomyRepository(path, {
+    repo = configuredTestRepository(path, {
       adminPin: "2468",
       seedStarterCatalog: true,
     });
@@ -334,7 +348,7 @@ test("migration31 conserva pagos externos legados, agrega guard default 0 y el p
       ).payment_revision_required,
       0,
     );
-    const undone = repo.unmarkFinanceExpensePayment({
+    const undone = repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
       expenseId: legacy.id,
       expectedRevision: paid.revision ?? 0,
       reason: "Carga equivocada",
@@ -343,7 +357,7 @@ test("migration31 conserva pagos externos legados, agrega guard default 0 y el p
     assert.equal(undone.paidAt, null);
     db.close();
     repo.close();
-    repo = new SqliteGastronomyRepository(path, {
+    repo = configuredTestRepository(path, {
       adminPin: "2468",
       seedStarterCatalog: true,
     });
@@ -361,6 +375,7 @@ test("migration31 conserva pagos externos legados, agrega guard default 0 y el p
     assert.throws(
       () =>
         repo.payFinanceExpense({
+          authorizerPin: "2468",
           expenseId: legacy.id,
           paymentMethodCode: "TRANSFER",
           fromCash: false,
@@ -379,6 +394,7 @@ test("migration31 conserva pagos externos legados, agrega guard default 0 y el p
 test("payroll manual externo puede desmarcarse sin mutar importes salariales ni stock, y pago externo no toca caja", () =>
   fixture((repo, db) => {
     const expense = repo.createFinanceExpense({
+      authorizerPin: "2468",
       ...expenseInput,
       kind: "PAYROLL",
       employeeId: repo.bootstrap().currentUser.id,
@@ -394,11 +410,12 @@ test("payroll manual externo puede desmarcarse sin mutar importes salariales ni 
         .get() as { n: number }
     ).n;
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
     });
-    const undone = repo.unmarkFinanceExpensePayment({
+    const undone = repo.unmarkFinanceExpensePayment({ authorizerPin: "2468",
       expenseId: expense.id,
       expectedRevision: paid.revision ?? 0,
       reason: "Error",
@@ -429,8 +446,9 @@ test("payroll manual externo puede desmarcarse sin mutar importes salariales ni 
 
 test("deshacer rechaza clave reutilizada para otra petición y vuelve a validar permiso en replay", () =>
   fixture((repo, db) => {
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
@@ -441,14 +459,14 @@ test("deshacer rechaza clave reutilizada para otra petición y vuelve a validar 
       reason: "Error",
       idempotencyKey: "undo-replay",
     };
-    repo.unmarkFinanceExpensePayment(input);
+    repo.unmarkFinanceExpensePayment({ authorizerPin: "2468", ...input });
     assert.throws(
       () =>
-        repo.unmarkFinanceExpensePayment({ ...input, reason: "Otro motivo" }),
+        repo.unmarkFinanceExpensePayment({ authorizerPin: "2468", ...input, reason: "Otro motivo" }),
       /clave|idempotencia|diferentes/i,
     );
     db.prepare(
       "DELETE FROM role_permissions WHERE role_id=(SELECT role_id FROM users WHERE id=?) AND permission_code IN ('*','finance.manage')",
     ).run(repo.bootstrap().currentUser.id);
-    assert.throws(() => repo.unmarkFinanceExpensePayment(input), /permiso/i);
+    assert.throws(() => repo.unmarkFinanceExpensePayment({ authorizerPin: "2468", ...input }), /permiso/i);
   }));

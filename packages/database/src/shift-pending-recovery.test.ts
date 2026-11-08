@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -9,7 +10,7 @@ import { SqliteGastronomyRepository } from "./sqlite-repository";
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-shift-pending-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  const repo = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   const db = new Database(path);
   try { run(repo, db); }
   finally {

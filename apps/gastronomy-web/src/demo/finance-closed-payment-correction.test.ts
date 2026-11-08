@@ -13,6 +13,7 @@ async function setup(method = "CASH") {
   const api = createDemoApi(storage);
   const bootstrap = await api.bootstrap();
   const expense = await api.createFinanceExpense({
+    authorizerPin: "1234",
     title: "Obligación manual aún debida",
     category: "Pruebas",
     kind: "GENERAL",
@@ -28,7 +29,7 @@ async function setup(method = "CASH") {
     expectedRevision: expense.revision ?? 0,
     idempotencyKey: "closed-pay",
   };
-  const paid = await api.payFinanceExpense(paymentInput);
+  const paid = await api.payFinanceExpense({ authorizerPin: "1234", ...paymentInput });
   const beforeClose = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
   const session = beforeClose.data.cashSession;
   const movements = structuredClone(beforeClose.movements);
@@ -118,6 +119,7 @@ describe("corrección de pago desde caja cerrada en demo", () => {
     const first = await api.correctFinanceExpenseClosedCashPayment(input);
     await createDemoApi(storage).openCashSession({ openingAmountMinor: 5_000 });
     const repaid = await createDemoApi(storage).payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id, paymentMethodCode: "TRANSFER", fromCash: true,
       expectedRevision: first.revision!, idempotencyKey: "real-payment-after-fix",
     });
@@ -127,7 +129,7 @@ describe("corrección de pago desde caja cerrada en demo", () => {
     const replayApi = createDemoApi(storage);
     const beforeOldPayReplay = storage.getItem(DEMO_STORAGE_KEY);
     const activeAfterNewPay = JSON.parse(beforeOldPayReplay!).financeExpenses.find((item: { id: string }) => item.id === expense.id);
-    await expect(replayApi.payFinanceExpense(paymentInput)).resolves.toEqual(paid);
+    await expect(replayApi.payFinanceExpense({ authorizerPin: "1234", ...paymentInput })).resolves.toEqual(paid);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(beforeOldPayReplay);
     expect(JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!).financeExpenses.find((item: { id: string }) => item.id === expense.id)).toEqual(activeAfterNewPay);
   });
@@ -137,6 +139,7 @@ describe("corrección de pago desde caja cerrada en demo", () => {
     const corrected = await api.correctFinanceExpenseClosedCashPayment(correctionInput(expense.id, paid.revision!, "closed-before-return"));
     await createDemoApi(storage).openCashSession({ openingAmountMinor: 40_000 });
     const repaid = await createDemoApi(storage).payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id, paymentMethodCode: "CASH", fromCash: true,
       expectedRevision: corrected.revision!, idempotencyKey: "new-real-payment",
     });

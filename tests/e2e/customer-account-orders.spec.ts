@@ -1,4 +1,5 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import { launchConfiguredPos } from "./pos-fixture";
+import { test, expect, type ElectronApplication, type Page } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ let userData = "";
 
 test.beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-account-orders-"));
-  app = await electron.launch({ args: ["apps/desktop-shell", `--user-data-dir=${userData}`], cwd: process.cwd() });
+  app = await launchConfiguredPos({ args: ["apps/desktop-shell", `--user-data-dir=${userData}`], cwd: process.cwd() });
   page = await app.firstWindow();
 });
 test.afterEach(async () => {
@@ -26,7 +27,7 @@ async function seed(type: "TAKEAWAY" | "DELIVERY", linked = false, delivering = 
     const data = await api.bootstrap();
     const session = await api.openCashSession({ openingAmountMinor: 1_000_000 });
     const customer = await api.createCustomer({ name: "Cliente cuenta E2E", phone: "1155559876" });
-    const driver = type === "DELIVERY" ? await api.createDriver({ fullName: "Repartidor cuenta E2E", authorizerPin: "1234" }) : null;
+    const driver = type === "DELIVERY" ? await api.createDriver({ fullName: "Repartidor cuenta E2E", authorizerPin: "748259" }) : null;
     const order = await api.createOrder({
       type, customerId: linked ? customer.id : undefined,
       customerName: customer.name, customerPhone: customer.phone,

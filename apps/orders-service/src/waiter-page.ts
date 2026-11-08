@@ -299,7 +299,7 @@ export const waiterHtml = String.raw`<!doctype html>
       </section>
     </main>
     <div id="sendBar" class="sticky" hidden>
-      <button id="send" type="button">Enviar a cocina</button>
+      <button id="send" type="button">Enviar pedido</button>
     </div>
     <script>
       (() => {
@@ -544,7 +544,7 @@ export const waiterHtml = String.raw`<!doctype html>
         function primaryAction(hasPending, isBusy, hasLines, isChecking = false) {
           return {
             disabled: isBusy || isChecking || (!hasPending && !hasLines),
-            label: isBusy ? 'Enviando…' : isChecking ? 'Consultando…' : hasPending ? 'Ver estado del pedido' : 'Enviar a cocina',
+            label: isBusy ? 'Enviando…' : isChecking ? 'Consultando…' : hasPending ? 'Ver estado del pedido' : 'Enviar pedido',
           };
         }
         function allProducts() {
@@ -937,6 +937,9 @@ export const waiterHtml = String.raw`<!doctype html>
             setMsg('printStatus', sameCashSession
               ? 'Pedido recibido. Avisá en caja: falló la impresión. No lo vuelvas a enviar.'
               : 'El pedido del turno anterior fue recibido. Avisá en caja: falló la impresión.', 'warn');
+          } else if (s === 'recorded') {
+            saveWatch(null);
+            setMsg('printStatus', 'Pedido registrado en la mesa, sin impresión.');
           } else {
             saveWatch({
               requestId: record.requestId,
@@ -982,7 +985,7 @@ export const waiterHtml = String.raw`<!doctype html>
           const hasAcceptance = Array.isArray(d.acceptedLineIds) && d.acceptedLineIds.length > 0;
           if (
             hasAcceptance ||
-            ['accepted', 'printed', 'printing', 'queued', 'recovering', 'receiving', 'failed'].includes(
+            ['accepted', 'recorded', 'printed', 'printing', 'queued', 'recovering', 'receiving', 'failed'].includes(
               status,
             )
           ) {
@@ -1052,12 +1055,14 @@ export const waiterHtml = String.raw`<!doctype html>
               'printStatus',
               status === 'printed'
                 ? 'Comanda enviada a la impresora'
+                : status === 'recorded'
+                  ? 'Pedido registrado en la mesa, sin impresión.'
                 : status === 'failed'
                   ? 'Pedido recibido. Avisá en caja: falló la impresión. No lo vuelvas a enviar.'
                   : 'Pedido recibido. Preparando la comanda…',
               status === 'failed' ? 'warn' : '',
             );
-            if (status === 'printed' || status === 'failed') {
+            if (status === 'printed' || status === 'failed' || status === 'recorded') {
               saveWatch(null);
               if (watchTimer) {
                 clearTimeout(watchTimer);

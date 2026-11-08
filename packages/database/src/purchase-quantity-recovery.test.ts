@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -11,7 +12,7 @@ import { latestSchemaVersion, removeNewNullablePurchaseColumns, rewindPurchaseTe
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-quantity-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  const repo = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   const db = new Database(path);
   try { run(repo, db); }
   finally { db.close(); repo.close(); assert.equal(dirname(resolve(dir)), resolve(tmpdir())); assert.ok(basename(dir).startsWith("gastronomy-purchase-quantity-")); rmSync(dir, { recursive: true, force: true }); }
@@ -198,14 +199,14 @@ test("quantity correction requires purchases.manage and a valid same-permission 
 
 test("quantity ledger is immutable and migration 37 upgrades schema 36 without changing historical values", () => {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-quantity-")); const path = join(dir, "test.sqlite");
-  let repo = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true }); let db = new Database(path);
+  let repo = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true }); let db = new Database(path);
   try {
     const { purchase, input } = setup(repo);
     const purchaseBefore = removeNewNullablePurchaseColumns(db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id) as any);
     const itemsBefore = db.prepare("SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY rowid").all(purchase.id);
     // Return the fixture to schema 36 while retaining all real historical business rows.
     rewindPurchaseTestSchema(db, 36);
-    db.close(); repo.close(); repo = new SqliteGastronomyRepository(path, { adminPin: "2468" }); db = new Database(path);
+    db.close(); repo.close(); repo = configuredTestRepository(path, { adminPin: "2468" }); db = new Database(path);
     assert.equal((db.prepare("SELECT MAX(version) version FROM schema_migrations").get() as any).version, latestSchemaVersion);
     assert.deepEqual(removeNewNullablePurchaseColumns(db.prepare("SELECT * FROM purchases WHERE id=?").get(purchase.id) as any), purchaseBefore);
     assert.deepEqual(db.prepare("SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY rowid").all(purchase.id), itemsBefore);

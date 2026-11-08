@@ -540,6 +540,7 @@ function MovementModal({
   const [paymentMethodCode, setPaymentMethodCode] = useState(defaultMethodCode);
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
+  const [authorizerPin, setAuthorizerPin] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -548,6 +549,7 @@ function MovementModal({
       setPaymentMethodCode(defaultMethodCode);
       setAmount("");
       setReason("");
+      setAuthorizerPin("");
       setError(null);
     }
   }, [open, defaultMethodCode]);
@@ -570,13 +572,28 @@ function MovementModal({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          const value = parseMoneyInput(amount);
+          const parsed = parseMoneyInput(
+            amount.startsWith("-") ? amount.slice(1) : amount,
+          );
+          const value =
+            type === "ADJUSTMENT" &&
+            amount.trim().startsWith("-") &&
+            parsed != null
+              ? -parsed
+              : parsed;
           if (value == null) return setError("Importe inválido.");
+          const needsAuthorization =
+            type === "WITHDRAWAL" ||
+            type === "EXPENSE" ||
+            (type === "ADJUSTMENT" && value < 0);
+          if (needsAuthorization && !/^\d{4,8}$/.test(authorizerPin))
+            return setError("Ingresá un PIN de autorización válido.");
           mutation.mutate({
             type,
             paymentMethodCode,
             amountMinor: value,
             reason,
+            ...(needsAuthorization ? { authorizerPin } : {}),
           });
         }}
         className="grid gap-4"
@@ -585,9 +602,10 @@ function MovementModal({
           <Field label="Tipo">
             <Select
               value={type}
-              onChange={(event) =>
-                setType(event.target.value as CashMovementInput["type"])
-              }
+              onChange={(event) => {
+                setType(event.target.value as CashMovementInput["type"]);
+                setAuthorizerPin("");
+              }}
             >
               <option value="INCOME">Ingreso</option>
               <option value="EXPENSE">Gasto</option>
@@ -615,7 +633,17 @@ function MovementModal({
             autoFocus
             inputMode="decimal"
             value={amount}
-            onChange={(event) => setAmount(event.target.value)}
+            onChange={(event) => {
+              setAmount(event.target.value);
+              if (
+                type === "ADJUSTMENT" &&
+                !event.target.value.trim().startsWith("-")
+              )
+                setAuthorizerPin("");
+            }}
+            placeholder={
+              type === "ADJUSTMENT" ? "Positivo o negativo" : undefined
+            }
           />
         </Field>
         <Field label="Motivo">
@@ -625,12 +653,39 @@ function MovementModal({
             required
           />
         </Field>
+        {type === "WITHDRAWAL" ||
+        type === "EXPENSE" ||
+        (type === "ADJUSTMENT" && amount.trim().startsWith("-")) ? (
+          <Field label="PIN de autorización">
+            <Input
+              type="password"
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={8}
+              value={authorizerPin}
+              onChange={(event) =>
+                setAuthorizerPin(event.target.value.replace(/\D/g, ""))
+              }
+              required
+            />
+          </Field>
+        ) : null}
         {error ? <ErrorMessage>{error}</ErrorMessage> : null}
         <div className="flex justify-end gap-2">
           <Button type="button" variant="secondary" onClick={close} disabled={mutation.isPending}>
             Cancelar
           </Button>
-          <Button type="submit" disabled={!reason.trim() || mutation.isPending}>
+          <Button
+            type="submit"
+            disabled={
+              !reason.trim() ||
+              mutation.isPending ||
+              ((type === "WITHDRAWAL" ||
+                type === "EXPENSE" ||
+                (type === "ADJUSTMENT" && amount.trim().startsWith("-"))) &&
+                !/^\d{4,8}$/.test(authorizerPin))
+            }
+          >
             {type === "INCOME" ? <ArrowUp /> : <ArrowDown />} Registrar
           </Button>
         </div>
@@ -1348,7 +1403,10 @@ function SmallLabel({ children, dark = false }: { children: ReactNode; dark?: bo
 
 function ErrorMessage({ children }: { children: ReactNode }) {
   return (
-    <p className="flex items-start gap-2 rounded-lg bg-rose-50 p-3 text-xs text-rose-700">
+    <p
+      role="alert"
+      className="flex items-start gap-2 rounded-lg bg-rose-50 p-3 text-xs text-rose-700"
+    >
       <WarningCircle className="mt-px shrink-0" size={16} /> {children}
     </p>
   );

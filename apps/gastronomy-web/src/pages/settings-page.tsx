@@ -48,6 +48,8 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
   const navigate = useNavigate();
   const [settings, setSettings] = useState<AppSettingsDto>(data.settings);
   const [message, setMessage] = useState<string | null>(null);
+  const [restorePin, setRestorePin] = useState("");
+  const [requestRestore, setRequestRestore] = useState(false);
   const [activeSection, setActiveSection] = useState(() => {
     const section = location.hash.slice(1);
     return SETTINGS_SECTIONS.some(([id]) => id === section)
@@ -103,14 +105,24 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
       ),
     onError: (value) => setMessage(humanError(value)),
   });
-  const restore = useApiMutation(() => window.gastronomy.restoreBackup(), {
-    onSuccess: (value) =>
+  const restore = useApiMutation(() => window.gastronomy.restoreBackup(restorePin), {
+    onSuccess: (value) => {
+      setRestorePin("");
+      setRequestRestore(false);
       setMessage(
         value.restored
           ? `Copia restaurada desde ${value.path}`
           : "Restauración cancelada.",
-      ),
-    onError: (value) => setMessage(humanError(value)),
+      );
+      // The restored database can require first-run admin PIN setup. Reboot
+      // the renderer so App re-reads that state before allowing any operation.
+      if (value.restored) window.setTimeout(() => window.location.reload(), 0);
+    },
+    onError: (value) => {
+      setRestorePin("");
+      setRequestRestore(false);
+      setMessage(humanError(value));
+    },
   });
   const toggleModule = (key: keyof AppSettingsDto["modules"]) =>
     setSettings((current) => ({
@@ -485,13 +497,23 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
           </Button>
           <Button
             variant="secondary"
-            onClick={() => restore.mutate()}
+            onClick={() => { setRestorePin(""); setRequestRestore(true); }}
             disabled={backup.isPending || restore.isPending}
           >
             <ArrowClockwise />
             Restaurar copia
           </Button>
         </div>
+        {requestRestore ? <div className="mt-3 max-w-xs space-y-2">
+          <Field label="PIN de ADMIN para restaurar">
+            <Input id="restore-admin-pin" type="password" inputMode="numeric" autoComplete="off" maxLength={8} value={restorePin} onChange={(event) => setRestorePin(event.target.value.replace(/\D/g, "").slice(0, 8))} />
+          </Field>
+          <p className="text-xs text-slate-500">Se valida contra un ADMIN activo con PIN confirmado. La caja debe estar cerrada.</p>
+          <div className="flex gap-2">
+            <Button onClick={() => restore.mutate()} disabled={!/^\d{4,8}$/.test(restorePin) || restore.isPending || backup.isPending}>Continuar</Button>
+            <Button variant="secondary" onClick={() => { setRestorePin(""); setRequestRestore(false); }} disabled={restore.isPending}>Cancelar</Button>
+          </div>
+        </div> : null}
       </Card> : null}
       </div>
     </div>

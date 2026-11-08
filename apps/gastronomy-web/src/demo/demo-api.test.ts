@@ -20,6 +20,37 @@ class MemoryStorage implements DemoStorage {
 }
 
 describe("API de demostración", () => {
+  it("aplica redondeo y parches de precios propios de forma atómica", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    const auth = {reason:"Prueba", authorizerPin:"1234"};
+    const initial = await api.bootstrap();
+    const {books} = await api.savePriceBook({...auth, name:"Redondeo", adjustmentBps:0});
+    const book = books.find((candidate) => candidate.name === "Redondeo")!;
+    await api.assignPriceBooks({...auth, assignments:{SALON:books.find((candidate) => candidate.isBase)!.id,
+      TAKEAWAY:book.id, DELIVERY:books.find((candidate) => candidate.isBase)!.id}});
+    const product = initial.products[0]!;
+    await api.savePriceBook({...auth, id:book.id, name:book.name, adjustmentBps:0,
+      roundingIncrementMinor:1000, productOverrides:{[product.id]:12345}});
+    const changed = (await api.bootstrap()).products.find((item) => item.id === product.id)!;
+    expect(changed.prices.find((price) => price.priceListId === book.id)?.amountMinor).toBe(12345);
+    const before = storage.getItem(DEMO_STORAGE_KEY);
+    const secondProduct = initial.products[1]!;
+    await expect(api.savePriceBook({...auth, id:book.id, name:book.name, adjustmentBps:0,
+      roundingIncrementMinor:1000, productOverrides:{[product.id]:22222,[secondProduct.id]:-1}})).rejects.toThrow();
+    expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(before);
+    await api.savePriceBook({...auth, id:book.id, name:book.name, adjustmentBps:0,
+      productOverrides:{[product.id]:null}});
+    const cleared = (await api.bootstrap()).products.find((item) => item.id === product.id)!;
+    expect(cleared.prices.find((price) => price.priceListId === book.id)?.amountMinor).toBe(
+      Math.round(cleared.priceBook!.baseMinor / 1000) * 1000,
+    );
+    const created = await api.savePriceBook({...auth, name:"Creada con precios", adjustmentBps:0,
+      productOverrides:{[product.id]:23456}});
+    const newBook = created.books.find((candidate) => candidate.name === "Creada con precios")!;
+    const createdProduct = (await api.bootstrap()).products.find((item) => item.id === product.id)!;
+    expect(createdProduct.priceBook!.overrides[newBook.id]).toBe(23456);
+  });
   it("rechaza precios de lista inválidos sin editar el producto y conserva un precio propio de cero", async () => {
     const api = createDemoApi(new MemoryStorage());
     const auth = {reason:"Prueba", authorizerPin:"1234"};
@@ -38,7 +69,7 @@ describe("API de demostración", () => {
     expect(fetched.prices.find(p=>p.priceListCode==="SALON")?.amountMinor).toBe(0);
     expect(fetched.prices.find(p=>p.priceListCode==="DELIVERY")?.amountMinor).toBe(15000);
   });
-  it("migra storage v12 a listas por vectores de precios sin cambiar importes", async () => {
+  it("migra precios v12 a Principal y Delivery, separando Retiro sólo si difiere", async () => {
     const storage = new MemoryStorage();
     const initial = await createDemoApi(storage).bootstrap();
     const legacy = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
@@ -53,17 +84,32 @@ describe("API de demostración", () => {
         { priceListId: "legacy-delivery", priceListCode: "DELIVERY", amountMinor: 135 },
       ];
     }
+    legacy.data.products[0]!.prices[1]!.amountMinor = 100;
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(legacy));
     const migratedApi = createDemoApi(storage);
     const migrated = await migratedApi.bootstrap();
     const books = await migratedApi.getPriceBooks();
     expect(books.assignments.SALON).not.toBe(books.assignments.TAKEAWAY);
     expect(books.assignments.TAKEAWAY).not.toBe(books.assignments.DELIVERY);
-    expect(migrated.products[0]!.prices.map((p) => p.amountMinor)).toEqual([100, 120, 135]);
+    expect(migrated.products[0]!.prices.map((p) => p.amountMinor)).toEqual([100, 100, 135]);
     expect(migrated.products.every((p) => p.priceBook?.baseMinor === 100)).toBe(true);
+    expect(books.books.map((book) => book.name)).toEqual(["Principal", "Delivery", "Retiro"]);
+    expect(migrated.products[0]!.priceBook!.overrides[books.assignments.TAKEAWAY]).toBe(100);
     expect(migrated.products.every((p) => Object.keys(p.priceBook!.overrides).every((id) => id !== books.books.find((b) => b.isBase)!.id))).toBe(true);
     expect(JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!).version).toBe(13);
     expect(initial.products).toHaveLength(migrated.products.length);
+  });
+  it("no reemplaza listas ya configuradas aunque el estado tenga una versión previa", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    await api.bootstrap();
+    const configured = await api.getPriceBooks();
+    const legacy = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
+    legacy.version = 12;
+    storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(legacy));
+    const migrated = createDemoApi(storage);
+    await migrated.bootstrap();
+    expect(await migrated.getPriceBooks()).toEqual(configured);
   });
   it("lectura de costos incluye inactivos y cero sin modificar almacenamiento", async () => {
     const storage = new MemoryStorage();
@@ -291,6 +337,7 @@ describe("API de demostración", () => {
     await api.addOrderItem({ orderId: order.id, productId: product.id });
     await api.confirmOrder({ orderId: order.id });
     const salary = await api.createFinanceExpense({
+      authorizerPin: "1234",
       title: "Sueldo",
       category: "Personal",
       kind: "PAYROLL",
@@ -299,6 +346,7 @@ describe("API de demostración", () => {
       incurredOn: date,
     });
     await api.createFinanceRecurring({
+      authorizerPin: "1234",
       title: "Alquiler",
       category: "Local",
       kind: "FIXED",
@@ -313,6 +361,7 @@ describe("API de demostración", () => {
       (await api.getFinanceReport({ from: date, to: date })).expenses.length,
     ).toBe(2);
     await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: salary.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -405,6 +454,7 @@ describe("API de demostración", () => {
     const api = createDemoApi(new MemoryStorage());
     const date = new Date().toISOString().slice(0, 10);
     const rule = await api.createFinanceRecurring({
+      authorizerPin: "1234",
       title: "Servicio",
       category: "Local",
       kind: "FIXED",
@@ -412,7 +462,7 @@ describe("API de demostración", () => {
       dayOfMonth: Number(date.slice(8)),
       startMonth: date.slice(0, 7),
     });
-    await api.stopFinanceRecurring({ recurringId: rule.id });
+    await api.stopFinanceRecurring({ authorizerPin: "1234", recurringId: rule.id });
     expect(
       (await api.getFinanceReport({ from: date.slice(0, 7) + "-01", to: date }))
         .expenses,

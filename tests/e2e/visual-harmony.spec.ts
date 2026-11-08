@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Locator,
   type Page,
@@ -30,7 +30,7 @@ async function expectSameControlRow(...controls: Locator[]) {
 
 test.beforeAll(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-visual-harmony-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });

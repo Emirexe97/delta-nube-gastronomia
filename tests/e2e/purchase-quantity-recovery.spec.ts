@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -19,7 +19,7 @@ let app: ElectronApplication,
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-purchase-quantity-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -116,7 +116,7 @@ async function fixture() {
       supplierName: "Proveedor cantidad original",
       invoiceNumber: "FAC-CANTIDAD",
       items: [{ productId: product.id, quantityMinor: 2500, unitCostMinor: 10000 }],
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "purchase-quantity-original",
     });
   });
@@ -140,7 +140,7 @@ async function openQuantity() {
   return dialog;
 }
 
-async function fillQuantity(dialog: any, quantity: string, pin = "1234") {
+async function fillQuantity(dialog: any, quantity: string, pin = "748259") {
   await dialog.getByLabel("Producto de la compra", { exact: true }).selectOption({ index: 0 });
   await dialog
     .getByLabel("Cantidad correcta", { exact: true })
@@ -170,7 +170,7 @@ test("quantity correction composes with cost correction and preserves stock, cas
       productId: purchase.items[0]!.productId,
       newStockMinor: 1500,
       reason: "Conteo físico previo",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const report = await api.getFinanceReport({
       from: session.businessDate,
@@ -193,7 +193,7 @@ test("quantity correction composes with cost correction and preserves stock, cas
       expectedRevision: purchase.revision ?? 0,
       unitCostMinor: 12000,
       reason: "Costo real de factura",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "quantity-compose-cost-first",
     });
     const quantity = await api.correctPurchaseItemQuantity({
@@ -202,7 +202,7 @@ test("quantity correction composes with cost correction and preserves stock, cas
       expectedRevision: cost.revision,
       quantityMinor: 3500,
       reason: "Cantidad correcta de factura",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "quantity-compose-quantity-second",
     });
     const costAgain = await api.correctPurchaseItemCost({
@@ -211,7 +211,7 @@ test("quantity correction composes with cost correction and preserves stock, cas
       expectedRevision: quantity.revision,
       unitCostMinor: 13000,
       reason: "Revisión final de costo",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "quantity-compose-cost-third",
     });
     const reportAfter = session
@@ -283,7 +283,7 @@ test("zero quantity and invalid PIN are rejected while correction fields remain 
   await expect(dialog.getByLabel("Cantidad correcta", { exact: true })).toHaveValue("0");
   await dialog.getByLabel("Cantidad correcta", { exact: true }).fill("3,5");
   await expect(dialog.getByRole("alert")).toContainText(/mayor|positiv/i);
-  await dialog.getByLabel("PIN autorizador", { exact: true }).fill("1234");
+  await dialog.getByLabel("PIN autorizador", { exact: true }).fill("748259");
   await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
   await expect(trigger).toBeFocused();
   const reopened = await openQuantity();
@@ -320,7 +320,7 @@ test("stale revision keeps fields, Escape restores focus, and pending IPC cannot
       expectedRevision: purchase.revision ?? 0,
       quantityMinor: 3000,
       reason: "Corrección concurrente",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "quantity-concurrent-change",
     });
   }, purchase);

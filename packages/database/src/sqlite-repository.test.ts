@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { rmSync } from "node:fs";
@@ -998,6 +999,7 @@ test("finanzas separa ventas, costo congelado, sueldo y gasto fijo de compras", 
     });
     repository.confirmOrder({ orderId: draft.id });
     const salary = repository.createFinanceExpense({
+      authorizerPin: "2468",
       title: "Sueldo mesero",
       category: "Personal",
       kind: "PAYROLL",
@@ -1006,6 +1008,7 @@ test("finanzas separa ventas, costo congelado, sueldo y gasto fijo de compras", 
       incurredOn: date,
     });
     repository.createFinanceRecurring({
+      authorizerPin: "2468",
       title: "Alquiler",
       category: "Local",
       kind: "FIXED",
@@ -1025,6 +1028,7 @@ test("finanzas separa ventas, costo congelado, sueldo y gasto fijo de compras", 
       2,
     );
     const paid = repository.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: salary.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -1035,6 +1039,7 @@ test("finanzas separa ventas, costo congelado, sueldo y gasto fijo de compras", 
       600_000,
     );
     repository.registerCashMovement({
+      authorizerPin: "2468",
       type: "EXPENSE",
       amountMinor: 50_000,
       paymentMethodCode: "CASH",
@@ -1084,6 +1089,7 @@ test("detener un gasto fijo no lo regenera dentro del mes actual", () => {
   withRepository((repository) => {
     const date = new Date().toISOString().slice(0, 10);
     const rule = repository.createFinanceRecurring({
+      authorizerPin: "2468",
       title: "Servicio",
       category: "Local",
       kind: "FIXED",
@@ -1091,7 +1097,7 @@ test("detener un gasto fijo no lo regenera dentro del mes actual", () => {
       dayOfMonth: Number(date.slice(8)),
       startMonth: date.slice(0, 7),
     });
-    repository.stopFinanceRecurring({ recurringId: rule.id });
+    repository.stopFinanceRecurring({ authorizerPin: "2468", recurringId: rule.id });
     assert.equal(
       repository.getFinanceReport({ from: date.slice(0, 7) + "-01", to: date })
         .expenses.length,
@@ -1121,6 +1127,7 @@ test("finanzas asigna ventas, costos y gastos nocturnos a la jornada de caja", (
         .run(timestamp, timestamp, order.id);
     }
     const movement = repository.registerCashMovement({
+      authorizerPin: "2468",
       type: "EXPENSE",
       amountMinor: 50_000,
       paymentMethodCode: "CASH",
@@ -1218,6 +1225,7 @@ test("finanzas reconoce el fee de delivery y excluye la liquidación de gastos",
 
     // An unrelated cash expense remains part of operating expenses.
     repository.registerCashMovement({
+      authorizerPin: "2468",
       type: "EXPENSE",
       amountMinor: 50_000,
       paymentMethodCode: "CASH",
@@ -1342,7 +1350,7 @@ test("pago inmediato al repartidor y reversión no cambian el costo del envío g
 
 function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
   const path = join(tmpdir(), `gastronomy-${randomUUID()}.sqlite`);
-  const repository = new SqliteGastronomyRepository(path, {
+  const repository = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -2578,6 +2586,7 @@ test("la persistencia rechaza importes de caja inválidos aun sin la capa de apl
     assert.throws(
       () =>
         repository.registerCashMovement({
+          authorizerPin: "2468",
           type: "ADJUSTMENT",
           amountMinor: -10_001,
           reason: "Ajuste excesivo",
@@ -2587,6 +2596,7 @@ test("la persistencia rechaza importes de caja inválidos aun sin la capa de apl
     assert.throws(
       () =>
         repository.registerCashMovement({
+          authorizerPin: "2468",
           type: "EXPENSE",
           amountMinor: 100,
           reason: "   ",
@@ -3849,7 +3859,7 @@ test("migración elimina eventos de auditoría no sensibles", () => {
   }
 });
 
-test("migración unifica precios existentes de delivery y para retirar", () => {
+test("migración conserva precios explícitos distintos de delivery y para retirar", () => {
   const path = join(tmpdir(), `gastronomy-prices-${randomUUID()}.sqlite`);
   const first = new SqliteGastronomyRepository(path, {
     seedStarterCatalog: true,
@@ -3878,7 +3888,8 @@ test("migración unifica precios existentes de delivery y para retirar", () => {
     const delivery = product?.prices.find(
       (price) => price.priceListCode === "DELIVERY",
     )?.amountMinor;
-    assert.equal(delivery, takeaway);
+    assert.equal(takeaway, 1_500_000);
+    assert.equal(delivery, 1_990_000);
   } finally {
     migrated.close();
     for (const suffix of ["", "-wal", "-shm"])
@@ -3970,7 +3981,7 @@ test("edición de producto actualiza listas y conserva historial en auditoría",
 test("reinicio conserva precios editados, auditoría y precio de pedidos nuevos", () => {
   const path = join(tmpdir(), `gastronomy-price-restart-${randomUUID()}.sqlite`);
   try {
-    const first = new SqliteGastronomyRepository(path, {
+    const first = configuredTestRepository(path, {
       adminPin: "2468",
       seedStarterCatalog: true,
     });
@@ -4029,7 +4040,7 @@ test("reinicio conserva caja y pedido pendiente", () => {
   const path = join(tmpdir(), `gastronomy-restart-${randomUUID()}.sqlite`);
   let orderId = "";
   try {
-    const first = new SqliteGastronomyRepository(path, {
+    const first = configuredTestRepository(path, {
       adminPin: "2468",
       seedStarterCatalog: true,
     });
@@ -4041,7 +4052,7 @@ test("reinicio conserva caja y pedido pendiente", () => {
     } finally {
       first.close();
     }
-    const reopened = new SqliteGastronomyRepository(path, { adminPin: "2468" });
+    const reopened = configuredTestRepository(path, { adminPin: "2468" });
     try {
       const state = reopened.bootstrap();
       assert.equal(state.cashSession?.openingAmountMinor, 321_000);
@@ -4634,7 +4645,7 @@ test("informe netea devoluciones de forma coherente por medio, producto y catego
 test("backup SQLite es consistente y validable", async () => {
   const source = join(tmpdir(), `gastronomy-${randomUUID()}.sqlite`);
   const backup = join(tmpdir(), `gastronomy-backup-${randomUUID()}.sqlite`);
-  const repository = new SqliteGastronomyRepository(source, {
+  const repository = configuredTestRepository(source, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -4642,7 +4653,7 @@ test("backup SQLite es consistente y validable", async () => {
     repository.openCashSession({ openingAmountMinor: 123_000 });
     await repository.backupTo(backup);
     SqliteGastronomyRepository.validateDatabase(backup);
-    const restored = new SqliteGastronomyRepository(backup, {
+    const restored = configuredTestRepository(backup, {
       adminPin: "2468",
     });
     try {
@@ -5922,6 +5933,7 @@ test("permite registrar movimientos de caja con diferentes medios de pago y vali
     // 1. Gasto por Transferencia por importe superior al efectivo en caja:
     // Debe permitirlo ya que no consume efectivo físico del cajón.
     const afterTransfer = repository.registerCashMovement({
+      authorizerPin: "2468",
       type: "EXPENSE",
       amountMinor: 10_000_000,
       reason: "Pago a proveedor por transferencia",
@@ -5934,6 +5946,7 @@ test("permite registrar movimientos de caja con diferentes medios de pago y vali
     assert.throws(
       () =>
         repository.registerCashMovement({
+          authorizerPin: "2468",
           type: "EXPENSE",
           amountMinor: 6_000_000,
           reason: "Gasto en efectivo excesivo",
@@ -5944,6 +5957,7 @@ test("permite registrar movimientos de caja con diferentes medios de pago y vali
 
     // 3. Gasto en Efectivo válido: descuenta efectivo esperado
     const afterCash = repository.registerCashMovement({
+      authorizerPin: "2468",
       type: "EXPENSE",
       amountMinor: 2_000_000,
       reason: "Artículos de limpieza en efectivo",

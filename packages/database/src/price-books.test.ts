@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
@@ -10,7 +11,7 @@ function withRepo(
   run: (repo: SqliteGastronomyRepository, path: string) => void,
 ) {
   const path = join(tmpdir(), `price-books-${randomUUID()}.sqlite`);
-  const repo = new SqliteGastronomyRepository(path, {
+  const repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -49,7 +50,7 @@ test("migrates legacy prices without changing cents and survives reopening", () 
       p.prices.map((x) => [x.priceListCode, x.amountMinor]),
     );
     repo.close();
-    const reopened = new SqliteGastronomyRepository(path, {
+    const reopened = configuredTestRepository(path, {
       adminPin: "2468",
       seedStarterCatalog: true,
     });
@@ -288,4 +289,96 @@ test("save and assign price books require the operator permission as well as PIN
         }),
       /permiso/i,
     );
+  }));
+
+test("price-book saves atomically patch fixed prices and preserve omitted rounding", () =>
+  withRepo((repo) => {
+    const productId = "starter-muzza-grande";
+    const product = repo.bootstrap().products.find((p) => p.id === productId)!;
+    const base = repo.getPriceBooks().books.find((b) => b.isBase)!;
+    const created = repo.savePriceBook({
+      name: "Miles",
+      adjustmentBps: 1250,
+      roundingIncrementMinor: 1000,
+      productOverrides: { [productId]: 12345 },
+      reason: "Configurar precio",
+      authorizerPin: "2468",
+    });
+    const book = created.books.find((b) => b.name === "Miles")!;
+    assert.equal(book.roundingIncrementMinor, 1000);
+    repo.assignPriceBooks({
+      assignments: { SALON: base.id, TAKEAWAY: book.id, DELIVERY: base.id },
+      reason: "Asignar",
+      authorizerPin: "2468",
+    });
+    assert.equal(repo.bootstrap().products.find((p) => p.id === productId)!.prices.find((p) => p.priceListCode === "TAKEAWAY")!.amountMinor, 12345);
+    repo.openCashSession({ openingAmountMinor: 0 });
+    const draft = repo.createOrder({ type: "TAKEAWAY", customerName: "Cliente", customerPhone: "11 1234-5678" });
+    repo.addOrderItem({ orderId: draft.id, productId });
+    repo.confirmOrder({ orderId: draft.id });
+    repo.payOrder({ orderId: draft.id, payments: [{ methodCode: "CASH", amountMinor: 12345 }] });
+
+    const updated = repo.savePriceBook({
+      id: book.id,
+      name: book.name,
+      adjustmentBps: book.adjustmentBps,
+      productOverrides: { [productId]: null },
+      reason: "Quitar fijo",
+      authorizerPin: "2468",
+    }).books.find((b) => b.id === book.id)!;
+    assert.equal(updated.roundingIncrementMinor, 1000);
+    const entry = repo.getAuditLog({ action: "PRICE_BOOK_UPDATED" }).find((item) => item.entityId === book.id)!;
+    assert.equal(entry.reason, "Quitar fijo");
+    assert.deepEqual(JSON.parse(entry.afterJson!).productOverrides[productId], { before: 12345, after: null });
+    const rounded = Math.floor((product.priceBook!.baseMinor * 11250 + 5_000_000) / 10_000_000) * 1000;
+    assert.equal(repo.bootstrap().products.find((p) => p.id === productId)!.prices.find((p) => p.priceListCode === "TAKEAWAY")!.amountMinor, rounded);
+    assert.equal(repo.getOrder(draft.id).items[0]?.unitPriceMinorSnapshot, 12345);
+
+    assert.throws(() => repo.savePriceBook({
+      id: book.id,
+      name: book.name,
+      adjustmentBps: book.adjustmentBps,
+      roundingIncrementMinor: 100000,
+      productOverrides: { [productId]: 77, "missing-product": 100 },
+      reason: "Debe revertir",
+      authorizerPin: "2468",
+    }), /producto inválido/i);
+    assert.equal(repo.getPriceBooks().books.find((b) => b.id === book.id)!.roundingIncrementMinor, 1000);
+    assert.equal(repo.bootstrap().products.find((p) => p.id === productId)!.priceBook?.overrides[book.id], undefined);
+    assert.throws(() => repo.savePriceBook({
+      id: book.id, name: book.name, adjustmentBps: book.adjustmentBps,
+      roundingIncrementMinor: null as never, reason: "Null inválido", authorizerPin: "2468",
+    }), /redondeo/i);
+    assert.throws(() => repo.savePriceBook({
+      id: book.id, name: book.name, adjustmentBps: book.adjustmentBps,
+      productOverrides: [] as never, reason: "Parche inválido", authorizerPin: "2468",
+    }), /precios propios/i);
+  }));
+
+test("legacy channel split copies rounding and keeps unrelated product prices unchanged", () =>
+  withRepo((repo) => {
+    const products = repo.bootstrap().products;
+    const edited = products.find((p) => p.id === "starter-muzza-grande")!;
+    const other = products.find((p) => p.id !== edited.id)!;
+    const book = repo.savePriceBook({
+      name: "Redondeo miles", adjustmentBps: 500, roundingIncrementMinor: 1000,
+      reason: "Prueba", authorizerPin: "2468",
+    }).books.find((b) => b.name === "Redondeo miles")!;
+    const internal = repo as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => unknown } } };
+    internal.db.prepare("UPDATE price_book_assignments SET book_id=? WHERE channel IN ('TAKEAWAY','DELIVERY')").run(book.id);
+    const before = repo.bootstrap().products.find((p) => p.id === other.id)!.prices;
+    const own = repo.bootstrap().products.find((p) => p.id === edited.id)!;
+    repo.updateProduct({
+      productId: edited.id, categoryId: edited.categoryId, name: edited.name, active: true,
+      prices: own.prices.map((price) => ({
+        priceListCode: price.priceListCode as "SALON" | "TAKEAWAY" | "DELIVERY",
+        amountMinor: price.amountMinor + (price.priceListCode === "TAKEAWAY" ? 1 : price.priceListCode === "DELIVERY" ? 2 : 0),
+      })),
+      reason: "Separar legacy", authorizerPin: "2468",
+    });
+    const after = repo.bootstrap().products.find((p) => p.id === other.id)!.prices;
+    assert.deepEqual(after.map((price) => [price.priceListCode, price.amountMinor]), before.map((price) => [price.priceListCode, price.amountMinor]));
+    const assignments = repo.getPriceBooks().assignments;
+    const deliveryBook = repo.getPriceBooks().books.find((b) => b.id === assignments.DELIVERY)!;
+    assert.equal(deliveryBook.roundingIncrementMinor, 1000);
   }));

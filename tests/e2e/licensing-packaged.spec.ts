@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -237,7 +237,7 @@ test("packaged runtime enforces expired writes, preserves read access, and resum
   const userData = join(profile, "packaged-user-data");
   await mkdir(userData, { recursive: true });
   // Require the app's real packaged state before any test writes through IPC.
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     executablePath: renamed,
     args: [`--user-data-dir=${userData}`],
     cwd: buildOutput,
@@ -379,15 +379,10 @@ test("packaged runtime enforces expired writes, preserves read access, and resum
   if (!exported.path) throw new Error("Export handler returned no path.");
   await readFile(exported.path);
 
-  // Restoration runs through the real packaged IPC/repository path. Only the
-  // native picker and dialogs are stubbed; the fixture supplies a real backup.
-  const restored = await packagedPage.evaluate(() =>
-    window.gastronomy.restoreBackup(),
-  );
-  expect(restored).toMatchObject({
-    path: backup.path,
-    restored: true,
-  });
+  // Expiration does not bypass the independent open-shift restoration guard.
+  await expect(packagedPage.evaluate(() =>
+    window.gastronomy.restoreBackup("748259"),
+  )).rejects.toThrow(/cerrá la caja/i);
   expect(
     await packagedPage.evaluate(() => window.gastronomy.getLicenseStatus()),
   ).toMatchObject({ state: "EXPIRED", canOperate: false });
@@ -459,7 +454,7 @@ test("owner panel approves a packaged device without codes, suspends it and pres
   const buildOutput = join(fixtureRoot, "electron-builder", "win-unpacked");
   const userData = join(profile, "panel-device-user-data");
   const launch = () =>
-    electron.launch({
+    launchConfiguredPos({
       executablePath: join(buildOutput, "GastronomyLicenseTest.exe"),
       args: [`--user-data-dir=${userData}`],
       cwd: buildOutput,

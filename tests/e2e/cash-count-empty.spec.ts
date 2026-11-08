@@ -1,3 +1,4 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import { test, expect, _electron as electron } from "@playwright/test";
 import type { ElectronApplication, Page } from "@playwright/test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -13,7 +14,7 @@ let profile = "";
 
 async function launchWithCash() {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-cash-count-empty-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });

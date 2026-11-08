@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -15,7 +15,7 @@ let profile = "";
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-operations-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -53,7 +53,7 @@ test("purchase product correction and cancellation are contextual, authorized an
       items: [
         { productId: first.id, quantityMinor: 2000, unitCostMinor: 10000 },
       ],
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     return {
       purchase,
@@ -88,7 +88,7 @@ test("purchase product correction and cancellation are contextual, authorized an
   await expect(
     correction.getByRole("combobox", { name: /^Producto vigente/ }),
   ).toHaveValue(seeded.second.id);
-  await correction.getByLabel("PIN autorizador").fill("1234");
+  await correction.getByLabel("PIN autorizador").fill("748259");
   await correction
     .getByRole("button", { name: "Guardar corrección", exact: true })
     .click();
@@ -113,7 +113,7 @@ test("purchase product correction and cancellation are contextual, authorized an
     "Existencias, ventas, costo de ventas y caja permanecen intactos",
   );
   await cancel.getByLabel("Motivo", { exact: false }).fill("Compra duplicada");
-  await cancel.getByLabel("PIN autorizador").fill("1234");
+  await cancel.getByLabel("PIN autorizador").fill("748259");
   await cancel
     .getByRole("button", { name: "Anular compra", exact: true })
     .click();
@@ -200,7 +200,7 @@ test("configure and order a real combo with variant extras, fixed price and comp
   await config
     .getByLabel("Motivo", { exact: true })
     .fill("Alta de menú combo QA");
-  await config.getByLabel("PIN de autorización", { exact: true }).fill("1234");
+  await config.getByLabel("PIN de autorización", { exact: true }).fill("748259");
   await config
     .getByRole("button", { name: "Guardar combo", exact: true })
     .click();
@@ -298,7 +298,7 @@ test("repeat from customer history opens a current-price unpaid draft that can e
       productId: product.id,
       prices: prices.map((price) => ({ ...price, amountMinor: 200000 })),
       reason: "Precio de hoy",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     return { source, customer };
   });

@@ -24,7 +24,7 @@ import {
   type DeviceProof,
 } from "@gastronomy/licensing";
 import { hashAccountPassword, verifyAccountPassword, verifyPanelPassword } from "./panel-auth.js";
-import { issueWebSiteTicket } from "@gastronomy/web-orders/provision";
+import { issueWebSiteTicket, issueWaiterTicket } from "@gastronomy/web-orders/provision";
 import { createMerchantLedger, MerchantLedgerError } from "./merchant-ledger.js";
 import { arsToCents, BillingError, createSandboxBilling, type SandboxGateway } from "./sandbox-billing.js";
 import { createMpGateway, readSandboxConfig, verifyWebhookSignature, MercadoPagoSandboxError } from "./mercadopago-sandbox.js";
@@ -35,6 +35,7 @@ const MAX_BODY = 16 * 1024;
 type Env = {
   sandboxBilling?: { gateway: SandboxGateway; webhookSecret: string };
   webSiteProvisionSecret?: string;
+  waiterProvisionSecret?: string;
   dbPath: string;
   adminToken: string;
   privateKey: string;
@@ -160,6 +161,9 @@ export function createLicenseServer(
   if (env.webSiteProvisionSecret !== undefined &&
       (Buffer.byteLength(env.webSiteProvisionSecret) < 32 || env.webSiteProvisionSecret === env.adminToken))
     throw new Error("Use a dedicated WEB_SITE_PROVISION_SECRET of at least 32 bytes");
+  if (env.waiterProvisionSecret !== undefined &&
+      (Buffer.byteLength(env.waiterProvisionSecret) < 32 || env.waiterProvisionSecret === env.adminToken))
+    throw new Error("Use a dedicated WAITER_PROVISION_SECRET of at least 32 bytes");
   if (!env.dbPath || !env.dbPath.match(/^(?:[A-Za-z]:\\|\\\\|\/)/))
     throw new Error("DB_PATH must be absolute");
   if (env.panelAuth) {
@@ -301,9 +305,15 @@ export function createLicenseServer(
   // Only call after a fresh, verified v2 proof from the approved installation.
   const deviceCredentials = (row: LicenseRow, installationId: string) => {
     const token = issueToken(row, installationId);
-    if (!env.webSiteProvisionSecret || row.status !== "ACTIVE" || Date.parse(row.paid_through) <= Date.now())
+    if (row.status !== "ACTIVE" || Date.parse(row.paid_through) <= Date.now())
       return { token };
-    return { token, webSiteTicket: issueWebSiteTicket({ licenseId: row.id, installationId, businessName: row.business_name }, env.webSiteProvisionSecret) };
+    const credentials: { token: string; webSiteTicket?: string; waiterTicket?: string } = { token };
+    if (env.webSiteProvisionSecret)
+      credentials.webSiteTicket = issueWebSiteTicket({ licenseId: row.id, installationId, businessName: row.business_name }, env.webSiteProvisionSecret);
+    const waiterSecret = env.waiterProvisionSecret ?? env.webSiteProvisionSecret;
+    if (waiterSecret)
+      credentials.waiterTicket = issueWaiterTicket({ licenseId: row.id, installationId }, waiterSecret);
+    return credentials;
   };
   const rowById = (id: string): LicenseRow | undefined =>
     db.prepare("SELECT * FROM licenses WHERE id = ?").get(id) as
@@ -1563,6 +1573,9 @@ if (
     webSiteProvisionSecret: process.env.WEB_SITE_PROVISION_SECRET_FILE
       ? readFileSync(process.env.WEB_SITE_PROVISION_SECRET_FILE, "utf8").trim()
       : process.env.WEB_SITE_PROVISION_SECRET,
+    waiterProvisionSecret: process.env.WAITER_PROVISION_SECRET_FILE
+      ? readFileSync(process.env.WAITER_PROVISION_SECRET_FILE, "utf8").trim()
+      : process.env.WAITER_PROVISION_SECRET,
     posAi: {
       apiKey: process.env.GEMINI_API_KEY_FILE
         ? readFileSync(process.env.GEMINI_API_KEY_FILE, "utf8").trim()

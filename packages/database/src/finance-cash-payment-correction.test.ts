@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,7 +16,7 @@ function fixture(
 ) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-cash-correction-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, {
+  const repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -44,13 +45,14 @@ const expenseInput = {
 test("corrige pago efectivo con reversión compensatoria auditable, conserva importe del gasto y permite nueva revisión", () =>
   fixture((repo, db) => {
     const session = repo.openCashSession({ openingAmountMinor: 100000 });
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const stockBefore = (
       db
         .prepare("SELECT COALESCE(SUM(stock_minor),0) AS total FROM products")
         .get() as { total: number }
     ).total;
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -208,6 +210,7 @@ test("corrige pago efectivo con reversión compensatoria auditable, conserva imp
       reportBefore.unpaidMinor + expense.amountMinor,
     );
     const reopened = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -254,8 +257,9 @@ test("corrige pago efectivo con reversión compensatoria auditable, conserva imp
 test("captura la clasificación efectiva de caja del movimiento aunque luego se desactive o cambie el medio", () =>
   fixture((repo, db) => {
     const session = repo.openCashSession({ openingAmountMinor: 100000 });
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -291,8 +295,9 @@ test("captura la clasificación efectiva de caja del movimiento aunque luego se 
 test("compensa transferencia vinculada a caja conservando affects_cash=false aunque cambie el catálogo", () =>
   fixture((repo, db) => {
     const session = repo.openCashSession({ openingAmountMinor: 100000 });
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: true,
@@ -325,8 +330,9 @@ test("compensa transferencia vinculada a caja conservando affects_cash=false aun
 
 test("rechaza razón vacía, revisión obsoleta, transferencia externa y corrección sin autorización", () =>
   fixture((repo, db) => {
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
@@ -409,8 +415,9 @@ test("rechaza razón vacía, revisión obsoleta, transferencia externa y correcc
 test("migration 32 upgrades a v31 database without altering expenses, cash, audit, receipts or users", () =>
   fixture((repo, db, path) => {
     repo.openCashSession({ openingAmountMinor: 100000 });
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -443,7 +450,7 @@ test("migration 32 upgrades a v31 database without altering expenses, cash, audi
     db.exec(
       "DROP TABLE finance_expense_payment_corrections; DELETE FROM schema_migrations WHERE version=32;",
     );
-    const upgraded = new SqliteGastronomyRepository(path, {
+    const upgraded = configuredTestRepository(path, {
       adminPin: "2468",
       seedStarterCatalog: true,
     });
@@ -507,6 +514,7 @@ test("migration 32 upgrades a v31 database without altering expenses, cash, audi
       );
       assert.deepEqual(
         upgraded.payFinanceExpense({
+          authorizerPin: "2468",
           expenseId: expense.id,
           paymentMethodCode: "CASH",
           fromCash: true,
@@ -523,8 +531,9 @@ test("migration 32 upgrades a v31 database without altering expenses, cash, audi
 test("no permite corregir si la caja original está cerrada o existe otra sesión abierta", () =>
   fixture((repo) => {
     const session = repo.openCashSession({ openingAmountMinor: 100000 });
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -569,7 +578,7 @@ test("no permite corregir si la caja original está cerrada o existe otra sesió
 test("rechaza gasto pendiente, recurrente o cancelado fuera del alcance", () =>
   fixture((repo, db) => {
     repo.openCashSession({ openingAmountMinor: 100000 });
-    const pending = repo.createFinanceExpense(expenseInput);
+    const pending = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const pendingInput = {
       expenseId: pending.id,
       expectedRevision: pending.revision ?? 0,
@@ -582,15 +591,18 @@ test("rechaza gasto pendiente, recurrente o cancelado fuera del alcance", () =>
       /pagado|vinculado/i,
     );
     const paidExpense = repo.createFinanceExpense({
+      authorizerPin: "2468",
       ...expenseInput,
       title: "Recurrente",
     });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: paidExpense.id,
       paymentMethodCode: "CASH",
       fromCash: true,
     });
     const recurring = repo.createFinanceRecurring({
+      authorizerPin: "2468",
       title: "Mantenimiento mensual",
       category: "Mantenimiento",
       kind: "FIXED",
@@ -629,8 +641,9 @@ test("rechaza gasto pendiente, recurrente o cancelado fuera del alcance", () =>
 test("la recuperación permite corregir y anular el gasto pendiente sin tocar el historial de caja", () =>
   fixture((repo, db) => {
     repo.openCashSession({ openingAmountMinor: 100000 });
-    const expense = repo.createFinanceExpense(expenseInput);
+    const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
     const paid = repo.payFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -651,6 +664,7 @@ test("la recuperación permite corregir y anular el gasto pendiente sin tocar el
         .all(),
     };
     const edited = repo.correctFinanceExpense({
+      authorizerPin: "2468",
       ...expenseInput,
       expenseId: expense.id,
       expectedRevision: pending.revision!,
@@ -660,6 +674,7 @@ test("la recuperación permite corregir y anular el gasto pendiente sin tocar el
     });
     assert.equal(edited.amountMinor, 13000);
     const cancelled = repo.cancelFinanceExpense({
+      authorizerPin: "2468",
       expenseId: expense.id,
       expectedRevision: edited.revision!,
       reason: "Gasto no corresponde",

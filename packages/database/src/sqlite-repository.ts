@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import Database from "better-sqlite3-multiple-ciphers";
 import bcrypt from "bcryptjs";
 import type { GastronomyRepository } from "@gastronomy/application";
-import { AUDIT_FILTER_ACTIONS } from "@gastronomy/contracts";
+import { AUDIT_FILTER_ACTIONS, isPriceBookRoundingIncrementMinor } from "@gastronomy/contracts";
 import type {
   AddHalfAndHalfItemInput,
   AddComboItemInput,
@@ -51,6 +51,7 @@ import type {
   MarkOrderServedInput,
   ProductDto,
   PriceChannel,
+  PriceBookRoundingIncrementMinor,
   PriceBooksDto,
   SavePriceBookInput,
   AssignPriceBooksInput,
@@ -122,6 +123,7 @@ import {
   getKitchenAdditions,
   applyBookAdjustment,
   calculateBookPrice,
+  planLegacyChannelPrices,
 } from "@gastronomy/domain";
 import { migrations } from "./migrations";
 import { populateRepeatedOrder } from "./repeat-order";
@@ -262,9 +264,47 @@ export interface SqliteRepositoryOptions {
   seedStarterCatalog?: boolean;
 }
 
+/** Never include the human credential in receipts, events or audit snapshots. */
+function withoutAuthorizerPin<T extends { authorizerPin?: string }>({authorizerPin: _pin, ...businessData}: T) {
+  return businessData;
+}
+
 export class SqliteGastronomyRepository implements GastronomyRepository {
   readonly db: SqliteDatabase;
   private readonly adminUserId = "user-admin";
+
+  private assertPinIsUnique(pin: string, exceptUserId?: string) {
+    const rows = this.db.prepare("SELECT id,pin_hash FROM users WHERE active=1 AND id<>COALESCE(?, '')")
+      .all(exceptUserId ?? "") as { id: string; pin_hash: string }[];
+    if (rows.some((row) => bcrypt.compareSync(pin, row.pin_hash)))
+      throw new Error("Ese PIN ya está asignado a otro usuario activo.");
+  }
+
+  isInitialAdminPinSetupRequired(): boolean {
+    const row = this.db.prepare("SELECT must_change_pin FROM users WHERE id=? AND active=1")
+      .get(this.adminUserId) as { must_change_pin: number } | undefined;
+    if (!row) throw new Error("No se pudo verificar al administrador activo de esta caja. Contactá a soporte.");
+    return Boolean(row.must_change_pin);
+  }
+
+  setInitialAdminPin(input: { currentPin: string; newPin: string }): { configured: true } {
+    if (typeof input?.newPin !== "string" || !/^\d{4,8}$/.test(input.newPin) || /^(\d)\1+$/.test(input.newPin) ||
+        /^(0123|1234|2345|3456|4567|5678|6789|9876|8765|7654|6543|5432|4321|3210)$/.test(input.newPin) || input.newPin === "1234")
+      throw new Error("Elegí un PIN de 4 a 8 dígitos que no sea fácil de adivinar.");
+    const update = this.db.transaction(() => {
+      const row = this.db.prepare("SELECT pin_hash,must_change_pin FROM users WHERE id=? AND active=1")
+        .get(this.adminUserId) as { pin_hash: string; must_change_pin: number } | undefined;
+      if (!row || !row.must_change_pin) throw new Error("La configuración inicial del PIN ya fue completada.");
+      if (typeof input.currentPin !== "string" || !bcrypt.compareSync(input.currentPin, row.pin_hash))
+        throw new Error("El PIN actual es incorrecto.");
+      if (bcrypt.compareSync(input.newPin, row.pin_hash)) throw new Error("El nuevo PIN debe ser distinto del PIN actual.");
+      this.assertPinIsUnique(input.newPin, this.adminUserId);
+      this.db.prepare("UPDATE users SET pin_hash=?,must_change_pin=0,updated_at=? WHERE id=? AND must_change_pin=1")
+        .run(bcrypt.hashSync(input.newPin, 12), nowIso(), this.adminUserId);
+      return { configured: true as const };
+    });
+    return update();
+  }
 
   /** Create a short-lived, single-use QR pairing challenge on the POS. */
   createWaiterChallenge(waiterUserId: string) {
@@ -531,15 +571,20 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       this.db.prepare(`INSERT INTO waiter_batches(request_id,session_token_hash,expected_order_id,payload_hash,accepted_line_ids_json,status,created_at) VALUES(?,?,?,?,?,'RECEIVING',?)`)
         .run(input.requestId, session.tokenHash, input.expectedOrderId ?? null, payloadHash, JSON.stringify(lineIds), nowIso());
       const orderId = existingOrder ? String(existingOrder.id) : this.createOrder({ idempotencyKey: input.requestId, terminalId: `waiter-session:${String(session.user_id)}`, type: "DINE_IN", tableId: input.tableId, waiterUserId: String(session.user_id) }).id;
-      const before = existingOrder ? this.getOrder(orderId) : null;
+      const kitchen = this.getSettings().printing.kitchen;
+      const canPrint = kitchen.mode === "SYSTEM_DIRECT" && Boolean(kitchen.deviceName?.trim());
+      const before = canPrint && existingOrder ? this.getOrder(orderId) : null;
       for (const line of input.lines) {
         this.addOrderItem({ orderId, productId: line.productId, quantity: line.quantity, notes: line.note ?? null });
         this.db.prepare("INSERT INTO waiter_batch_lines(line_id,request_id,product_id,quantity,note) VALUES(?,?,?,?,?)")
           .run(line.lineId, input.requestId, line.productId, line.quantity, line.note?.trim() || null);
       }
       if (!existingOrder) this.confirmOrder({ orderId, idempotencyKey: `${input.requestId}:confirm`, terminalId: `waiter-session:${String(session.user_id)}` });
+      if (!canPrint) {
+        this.db.prepare("UPDATE waiter_batches SET order_id=?,status='RECORDED' WHERE request_id=?").run(orderId, input.requestId);
+        return { requestId: input.requestId, orderId, acceptedLineIds: lineIds, printJobId: null, status: "RECORDED", created: true };
+      }
       // Snapshot is immutable and scoped to this batch, not the whole table's prior kitchen history.
-      const jobId = randomUUID();
       const orderNow = this.getOrder(orderId);
       const oldItems = new Map((before?.items ?? []).map((item) => [item.id, item]));
       const additions = orderNow.items.flatMap((item) => {
@@ -549,13 +594,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         return [{ ...item, quantity, lineTotalMinor: Math.round(item.lineTotalMinor * quantity / item.quantity) }];
       });
       if (!additions.length) throw new Error("No se detectaron líneas nuevas para imprimir.");
-      const settings = this.getSettings();
-      if (settings.printing.kitchen.mode !== "SYSTEM_DIRECT" || !settings.printing.kitchen.deviceName?.trim()) throw new Error("Configurá una impresora de cocina en modo directo explícito en la caja antes de recibir tandas.");
       const quantities = { ...(orderNow.kitchenPrintedQuantities ?? {}) };
+      const jobId = randomUUID();
       for (const addition of additions) quantities[addition.id] = (quantities[addition.id] ?? 0) + addition.quantity;
       const snapshot = JSON.stringify({ order: { ...orderNow, items: additions, kitchenPrintScope: existingOrder ? "ADDED" : "FULL" }, quantities });
       this.db.prepare(`INSERT INTO print_jobs(id,order_id,kind,status,printer_name,copies,created_at,kitchen_snapshot_json)
-        VALUES(?,?,'KITCHEN_ORDER','QUEUED',?,?,?,?)`).run(jobId, orderId, settings.printing.kitchen.deviceName || null, settings.printing.kitchen.copies, nowIso(), snapshot);
+        VALUES(?,?,'KITCHEN_ORDER','QUEUED',?,?,?,?)`).run(jobId, orderId, kitchen.deviceName, kitchen.copies, nowIso(), snapshot);
       this.db.prepare("UPDATE waiter_batches SET order_id=?,print_job_id=?,status='QUEUED' WHERE request_id=?").run(orderId, jobId, input.requestId);
       return { requestId: input.requestId, orderId, acceptedLineIds: lineIds, printJobId: jobId, status: "QUEUED", created: true };
     });
@@ -592,8 +636,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         AND (expires_on_cash_close=0 OR cash_session_id NOT IN (SELECT id FROM cash_sessions WHERE status='OPEN'))`).run(nowIso());
       this.db.prepare("DELETE FROM waiter_challenges").run();
       this.recoverInterruptedPrintClaims();
-      this.seed(options);
-      this.initializePriceBooks();
+      // Distinguish a real legacy catalog from the optional development seed.
+      const hasExistingCatalog = Boolean(this.db.prepare("SELECT 1 FROM products LIMIT 1").get());
+      this.db.transaction(() => {
+        this.seed(options);
+        this.initializePriceBooks(hasExistingCatalog);
+      })();
     } catch (error) {
       // Failed construction never reaches the caller's repository reference.
       // Release its SQLite handle so restoration can remove sidecars and roll back.
@@ -625,6 +673,20 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   backupTo(path: string) {
     return this.db.backup(path);
+  }
+
+  /** Verify restore prerequisites against the live database immediately before any file selection. */
+  authorizeBackupRestore(pin: string) {
+    if (typeof pin !== "string" || !/^\d{4,8}$/.test(pin))
+      throw new Error("Ingresá el PIN de un ADMIN activo.");
+    if (this.db.prepare("SELECT 1 FROM cash_sessions WHERE status='OPEN' LIMIT 1").get())
+      throw new Error("Cerrá la caja antes de restaurar una copia de seguridad.");
+    if (this.isInitialAdminPinSetupRequired())
+      throw new Error("ADMIN sin PIN activo confirmado: completá primero el cambio del PIN inicial.");
+    const user = this.confirmedPinHolder(pin);
+    if (!user || user.role_code !== "ADMIN")
+      throw new Error("PIN incorrecto o ADMIN sin PIN activo confirmado.");
+    return true;
   }
 
   static validateDatabase(path: string) {
@@ -850,12 +912,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       ["starter-gaseosa", "category-3", "Gaseosa 1,5 L", "GAS15", 450_000],
     ] as const;
     for (const [id, categoryId, name, code, salonPrice] of products) {
-      this.db
+      const inserted = this.db
         .prepare(
           `INSERT OR IGNORE INTO products(id, category_id, name, code, sort_order, created_at, updated_at)
            VALUES (?, ?, ?, ?, 0, ?, ?)`,
         )
         .run(id, categoryId, name, code, timestamp, timestamp);
+      // Existing products may legitimately lack one legacy channel; let the
+      // conversion copy its counterpart instead of filling it with demo prices.
+      if (!inserted.changes) continue;
       for (const [priceListId, multiplier] of [
         ["price-salon", 1],
         ["price-takeaway", 1],
@@ -940,7 +1005,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     if (!Number.isSafeInteger(staffNumber) || staffNumber <= 0 ||
         typeof pin !== "string" || !/^\d{4,8}$/.test(pin)) return null;
     const user = this.db.prepare(
-      "SELECT id, role_id, pin_hash FROM users WHERE staff_number=? AND active=1",
+      "SELECT id, role_id, pin_hash FROM users WHERE staff_number=? AND active=1 AND must_change_pin=0",
     ).get(staffNumber) as { id: string; role_id: string; pin_hash: string } | undefined;
     if (!user || !bcrypt.compareSync(pin, user.pin_hash)) return null;
     const permissions = this.db.prepare(
@@ -1544,18 +1609,27 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   registerCashMovement(input: CashMovementInput): CashSessionDto {
+    if (!["INCOME", "EXPENSE", "WITHDRAWAL", "ADJUSTMENT"].includes(input.type))
+      throw new Error("El tipo de movimiento de caja no es válido.");
     assertMoneyMinor(input.amountMinor);
     if (input.amountMinor === 0)
       throw new Error("El movimiento debe tener un importe distinto de cero.");
     if (input.type !== "ADJUSTMENT") nonNegativeMoney(input.amountMinor);
+    const protectedPermission = input.type === "WITHDRAWAL"
+      ? "cash.withdraw"
+      : input.type === "EXPENSE" || (input.type === "ADJUSTMENT" && input.amountMinor < 0)
+        ? "cash.expense" : null;
     const reason = input.reason.trim();
     if (!reason) throw new Error("El movimiento requiere un motivo.");
+    const authorizer = protectedPermission
+      ? this.authorizePin(input.authorizerPin ?? "", protectedPermission)
+      : null;
     return this.idempotentTransaction(
       input.idempotencyKey,
       input.terminalId,
       "registerCashMovement",
       undefined,
-      input,
+      withoutAuthorizerPin(input),
       () => {
         const run = this.db.transaction(() => {
           const session = this.requireOpenCashSessionRow();
@@ -1596,7 +1670,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               input.amountMinor,
               affectsCash ? 1 : 0,
               method.id,
-              this.adminUserId,
+              authorizer ? String(authorizer.id) : this.adminUserId,
               reason,
               nowIso(),
             );
@@ -1604,9 +1678,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             entityType: "CASH_SESSION",
             entityId: String(session.id),
             action: `CASH_${input.type}`,
-            permission:
-              input.type === "WITHDRAWAL" ? "cash.withdraw" : "cash.expense",
+            permission: protectedPermission ?? "cash.expense",
             reason,
+            authorizerUserId: authorizer ? String(authorizer.id) : undefined,
             after: {
               amountMinor: input.amountMinor,
               paymentMethodCode: String(method.code),
@@ -1618,7 +1692,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             String(session.id),
             "CashMovementRecorded",
             {
-              ...input,
+              ...withoutAuthorizerPin(input),
               paymentMethodCode: String(method.code),
               affectsCash,
               reason,
@@ -1838,113 +1912,49 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }));
   }
 
-  private initializePriceBooks(): void {
-    const run = this.db.transaction(() => {
-      const assigned = Number(
-        (
-          this.db
-            .prepare("SELECT COUNT(*) n FROM price_book_assignments")
-            .get() as Row
-        ).n,
-      );
-      if (assigned) return;
-      this.db
-        .prepare(
-          "INSERT OR IGNORE INTO price_books(id,name,adjustment_bps,is_base,sort_order) VALUES('price-book-base','Principal',0,1,0)",
-        )
-        .run();
-      const products = this.db
-        .prepare("SELECT id FROM products")
-        .all() as Row[];
-      const read = this.db.prepare(
-        `SELECT pl.code,pp.amount_minor FROM product_prices pp JOIN price_lists pl ON pl.id=pp.price_list_id WHERE pp.product_id=?`,
-      );
-      const baseInsert = this.db.prepare(
-        "INSERT OR IGNORE INTO product_price_book_bases(product_id,amount_minor) VALUES(?,?)",
-      );
-      const baseValues = new Map<string, number>();
-      const override = this.db.prepare(
-        "INSERT OR IGNORE INTO product_price_book_overrides(product_id,book_id,amount_minor) VALUES(?,?,?)",
-      );
-      const byChannel: Record<PriceChannel, Map<string, number>> = {
-        SALON: new Map(),
-        TAKEAWAY: new Map(),
-        DELIVERY: new Map(),
-      };
-      for (const p of products) {
-        const id = String(p.id);
-        const prices = Object.fromEntries(
-          (read.all(id) as Row[]).map((r) => [
-            String(r.code),
-            Number(r.amount_minor),
-          ]),
-        );
-        const base = prices.SALON ?? prices.TAKEAWAY ?? prices.DELIVERY ?? 0;
-        baseInsert.run(id, base);
-        baseValues.set(id, base);
-        for (const channel of ["SALON", "TAKEAWAY", "DELIVERY"] as const)
-          if (prices[channel] != null)
-            byChannel[channel].set(id, prices[channel]);
+  /** Called inside the seed transaction. Existing book configurations are never re-imported. */
+  private initializePriceBooks(hasExistingCatalog: boolean): void {
+    if (this.db.prepare("SELECT 1 FROM price_book_assignments LIMIT 1").get()) return;
+    const readCatalog = this.db.prepare(`
+      SELECT p.id,
+        MAX(CASE WHEN pl.code='SALON' THEN pp.amount_minor END) AS SALON,
+        MAX(CASE WHEN pl.code='TAKEAWAY' THEN pp.amount_minor END) AS TAKEAWAY,
+        MAX(CASE WHEN pl.code='DELIVERY' THEN pp.amount_minor END) AS DELIVERY
+      FROM products p LEFT JOIN product_prices pp ON pp.product_id=p.id
+      LEFT JOIN price_lists pl ON pl.id=pp.price_list_id GROUP BY p.id ORDER BY p.id`);
+    type ChannelRow = { id: string } & Record<PriceChannel, number | null>;
+    const snapshot = readCatalog.all() as ChannelRow[];
+    const plan = planLegacyChannelPrices(snapshot.map(({ id, SALON, DELIVERY, TAKEAWAY }) =>
+      ({ id, prices: { SALON: SALON ?? undefined, DELIVERY: DELIVERY ?? undefined, TAKEAWAY: TAKEAWAY ?? undefined } })));
+    const baseId = "price-book-base";
+    const deliveryId = hasExistingCatalog ? "price-book-delivery" : baseId;
+    const takeawayId = hasExistingCatalog && plan.separateTakeaway ? "price-book-takeaway" : deliveryId;
+    const book = this.db.prepare("INSERT INTO price_books(id,name,adjustment_bps,is_base,sort_order) VALUES(?,?,0,?,?)");
+    book.run(baseId, "Principal", 1, 0);
+    if (deliveryId !== baseId) book.run(deliveryId, "Delivery", 0, 1);
+    if (takeawayId !== deliveryId) book.run(takeawayId, "Retiro", 0, 2);
+    const assign = this.db.prepare("INSERT INTO price_book_assignments(channel,book_id) VALUES(?,?)");
+    assign.run("SALON", baseId);
+    assign.run("DELIVERY", deliveryId);
+    assign.run("TAKEAWAY", takeawayId);
+    const base = this.db.prepare("INSERT INTO product_price_book_bases(product_id,amount_minor) VALUES(?,?)");
+    const fixed = this.db.prepare("INSERT INTO product_price_book_overrides(product_id,book_id,amount_minor) VALUES(?,?,?)");
+    for (const product of plan.products) {
+      base.run(product.id, product.salon);
+      // Two historical tariffs are independent even when today's amounts coincide.
+      if (deliveryId !== baseId) fixed.run(product.id, deliveryId, product.delivery);
+      if (takeawayId !== deliveryId) fixed.run(product.id, takeawayId, product.takeaway);
+    }
+    this.materializePriceBooks();
+    if (hasExistingCatalog) {
+      // Verify what the POS actually charges, not just the newly written rules.
+      const actual = new Map((readCatalog.all() as ChannelRow[]).map(row => [row.id, row]));
+      for (const { id, salon, delivery, takeaway } of plan.products) {
+        const row = actual.get(id);
+        if (!row || row.SALON !== salon || row.DELIVERY !== delivery || row.TAKEAWAY !== takeaway)
+          throw new Error("No se pudieron conservar todos los precios anteriores. Se canceló la conversión de listas.");
       }
-      const assignments = this.db.prepare(
-        "INSERT INTO price_book_assignments(channel,book_id) VALUES(?,?)",
-      );
-      for (const channel of ["SALON", "TAKEAWAY", "DELIVERY"] as const) {
-        // Salon is the principal source. For other channels create a derived flat list only when legacy prices differed.
-        if (channel === "SALON") {
-          assignments.run(channel, "price-book-base");
-          continue;
-        }
-        let id = "price-book-base";
-        const hasDiff = [...byChannel[channel]].some(
-          ([productId, value]) => baseValues.get(productId) !== value,
-        );
-        if (hasDiff) {
-          // Share the same derived book when both historical channels have identical amounts.
-          if (channel === "DELIVERY") {
-            const takeaway = [...byChannel.TAKEAWAY].sort((a, b) =>
-              a[0].localeCompare(b[0]),
-            );
-            const delivery = [...byChannel.DELIVERY].sort((a, b) =>
-              a[0].localeCompare(b[0]),
-            );
-            if (
-              takeaway.length === delivery.length &&
-              takeaway.every(
-                ([pid, v], i) =>
-                  delivery[i]?.[0] === pid && delivery[i]?.[1] === v,
-              )
-            ) {
-              const existing = this.db
-                .prepare(
-                  "SELECT book_id FROM price_book_assignments WHERE channel='TAKEAWAY'",
-                )
-                .get() as Row | undefined;
-              if (existing) {
-                assignments.run(channel, String(existing.book_id));
-                continue;
-              }
-            }
-          }
-          id = `price-book-${channel.toLowerCase()}`;
-          this.db
-            .prepare(
-              "INSERT OR IGNORE INTO price_books(id,name,adjustment_bps,is_base,sort_order) VALUES(?,?,0,0,?)",
-            )
-            .run(
-              id,
-              channel === "TAKEAWAY" ? "Retiro" : "Delivery",
-              channel === "TAKEAWAY" ? 1 : 2,
-            );
-          for (const [productId, value] of byChannel[channel])
-            if (baseValues.get(productId) !== value)
-              override.run(productId, id, value);
-        }
-        assignments.run(channel, id);
-      }
-      this.materializePriceBooks();
-    });
-    run();
+    }
   }
 
   /** Keep existing channel consumers in sync without touching orders or rewriting unchanged prices. */
@@ -1953,7 +1963,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const scope = productIds ? `WHERE base.product_id IN (${productIds.map(() => "?").join(",")})` : "";
     const effective = this.db.prepare(`
       SELECT base.product_id, base.amount_minor AS base_minor, list.id AS list_id,
-             book.adjustment_bps, override.amount_minor AS fixed_minor
+             book.adjustment_bps, book.rounding_increment_minor, override.amount_minor AS fixed_minor
       FROM product_price_book_bases base
       CROSS JOIN price_book_assignments assignment
       JOIN price_books book ON book.id=assignment.book_id
@@ -1968,7 +1978,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const timestamp = nowIso();
     for (const row of effective) {
       const amount = calculateBookPrice(Number(row.base_minor), Number(row.adjustment_bps),
-        row.fixed_minor == null ? undefined : Number(row.fixed_minor));
+        row.fixed_minor == null ? undefined : Number(row.fixed_minor), Number(row.rounding_increment_minor ?? 1) as PriceBookRoundingIncrementMinor);
       write.run(row.product_id, row.list_id, amount, timestamp);
     }
   }
@@ -1990,6 +2000,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         value.baseMinor,
         book.adjustmentBps,
         value.overrides[book.id],
+        book.roundingIncrementMinor,
       );
   }
 
@@ -2021,7 +2032,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           throw new Error("Hay un precio propio o una lista inválida.");
       }
       for (const book of books)
-        calculateBookPrice(base, book.adjustmentBps, overrides[book.id]);
+        calculateBookPrice(base, book.adjustmentBps, overrides[book.id], book.roundingIncrementMinor);
     }
   }
 
@@ -2029,7 +2040,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const books = (
       this.db
         .prepare(
-          "SELECT id,name,adjustment_bps,is_base FROM price_books ORDER BY sort_order,name",
+          "SELECT id,name,adjustment_bps,is_base,rounding_increment_minor FROM price_books ORDER BY sort_order,name",
         )
         .all() as Row[]
     ).map((r) => ({
@@ -2037,6 +2048,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       name: String(r.name),
       adjustmentBps: Number(r.adjustment_bps),
       isBase: flag(r.is_base),
+      roundingIncrementMinor: Number(r.rounding_increment_minor ?? 1) as PriceBookRoundingIncrementMinor,
     }));
     const assignments = Object.fromEntries(
       (
@@ -2076,6 +2088,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             name: String(existing.name),
             adjustmentBps: Number(existing.adjustment_bps),
             isBase: flag(existing.is_base),
+            roundingIncrementMinor: Number(existing.rounding_increment_minor ?? 1),
           }
         : null;
       const duplicate = this.db
@@ -2085,16 +2098,43 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         .get(input.name.trim(), input.id ?? "");
       if (duplicate) throw new Error("Ya existe una lista con ese nombre.");
       const id = input.id ?? randomUUID();
+      const requestedRounding = input.roundingIncrementMinor;
+      if (requestedRounding !== undefined && !isPriceBookRoundingIncrementMinor(requestedRounding))
+        throw new Error("El redondeo de la lista no es válido.");
+      const roundingIncrementMinor = requestedRounding ?? Number(existing?.rounding_increment_minor ?? 1);
       if (existing)
         this.db
-          .prepare("UPDATE price_books SET name=?,adjustment_bps=? WHERE id=?")
-          .run(input.name.trim(), input.adjustmentBps, id);
+          .prepare("UPDATE price_books SET name=?,adjustment_bps=?,rounding_increment_minor=? WHERE id=?")
+          .run(input.name.trim(), input.adjustmentBps, roundingIncrementMinor, id);
       else
         this.db
           .prepare(
-            "INSERT INTO price_books(id,name,adjustment_bps,is_base,sort_order) VALUES(?,?,?,0,COALESCE((SELECT MAX(sort_order)+1 FROM price_books),1))",
+            "INSERT INTO price_books(id,name,adjustment_bps,is_base,sort_order,rounding_increment_minor) VALUES(?,?,?,0,COALESCE((SELECT MAX(sort_order)+1 FROM price_books),1),?)",
           )
-          .run(id, input.name.trim(), input.adjustmentBps);
+          .run(id, input.name.trim(), input.adjustmentBps, roundingIncrementMinor);
+      const patchValue = (input as unknown as Record<string, unknown>).productOverrides;
+      if (patchValue !== undefined && (!patchValue || typeof patchValue !== "object" || Array.isArray(patchValue) || ![Object.prototype, null].includes(Object.getPrototypeOf(patchValue))))
+        throw new Error("Los precios propios no son válidos.");
+      const patch = (patchValue ?? {}) as Record<string, unknown>;
+      const entries = Object.entries(patch);
+      const overrideAudit: Record<string, { before: number | null; after: number | null }> = Object.create(null);
+      if (entries.length) {
+        const productExists = this.db.prepare("SELECT 1 FROM products WHERE id=?");
+        const getPrevious = this.db.prepare("SELECT amount_minor FROM product_price_book_overrides WHERE product_id=? AND book_id=?");
+        const updateOverride = this.db.prepare(`INSERT INTO product_price_book_overrides(product_id,book_id,amount_minor)
+          VALUES(?,?,?) ON CONFLICT(product_id,book_id) DO UPDATE SET amount_minor=excluded.amount_minor`);
+        const clearOverride = this.db.prepare("DELETE FROM product_price_book_overrides WHERE product_id=? AND book_id=?");
+        for (const [productId, amount] of entries) {
+          if (!productId || productId === "__proto__" || ["constructor", "prototype"].includes(productId) || productId.trim() !== productId || !productExists.get(productId))
+            throw new Error("Hay un producto inválido en los precios propios.");
+          if (amount !== null && (!Number.isSafeInteger(amount) || Number(amount) < 0))
+            throw new Error("El precio propio no es válido.");
+          const previous = getPrevious.get(productId, id) as Row | undefined;
+          overrideAudit[productId] = { before: previous ? Number(previous.amount_minor) : null, after: amount as number | null };
+          if (amount === null) clearOverride.run(productId, id);
+          else updateOverride.run(productId, id, amount);
+        }
+      }
       this.validateAllPriceBookProducts();
       this.materializePriceBooks();
       this.audit({
@@ -2109,6 +2149,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           name: input.name.trim(),
           adjustmentBps: input.adjustmentBps,
           isBase: false,
+          roundingIncrementMinor,
+          productOverrides: overrideAudit,
         },
         authorizerUserId: String(auth.id),
       });
@@ -2395,21 +2437,25 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }));
   }
 
+  // Resolve identity before permissions. Older databases may contain the same
+  // PIN on two active people, even if only one of them holds this permission.
+  private confirmedPinHolder(pin: string): Row | undefined {
+    if (typeof pin !== "string" || !/^\d{4,8}$/.test(pin)) return undefined;
+    const users = this.db.prepare(
+      "SELECT u.*, r.code AS role_code FROM users u JOIN roles r ON r.id=u.role_id WHERE u.active=1",
+    ).all() as Row[];
+    const matches = users.filter(user => bcrypt.compareSync(pin, String(user.pin_hash)));
+    if (matches.length > 1) throw new Error("PIN ambiguo: asigná un PIN único a cada usuario autorizante.");
+    return matches[0] && !flag(matches[0].must_change_pin) ? matches[0] : undefined;
+  }
+
   private authorizePin(pin: string, permission: string | readonly string[]) {
-    const permissions = Array.isArray(permission) ? permission : [permission];
-    const placeholders = permissions.map(() => "?").join(",");
-    return requireRow(
-      (
-        this.db
-          .prepare(
-            `SELECT DISTINCT u.* FROM users u
-        JOIN role_permissions rp ON rp.role_id = u.role_id
-        WHERE u.active = 1 AND rp.permission_code IN (${placeholders})`,
-          )
-          .all(...permissions) as Row[]
-      ).find((row) => bcrypt.compareSync(pin, String(row.pin_hash))),
-      "PIN incorrecto o usuario sin permiso.",
-    );
+    const user = this.confirmedPinHolder(pin);
+    const permissions = typeof permission === "string" ? [permission] : permission;
+    if (user && this.db.prepare(
+      `SELECT 1 FROM role_permissions WHERE role_id=? AND permission_code IN (${permissions.map(() => "?").join(",")}) LIMIT 1`,
+    ).get(user.role_id, ...permissions)) return user;
+    throw new Error("PIN incorrecto o usuario sin permiso.");
   }
 
   private listTables(): RestaurantTableDto[] {
@@ -8045,14 +8091,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   createFinanceExpense(input: CreateFinanceExpenseInput): FinanceExpenseDto {
+    const authorizer = this.authorizePin(input.authorizerPin ?? "", "finance.manage");
     return this.idempotentTransaction(
       input.idempotencyKey,
       input.terminalId,
       "createFinanceExpense",
       undefined,
-      input,
+      withoutAuthorizerPin(input),
       () => {
-        assertPermission(this.currentUser().permissions, "finance.manage");
         if (
           !input.title.trim() ||
           !input.category.trim() ||
@@ -8101,7 +8147,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           entityId: id,
           action: "FINANCE_EXPENSE_CREATED",
           permission: "finance.manage",
-          after: input,
+          authorizerUserId: String(authorizer.id),
+          after: withoutAuthorizerPin(input),
         });
         return this.financeExpense(id);
       },
@@ -8110,8 +8157,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   correctFinanceExpense(input: CorrectFinanceExpenseInput): FinanceExpenseDto {
     assertPermission(this.currentUser().permissions, "finance.manage");
-    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "correctFinanceExpense", undefined, { operation: "correctFinanceExpense", input }, () => {
-      assertPermission(this.currentUser().permissions, "finance.manage");
+    const authorizer = this.authorizePin(input.authorizerPin ?? "", "finance.manage");
+    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "correctFinanceExpense", undefined, { operation: "correctFinanceExpense", input: withoutAuthorizerPin(input) }, () => {
       if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) throw new Error("La revisión esperada no es válida.");
       if (!boundedText(input.reason, 500)) throw new Error("Ingresá un motivo válido (hasta 500 caracteres).");
       if (!boundedText(input.title, 160) || !boundedText(input.category, 160) || (input.note != null && input.note.length > 1000) || !["GENERAL", "FIXED", "PAYROLL"].includes(input.kind) || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0 || !validIsoDate(input.incurredOn)) throw new Error("Completá un gasto válido.");
@@ -8127,15 +8174,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const result = this.db.prepare(`UPDATE finance_expenses SET title=?,category=?,kind=?,amount_minor=?,incurred_on=?,due_on=?,employee_id=?,note=?,revision=revision+1 WHERE id=? AND revision=? AND paid_at IS NULL AND recurring_id IS NULL AND cancelled_at IS NULL AND cash_movement_id IS NULL`).run(input.title.trim(), input.category.trim(), input.kind, input.amountMinor, input.incurredOn, dueOn, input.employeeId ?? null, input.note?.trim() || null, input.expenseId, input.expectedRevision);
       if (result.changes !== 1) throw new Error("El gasto fue modificado; actualizá la información antes de corregirlo.");
       const after = this.financeExpense(input.expenseId);
-      this.audit({ entityType: "FINANCE_EXPENSE", entityId: input.expenseId, action: "FINANCE_EXPENSE_CORRECTED", permission: "finance.manage", reason: input.reason.trim(), before, after });
+      this.audit({ entityType: "FINANCE_EXPENSE", entityId: input.expenseId, action: "FINANCE_EXPENSE_CORRECTED", permission: "finance.manage", reason: input.reason.trim(), before, after, authorizerUserId: String(authorizer.id) });
       return after;
     });
   }
 
   cancelFinanceExpense(input: CancelFinanceExpenseInput): FinanceExpenseDto {
     assertPermission(this.currentUser().permissions, "finance.manage");
-    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "cancelFinanceExpense", undefined, { operation: "cancelFinanceExpense", input }, () => {
-      assertPermission(this.currentUser().permissions, "finance.manage");
+    const authorizer = this.authorizePin(input.authorizerPin ?? "", "finance.manage");
+    return this.idempotentTransaction(input.idempotencyKey, input.terminalId, "cancelFinanceExpense", undefined, { operation: "cancelFinanceExpense", input: withoutAuthorizerPin(input) }, () => {
       if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) throw new Error("La revisión esperada no es válida.");
       if (!boundedText(input.reason, 500)) throw new Error("Ingresá un motivo válido (hasta 500 caracteres).");
       const before = this.financeExpense(input.expenseId);
@@ -8144,20 +8191,19 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       if (before.recurringId) throw new Error("No se puede cancelar un gasto recurrente.");
       if ((this.db.prepare("SELECT cash_movement_id FROM finance_expenses WHERE id=?").get(input.expenseId) as Row).cash_movement_id != null) throw new Error("No se puede anular un gasto vinculado a caja.");
       const cancelledAt = nowIso();
-      const result = this.db.prepare(`UPDATE finance_expenses SET cancelled_at=?, cancellation_reason=?, cancelled_by_user_id=?, revision=revision+1 WHERE id=? AND revision=? AND paid_at IS NULL AND recurring_id IS NULL AND cancelled_at IS NULL AND cash_movement_id IS NULL`).run(cancelledAt, input.reason.trim(), this.adminUserId, input.expenseId, input.expectedRevision);
+      const result = this.db.prepare(`UPDATE finance_expenses SET cancelled_at=?, cancellation_reason=?, cancelled_by_user_id=?, revision=revision+1 WHERE id=? AND revision=? AND paid_at IS NULL AND recurring_id IS NULL AND cancelled_at IS NULL AND cash_movement_id IS NULL`).run(cancelledAt, input.reason.trim(), authorizer.id, input.expenseId, input.expectedRevision);
       if (result.changes !== 1) throw new Error("El gasto fue modificado; actualizá la información antes de cancelarlo.");
       const after = this.financeExpense(input.expenseId);
-      this.audit({ entityType: "FINANCE_EXPENSE", entityId: input.expenseId, action: "FINANCE_EXPENSE_CANCELLED", permission: "finance.manage", reason: input.reason.trim(), before, after });
+      this.audit({ entityType: "FINANCE_EXPENSE", entityId: input.expenseId, action: "FINANCE_EXPENSE_CANCELLED", permission: "finance.manage", reason: input.reason.trim(), before, after, authorizerUserId: String(authorizer.id) });
       return after;
     });
   }
 
   correctFinanceMonthlyExpense(input: CorrectFinanceMonthlyExpenseInput): FinanceExpenseDto {
-    assertPermission(this.currentUser().permissions, "finance.manage");
+    const authorizer = this.authorizePin(input.authorizerPin ?? "", "finance.manage");
     return this.idempotentTransaction(input.idempotencyKey, input.terminalId,
       "correctFinanceMonthlyExpense", undefined,
-      { operation: "correctFinanceMonthlyExpense", input }, () => {
-        assertPermission(this.currentUser().permissions, "finance.manage");
+      { operation: "correctFinanceMonthlyExpense", input: withoutAuthorizerPin(input) }, () => {
         if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0)
           throw new Error("La revisión esperada no es válida.");
         if (!boundedText(input.reason, 500)) throw new Error("Ingresá un motivo válido (hasta 500 caracteres).");
@@ -8186,17 +8232,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         const after = this.financeExpense(input.expenseId);
         this.audit({ entityType: "FINANCE_EXPENSE", entityId: input.expenseId,
           action: "FINANCE_MONTHLY_EXPENSE_CORRECTED", permission: "finance.manage",
-          reason: input.reason.trim(), before, after });
+          reason: input.reason.trim(), before, after, authorizerUserId: String(authorizer.id) });
         return after;
       });
   }
 
   cancelFinanceMonthlyExpense(input: CancelFinanceExpenseInput): FinanceExpenseDto {
-    assertPermission(this.currentUser().permissions, "finance.manage");
+    const authorizer = this.authorizePin(input.authorizerPin ?? "", "finance.manage");
     return this.idempotentTransaction(input.idempotencyKey, input.terminalId,
       "cancelFinanceMonthlyExpense", undefined,
-      { operation: "cancelFinanceMonthlyExpense", input }, () => {
-        assertPermission(this.currentUser().permissions, "finance.manage");
+      { operation: "cancelFinanceMonthlyExpense", input: withoutAuthorizerPin(input) }, () => {
         if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0)
           throw new Error("La revisión esperada no es válida.");
         if (!boundedText(input.reason, 500)) throw new Error("Ingresá un motivo válido (hasta 500 caracteres).");
@@ -8211,28 +8256,27 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         const result = this.db.prepare(`UPDATE finance_expenses SET cancelled_at=?,cancellation_reason=?,cancelled_by_user_id=?,revision=revision+1
           WHERE id=? AND revision=? AND recurring_id IS NOT NULL AND kind IN ('FIXED','PAYROLL')
             AND paid_at IS NULL AND cancelled_at IS NULL AND cash_movement_id IS NULL AND incurred_on<=?`)
-          .run(cancelledAt, input.reason.trim(), this.currentUser().id, input.expenseId, input.expectedRevision,
+          .run(cancelledAt, input.reason.trim(), authorizer.id, input.expenseId, input.expectedRevision,
             businessDateFromOpening(cancelledAt));
         if (result.changes !== 1)
           throw new Error("El gasto fue modificado o dejó de ser elegible; actualizá la información antes de anularlo.");
         const after = this.financeExpense(input.expenseId);
         this.audit({ entityType: "FINANCE_EXPENSE", entityId: input.expenseId,
           action: "FINANCE_MONTHLY_EXPENSE_CANCELLED", permission: "finance.manage",
-          reason: input.reason.trim(), before, after });
+          reason: input.reason.trim(), before, after, authorizerUserId: String(authorizer.id) });
         return after;
       });
   }
 
   payFinanceExpense(input: PayFinanceExpenseInput): FinanceExpenseDto {
-    assertPermission(this.currentUser().permissions, "finance.manage");
+    const authorizer = this.authorizePin(input.authorizerPin ?? "", "finance.manage");
     return this.idempotentTransaction(
       input.idempotencyKey,
       input.terminalId,
       "payFinanceExpense",
       undefined,
-      input,
+      withoutAuthorizerPin(input),
       () => {
-        assertPermission(this.currentUser().permissions, "finance.manage");
         const expense = this.financeExpense(input.expenseId);
         if (expense.cancelledAt) throw new Error("No se puede pagar un gasto cancelado.");
         if (expense.paidAt) throw new Error("El gasto ya está pagado.");
@@ -8274,7 +8318,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               expense.amountMinor,
               method.affects_cash,
               method.id,
-              this.adminUserId,
+              String(authorizer.id),
               `Gasto finanzas: ${expense.title}`,
               nowIso(),
             );
@@ -8291,6 +8335,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           entityId: expense.id,
           action: "FINANCE_EXPENSE_PAID",
           permission: "finance.manage",
+          authorizerUserId: String(authorizer.id),
           before: expense,
           after: {
             ...after,
@@ -8517,14 +8562,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   unmarkFinanceExpensePayment(input: UnmarkFinanceExpensePaymentInput): FinanceExpenseDto {
     assertPermission(this.currentUser().permissions, "finance.manage");
+    const authorizer = this.authorizePin(input.authorizerPin ?? "", "finance.manage");
     return this.idempotentTransaction(
       input.idempotencyKey,
       input.terminalId,
       "unmarkFinanceExpensePayment",
       undefined,
-      { operation: "unmarkFinanceExpensePayment", input },
+      { operation: "unmarkFinanceExpensePayment", input: withoutAuthorizerPin(input) },
       () => {
-        assertPermission(this.currentUser().permissions, "finance.manage");
         if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) throw new Error("La revisión esperada no es válida.");
         if (!boundedText(input.reason, 500)) throw new Error("Ingresá un motivo válido (hasta 500 caracteres).");
         const before = this.financeExpense(input.expenseId);
@@ -8537,7 +8582,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         const result = this.db.prepare(`UPDATE finance_expenses SET paid_at=NULL,payment_method_id=NULL,revision=revision+1,payment_revision_required=1 WHERE id=? AND revision=? AND paid_at IS NOT NULL AND recurring_id IS NULL AND cancelled_at IS NULL AND cash_movement_id IS NULL`).run(input.expenseId, input.expectedRevision);
         if (result.changes !== 1) throw new Error("El gasto fue modificado; actualizá la información antes de deshacer el pago.");
         const after = this.financeExpense(input.expenseId);
-        this.audit({ entityType: "FINANCE_EXPENSE", entityId: input.expenseId, action: "FINANCE_EXPENSE_PAYMENT_UNMARKED", permission: "finance.manage", reason: input.reason.trim(), before, after });
+        this.audit({ entityType: "FINANCE_EXPENSE", entityId: input.expenseId, action: "FINANCE_EXPENSE_PAYMENT_UNMARKED", permission: "finance.manage", reason: input.reason.trim(), before, after, authorizerUserId: String(authorizer.id) });
         return after;
       },
     );
@@ -8546,14 +8591,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   createFinanceRecurring(
     input: CreateFinanceRecurringInput,
   ): FinanceRecurringDto {
+    const authorizer = this.authorizePin(input.authorizerPin ?? "", "finance.manage");
     return this.idempotentTransaction(
       input.idempotencyKey,
       input.terminalId,
       "createFinanceRecurring",
       undefined,
-      input,
+      withoutAuthorizerPin(input),
       () => {
-        assertPermission(this.currentUser().permissions, "finance.manage");
         if (
           !input.title.trim() ||
           !input.category.trim() ||
@@ -8597,7 +8642,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           entityId: id,
           action: "FINANCE_RECURRING_CREATED",
           permission: "finance.manage",
-          after: input,
+          after: withoutAuthorizerPin(input),
+          authorizerUserId: String(authorizer.id),
         });
         return this.financeRecurringDto(
           this.db
@@ -8608,8 +8654,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     );
   }
 
-  stopFinanceRecurring(input: { recurringId: Id }): FinanceRecurringDto {
-    assertPermission(this.currentUser().permissions, "finance.manage");
+  stopFinanceRecurring(input: { recurringId: Id; authorizerPin: string }): FinanceRecurringDto {
+    const authorizer = this.authorizePin(input.authorizerPin ?? "", "finance.manage");
     const run = this.db.transaction(() => {
       requireRow(
         this.db
@@ -8639,6 +8685,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         entityId: input.recurringId,
         action: "FINANCE_RECURRING_STOPPED",
         permission: "finance.manage",
+        authorizerUserId: String(authorizer.id),
       });
       return this.financeRecurringDto(
         this.db
@@ -9131,6 +9178,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const timestamp = nowIso();
       const staffNumber = input.staffNumber ?? this.nextAvailableStaffNumber();
       this.assertStaffNumberAvailable(staffNumber);
+      this.assertPinIsUnique(input.pin);
       this.db
         .prepare(
           `INSERT INTO users(id, staff_number, full_name, role_id, pin_hash, must_change_pin, active, created_at, updated_at)
@@ -9266,6 +9314,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const staffNumber = input.staffNumber ?? before.staffNumber;
       this.assertStaffNumberAvailable(staffNumber, input.userId);
       if (input.newPin) {
+        if (!/^\d{4,8}$/.test(input.newPin)) throw new Error("El PIN debe tener entre 4 y 8 dígitos.");
+        if (input.userId === this.adminUserId && input.newPin === "1234")
+          throw new Error("No se puede restablecer el PIN inicial del administrador.");
+        this.assertPinIsUnique(input.newPin, input.userId);
         this.db
           .prepare(
             "UPDATE users SET staff_number = ?, role_id = ?, active = ?, pin_hash = ?, must_change_pin = 0, updated_at = ? WHERE id = ?",
@@ -9380,12 +9432,13 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   settleDelivery(input: SettleDeliveryInput): DeliveryLedgerDto[] {
+    const authorizer = this.authorizePin(input.authorizerPin, "cash.expense");
     return this.idempotentTransaction(
       input.idempotencyKey,
       input.terminalId,
       "settleDelivery",
       undefined,
-      input,
+      withoutAuthorizerPin(input),
       () => {
         const run = this.db.transaction(() => {
           if (!input.ledgerIds.length)
@@ -9396,10 +9449,6 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           const reason = input.reason.trim();
           if (!reason) throw new Error("La liquidación requiere un motivo.");
           const session = this.requireOpenCashSessionRow();
-          const authorizer = this.authorizePin(
-            input.authorizerPin,
-            "cash.expense",
-          );
           const timestamp = nowIso();
           const rows = requestedIds.map((id) =>
             requireRow(
@@ -9469,7 +9518,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
                 affectsCash ? 1 : 0,
                 method.id,
                 row.order_id,
-                this.adminUserId,
+                String(authorizer.id),
                 movementReason,
                 timestamp,
               );

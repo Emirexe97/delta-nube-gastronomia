@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -19,7 +19,7 @@ let profile = "";
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-waiter-focus-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -75,7 +75,7 @@ test("recupera el foco del nombre de mozo después de corregir el número invál
       fullName: "Mozo recuperación foco",
       roleCode: "WAITER",
       pin: "2468",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     }),
   );
   await page.reload();
@@ -199,7 +199,7 @@ test("el avance rápido mesa-mozo continúa abriendo el pedido correcto", async 
       fullName: "Mozo avance repetido",
       roleCode: "WAITER",
       pin: "2468",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     }),
   );
   await page.reload();

@@ -5,6 +5,7 @@ import type {
   ConfigureProductComboInput,
   CreateComboInput,
   ProductDto,
+  PriceBookDto,
   PriceBooksDto,
 } from "@gastronomy/contracts";
 import { assertComboDefinition, calculateBookPrice } from "@gastronomy/domain";
@@ -99,12 +100,12 @@ export function ComboConfigModal({
         (category) => category.id === candidate.categoryId && category.active,
       ),
   );
-  const derivedPricePreview = (amountText: string, adjustmentBps: number) => {
+  const derivedPricePreview = (amountText: string, book: PriceBookDto) => {
     if (!amountText.trim()) return "—";
     const amount = parsePriceInput(amountText);
     if (amount == null) return "Precio fuera de rango";
     try {
-      return formatMoney(calculateBookPrice(amount, adjustmentBps));
+      return formatMoney(calculateBookPrice(amount, book.adjustmentBps, undefined, book.roundingIncrementMinor));
     } catch {
       return "Precio fuera de rango";
     }
@@ -123,7 +124,7 @@ export function ComboConfigModal({
       overrides[bookId] = amount;
     }
     try {
-      for (const book of booksDto.books) calculateBookPrice(base, book.adjustmentBps, overrides[book.id]);
+      for (const book of booksDto.books) calculateBookPrice(base, book.adjustmentBps, overrides[book.id], book.roundingIncrementMinor);
     } catch (value) {
       return humanError(value);
     }
@@ -306,7 +307,7 @@ export function ComboConfigModal({
             </Field>
             <div />
             {booksDto.books.filter((book) => !book.isBase).map((book) => (
-              <Field key={book.id} label={`Precio propio · ${book.name}`} hint={`Derivado: ${derivedPricePreview(basePrice, book.adjustmentBps)}`}>
+              <Field key={book.id} label={`Precio propio · ${book.name}`} hint={`Derivado: ${derivedPricePreview(basePrice, book)}`}>
                 <Input aria-label={`Precio propio ${book.name}`} inputMode="decimal" disabled={mutation.isPending} placeholder="Heredar derivado" value={priceOverrides[book.id] ?? ""} onChange={(event) => { setPriceOverrides((current) => ({ ...current, [book.id]: event.target.value })); setError(null); }} />
               </Field>
             ))}

@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
 } from "@playwright/test";
 import { randomBytes, createHash, randomUUID } from "node:crypto";
@@ -76,7 +76,7 @@ test("carta pública de un POS → edición en Pedidos → una comanda sin cobro
         revision: 0,
       }),
     );
-    app = await electron.launch({
+    app = await launchConfiguredPos({
       args: ["apps/desktop-shell", "--user-data-dir=" + profile],
       env: {
         ...process.env,
@@ -168,7 +168,7 @@ test("carta pública de un POS → edición en Pedidos → una comanda sin cobro
             priceListCodes: ["TAKEAWAY", "DELIVERY"],
           },
           reason: "Revisar precios de la carta piloto",
-          authorizerPin: "1234",
+          authorizerPin: "748259",
         }),
       id,
     );

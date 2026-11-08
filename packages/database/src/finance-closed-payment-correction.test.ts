@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,7 +16,7 @@ function fixture(
 ) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-closed-payment-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, {
+  const repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -41,8 +42,9 @@ const expenseInput = {
 
 function setupClosed(repo: SqliteGastronomyRepository, method: "CASH" | "TRANSFER") {
   const session = repo.openCashSession({ openingAmountMinor: 100000 });
-  const expense = repo.createFinanceExpense(expenseInput);
+  const expense = repo.createFinanceExpense({ authorizerPin: "2468", ...expenseInput });
   const paid = repo.payFinanceExpense({
+    authorizerPin: "2468",
     expenseId: expense.id,
     paymentMethodCode: method,
     fromCash: true,
@@ -100,6 +102,7 @@ for (const method of ["CASH", "TRANSFER"] as const) {
         "same command receipt replays even after state changes",
       );
       assert.deepEqual(repo.payFinanceExpense({
+        authorizerPin: "2468",
         expenseId: expense.id, paymentMethodCode: method, fromCash: true,
         idempotencyKey: `original-${method}`,
       }), paid, "replaying the historic payment receipt cannot undo the correction");
@@ -141,6 +144,7 @@ for (const method of ["CASH", "TRANSFER"] as const) {
       repo.registerCashMovement({ type: "INCOME", amountMinor: 20000, paymentMethodCode: "CASH", reason: "Fondos reales", idempotencyKey: `fund-new-session-${method}` });
       assert.equal(repo.bootstrap().cashSession?.expectedAmountMinor, 25000);
       const repaid = repo.payFinanceExpense({
+        authorizerPin: "2468",
         expenseId: expense.id,
         paymentMethodCode: "CASH",
         fromCash: true,
@@ -214,7 +218,7 @@ test("migration 33 upgrade adds the closed-correction ledger without rewriting e
     const oldSession = db.prepare("SELECT * FROM cash_sessions WHERE id=?").get(session.id);
     assert.ok(paid.paidAt);
     db.exec("DROP TABLE IF EXISTS finance_expense_closed_payment_corrections; DELETE FROM schema_migrations WHERE version=34;");
-    const upgraded = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+    const upgraded = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
     const upgradedDb = new Database(path);
     try {
       assert.equal((upgradedDb.prepare("SELECT version FROM schema_migrations WHERE version=34").get() as any).version, 34);
@@ -243,7 +247,7 @@ test("closed correction rejects unsupported kind, recurring expense, and an orig
     assert.throws(() => (repo as any).correctFinanceExpenseClosedCashPayment({ ...base, idempotencyKey: "fixed-kind" }), /General|manual/i);
     assert.deepEqual(before(), fixed);
     db.prepare("UPDATE finance_expenses SET kind='GENERAL' WHERE id=?").run(expense.id);
-    const recurring = repo.createFinanceRecurring({ title: "Regla fuera de alcance", category: "Servicios", kind: "FIXED",
+    const recurring = repo.createFinanceRecurring({ authorizerPin: "2468", title: "Regla fuera de alcance", category: "Servicios", kind: "FIXED",
       amountMinor: expense.amountMinor, dayOfMonth: 7, startMonth: "2026-10", idempotencyKey: "recurring-out-of-scope" });
     db.prepare("UPDATE finance_expenses SET recurring_id=? WHERE id=?").run(recurring.id, expense.id);
     const recurringState = before();
@@ -275,7 +279,7 @@ test("finance permission and PIN are rechecked before replay; later cancellation
     assert.throws(() => correction(repo, expense.id, paid.revision!, key), /PIN|permiso|autoriz/i);
     assert.deepEqual(unchanged(), afterCorrection, "revoked PIN authorization cannot replay a cached success");
     db.prepare("INSERT OR IGNORE INTO role_permissions(role_id,permission_code) SELECT role_id,'cash.expense' FROM users WHERE id=?").run(repo.bootstrap().currentUser.id);
-    const cancelled = repo.cancelFinanceExpense({ expenseId: expense.id, expectedRevision: corrected.revision!,
+    const cancelled = repo.cancelFinanceExpense({ authorizerPin: "2468", expenseId: expense.id, expectedRevision: corrected.revision!,
       reason: "La obligación fue cancelada luego", idempotencyKey: "cancel-after-closed-correction" });
     assert.ok(cancelled.cancelledAt);
     assert.equal(repo.getFinanceReport({ from: session.businessDate, to: session.businessDate }).expensesMinor, 0,

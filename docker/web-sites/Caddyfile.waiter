@@ -1,6 +1,6 @@
 # BEGIN gastronomy waiter (staff only)
 pedidos.deltanubeweb.com {
-    @waiter path /waiter /waiter/ /v1/waiter/*
+    @waiter path /waiter /waiter/ /v1/waiter/* /v1/waiter-connections
     handle @waiter {
         reverse_proxy gastronomy-waiter-api:8098
     }

@@ -5,6 +5,8 @@ const invoke = <T>(method: keyof DesktopApi, payload?: unknown) =>
   ipcRenderer.invoke(`gastronomy:${method}`, payload) as Promise<T>;
 
 const api: DesktopApi = {
+  isInitialAdminPinSetupRequired: () => invoke("isInitialAdminPinSetupRequired"),
+  setInitialAdminPin: (input) => invoke("setInitialAdminPin", input),
   askPosAssistantAi: (input) => invoke("askPosAssistantAi", input),
   listDelayedWaiterBatches: () => invoke("listDelayedWaiterBatches"),
   confirmDelayedWaiterBatch: (input) => invoke("confirmDelayedWaiterBatch", input),
@@ -147,7 +149,7 @@ const api: DesktopApi = {
   getDetailedReport: (filters) => invoke("getDetailedReport", filters),
   getAuditLog: (input) => invoke("getAuditLog", input),
   createBackup: () => invoke("createBackup"),
-  restoreBackup: () => invoke("restoreBackup"),
+  restoreBackup: (pin: string) => invoke("restoreBackup", pin),
   listPrinters: () => invoke("listPrinters"),
   testPrinter: (input) => invoke("testPrinter", input),
   saveSettings: (settings) => invoke("saveSettings", settings),

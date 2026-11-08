@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -14,7 +14,7 @@ let page: Page;
 let profile = "";
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-ingredient-costs-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });

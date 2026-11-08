@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -21,7 +22,7 @@ function fixture(
 ) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-purchase-document-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, {
+  const repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -441,7 +442,7 @@ test("migration 39 upgrades a v38 database without changing purchase snapshots",
         ).n,
       1,
     );
-    const upgraded = new SqliteGastronomyRepository(path, {
+    const upgraded = configuredTestRepository(path, {
       adminPin: "2468",
       seedStarterCatalog: true,
     });

@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -17,7 +17,7 @@ let app: ElectronApplication,
   profile = "";
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-purchase-cost-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -138,7 +138,7 @@ async function fixture(two = false) {
       supplierName: "Proveedor costo original",
       invoiceNumber: "FAC-COSTO",
       notes: "Conservar original",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "cost-original",
       items: [
         {
@@ -189,7 +189,7 @@ async function fillCost(
   await d
     .getByLabel("Motivo", { exact: true })
     .fill("Costo de comprobante mal transcripto");
-  await d.getByLabel("PIN autorizador", { exact: true }).fill("1234");
+  await d.getByLabel("PIN autorizador", { exact: true }).fill("748259");
 }
 test("one corrected line projects effective total while originals stock cash and receipt stay immutable", async () => {
   const f = await fixture(true);
@@ -245,7 +245,7 @@ test("manual cost and newer purchase take precedence even after old invoice cost
           unitCostMinor: 15000,
         },
       ],
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     await api.setFinanceProductCost({
       productId: f.products[0].id,
@@ -319,14 +319,14 @@ test("old captures and profit stay fixed while later captures use effective purc
       expectedRevision: 0,
       unitCostMinor: 12000,
       reason: "Precio correcto de factura",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "actual-cost",
     });
     const after = await api.getFinanceReport({ from: date, to: date });
     await api.createPurchase({
       supplierName: "Stock para líneas nuevas",
       items: [{ productId: p.id, quantityMinor: 2000, unitCostMinor: 12000 }],
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const added = await api.addOrderItem({
       orderId: confirmed.id,
@@ -380,7 +380,7 @@ test("PIN error and metadata conflict preserve fields; Escape and reopening use 
   await expect(
     d.getByLabel("Costo unitario correcto", { exact: true }),
   ).toHaveValue("130");
-  await d.getByLabel("PIN autorizador", { exact: true }).fill("1234");
+  await d.getByLabel("PIN autorizador", { exact: true }).fill("748259");
   await page.evaluate(
     (f) =>
       window.gastronomy.correctPurchaseMetadata({
@@ -388,7 +388,7 @@ test("PIN error and metadata conflict preserve fields; Escape and reopening use 
         expectedRevision: 0,
         supplierName: "Proveedor editado",
         reason: "Otra pantalla",
-        authorizerPin: "1234",
+        authorizerPin: "748259",
         idempotencyKey: "metadata-concurrent",
       }),
     f,

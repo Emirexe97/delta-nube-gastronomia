@@ -1,4 +1,5 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import { launchConfiguredPos } from "./pos-fixture";
+import { test, expect, type ElectronApplication, type Page } from "@playwright/test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
@@ -47,7 +48,7 @@ test.beforeEach(async () => {
   rendererRequests = [];
   blockedSettingsChunk = false;
   const rendererUrl = await startRendererServer();
-  app = await electron.launch({ args: ["apps/desktop-shell", `--user-data-dir=${userData}`], cwd: process.cwd(), env: { ...process.env, GASTRONOMY_RENDERER_URL: rendererUrl } });
+  app = await launchConfiguredPos({ args: ["apps/desktop-shell", `--user-data-dir=${userData}`], cwd: process.cwd(), env: { ...process.env, GASTRONOMY_RENDERER_URL: rendererUrl } });
   page = await app.firstWindow();
 });
 

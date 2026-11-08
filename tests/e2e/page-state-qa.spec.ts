@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -13,7 +13,9 @@ let app: ElectronApplication;
 let page: Page;
 let userData = "";
 
-async function deferIpcMutation(method: "openCashSession" | "registerCashMovement") {
+async function deferIpcMutation(
+  method: "openCashSession" | "registerCashMovement",
+) {
   const channel = `gastronomy:${method}`;
   return app.evaluate(({ ipcMain }, handlerChannel) => {
     const main = globalThis as typeof globalThis & {
@@ -26,13 +28,18 @@ async function deferIpcMutation(method: "openCashSession" | "registerCashMovemen
     const original = handlers.get(handlerChannel);
     if (!original) throw new Error(`No existe el handler ${handlerChannel}`);
     ipcMain.removeHandler(handlerChannel);
-    ipcMain.handle(handlerChannel, (event, ...args) =>
-      new Promise((resolve, reject) => {
-        main.__pageStateQaResolveMutation = () => {
-          main.__pageStateQaResolveMutation = undefined;
-          void Promise.resolve(original(event, ...args)).then(resolve, reject);
-        };
-      }),
+    ipcMain.handle(
+      handlerChannel,
+      (event, ...args) =>
+        new Promise((resolve, reject) => {
+          main.__pageStateQaResolveMutation = () => {
+            main.__pageStateQaResolveMutation = undefined;
+            void Promise.resolve(original(event, ...args)).then(
+              resolve,
+              reject,
+            );
+          };
+        }),
     );
   }, channel);
 }
@@ -50,7 +57,7 @@ async function resolveDeferredIpcMutation() {
 
 test.beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-page-state-qa-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });
@@ -94,11 +101,14 @@ test("Repartidores tolera refrescos con y sin caja y conserva solo selecciones p
       });
     const driver = await api.createDriver({
       fullName: "Repartidor estado E2E",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const product = bootstrap.products.find((candidate) => candidate.active)!;
     const ledgers: Array<{ id: string; number: number }> = [];
-    for (const customerName of ["Pendiente válido E2E", "Pendiente liquidado E2E"]) {
+    for (const customerName of [
+      "Pendiente válido E2E",
+      "Pendiente liquidado E2E",
+    ]) {
       const order = await api.createOrder({
         type: "DELIVERY",
         customerName,
@@ -119,7 +129,10 @@ test("Repartidores tolera refrescos con y sin caja y conserva solo selecciones p
         payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
       });
       await api.updateOrderStatus({ orderId: order.id, status: "READY" });
-      await api.updateOrderStatus({ orderId: order.id, status: "OUT_FOR_DELIVERY" });
+      await api.updateOrderStatus({
+        orderId: order.id,
+        status: "OUT_FOR_DELIVERY",
+      });
       await api.updateOrderStatus({ orderId: order.id, status: "DELIVERED" });
       ledgers.push({ id: order.id, number: confirmed.number });
     }
@@ -134,37 +147,47 @@ test("Repartidores tolera refrescos con y sin caja y conserva solo selecciones p
   await page.getByRole("link", { name: "Repartidores", exact: true }).click();
   await period.selectOption("ALL");
   await period.selectOption("CURRENT_SHIFT");
-  await expect(page.getByLabel(`Seleccionar movimiento del pedido ${seeded[0]!.number}`)).toBeVisible();
+  await expect(
+    page.getByLabel(`Seleccionar movimiento del pedido ${seeded[0]!.number}`),
+  ).toBeVisible();
   const selectedLabels = seeded.map(({ number }) =>
     page.getByLabel(`Seleccionar movimiento del pedido ${number}`),
   );
   for (const checkbox of selectedLabels) await checkbox.check();
   await expect(
-    page.getByRole("button", { name: /Registrar rendición del repartidor \(2\)/ }),
+    page.getByRole("button", {
+      name: /Registrar rendición del repartidor \(2\)/,
+    }),
   ).toBeEnabled();
 
   await page.evaluate(async (ledgerId) => {
     await window.gastronomy.settleDelivery({
       ledgerIds: [ledgerId],
       reason: "Refresco selectivo E2E",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: crypto.randomUUID(),
     });
   }, seeded[1]!.ledgerId);
 
-  await page.getByRole("button", { name: "Nuevo repartidor", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Nuevo repartidor", exact: true })
+    .click();
   const newDriver = page.getByRole("dialog", { name: "Nuevo repartidor" });
   await newDriver.getByLabel("Nombre completo").fill("Dispara refresco E2E");
-  await newDriver.getByLabel(/PIN de autorización/).fill("1234");
+  await newDriver.getByLabel(/PIN de autorización/).fill("748259");
   await newDriver.getByRole("button", { name: "Crear repartidor" }).click();
   await expect(newDriver).toBeHidden();
 
   await expect(selectedLabels[0]).toBeChecked();
   await expect(selectedLabels[1]).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: /Registrar rendición del repartidor \(1\)/ }),
+    page.getByRole("button", {
+      name: /Registrar rendición del repartidor \(1\)/,
+    }),
   ).toBeEnabled();
-  expect(errors.filter((message) => /Maximum update depth/i.test(message))).toEqual([]);
+  expect(
+    errors.filter((message) => /Maximum update depth/i.test(message)),
+  ).toEqual([]);
 });
 
 test("Abrir caja y Movimiento de caja no se cierran mientras su mutación espera", async () => {
@@ -182,12 +205,18 @@ test("Abrir caja y Movimiento de caja no se cierran mientras su mutación espera
   await page.getByRole("button", { name: "Abrir caja", exact: true }).click();
   const openDialog = page.getByRole("dialog", { name: "Abrir caja" });
   await openDialog.getByLabel("Cambio / fondo inicial").fill("50000");
-  await openDialog.getByRole("button", { name: "Abrir caja", exact: true }).click();
+  await openDialog
+    .getByRole("button", { name: "Abrir caja", exact: true })
+    .click();
   await expect(openDialog).toHaveAttribute("aria-busy", "true");
   await page.keyboard.press("Escape");
   await expect(openDialog).toBeVisible();
-  await expect(openDialog.getByRole("button", { name: "Cancelar" })).toBeDisabled();
-  await expect(openDialog.getByRole("button", { name: "Operación en curso" })).toBeDisabled();
+  await expect(
+    openDialog.getByRole("button", { name: "Cancelar" }),
+  ).toBeDisabled();
+  await expect(
+    openDialog.getByRole("button", { name: "Operación en curso" }),
+  ).toBeDisabled();
   await resolveDeferredIpcMutation();
   await expect(openDialog).toBeHidden();
 
@@ -195,15 +224,22 @@ test("Abrir caja y Movimiento de caja no se cierran mientras su mutación espera
   await deferIpcMutation("registerCashMovement");
   await page.getByRole("link", { name: "Caja", exact: true }).click();
   await page.getByRole("button", { name: /Registrar movimiento/ }).click();
-  const movementDialog = page.getByRole("dialog", { name: "Movimiento de caja" });
+  const movementDialog = page.getByRole("dialog", {
+    name: "Movimiento de caja",
+  });
   await movementDialog.getByLabel("Importe").fill("1500");
   await movementDialog.getByLabel("Motivo").fill("Movimiento diferido E2E");
+  await movementDialog.getByLabel("PIN de autorización").fill("748259");
   await movementDialog.getByRole("button", { name: "Registrar" }).click();
   await expect(movementDialog).toHaveAttribute("aria-busy", "true");
   await page.keyboard.press("Escape");
   await expect(movementDialog).toBeVisible();
-  await expect(movementDialog.getByRole("button", { name: "Cancelar" })).toBeDisabled();
-  await expect(movementDialog.getByRole("button", { name: "Operación en curso" })).toBeDisabled();
+  await expect(
+    movementDialog.getByRole("button", { name: "Cancelar" }),
+  ).toBeDisabled();
+  await expect(
+    movementDialog.getByRole("button", { name: "Operación en curso" }),
+  ).toBeDisabled();
   await resolveDeferredIpcMutation();
   await expect(movementDialog).toBeHidden();
 });

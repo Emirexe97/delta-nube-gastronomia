@@ -1,4 +1,5 @@
-import { test, expect, _electron as electron, type ElectronApplication } from "@playwright/test";
+import { launchConfiguredPos } from "./pos-fixture";
+import { test, expect, type ElectronApplication } from "@playwright/test";
 import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,7 +29,7 @@ test("cuenta activa una PC nueva, conserva licencia tras reiniciar y permite caj
     for (const key of Object.keys(env)) if (key.startsWith("GASTRONOMY_") && key !== "GASTRONOMY_E2E_BACKGROUND") delete env[key];
     Object.assign(env, { GASTRONOMY_LOCAL_PILOT: "1", GASTRONOMY_WEB_PROVISION_URL: origin });
     const launch = async () => {
-      app = await electron.launch({ args: ["apps/desktop-shell", `--user-data-dir=${profile}`], env });
+      app = await launchConfiguredPos({ args: ["apps/desktop-shell", `--user-data-dir=${profile}`], env });
       return app.firstWindow();
     };
     let pos = await launch();

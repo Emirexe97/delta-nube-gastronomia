@@ -59,4 +59,17 @@ describe("settings section navigation", () => {
     }
     expect(markup).toContain('data-enter-navigation');
   });
+
+  it("does not display an ADMIN PIN field until restoration is requested", () => {
+    const markup = renderToStaticMarkup(
+      <StaticRouter location="/configuracion#settings-backup">
+        <QueryClientProvider client={new QueryClient()}>
+          <SettingsPage data={bootstrap} />
+        </QueryClientProvider>
+      </StaticRouter>,
+    );
+    expect(markup).toContain('id="settings-backup"');
+    expect(markup).toContain("Restaurar copia");
+    expect(markup).not.toContain('id="restore-admin-pin"');
+  });
 });

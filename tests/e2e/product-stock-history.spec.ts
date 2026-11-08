@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -19,7 +19,7 @@ let app: ElectronApplication,
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-product-history-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -116,10 +116,10 @@ async function openProduct(product:any) {
  const dialog=page.getByRole('dialog',{name:`Editar · ${product.name}`,exact:true});await expect(dialog).toBeVisible();return dialog;
 }
 test('product recent history includes stock adjustments and edits even beyond other-product recent activity',async()=>{
- const product=await fixture();await page.evaluate(async(product)=>{const api=window.gastronomy;await api.adjustStock({productId:product.id,newStockMinor:7000,reason:'Conteo físico del viernes',authorizerPin:'1234'});},product);
+ const product=await fixture();await page.evaluate(async(product)=>{const api=window.gastronomy;await api.adjustStock({productId:product.id,newStockMinor:7000,reason:'Conteo físico del viernes',authorizerPin:'748259'});},product);
  const modulePath=createRequire(join(process.cwd(),'packages/database/package.json')).resolve('better-sqlite3-multiple-ciphers');
  await app.evaluate(({app},x)=>{const path=process.getBuiltinModule('path');if(path.resolve(app.getPath('userData'))!==path.resolve(x.profile))throw Error('wrong profile');const req=process.getBuiltinModule('module').createRequire(x.modulePath);const db=new(req(x.modulePath))(path.join(x.profile,'gastronomy.sqlite'));try{const base=db.prepare("SELECT * FROM audit_log WHERE action='STOCK_ADJUSTED' AND entity_id=? ORDER BY rowid DESC LIMIT 1").get(x.id);const insert=db.prepare('INSERT INTO audit_log(id,timestamp,business_date,operator_user_id,authorizer_user_id,permission_used,entity_type,entity_id,action,reason,before_json,after_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)');db.transaction(()=>{for(let i=0;i<205;i++)insert.run('fixture-other-'+i,new Date(Date.now()+1000+i).toISOString(),base.business_date,base.operator_user_id,base.authorizer_user_id,base.permission_used,'PRODUCT','fixture-other-product','STOCK_ADJUSTED','Otro producto '+i,'{}','{}');})();}finally{db.close();}}, {profile,modulePath,id:product.id});
- await page.evaluate(async(product)=>{const api=window.gastronomy;const fresh=(await api.bootstrap()).products.find(p=>p.id===product.id)!;await api.updateProduct({productId:fresh.id,categoryId:fresh.categoryId,name:fresh.name,code:fresh.code,active:fresh.active,prices:fresh.prices,reason:'Edición de ficha revisada',authorizerPin:'1234'});},product);
+ await page.evaluate(async(product)=>{const api=window.gastronomy;const fresh=(await api.bootstrap()).products.find(p=>p.id===product.id)!;await api.updateProduct({productId:fresh.id,categoryId:fresh.categoryId,name:fresh.name,code:fresh.code,active:fresh.active,prices:fresh.prices,reason:'Edición de ficha revisada',authorizerPin:'748259'});},product);
  const dialog=await openProduct(product);await dialog.getByRole('tab',{name:'Historial',exact:true}).click();const history=dialog.getByRole('region',{name:'Historial reciente de cambios'});
  await expect(history.getByText('Conteo físico del viernes',{exact:true})).toBeVisible();await expect(history.getByText('Stock ajustado',{exact:true})).toBeVisible();await expect(history.getByText('Edición de ficha revisada',{exact:true})).toBeVisible();await expect(history.getByRole('listitem').filter({hasText:'Conteo físico del viernes'}).getByText('Administrador',{exact:false})).toBeVisible();
  await expect(history.getByText(/Otro producto/)).toHaveCount(0);

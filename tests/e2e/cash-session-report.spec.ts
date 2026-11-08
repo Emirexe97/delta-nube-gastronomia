@@ -1,3 +1,4 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   installInteractionDiagnostics,
   attachInteractionDiagnostics,
@@ -5,7 +6,6 @@ import {
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -19,7 +19,7 @@ let userData = "";
 
 async function launch() {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-cash-report-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });
@@ -84,7 +84,7 @@ test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ti
     });
     const driver = await api.createDriver({
       fullName: "Repartidor cierre",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const order = await api.createOrder({
       type: "DELIVERY",
@@ -113,7 +113,7 @@ test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ti
     .check();
   await page.getByRole("button", { name: /Pagar envío/ }).click();
   const settle = page.getByRole("dialog", { name: "Revisar pago o rendición" });
-  await settle.getByLabel(/PIN/).fill("1234");
+  await settle.getByLabel(/PIN/).fill("748259");
   await settle.getByRole("button", { name: /Revisar/ }).click();
   await page
     .getByRole("dialog", { name: "Confirmar movimiento de caja" })
@@ -559,6 +559,7 @@ test("mantiene listas extensas del informe desplazables y conserva el encabezado
       orderNumbers.push(order.number);
     }
     await api.registerCashMovement({
+      authorizerPin: "748259",
       type: "EXPENSE",
       amountMinor: 100,
       reason: "Gasto agrupado E2E",

@@ -7,6 +7,7 @@ export type WebSiteIdentity = {
   businessName: string;
 };
 const prefix = "dn-web-site-v1";
+const waiterPrefix = "dn-waiter-v1";
 const ttl = 5 * 60_000;
 function signature(secret: string, payload: string): Buffer {
   if (Buffer.byteLength(secret) < 32)
@@ -89,4 +90,30 @@ export function verifyWebSiteTicket(
     installationId: data.installationId,
     businessName: data.businessName,
   };
+}
+
+export type WaiterTicketClaims = Pick<WebSiteIdentity, "licenseId" | "installationId">;
+const waiterTtl = 5 * 60_000;
+function validWaiterClaims(data: Partial<WaiterTicketClaims> | null): boolean {
+  const id = (s: unknown) => typeof s === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(s);
+  return !!data && id(data.licenseId) && id(data.installationId);
+}
+export function issueWaiterTicket(claims: WaiterTicketClaims, secret: string, now = Date.now()): string {
+  if (!validWaiterClaims(claims) || !Number.isSafeInteger(now)) throw new Error("Invalid waiter ticket claims");
+  if (Buffer.byteLength(secret) < 32) throw new Error("WEB_SITE_PROVISION_SECRET requires at least 32 bytes");
+  const payload = Buffer.from(JSON.stringify({ ...claims, iat: now, exp: now + waiterTtl })).toString("base64url");
+  return [waiterPrefix, payload, createHmac("sha256", secret).update(waiterPrefix + "." + payload).digest("base64url")].join(".");
+}
+export function verifyWaiterTicket(ticket: string, secret: string, now = Date.now()): WaiterTicketClaims {
+  const invalid = () => new Error("Invalid or expired waiter ticket");
+  if (typeof ticket !== "string" || ticket.length > 4096) throw invalid();
+  if (Buffer.byteLength(secret) < 32) throw invalid();
+  const [version, payload, mac, ...rest] = ticket.split(".");
+  if (version !== waiterPrefix || !payload || !mac || rest.length || !/^[A-Za-z0-9_-]+$/.test(payload) || !/^[A-Za-z0-9_-]{43}$/.test(mac)) throw invalid();
+  const expected = createHmac("sha256", secret).update(waiterPrefix + "." + payload).digest("base64url");
+  if (!timingSafeEqual(Buffer.from(expected), Buffer.from(mac))) throw invalid();
+  let data: any;
+  try { data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { throw invalid(); }
+  if (!validWaiterClaims(data) || !Number.isSafeInteger(data.iat) || !Number.isSafeInteger(data.exp) || data.exp !== data.iat + waiterTtl || data.iat > now + 15_000 || data.exp <= now) throw invalid();
+  return { licenseId: data.licenseId, installationId: data.installationId };
 }

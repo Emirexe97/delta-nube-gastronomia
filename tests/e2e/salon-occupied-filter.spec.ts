@@ -1,11 +1,12 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
+import { launchConfiguredPos } from "./pos-fixture";
+import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 let app: ElectronApplication, page: Page, profile='';
 test.beforeEach(async()=>{
  profile=await mkdtemp(join(tmpdir(),'gastronomy-occupied-filter-'));
- app=await electron.launch({args:['apps/desktop-shell',`--user-data-dir=${profile}`],cwd:process.cwd()});page=await app.firstWindow();
+ app=await launchConfiguredPos({args:['apps/desktop-shell',`--user-data-dir=${profile}`],cwd:process.cwd()});page=await app.firstWindow();
  await expect(page.getByText('Delta Nube',{exact:true})).toBeVisible();
  expect(resolve(await app.evaluate(({app})=>app.getPath('userData')))).toBe(resolve(profile));
  await page.evaluate(()=>window.gastronomy.openCashSession({openingAmountMinor:100000}));await page.reload();

@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -21,7 +21,7 @@ test.use({ actionTimeout: 5000 });
 async function launch(tag: string) {
   await mkdir(evidenceDir, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), `gastronomy-us18b2b-${tag}-`));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -82,6 +82,7 @@ async function seed(title: string, amountMinor = 1_234_500) {
       });
       const date = (await api.bootstrap()).cashSession!.businessDate;
       const expense = await api.createFinanceExpense({
+        authorizerPin: "748259",
         title,
         category: "US18A prueba",
         kind: "GENERAL",
@@ -131,6 +132,7 @@ async function paidFixture(
       const date =
         session?.businessDate ?? new Date().toLocaleDateString("en-CA");
       const expense = await api.createFinanceExpense({
+        authorizerPin: "748259",
         title: 'US18B2B "servicio;cancelado"',
         category: "Servicios",
         kind: "GENERAL",
@@ -144,7 +146,7 @@ async function paidFixture(
         expectedRevision: expense.revision ?? 0,
         idempotencyKey: "original-pay",
       };
-      const paid = await api.payFinanceExpense(payInput);
+      const paid = await api.payFinanceExpense({ authorizerPin: "748259", ...payInput });
       return {
         date,
         session,
@@ -229,7 +231,7 @@ for (const pair of [
     await expect(dialog.getByLabel("Motivo", { exact: true })).toHaveValue(
       "El proveedor devolvió el total",
     );
-    await dialog.getByLabel("PIN de autorización").fill("1234");
+    await dialog.getByLabel("PIN de autorización").fill("748259");
     await capture(`confirm-${pair.paid}-to-${pair.received}`, data);
     await confirm.click();
     await expect(dialog).toHaveCount(0);
@@ -279,7 +281,7 @@ for (const pair of [
             await window.gastronomy.reverseCashMovement({
               movementId,
               reason: "No cambiar devolución",
-              authorizerPin: "1234",
+              authorizerPin: "748259",
             });
             errors.push("accepted");
           } catch (e) {
@@ -384,12 +386,12 @@ test("recibir en nueva caja conserva cierre original e historial de pago/reinten
       destination: "CASH_SESSION" as const,
       paymentMethodCode: "CASH",
       reason: "Recibido después del cierre",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "return-today",
     };
     const returned = await api.receiveFinanceExpenseReturn(input);
     const replay = await api.receiveFinanceExpenseReturn(input);
-    await api.payFinanceExpense(d.payInput);
+    await api.payFinanceExpense({ authorizerPin: "748259", ...d.payInput });
     const closed = await api.getCashSessionReport({
       cashSessionId: d.session!.id,
     });
@@ -422,7 +424,7 @@ test("caja cerrada mientras modal abierto rechaza sin perder campos ni modificar
   await dialog
     .getByLabel("Motivo", { exact: true })
     .fill("El dinero llegó ahora");
-  await dialog.getByLabel("PIN de autorización").fill("1234");
+  await dialog.getByLabel("PIN de autorización").fill("748259");
   await page.evaluate(async () =>
     window.gastronomy.closeCashSession({
       countedAmountMinor: 76550,

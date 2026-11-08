@@ -15,6 +15,7 @@ async function setup(kind: "FIXED" | "PAYROLL" = "FIXED") {
   const bootstrap = await api.bootstrap();
   const incurredOn = businessDateFromOpening(new Date().toISOString());
   const rule = await api.createFinanceRecurring({
+    authorizerPin: "1234",
     title: "Alquiler del mes",
     category: "Vivienda",
     kind,
@@ -68,7 +69,7 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
     async (kind) => {
       const { storage, api, rule, expense, incurredOn } = await setup(kind);
       const before = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
-      const corrected = await api.correctFinanceMonthlyExpense(changeInput(expense.id, expense.revision ?? 0));
+      const corrected = await api.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...changeInput(expense.id, expense.revision ?? 0) });
       expect(corrected).toMatchObject({
         id: expense.id, recurringId: rule.id, kind, incurredOn,
         title: "Alquiler corregido", category: "Operación", amountMinor: 57000,
@@ -92,11 +93,11 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
 
   it("permite corregir una ocurrencia impaga de una regla detenida sin reactivarla ni cambiarla", async () => {
     const { storage, rule, expense, incurredOn } = await setup("FIXED");
-    const stopped = await createDemoApi(storage).stopFinanceRecurring({ recurringId: rule.id });
+    const stopped = await createDemoApi(storage).stopFinanceRecurring({ authorizerPin: "1234", recurringId: rule.id });
     expect(stopped.active).toBe(false);
     const before = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
     const api = createDemoApi(storage);
-    const corrected = await api.correctFinanceMonthlyExpense(changeInput(expense.id, expense.revision ?? 0, "stopped"));
+    const corrected = await api.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...changeInput(expense.id, expense.revision ?? 0, "stopped") });
     expect(corrected).toMatchObject({ recurringId: rule.id, incurredOn, paidAt: null, amountMinor: 57000 });
     const after = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
     expect(after.financeRecurring.find((item: { id: string }) => item.id === rule.id)).toEqual(
@@ -109,15 +110,17 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
   it("preserva vencimiento y nota omitidos; solo limpia la nota con null explícito", async () => {
     const { api, expense } = await setup("FIXED");
     const first = await api.correctFinanceMonthlyExpense({
+      authorizerPin: "1234",
       ...changeInput(expense.id, expense.revision ?? 0, "note-initial"),
       dueOn: "2026-10-24",
       note: "Nota que debe persistir",
     });
     const { dueOn: _dueOn, note: _note, ...withoutOptionalFields } = changeInput(expense.id, first.revision ?? 0, "note-omitted");
-    const second = await api.correctFinanceMonthlyExpense(withoutOptionalFields);
+    const second = await api.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...withoutOptionalFields });
     expect(second.dueOn).toBe("2026-10-24");
     expect(second.note).toBe("Nota que debe persistir");
     const cleared = await api.correctFinanceMonthlyExpense({
+      authorizerPin: "1234",
       ...withoutOptionalFields,
       expectedRevision: second.revision ?? 0,
       note: null,
@@ -132,6 +135,7 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
     const api = createDemoApi(storage);
     const before = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
     const cancelled = await api.cancelFinanceMonthlyExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       expectedRevision: expense.revision ?? 0,
       reason: "Ocurrencia duplicada de este mes",
@@ -159,7 +163,7 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(futureState));
     const api = createDemoApi(storage);
     const before = storage.getItem(DEMO_STORAGE_KEY);
-    await expect(api.correctFinanceMonthlyExpense(changeInput(expense.id, expense.revision ?? 0, "future")))
+    await expect(api.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...changeInput(expense.id, expense.revision ?? 0, "future") }))
       .rejects.toThrow(/ya incurrida|fecha de gasto/i);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(before);
   });
@@ -176,7 +180,7 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(movedForward));
     const api = createDemoApi(storage);
     const before = storage.getItem(DEMO_STORAGE_KEY);
-    await expect(api.correctFinanceMonthlyExpense(changeInput(expense.id, expense.revision ?? 0, "ba-cutoff")))
+    await expect(api.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...changeInput(expense.id, expense.revision ?? 0, "ba-cutoff") }))
       .rejects.toThrow(/ya incurridas/i);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(before);
   });
@@ -184,7 +188,7 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
   it("no permite cambiar recurrencia, pago, cancelación, caja ni revisión; rechazos no mutan", async () => {
     const { storage, api, expense } = await setup();
     const snapshot = storage.getItem(DEMO_STORAGE_KEY);
-    await expect(api.correctFinanceMonthlyExpense(changeInput(expense.id, (expense.revision ?? 0) + 1, "stale")))
+    await expect(api.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...changeInput(expense.id, (expense.revision ?? 0) + 1, "stale") }))
       .rejects.toThrow(/cambió/i);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(snapshot);
 
@@ -194,7 +198,7 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(altered));
     const paidApi = createDemoApi(storage);
     const paidSnapshot = storage.getItem(DEMO_STORAGE_KEY);
-    await expect(paidApi.correctFinanceMonthlyExpense(changeInput(expense.id, expense.revision ?? 0, "paid")))
+    await expect(paidApi.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...changeInput(expense.id, expense.revision ?? 0, "paid") }))
       .rejects.toThrow(/impagas|pagado/i);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(paidSnapshot);
 
@@ -203,7 +207,7 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(altered));
     const linkedApi = createDemoApi(storage);
     const linkedSnapshot = storage.getItem(DEMO_STORAGE_KEY);
-    await expect(linkedApi.correctFinanceMonthlyExpense(changeInput(expense.id, expense.revision ?? 0, "linked")))
+    await expect(linkedApi.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...changeInput(expense.id, expense.revision ?? 0, "linked") }))
       .rejects.toThrow(/impagas|vinculados|caja/i);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(linkedSnapshot);
   });
@@ -215,20 +219,20 @@ describe("recuperación de ocurrencias mensuales impagas en demo", () => {
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(restricted));
     const api = createDemoApi(storage);
     const input = changeInput(expense.id, expense.revision ?? 0, "replay");
-    const corrected = await api.correctFinanceMonthlyExpense(input);
+    const corrected = await api.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...input });
     const state = JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!);
     expect(state.financeExpensePaymentRevisionRequired[expense.id]).toBe(true);
     const snapshot = storage.getItem(DEMO_STORAGE_KEY);
-    await expect(createDemoApi(storage).payFinanceExpense({ expenseId: expense.id, paymentMethodCode: "TRANSFER", fromCash: false, idempotencyKey: "missing-revision" }))
+    await expect(createDemoApi(storage).payFinanceExpense({ authorizerPin: "1234", expenseId: expense.id, paymentMethodCode: "TRANSFER", fromCash: false, idempotencyKey: "missing-revision" }))
       .rejects.toThrow(/cambió/i);
-    await expect(createDemoApi(storage).payFinanceExpense({ expenseId: expense.id, paymentMethodCode: "TRANSFER", fromCash: false, expectedRevision: (corrected.revision ?? 0) - 1, idempotencyKey: "stale-revision" }))
+    await expect(createDemoApi(storage).payFinanceExpense({ authorizerPin: "1234", expenseId: expense.id, paymentMethodCode: "TRANSFER", fromCash: false, expectedRevision: (corrected.revision ?? 0) - 1, idempotencyKey: "stale-revision" }))
       .rejects.toThrow(/cambió/i);
     expect(JSON.parse(storage.getItem(DEMO_STORAGE_KEY)!).financeExpenses.find((item: { id: string }) => item.id === expense.id).paidAt).toBeNull();
     const correctedReplayApi = createDemoApi(storage);
     const beforeReplay = storage.getItem(DEMO_STORAGE_KEY);
-    await expect(correctedReplayApi.correctFinanceMonthlyExpense(input)).resolves.toEqual(corrected);
+    await expect(correctedReplayApi.correctFinanceMonthlyExpense({ authorizerPin: "1234", ...input })).resolves.toEqual(corrected);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(beforeReplay);
-    const paid = await createDemoApi(storage).payFinanceExpense({ expenseId: expense.id, paymentMethodCode: "TRANSFER", fromCash: false, expectedRevision: corrected.revision, idempotencyKey: "valid-new-payment" });
+    const paid = await createDemoApi(storage).payFinanceExpense({ authorizerPin: "1234", expenseId: expense.id, paymentMethodCode: "TRANSFER", fromCash: false, expectedRevision: corrected.revision, idempotencyKey: "valid-new-payment" });
     expect(paid.paidAt).toBeTruthy();
     expect(snapshot).toBeTruthy();
   });

@@ -191,16 +191,30 @@ test("FAILED print status with accepted lines remains accepted, not rejected", (
   assert.equal(calls.removed, 0);
 });
 
+test("RECORDED without a print job remains an accepted order, not a print failure", () => {
+  const { calls } = runUpdateBatch({
+    requestId: "stable-request-123",
+    status: "RECORDED",
+    printJobId: null,
+  });
+  assert.equal(calls.accepted, 1);
+  assert.equal(calls.removed, 0);
+  assert.match(waiterHtml, /Pedido registrado en la mesa, sin impresión\./);
+  assert.doesNotMatch(waiterHtml, /Pedido registrado\. No salió papel.*avisá en caja/);
+});
+
 test("pending action stays available even without draft lines; only sending disables it", () => {
   const match = waiterHtml.match(/function primaryAction\(hasPending, isBusy, hasLines, isChecking = false\) \{([\s\S]*?)\n        \}/);
   assert.ok(match);
   const action = new Function("hasPending", "isBusy", "hasLines", "isChecking = false", match[1]);
   assert.deepEqual(action(true, false, false), { disabled: false, label: "Ver estado del pedido" });
+  assert.deepEqual(action(false, false, true), { disabled: false, label: "Enviar pedido" });
   assert.deepEqual(action(false, true, true), { disabled: true, label: "Enviando…" });
   assert.equal(action(false, false, false).disabled, true);
   assert.equal(action(false, false, true).disabled, false);
   assert.deepEqual(action(true, false, true, true), { disabled: true, label: "Consultando…" });
   assert.match(scriptTokens, /el\('send'\)\.onclick=pending\(\)\?\(\)=>checkPending\(true\):sendBatch/);
+  assert.match(waiterHtml, /<button id="send" type="button">Enviar pedido<\/button>/);
 });
 
 test("manual status guidance focuses and reveals the visible result with reduced-motion support", () => {

@@ -26,6 +26,7 @@ async function setup() {
   incurredOn.setUTCMonth(incurredOn.getUTCMonth() - 1);
   const expenseDate = incurredOn.toISOString().slice(0, 10);
   const expense = await api.createFinanceExpense({
+    authorizerPin: "1234",
     title: "Servicio reintegrado",
     category: "Servicios",
     kind: "GENERAL",
@@ -35,6 +36,7 @@ async function setup() {
     idempotencyKey: "expense",
   });
   const paid = await api.payFinanceExpense({
+    authorizerPin: "1234",
     expenseId: expense.id,
     paymentMethodCode: "CASH",
     fromCash: true,
@@ -209,6 +211,7 @@ describe("devolución real total de gasto General en demo", () => {
     const corrected =
       await api.correctFinanceExpenseCashPayment(correctionInput);
     const repaid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -224,6 +227,7 @@ describe("devolución real total de gasto General en demo", () => {
     const stateAfterConstruction = storage.getItem(DEMO_STORAGE_KEY);
     await expect(
       replayApi.payFinanceExpense({
+        authorizerPin: "1234",
         expenseId: expense.id,
         paymentMethodCode: "CASH",
         fromCash: true,
@@ -241,6 +245,7 @@ describe("devolución real total de gasto General en demo", () => {
     const businessDate = (await externalApi.bootstrap()).cashSession!
       .businessDate;
     const external = await externalApi.createFinanceExpense({
+      authorizerPin: "1234",
       title: "Pago externo",
       category: "Servicios",
       kind: "GENERAL",
@@ -249,6 +254,7 @@ describe("devolución real total de gasto General en demo", () => {
       idempotencyKey: "unmark-expense",
     });
     const externalPaid = await externalApi.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: external.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
@@ -261,8 +267,9 @@ describe("devolución real total de gasto General en demo", () => {
       reason: "Unmark previo",
       idempotencyKey: "old-unmark",
     };
-    const unmarked = await externalApi.unmarkFinanceExpensePayment(unmarkInput);
+    const unmarked = await externalApi.unmarkFinanceExpensePayment({ authorizerPin: "1234", ...unmarkInput });
     const repaidExternal = await externalApi.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: external.id,
       paymentMethodCode: "TRANSFER",
       fromCash: false,
@@ -280,7 +287,7 @@ describe("devolución real total de gasto General en demo", () => {
     const externalStateAfterConstruction =
       externalStorage.getItem(DEMO_STORAGE_KEY);
     await expect(
-      externalReplayApi.unmarkFinanceExpensePayment(unmarkInput),
+      externalReplayApi.unmarkFinanceExpensePayment({ authorizerPin: "1234", ...unmarkInput }),
     ).resolves.toEqual(unmarked);
     expect(externalStorage.getItem(DEMO_STORAGE_KEY)).toBe(
       externalStateAfterConstruction,
@@ -379,6 +386,7 @@ describe("devolución real total de gasto General en demo", () => {
     const secondApi = createDemoApi(second);
     const boot = await secondApi.bootstrap();
     const external = await secondApi.createFinanceExpense({
+      authorizerPin: "1234",
       title: "Transferencia original",
       category: "Servicios",
       kind: "GENERAL",
@@ -388,6 +396,7 @@ describe("devolución real total de gasto General en demo", () => {
       idempotencyKey: "transfer-expense",
     });
     const paidTransfer = await secondApi.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: external.id,
       paymentMethodCode: "TRANSFER",
       fromCash: true,
@@ -422,6 +431,7 @@ describe("devolución real total de gasto General en demo", () => {
     ).rejects.toThrow(/cambió/i);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(stale);
     const fixed = await api.createFinanceExpense({
+      authorizerPin: "1234",
       title: "Fijo",
       category: "Servicios",
       kind: "FIXED",
@@ -430,6 +440,7 @@ describe("devolución real total de gasto General en demo", () => {
       idempotencyKey: "fixed",
     });
     const fixedPaid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: fixed.id,
       paymentMethodCode: "CASH",
       fromCash: false,
@@ -446,6 +457,7 @@ describe("devolución real total de gasto General en demo", () => {
     ).rejects.toThrow(/General|manuales/i);
     expect(storage.getItem(DEMO_STORAGE_KEY)).toBe(snapshot);
     const payroll = await api.createFinanceExpense({
+      authorizerPin: "1234",
       title: "Sueldo",
       category: "Personal",
       kind: "PAYROLL",
@@ -455,6 +467,7 @@ describe("devolución real total de gasto General en demo", () => {
       idempotencyKey: "payroll",
     });
     const payrollPaid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: payroll.id,
       paymentMethodCode: "CASH",
       fromCash: false,
@@ -497,7 +510,7 @@ describe("devolución real total de gasto General en demo", () => {
       receive(expense.id, paid.revision!),
     );
     await expect(
-      api.unmarkFinanceExpensePayment({
+      api.unmarkFinanceExpensePayment({ authorizerPin: "1234",
         expenseId: expense.id,
         expectedRevision: returned.revision!,
         reason: "No",
@@ -524,6 +537,7 @@ describe("devolución real total de gasto General en demo", () => {
         }),
       ).rejects.toThrow(/devolución|gasto/i);
     const partial = await api.createFinanceExpense({
+      authorizerPin: "1234",
       title: "Pendiente",
       category: "Pruebas",
       kind: "GENERAL",

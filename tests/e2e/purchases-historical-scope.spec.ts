@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -20,7 +20,7 @@ let profile = "";
 test.beforeEach(async () => {
   await mkdir(evidence, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-purchases-history-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -102,7 +102,7 @@ test("el costo histórico incluye todas las compras y su rótulo cabe en anchos 
         idempotencyKey: `us13-${invoiceNumber}`,
         supplierName: "Proveedor historial US13",
         invoiceNumber,
-        authorizerPin: "1234",
+        authorizerPin: "748259",
         items: [{ productId: product.id, quantityMinor: 1_000, unitCostMinor }],
       });
     }
@@ -193,7 +193,7 @@ test("el informe financiero del período no incorpora compras fuera de sus fecha
       idempotencyKey: "us13-finance-period-purchase",
       supplierName: "Proveedor período US13",
       invoiceNumber: "US13-PERIOD",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       items: [
         { productId: product.id, quantityMinor: 1_000, unitCostMinor: 57_000 },
       ],
@@ -277,7 +277,7 @@ test("el informe financiero del período no incorpora compras fuera de sus fecha
   await modal.getByLabel("Producto").selectOption(setup.productId);
   await modal.getByLabel("Cantidad", { exact: true }).fill("2,5");
   await modal.getByLabel("Costo unit.", { exact: true }).fill("100");
-  await modal.getByLabel("PIN autorizador").fill("1234");
+  await modal.getByLabel("PIN autorizador").fill("748259");
   await modal
     .getByRole("button", { name: "Confirmar ingreso", exact: true })
     .click();

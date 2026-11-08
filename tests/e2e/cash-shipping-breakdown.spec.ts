@@ -1,4 +1,5 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from "@playwright/test";
+import { launchConfiguredPos } from "./pos-fixture";
+import { test, expect, type ElectronApplication, type Page } from "@playwright/test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, basename } from "node:path";
@@ -11,7 +12,7 @@ let profile = "";
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-shipping-report-"));
-  app = await electron.launch({ args: ["apps/desktop-shell", `--user-data-dir=${profile}`], cwd: process.cwd() });
+  app = await launchConfiguredPos({ args: ["apps/desktop-shell", `--user-data-dir=${profile}`], cwd: process.cwd() });
   page = await app.firstWindow();
   await expect(page.getByRole("link", { name: "Caja", exact: true })).toBeVisible();
   expect(resolve(await app.evaluate(({ app }) => app.getPath("userData")))).toBe(resolve(profile));
@@ -62,8 +63,8 @@ for (const mode of ["direct", "accumulated", "driver-retained", "reversed-remitt
       const data = await api.bootstrap();
       await api.saveSettings({ ...data.settings, deliverySettlementEnabled: true, deliveryFeeBelongsToDriver: true, deliveryDriverPaymentMode: "ACCUMULATED" });
       const session = await api.openCashSession({ openingAmountMinor: 1_000_000 });
-      await api.registerCashMovement({ type: "EXPENSE", amountMinor: 20_000, paymentMethodCode: "CASH", reason: "Pago de envío a repartidor: Pedido #manual no vinculado" });
-      const driver = await api.createDriver({ fullName: "Repartidor informe", authorizerPin: "1234" });
+      await api.registerCashMovement({ authorizerPin: "748259", type: "EXPENSE", amountMinor: 20_000, paymentMethodCode: "CASH", reason: "Pago de envío a repartidor: Pedido #manual no vinculado" });
+      const driver = await api.createDriver({ fullName: "Repartidor informe", authorizerPin: "748259" });
       const order = await api.createOrder({ type: "DELIVERY", customerName: "Cliente informe", customerPhone: "1155557555", deliveryAddress: "Calle informe 75", deliveryFeeMinor: 25_000, driverUserId: driver.id });
       await api.addOrderItem({ orderId: order.id, productId: data.products[0]!.id });
       const confirmed = await api.confirmOrder({ orderId: order.id });
@@ -72,12 +73,12 @@ for (const mode of ["direct", "accumulated", "driver-retained", "reversed-remitt
       let shippingExpense = mode === "direct" ? 25_000 : 0;
       if (mode === "accumulated" || mode === "reversed-remittance") {
         const pending = (await api.bootstrap()).deliveryLedger.find((l) => l.orderId === order.id)!;
-        await api.settleDelivery({ ledgerIds: [pending.id], authorizerPin: "1234", reason: "Rendición informe" });
+        await api.settleDelivery({ ledgerIds: [pending.id], authorizerPin: "748259", reason: "Rendición informe" });
         shippingExpense = mode === "accumulated" ? 25_000 : pending.amountDueMinor;
-        if (mode === "reversed-remittance") await api.reverseDeliverySettlement({ ledgerId: pending.id, authorizerPin: "1234", reason: "Revertir rendición informe" });
+        if (mode === "reversed-remittance") await api.reverseDeliverySettlement({ ledgerId: pending.id, authorizerPin: "748259", reason: "Revertir rendición informe" });
       }
       const beforeClose = (await api.getCashSessionReport({ cashSessionId: session.id })).session;
-      await api.closeCashSession({ countedAmountMinor: beforeClose.expectedAmountMinor, closingFloatAmountMinor: 0, force: driverCollected, reason: driverCollected ? "Conservar rendición pendiente para prueba de informe" : undefined, authorizerPin: driverCollected ? "1234" : undefined });
+      await api.closeCashSession({ countedAmountMinor: beforeClose.expectedAmountMinor, closingFloatAmountMinor: 0, force: driverCollected, reason: driverCollected ? "Conservar rendición pendiente para prueba de informe" : undefined, authorizerPin: driverCollected ? "748259" : undefined });
       return { sessionId: session.id, shippingExpense, expected: beforeClose.expectedAmountMinor, sales: confirmed.totalMinor };
     }, mode);
     const before = await ledger();

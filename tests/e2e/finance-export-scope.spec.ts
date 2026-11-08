@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -20,7 +20,7 @@ let profile = "";
 test.beforeEach(async () => {
   await mkdir(evidence, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-finance-export-scope-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -138,6 +138,7 @@ test("exporta únicamente los gastos del período y conserva el CSV y su nombre"
     ] as const) {
       expenses.push(
         await api.createFinanceExpense({
+          authorizerPin: "748259",
           title,
           category: "Servicios",
           kind: "GENERAL",
@@ -151,6 +152,7 @@ test("exporta únicamente los gastos del período y conserva el CSV y su nombre"
       );
     }
     const paid = await api.payFinanceExpense({
+      authorizerPin: "748259",
       expenseId: expenses[0]!.id,
       paymentMethodCode: "CASH",
       fromCash: false,

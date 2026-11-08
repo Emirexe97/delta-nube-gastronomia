@@ -1,11 +1,12 @@
-import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
+import { launchConfiguredPos } from "./pos-fixture";
+import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname, basename } from 'node:path';
 let app: ElectronApplication, page: Page, profile = '';
 const key = 'gastronomy.salon.view';
 async function launch() {
-  app = await electron.launch({ args: ['apps/desktop-shell', `--user-data-dir=${profile}`], cwd: process.cwd() });
+  app = await launchConfiguredPos({ args: ['apps/desktop-shell', `--user-data-dir=${profile}`], cwd: process.cwd() });
   page = await app.firstWindow();
   await expect(page.getByText('Delta Nube', { exact: true })).toBeVisible();
   expect(resolve(await app.evaluate(({ app }) => app.getPath('userData')))).toBe(resolve(profile));

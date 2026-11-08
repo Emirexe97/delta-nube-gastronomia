@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { rmSync } from "node:fs";
@@ -8,7 +9,7 @@ import { SqliteGastronomyRepository } from "./sqlite-repository";
 
 function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
   const path = join(tmpdir(), `waiter-mobile-${randomUUID()}.sqlite`);
-  const repository = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  const repository = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   try { run(repository); } finally {
     repository.close();
     for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
@@ -122,6 +123,48 @@ test("waiter batch requires a live session and persists idempotent receipt", () 
   });
 });
 
+test("waiter pairing and batches work without a kitchen printer and create no phantom print work", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const waiter = repository.createUser({ fullName: "Mozo sin comandera", roleCode: "WAITER", pin: "1357", authorizerPin: "2468" });
+    const { sessionToken } = repository.pairWaiterSession({ challengeId: repository.createWaiterChallenge(waiter.id).challengeId, pin: "1357" });
+    const table = repository.ensureTable(92);
+    const input = { requestId: `batch-${randomUUID()}`, tableId: table.id, submittedAt: new Date().toISOString(),
+      lines: [{ lineId: `line-${randomUUID()}`, productId: "starter-muzza-grande", quantity: 1 }] };
+    const accepted = repository.submitWaiterBatch(sessionToken, input);
+    assert.equal(accepted.status, "RECORDED");
+    assert.ok(accepted.orderId);
+    assert.equal(repository.getOrder(accepted.orderId).lifecycleStatus, "CONFIRMED");
+    assert.equal(repository.getWaiterBatch(sessionToken, input.requestId)?.status, "RECORDED");
+    assert.equal(accepted.printJobId, null);
+    assert.equal(repository.submitWaiterBatch(sessionToken, input).created, false);
+    assert.equal(Number((repository.db.prepare("SELECT COUNT(*) AS n FROM print_jobs WHERE kind='KITCHEN_ORDER'").get() as { n: number }).n), 0);
+    assert.equal(Number((repository.db.prepare("SELECT COUNT(*) AS n FROM waiter_batches WHERE status='RECORDED'").get() as { n: number }).n), 1);
+
+    // A later cashier approval follows the same path, still without a paper job.
+    const next = (quantity: number) => ({ ...input, requestId: randomUUID(), expectedOrderId: accepted.orderId,
+      lines: [{ ...input.lines[0]!, lineId: randomUUID(), quantity }] });
+    const late = { ...next(2), submittedAt: new Date(Date.now() - 70_000).toISOString() };
+    assert.equal(repository.submitWaiterBatch(sessionToken, late).status, "PENDING_REVIEW");
+    const approved = repository.confirmDelayedWaiterBatch({ requestId: late.requestId });
+    assert.equal(approved.status, "RECORDED");
+    assert.equal(approved.printJobId, null);
+    assert.equal(repository.confirmDelayedWaiterBatch({ requestId: late.requestId }).created, false);
+    assert.equal(repository.getOrder(accepted.orderId).items[0]?.quantity, 3);
+
+    // Adding a printer later must never send old digital batches to the kitchen.
+    const settings = repository.getSettings();
+    settings.printing.kitchen.mode = "SYSTEM_DIRECT";
+    settings.printing.kitchen.deviceName = "Test kitchen";
+    repository.saveSettings(settings);
+    assert.equal(repository.submitWaiterBatch(sessionToken, input).printJobId, null);
+    const printed = repository.submitWaiterBatch(sessionToken, next(1));
+    assert.ok(printed.printJobId);
+    assert.equal(repository.getPrintOrder(printed.printJobId).items[0]?.quantity, 1);
+    assert.equal(repository.getOrder(accepted.orderId).items[0]?.quantity, 4);
+  });
+});
+
 test("late waiter batches stay pending without side effects until cashier confirms; receipt survives duplicate confirmation", () => {
   withRepository((repository) => {
     repository.openCashSession({ openingAmountMinor: 0 });
@@ -220,7 +263,7 @@ test("waiter role cannot review delayed batches",()=>{
 
 test("pending review survives repository restart and remains visible after waiter sessions are revoked",()=>{
   const path=join(tmpdir(),`waiter-pending-restart-${randomUUID()}.sqlite`);
-  const first=new SqliteGastronomyRepository(path,{adminPin:"2468",seedStarterCatalog:true});
+  const first=configuredTestRepository(path,{adminPin:"2468",seedStarterCatalog:true});
   let requestId="";
   try {
     first.openCashSession({openingAmountMinor:0});
@@ -233,7 +276,7 @@ test("pending review survives repository restart and remains visible after waite
     requestId=`restart-${randomUUID()}`;
     first.submitWaiterBatch(token,{requestId,tableId:first.ensureTable(95).id,lines:[{lineId:`line-${randomUUID()}`,productId:"starter-muzza-grande",quantity:1}]});
   } finally { first.close(); }
-  const restored=new SqliteGastronomyRepository(path,{adminPin:"2468",seedStarterCatalog:true});
+  const restored=configuredTestRepository(path,{adminPin:"2468",seedStarterCatalog:true});
   try {
     assert.ok(restored.listDelayedWaiterBatches().some((batch)=>batch.requestId===requestId));
     const receipt = restored.confirmDelayedWaiterBatch({ requestId });
@@ -272,7 +315,7 @@ test("expired challenges, legacy timed sessions, and closed shifts are not reusa
 
 test("POS restart preserves cash-bound access only, without reviving legacy credentials", () => {
   const path = join(tmpdir(), `waiter-restart-${randomUUID()}.sqlite`);
-  const first = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  const first = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   let token = "";
   let legacyToken = "";
   try {
@@ -282,7 +325,7 @@ test("POS restart preserves cash-bound access only, without reviving legacy cred
     legacyToken = first.pairWaiterSession({ challengeId: first.createWaiterChallenge(waiter.id).challengeId, pin: "1357" }).sessionToken;
     first.db.prepare("UPDATE waiter_sessions SET expires_on_cash_close=0,expires_at=? WHERE token_hash=?").run(new Date(Date.now()+60_000).toISOString(), createHash("sha256").update(legacyToken).digest("hex"));
   } finally { first.close(); }
-  const restored = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  const restored = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   try {
     assert.equal(restored.getWaiterSessionState(token).validUntil, "CASH_CLOSE");
     assert.throws(() => restored.getWaiterSessionState(legacyToken), /venció o fue revocada/);

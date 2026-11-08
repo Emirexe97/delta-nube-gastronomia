@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -15,7 +15,7 @@ let userData: string;
 
 test.beforeEach(async () => {
   userData = await mkdtemp(join(tmpdir(), "gastronomy-change-table-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
     cwd: process.cwd(),
   });
@@ -81,7 +81,7 @@ test("traslada pedido de mesa 61 a mesa 62 con PIN y actualiza la ocupación", a
   await expect(modal.getByRole("alert")).toBeVisible();
 
   // Ingresar PIN correcto
-  await modal.getByLabel("PIN de autorización").fill("1234");
+  await modal.getByLabel("PIN de autorización").fill("748259");
   await modal.getByRole("button", { name: /Confirmar traslado/i }).click();
 
   // El modal se cierra y la cabecera del editor ahora indica Mesa 62

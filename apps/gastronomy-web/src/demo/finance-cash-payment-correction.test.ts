@@ -19,6 +19,7 @@ async function setup() {
   const api = createDemoApi(storage);
   const bootstrap = await api.bootstrap();
   const expense = await api.createFinanceExpense({
+    authorizerPin: "1234",
     title: "Pago de caja a corregir",
     category: "Pruebas",
     kind: "GENERAL",
@@ -28,6 +29,7 @@ async function setup() {
     idempotencyKey: "create-expense",
   });
   const paid = await api.payFinanceExpense({
+    authorizerPin: "1234",
     expenseId: expense.id,
     paymentMethodCode: "CASH",
     fromCash: true,
@@ -209,6 +211,7 @@ describe("corrección de pago de gasto desde caja en demo", () => {
     ).toHaveLength(1);
     const recreatedApi = createDemoApi(storage);
     const repaid = await recreatedApi.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "CASH",
       fromCash: true,
@@ -232,6 +235,7 @@ describe("corrección de pago de gasto desde caja en demo", () => {
     const api = createDemoApi(storage);
     const date = (await api.bootstrap()).cashSession!.businessDate;
     const expense = await api.createFinanceExpense({
+      authorizerPin: "1234",
       title: "Transferencia",
       category: "Pruebas",
       kind: "GENERAL",
@@ -241,6 +245,7 @@ describe("corrección de pago de gasto desde caja en demo", () => {
       idempotencyKey: "expense",
     });
     const paid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: expense.id,
       paymentMethodCode: "TRANSFER",
       fromCash: true,
@@ -282,6 +287,7 @@ describe("corrección de pago de gasto desde caja en demo", () => {
     const api = createDemoApi(storage);
     const date = (await api.bootstrap()).cashSession!.businessDate;
     const external = await api.createFinanceExpense({
+      authorizerPin: "1234",
       title: "Externo",
       category: "Pruebas",
       kind: "GENERAL",
@@ -291,12 +297,14 @@ describe("corrección de pago de gasto desde caja en demo", () => {
       idempotencyKey: "external",
     });
     const externalPaid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: external.id,
       paymentMethodCode: "CASH",
       fromCash: false,
       idempotencyKey: "external-pay",
     });
     const linked = await api.createFinanceExpense({
+      authorizerPin: "1234",
       title: "Caja",
       category: "Pruebas",
       kind: "GENERAL",
@@ -306,6 +314,7 @@ describe("corrección de pago de gasto desde caja en demo", () => {
       idempotencyKey: "linked",
     });
     const linkedPaid = await api.payFinanceExpense({
+      authorizerPin: "1234",
       expenseId: linked.id,
       paymentMethodCode: "CASH",
       fromCash: true,

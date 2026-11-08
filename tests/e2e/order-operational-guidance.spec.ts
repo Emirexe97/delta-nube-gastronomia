@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -19,7 +19,7 @@ let app: ElectronApplication,
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-order-guidance-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -110,7 +110,7 @@ async function openOrder(name:string){await page.reload();await page.getByRole('
 test('a blocked draft confirmation has a visible reason without hover and never changes the order',async()=>{
  const order=await page.evaluate(async()=>{const api=window.gastronomy;await api.openCashSession({openingAmountMinor:1000000});return api.createOrder({type:'TAKEAWAY',customerName:'Motivo confirmación',customerPhone:'1155557301'});});const before=await ledger();const editor=await openOrder('Motivo confirmación');const confirm=editor.getByRole('button',{name:'Confirmar pedido',exact:true});await expect(confirm).toBeDisabled();const reason=await confirm.getAttribute('title');expect(reason).toBeTruthy();await expect(editor.getByText(reason!,{exact:true})).toBeVisible();await capture('visible-confirmation-reason',{order,before,reason});await page.keyboard.press('Escape');expect(await ledger()).toEqual(before);
 });
-async function deliveryFixture(){return page.evaluate(async()=>{const api=window.gastronomy;const d=await api.bootstrap();await api.saveSettings({...d.settings,deliverySettlementEnabled:true,deliveryFeeBelongsToDriver:true,deliveryDriverPaymentMode:'ACCUMULATED'});const session=await api.openCashSession({openingAmountMinor:1000000});const driver=await api.createDriver({fullName:'Repartidor prueba cobro',authorizerPin:'1234'});const order=await api.createOrder({type:'DELIVERY',customerName:'Receptor del cobro',customerPhone:'1155557302',deliveryAddress:'Calle 730',deliveryFeeMinor:250000,driverUserId:driver.id});await api.addOrderItem({orderId:order.id,productId:d.products[0]!.id});const confirmed=await api.confirmOrder({orderId:order.id});await api.updateOrderStatus({orderId:order.id,status:'READY'});await api.updateOrderStatus({orderId:order.id,status:'OUT_FOR_DELIVERY'});return{order:confirmed,driver,session};});}
+async function deliveryFixture(){return page.evaluate(async()=>{const api=window.gastronomy;const d=await api.bootstrap();await api.saveSettings({...d.settings,deliverySettlementEnabled:true,deliveryFeeBelongsToDriver:true,deliveryDriverPaymentMode:'ACCUMULATED'});const session=await api.openCashSession({openingAmountMinor:1000000});const driver=await api.createDriver({fullName:'Repartidor prueba cobro',authorizerPin:'748259'});const order=await api.createOrder({type:'DELIVERY',customerName:'Receptor del cobro',customerPhone:'1155557302',deliveryAddress:'Calle 730',deliveryFeeMinor:250000,driverUserId:driver.id});await api.addOrderItem({orderId:order.id,productId:d.products[0]!.id});const confirmed=await api.confirmOrder({orderId:order.id});await api.updateOrderStatus({orderId:order.id,status:'READY'});await api.updateOrderStatus({orderId:order.id,status:'OUT_FOR_DELIVERY'});return{order:confirmed,driver,session};});}
 test('cash at door identifies driver and cash-register effect before confirming actual delivery',async()=>{
  const f=await deliveryFixture();const editor=await openOrder('Receptor del cobro');await editor.getByRole('button',{name:'Entregar',exact:true}).click();const pay=page.getByRole('dialog',{name:'Cobrar y entregar',exact:true});await pay.getByRole('checkbox',{name:'Cobró el repartidor',exact:true}).check();await expect(pay.getByText(/lo recibe el repartidor/i)).toBeVisible();await expect(pay.getByText(/No ingresa efectivo a esta caja/i)).toBeVisible();await expect(pay.getByText(/retiene.*envío/i)).toBeVisible();await capture('delivery-cash-receiver',{f});await pay.getByRole('button',{name:'Cobrar y entregar',exact:true}).click();await expect(pay).toHaveCount(0);const after=await page.evaluate(()=>window.gastronomy.bootstrap());expect(after.cashSession!.expectedAmountMinor).toBe(f.session.expectedAmountMinor);const delivered=after.orders.find(o=>o.id===f.order.id)!;expect(delivered.collectedByDriver).toBe(true);expect(delivered.paymentStatus).toBe('PAID');expect(after.deliveryLedger.find(l=>l.orderId===f.order.id)?.direction).toBe('DRIVER_OWES_BUSINESS');
 });

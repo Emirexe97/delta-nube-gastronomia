@@ -11,3 +11,4 @@ export * from "./csv";
 export * from "./combos";
 export * from "./repeat-order";
 export * from "./ingredient-costs";
+export * from "./legacy-channel-prices";

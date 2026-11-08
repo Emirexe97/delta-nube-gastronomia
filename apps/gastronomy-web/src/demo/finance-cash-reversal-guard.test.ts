@@ -19,6 +19,7 @@ const linkedExpense = async (paymentMethodCode: "CASH" | "TRANSFER") => {
   const api = createDemoApi(storage);
   const date = (await api.bootstrap()).cashSession!.businessDate;
   const expense = await api.createFinanceExpense({
+    authorizerPin: "1234",
     title: `Gasto ${paymentMethodCode}`,
     category: "Pruebas",
     kind: "GENERAL",
@@ -27,6 +28,7 @@ const linkedExpense = async (paymentMethodCode: "CASH" | "TRANSFER") => {
     dueOn: date,
   });
   await api.payFinanceExpense({
+    authorizerPin: "1234",
     expenseId: expense.id,
     paymentMethodCode,
     fromCash: true,
@@ -117,6 +119,7 @@ describe("guardas demo al anular movimientos de caja", () => {
     const api = createDemoApi(storage);
     const cash = (await api.bootstrap()).cashSession!;
     await api.registerCashMovement({
+      authorizerPin: "1234",
       type: "EXPENSE",
       amountMinor: 700,
       paymentMethodCode: "CASH",

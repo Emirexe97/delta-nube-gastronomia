@@ -42,6 +42,7 @@ import type {
   RepeatOrderInput,
   IngredientDto, SaveIngredientInput, ProductCostConfigurationDto, SetProductCostConfigurationInput,
 } from "@gastronomy/contracts";
+import { isPriceBookRoundingIncrementMinor } from "@gastronomy/contracts";
 import { createDemoBootstrap, emptyDashboard } from "./demo-data";
 import { populateRepeatedDemoOrder } from "./repeat-order";
 import {
@@ -58,7 +59,9 @@ import {
   calculateBookPrice,
   applyBookAdjustment,
   assertComboLineAmount,
-  assertIngredientValues, calculateIngredientRecipeCost,
+  assertIngredientValues,
+  calculateIngredientRecipeCost,
+  planLegacyChannelPrices,
 } from "@gastronomy/domain";
 
 export const DEMO_STORAGE_KEY = "delta-nube-gastronomia.demo.v5";
@@ -86,6 +89,9 @@ const SENSITIVE_DEMO_AUDIT_ACTIONS = new Set([
   "PRODUCT_DELETED",
   "PRODUCTO_ACTUALIZADO",
   "PRODUCTOS_ACTUALIZADOS_EN_LOTE",
+  "PRICE_BOOK_CREATED",
+  "PRICE_BOOK_UPDATED",
+  "PRICE_BOOKS_ASSIGNED",
   "STOCK_AJUSTADO",
   "PURCHASE_CREATED",
   "PURCHASE_METADATA_CORRECTED",
@@ -635,38 +641,51 @@ function loadState(storage: DemoStorage): DemoState {
           order.number,
         );
     }
-    // Migrate v12 prices without changing amounts: create one book per distinct
-    // channel-price vector across the complete catalog, then map each channel.
-    if (!parsed.priceBooks || parsed.version < 13) {
+    // Migrate legacy channel prices only when price books were never configured.
+    if (!parsed.priceBooks) {
       const channels = ["SALON", "TAKEAWAY", "DELIVERY"] as const;
-      const signatures = channels.map((channel) => parsed.data.products.map((product) => product.prices.find((price) => price.priceListCode === channel)?.amountMinor ?? 0).join(","));
+      const plan = planLegacyChannelPrices(
+        parsed.data.products.map((product) => ({
+          id: product.id,
+          prices: Object.fromEntries(
+            channels.map((channel) => [
+              channel,
+              product.prices.find((price) => price.priceListCode === channel)
+                ?.amountMinor,
+            ]),
+          ) as Partial<Record<PriceChannel, number>>,
+        })),
+      );
       const baseId = "book-base";
-      const books: PriceBookDto[] = [{ id: baseId, name: "Principal", adjustmentBps: 0, isBase: true }];
-      const byChannel = new Map<string, string>([["SALON", baseId]]);
-      const signatureIds = new Map<string, string>([[signatures[0]!, baseId]]);
-      for (const channel of ["TAKEAWAY", "DELIVERY"] as const) {
-        const signature = signatures[channels.indexOf(channel)]!;
-        let id = signatureIds.get(signature);
-        if (!id) {
-          id = `book-migrated-${books.length}`;
-          books.push({ id, name: channel === "TAKEAWAY" ? "Retiro" : "Delivery", adjustmentBps: 0, isBase: false });
-          signatureIds.set(signature, id);
-        }
-        byChannel.set(channel, id);
-      }
+      const deliveryId = "book-delivery";
+      const takeawayId = "book-takeaway";
+      const books: PriceBookDto[] = [
+        { id: baseId, name: "Principal", adjustmentBps: 0, isBase: true },
+        { id: deliveryId, name: "Delivery", adjustmentBps: 0, isBase: false },
+      ];
+      if (plan.separateTakeaway)
+        books.push({
+          id: takeawayId,
+          name: "Retiro",
+          adjustmentBps: 0,
+          isBase: false,
+        });
       parsed.priceBooks = books;
-      parsed.priceBookAssignments = Object.fromEntries(channels.map((channel) => [channel, byChannel.get(channel)!])) as Record<PriceChannel, string>;
+      parsed.priceBookAssignments = {
+        SALON: baseId,
+        TAKEAWAY: plan.separateTakeaway ? takeawayId : deliveryId,
+        DELIVERY: deliveryId,
+      };
+      const planById = new Map(
+        plan.products.map((product) => [product.id, product]),
+      );
       for (const product of parsed.data.products) {
-        const salon = product.prices.find((price) => price.priceListCode === "SALON")?.amountMinor ?? 0;
-        const overrides: Record<string, number> = {};
-        const valuesByBook = new Map<string, number>();
-        for (const channel of channels) {
-          const bookId = parsed.priceBookAssignments[channel];
-          const amount = product.prices.find((price) => price.priceListCode === channel)?.amountMinor ?? 0;
-          if (bookId !== baseId) valuesByBook.set(bookId, amount);
-        }
-        for (const [bookId, amount] of valuesByBook) if (amount !== salon) overrides[bookId] = amount;
-        product.priceBook = { baseMinor: salon, overrides };
+        const prices = planById.get(product.id)!;
+        const overrides: Record<string, number> = {
+          [deliveryId]: prices.delivery,
+        };
+        if (plan.separateTakeaway) overrides[takeawayId] = prices.takeaway;
+        product.priceBook = { baseMinor: prices.salon, overrides };
       }
     }
     parsed.priceBooks ??= [{ id: "book-base", name: "Principal", adjustmentBps: 0, isBase: true }];
@@ -711,30 +730,63 @@ function methodName(data: BootstrapDto, code: string) {
 
 function orderPrice(product: ProductDto, type: OrderDto["type"], state?: DemoState) {
   const channel: PriceChannel = type === "DINE_IN" ? "SALON" : type;
-  const assignment = state?.priceBookAssignments ?? { SALON: "book-base", TAKEAWAY: "book-base", DELIVERY: "book-base" };
-  const books = state?.priceBooks ?? [{ id: "book-base", name: "Principal", adjustmentBps: 0, isBase: true }];
-  const book = books.find((candidate) => candidate.id === assignment[channel]) ?? books.find((candidate) => candidate.isBase)!;
-  if (product.priceBook) return calculateBookPrice(product.priceBook.baseMinor, book.adjustmentBps, product.priceBook.overrides[book.id]);
-  return product.prices.find((price) => price.priceListCode === channel)?.amountMinor ?? 0;
+  const assignment = state?.priceBookAssignments ?? {
+    SALON: "book-base",
+    TAKEAWAY: "book-base",
+    DELIVERY: "book-base",
+  };
+  const books = state?.priceBooks ?? [
+    { id: "book-base", name: "Principal", adjustmentBps: 0, isBase: true },
+  ];
+  const book =
+    books.find((candidate) => candidate.id === assignment[channel]) ??
+    books.find((candidate) => candidate.isBase)!;
+  if (product.priceBook)
+    return calculateBookPrice(
+      product.priceBook.baseMinor,
+      book.adjustmentBps,
+      product.priceBook.overrides[book.id],
+      book.roundingIncrementMinor,
+    );
+  return (
+    product.prices.find((price) => price.priceListCode === channel)
+      ?.amountMinor ?? 0
+  );
 }
 
 function refreshProductPrices(product: ProductDto, state: DemoState) {
   if (product.priceBook) validateDemoProductBook(product.priceBook, state.priceBooks!);
   const assignments = state.priceBookAssignments!;
-  product.prices = (["SALON", "TAKEAWAY", "DELIVERY"] as const).map((channel) => {
-    const book = state.priceBooks!.find((item) => item.id === assignments[channel])!;
-    const amountMinor = product.priceBook
-      ? calculateBookPrice(product.priceBook.baseMinor, book.adjustmentBps, product.priceBook.overrides[book.id])
-      : product.prices.find((price) => price.priceListCode === channel)?.amountMinor ?? 0;
-    return { priceListId: book.id, priceListCode: channel, amountMinor };
-  });
+  product.prices = (["SALON", "TAKEAWAY", "DELIVERY"] as const).map(
+    (channel) => {
+      const book = state.priceBooks!.find(
+        (item) => item.id === assignments[channel],
+      )!;
+      const amountMinor = product.priceBook
+        ? calculateBookPrice(
+            product.priceBook.baseMinor,
+            book.adjustmentBps,
+            product.priceBook.overrides[book.id],
+            book.roundingIncrementMinor,
+          )
+        : (product.prices.find((price) => price.priceListCode === channel)
+            ?.amountMinor ?? 0);
+      return { priceListId: book.id, priceListCode: channel, amountMinor };
+    },
+  );
 }
 
 function validateDemoProductBook(config: NonNullable<ProductDto["priceBook"]>, books: PriceBookDto[]) {
   if (!config.overrides || typeof config.overrides !== "object" || Array.isArray(config.overrides) ||
       Object.keys(config.overrides).some(id => !books.some(book => book.id === id && !book.isBase)))
     throw new Error("Hay un precio propio asociado a una lista no válida.");
-  for (const book of books) calculateBookPrice(config.baseMinor, book.adjustmentBps, config.overrides[book.id]);
+  for (const book of books)
+    calculateBookPrice(
+      config.baseMinor,
+      book.adjustmentBps,
+      config.overrides[book.id],
+      book.roundingIncrementMinor,
+    );
 }
 
 function productBookFromPrices(
@@ -757,9 +809,19 @@ function productBookFromPrices(
   for (const [id, amount] of desired) {
     if (id === baseId || overrides[id] === amount) continue;
     let calculated: number | undefined;
-    try { calculated = calculateBookPrice(principal, books.find(b=>b.id===id)?.adjustmentBps ?? 0); }
-    catch { /* An explicit fixed amount can still represent this price. */ }
-    if (calculated === amount) delete overrides[id]; else overrides[id] = amount;
+    try {
+      const book = books.find((b) => b.id === id);
+      calculated = calculateBookPrice(
+        principal,
+        book?.adjustmentBps ?? 0,
+        undefined,
+        book?.roundingIncrementMinor,
+      );
+    } catch {
+      /* An explicit fixed amount can still represent this price. */
+    }
+    if (calculated === amount) delete overrides[id];
+    else overrides[id] = amount;
   }
   return {baseMinor:principal, overrides};
 }
@@ -1437,6 +1499,24 @@ export function createDemoApi(
     if (!state.data.currentUser.permissions.includes("finance.manage") && !state.data.currentUser.permissions.includes("*"))
       throw new Error("No tenés permiso para modificar gastos.");
   };
+  const requireFinanceAuthorizer = (pin: string) => {
+    requireFinanceManage();
+    requirePin(pin);
+    return (
+      state.data.users.find(
+        (user) =>
+          user.active &&
+          (user.permissions.includes("finance.manage") ||
+            user.permissions.includes("*")),
+      )?.id ?? state.data.currentUser.id
+    );
+  };
+  const withoutAuthorizerPin = <T extends { authorizerPin?: string }>(
+    input: T,
+  ) => {
+    const { authorizerPin: _authorizerPin, ...request } = input;
+    return request;
+  };
   const requireCashExpenseAuthorizer = (pin: string) => {
     requirePin(pin);
     const authorizer = state.data.users.find((user) => user.active && (user.permissions.includes("cash.expense") || user.permissions.includes("*")));
@@ -1470,9 +1550,24 @@ export function createDemoApi(
     const date = new Date(`${value}T00:00:00.000Z`);
     return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
   };
-  const expenseRecoveryFingerprint = (input: CorrectFinanceExpenseInput | CancelFinanceExpenseInput, operation: string) => JSON.stringify({operation,input});
-  const recordFinanceExpenseRecovery = (expense: FinanceExpenseDto, action: string, before: FinanceExpenseDto, reason: string) => {
-    audit(state, "FINANCE_EXPENSE", expense.id, action, reason, "finance.manage");
+  const expenseRecoveryFingerprint = (
+    input: CorrectFinanceExpenseInput | CancelFinanceExpenseInput,
+    operation: string,
+  ) => JSON.stringify({ operation, input: withoutAuthorizerPin(input) });
+  const recordFinanceExpenseRecovery = (
+    expense: FinanceExpenseDto,
+    action: string,
+    before: FinanceExpenseDto,
+    reason: string,
+  ) => {
+    audit(
+      state,
+      "FINANCE_EXPENSE",
+      expense.id,
+      action,
+      reason,
+      "finance.manage",
+    );
     const entry = state.audit[0];
     if (entry?.entityId === expense.id && entry.action === action) {
       entry.beforeJson = JSON.stringify(before);
@@ -1649,6 +1744,12 @@ export function createDemoApi(
   save();
 
   return {
+    async isInitialAdminPinSetupRequired() {
+      return false;
+    },
+    async setInitialAdminPin() {
+      return { configured: true as const };
+    },
     async repeatOrder(input: RepeatOrderInput) {
       if (!state.data.currentUser.permissions.includes("orders.create") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para crear pedidos.");
       const key = input.idempotencyKey?.trim();
@@ -1696,25 +1797,95 @@ export function createDemoApi(
       if (!state.data.currentUser.permissions.includes("prices.bulk_update") && !state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para editar precios.");
       if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
       const name = input.name.trim();
-      if (!name || name.length > 80) throw new Error("El nombre de lista debe tener entre 1 y 80 caracteres.");
-      if (!Number.isSafeInteger(input.adjustmentBps) || input.adjustmentBps < -10000 || input.adjustmentBps > 100000) throw new Error("El ajuste de lista no es válido.");
+      if (!name || name.length > 80)
+        throw new Error(
+          "El nombre de lista debe tener entre 1 y 80 caracteres.",
+        );
+      if (
+        !Number.isSafeInteger(input.adjustmentBps) ||
+        input.adjustmentBps < -10000 ||
+        input.adjustmentBps > 100000
+      )
+        throw new Error("El ajuste de lista no es válido.");
+      if (
+        input.roundingIncrementMinor !== undefined &&
+        !isPriceBookRoundingIncrementMinor(input.roundingIncrementMinor)
+      )
+        throw new Error("El redondeo de lista no es válido.");
       const books = clone(state.priceBooks!);
       let book = input.id ? books.find((candidate) => candidate.id === input.id) : undefined;
       if (input.id && !book) throw new Error("La lista no existe.");
       if (!book || book.isBase) {
-        if (book?.isBase) throw new Error("La lista Principal no se puede editar.");
-        if (books.some((candidate) => candidate.name.trim().toLocaleLowerCase("es-AR") === name.toLocaleLowerCase("es-AR"))) throw new Error("Ya existe una lista con ese nombre.");
-        book = { id: uid("price-book", state), name, adjustmentBps: input.adjustmentBps, isBase: false };
+        if (book?.isBase)
+          throw new Error("La lista Principal no se puede editar.");
+        if (
+          books.some(
+            (candidate) =>
+              candidate.name.trim().toLocaleLowerCase("es-AR") ===
+              name.toLocaleLowerCase("es-AR"),
+          )
+        )
+          throw new Error("Ya existe una lista con ese nombre.");
+        book = {
+          id: `price-book-demo-${state.sequence + 1}`,
+          name,
+          adjustmentBps: input.adjustmentBps,
+          isBase: false,
+          roundingIncrementMinor: input.roundingIncrementMinor ?? 1,
+        };
         books.push(book);
       } else {
         if (books.some((candidate) => candidate.id !== book!.id && candidate.name.trim().toLocaleLowerCase("es-AR") === name.toLocaleLowerCase("es-AR"))) throw new Error("Ya existe una lista con ese nombre.");
         book.name = name;
         book.adjustmentBps = input.adjustmentBps;
+        if (input.roundingIncrementMinor !== undefined)
+          book.roundingIncrementMinor = input.roundingIncrementMinor;
       }
-      for (const product of state.data.products) validateDemoProductBook(product.priceBook!, books);
+      const products = clone(state.data.products);
+      if (input.productOverrides !== undefined) {
+        if (
+          !input.productOverrides ||
+          typeof input.productOverrides !== "object" ||
+          Array.isArray(input.productOverrides)
+        )
+          throw new Error("Los precios propios de la lista no son válidos.");
+        for (const [productId, amount] of Object.entries(
+          input.productOverrides,
+        )) {
+          const product = products.find(
+            (candidate) => candidate.id === productId,
+          );
+          if (
+            !product ||
+            book.isBase ||
+            (amount !== null && (!Number.isSafeInteger(amount) || amount < 0))
+          )
+            throw new Error("Los precios propios de la lista no son válidos.");
+          if (!product.priceBook)
+            product.priceBook = {
+              baseMinor:
+                product.prices.find((price) => price.priceListCode === "SALON")
+                  ?.amountMinor ?? 0,
+              overrides: {},
+            };
+          if (amount === null) delete product.priceBook.overrides[book.id];
+          else product.priceBook.overrides[book.id] = amount;
+        }
+      }
+      for (const product of products)
+        validateDemoProductBook(product.priceBook!, books);
       state.priceBooks = books;
-      for (const product of state.data.products) refreshProductPrices(product, state);
-      audit(state, "PRODUCT", book.id, "PRICE_BOOK_SAVED", input.reason.trim(), "prices.bulk_update");
+      for (const product of products) refreshProductPrices(product, state);
+      state.data.products = products;
+      if (!input.id) state.sequence += 1;
+      audit(
+        state,
+        "PRICE_BOOK",
+        book.id,
+        input.id ? "PRICE_BOOK_UPDATED" : "PRICE_BOOK_CREATED",
+        input.reason.trim(),
+        "prices.bulk_update",
+      );
       save();
       return output({ books, assignments: state.priceBookAssignments! });
     },
@@ -1726,13 +1897,29 @@ export function createDemoApi(
       if (Object.keys(input.assignments).length !== 3 || [input.assignments.SALON, input.assignments.TAKEAWAY, input.assignments.DELIVERY].some((id) => !state.priceBooks!.some((book) => book.id === id))) throw new Error("Una de las listas asignadas no existe.");
 
       const assignments = clone(input.assignments);
-      for (const product of state.data.products) for (const channel of ["SALON", "TAKEAWAY", "DELIVERY"] as const) {
-        const book = state.priceBooks!.find((candidate) => candidate.id === assignments[channel])!;
-        calculateBookPrice(product.priceBook!.baseMinor, book.adjustmentBps, book.isBase ? undefined : product.priceBook!.overrides[book.id]);
-      }
+      for (const product of state.data.products)
+        for (const channel of ["SALON", "TAKEAWAY", "DELIVERY"] as const) {
+          const book = state.priceBooks!.find(
+            (candidate) => candidate.id === assignments[channel],
+          )!;
+          calculateBookPrice(
+            product.priceBook!.baseMinor,
+            book.adjustmentBps,
+            book.isBase ? undefined : product.priceBook!.overrides[book.id],
+            book.roundingIncrementMinor,
+          );
+        }
       state.priceBookAssignments = assignments;
-      for (const product of state.data.products) refreshProductPrices(product, state);
-      audit(state, "PRODUCT", "price-books", "PRICE_BOOKS_ASSIGNED", input.reason.trim(), "prices.bulk_update");
+      for (const product of state.data.products)
+        refreshProductPrices(product, state);
+      audit(
+        state,
+        "PRICE_BOOK",
+        "assignments",
+        "PRICE_BOOKS_ASSIGNED",
+        input.reason.trim(),
+        "prices.bulk_update",
+      );
       save();
       return output({ books: state.priceBooks!, assignments: state.priceBookAssignments });
     },
@@ -1819,8 +2006,17 @@ export function createDemoApi(
       const cash = state.data.cashSession;
       if (!cash || cash.status !== "OPEN")
         throw new Error("Abrí una caja antes de registrar movimientos.");
-      if (input.amountMinor <= 0)
+      if (
+        input.amountMinor === 0 ||
+        (input.type !== "ADJUSTMENT" && input.amountMinor < 0)
+      )
         throw new Error("El importe debe ser mayor que cero.");
+      const needsCashExpenseAuthorization =
+        input.type === "WITHDRAWAL" ||
+        input.type === "EXPENSE" ||
+        (input.type === "ADJUSTMENT" && input.amountMinor < 0);
+      if (needsCashExpenseAuthorization)
+        requireCashExpenseAuthorizer(input.authorizerPin ?? "");
       const methodCode = input.paymentMethodCode || "CASH";
       if (methodCode === "ACCOUNT")
         throw new Error(
@@ -1835,18 +2031,20 @@ export function createDemoApi(
       const affectsCash = method.affectsCash;
       if (
         affectsCash &&
-        ["EXPENSE", "WITHDRAWAL"].includes(input.type) &&
-        input.amountMinor > cash.expectedAmountMinor
+        (input.type === "EXPENSE" ||
+          input.type === "WITHDRAWAL" ||
+          (input.type === "ADJUSTMENT" && input.amountMinor < 0)) &&
+        Math.abs(input.amountMinor) > cash.expectedAmountMinor
       )
         throw new Error(
           "La caja no tiene efectivo suficiente. Registrá un ingreso o corregí el importe antes de continuar.",
         );
       if (affectsCash) {
-        cash.expectedAmountMinor += ["EXPENSE", "WITHDRAWAL"].includes(
-          input.type,
-        )
-          ? -input.amountMinor
-          : input.amountMinor;
+        cash.expectedAmountMinor +=
+          ["EXPENSE", "WITHDRAWAL"].includes(input.type) ||
+          (input.type === "ADJUSTMENT" && input.amountMinor < 0)
+            ? -Math.abs(input.amountMinor)
+            : Math.abs(input.amountMinor);
         if (input.type === "INCOME")
           cash.cashIncomeMinor =
             (cash.cashIncomeMinor ?? 0) + input.amountMinor;
@@ -4997,6 +5195,7 @@ export function createDemoApi(
     },
 
     async createFinanceExpense(input) {
+      requireFinanceAuthorizer(input.authorizerPin ?? "");
       if (
         !input.title.trim() ||
         !input.category.trim() ||
@@ -5037,12 +5236,14 @@ export function createDemoApi(
       return financeExpenseDto(expense);
     },
 
-    async correctFinanceMonthlyExpense(input: CorrectFinanceMonthlyExpenseInput) {
-      requireFinanceManage();
+    async correctFinanceMonthlyExpense(
+      input: CorrectFinanceMonthlyExpenseInput,
+    ) {
+      requireFinanceAuthorizer(input.authorizerPin ?? "");
       const receiptKey = input.idempotencyKey?.trim() || null;
       const fingerprint = JSON.stringify({
         operation: "correctFinanceMonthlyExpense",
-        input: { ...input, idempotencyKey: undefined },
+        input: { ...withoutAuthorizerPin(input), idempotencyKey: undefined },
       });
       const prior = receiptKey ? state.financeExpenseRecoveryReceipts?.[receiptKey] : undefined;
       if (prior) {
@@ -5080,11 +5281,11 @@ export function createDemoApi(
     },
 
     async cancelFinanceMonthlyExpense(input: CancelFinanceExpenseInput) {
-      requireFinanceManage();
+      requireFinanceAuthorizer(input.authorizerPin ?? "");
       const receiptKey = input.idempotencyKey?.trim() || null;
       const fingerprint = JSON.stringify({
         operation: "cancelFinanceMonthlyExpense",
-        input: { ...input, idempotencyKey: undefined },
+        input: { ...withoutAuthorizerPin(input), idempotencyKey: undefined },
       });
       const prior = receiptKey ? state.financeExpenseRecoveryReceipts?.[receiptKey] : undefined;
       if (prior) {
@@ -5111,9 +5312,13 @@ export function createDemoApi(
     },
 
     async correctFinanceExpense(input) {
-      requireFinanceManage();
-      const receiptKey = input.idempotencyKey?.trim() || uid("expense-recovery", state);
-      const fingerprint = expenseRecoveryFingerprint(input,"correctFinanceExpense");
+      requireFinanceAuthorizer(input.authorizerPin ?? "");
+      const receiptKey =
+        input.idempotencyKey?.trim() || uid("expense-recovery", state);
+      const fingerprint = expenseRecoveryFingerprint(
+        input,
+        "correctFinanceExpense",
+      );
       const receipts = (state.financeExpenseRecoveryReceipts ??= {});
       const prior = receipts[receiptKey];
       if (prior) {
@@ -5149,9 +5354,13 @@ export function createDemoApi(
     },
 
     async cancelFinanceExpense(input) {
-      requireFinanceManage();
-      const receiptKey = input.idempotencyKey?.trim() || uid("expense-recovery", state);
-      const fingerprint = expenseRecoveryFingerprint(input,"cancelFinanceExpense");
+      requireFinanceAuthorizer(input.authorizerPin ?? "");
+      const receiptKey =
+        input.idempotencyKey?.trim() || uid("expense-recovery", state);
+      const fingerprint = expenseRecoveryFingerprint(
+        input,
+        "cancelFinanceExpense",
+      );
       const receipts = (state.financeExpenseRecoveryReceipts ??= {});
       const prior = receipts[receiptKey];
       if (prior) {
@@ -5175,13 +5384,13 @@ export function createDemoApi(
     },
 
     async payFinanceExpense(input) {
-      requireFinanceManage();
+      requireFinanceAuthorizer(input.authorizerPin ?? "");
       const receiptKey = input.idempotencyKey?.trim()
         ? input.idempotencyKey.trim()
         : null;
       const fingerprint = JSON.stringify({
         operation: "payFinanceExpense",
-        input: { ...input, idempotencyKey: undefined },
+        input: { ...withoutAuthorizerPin(input), idempotencyKey: undefined },
       });
       const receipts = state.financeExpensePaymentReceipts;
       const prior = receiptKey ? receipts?.[receiptKey] : undefined;
@@ -5341,9 +5550,14 @@ export function createDemoApi(
     },
 
     async unmarkFinanceExpensePayment(input: UnmarkFinanceExpensePaymentInput) {
-      requireFinanceManage();
-      const receiptKey = input.idempotencyKey?.trim() ? input.idempotencyKey.trim() : null;
-      const fingerprint = JSON.stringify({ operation: "unmarkFinanceExpensePayment", input: { ...input, idempotencyKey: undefined } });
+      requireFinanceAuthorizer(input.authorizerPin ?? "");
+      const receiptKey = input.idempotencyKey?.trim()
+        ? input.idempotencyKey.trim()
+        : null;
+      const fingerprint = JSON.stringify({
+        operation: "unmarkFinanceExpensePayment",
+        input: { ...withoutAuthorizerPin(input), idempotencyKey: undefined },
+      });
       const receipts = state.financeExpensePaymentReceipts;
       const prior = receiptKey ? receipts?.[receiptKey] : undefined;
       if (prior) {
@@ -5529,6 +5743,7 @@ export function createDemoApi(
     },
 
     async createFinanceRecurring(input) {
+      requireFinanceAuthorizer(input.authorizerPin ?? "");
       if (
         !input.title.trim() ||
         !input.category.trim() ||
@@ -5560,6 +5775,7 @@ export function createDemoApi(
     },
 
     async stopFinanceRecurring(input) {
+      requireFinanceAuthorizer(input.authorizerPin ?? "");
       const rule = state.financeRecurring?.find(
         (item) => item.id === input.recurringId && item.active,
       );
@@ -6651,7 +6867,7 @@ export function createDemoApi(
     async createBackup() {
       return { path: "Demostración: copia simulada en memoria del navegador" };
     },
-    async restoreBackup() {
+    async restoreBackup(_pin: string) {
       return { path: null, restored: false };
     },
 

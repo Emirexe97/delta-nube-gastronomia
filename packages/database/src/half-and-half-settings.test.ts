@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { rmSync } from "node:fs";
@@ -8,7 +9,7 @@ import { SqliteGastronomyRepository } from "./sqlite-repository";
 
 test("half-and-half setting defaults and legacy-absent true, persists toggles, and blocks only new combinations", () => {
   const path = join(tmpdir(), `half-and-half-settings-${randomUUID()}.sqlite`);
-  let repo = new SqliteGastronomyRepository(path, {
+  let repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -85,7 +86,7 @@ test("half-and-half setting defaults and legacy-absent true, persists toggles, a
       3,
     );
     repo.close();
-    repo = new SqliteGastronomyRepository(path, { adminPin: "2468" });
+    repo = configuredTestRepository(path, { adminPin: "2468" });
     assert.equal(repo.bootstrap().settings.halfAndHalfEnabled, true);
   } finally {
     repo.close();

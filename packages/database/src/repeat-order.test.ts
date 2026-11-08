@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -7,7 +8,7 @@ import { SqliteGastronomyRepository } from "./sqlite-repository";
 
 function fixture(run: (repo: SqliteGastronomyRepository) => void) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-repeat-"));
-  const repo = new SqliteGastronomyRepository(join(dir, "test.sqlite"), {
+  const repo = configuredTestRepository(join(dir, "test.sqlite"), {
     adminPin: "2468",
     seedStarterCatalog: true,
   });

@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -13,7 +13,7 @@ let page: Page;
 let profile = "";
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-delivery-method-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -50,7 +50,7 @@ test("reproduce los importes de la foto sin pagos y liquida por transferencia si
     const session = await api.openCashSession({ openingAmountMinor: 0 });
     const driver = await api.createDriver({
       fullName: "Repartidor de prueba",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     const product = await api.createProduct({
       categoryId: initial.categories[0]!.id,
@@ -154,7 +154,7 @@ test("reproduce los importes de la foto sin pagos y liquida por transferencia si
   await modal
     .getByLabel("Medio de pago de la liquidación")
     .selectOption("TRANSFER");
-  await modal.getByLabel("PIN de autorización", { exact: true }).fill("1234");
+  await modal.getByLabel("PIN de autorización", { exact: true }).fill("748259");
   await modal
     .getByRole("button", { name: "Revisar liquidación", exact: true })
     .click();
@@ -204,7 +204,7 @@ test("reproduce los importes de la foto sin pagos y liquida por transferencia si
       window.gastronomy.reverseDeliverySettlement({
         ledgerId,
         reason: "Revisar transferencia",
-        authorizerPin: "1234",
+        authorizerPin: "748259",
       }),
     outgoing[0]!.id,
   );

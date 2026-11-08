@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3-multiple-ciphers";
-import type { PriceChannel } from "@gastronomy/contracts";
+import type { PriceBookRoundingIncrementMinor, PriceChannel } from "@gastronomy/contracts";
 import { calculateBookPrice } from "@gastronomy/domain";
 
 const channels = ["SALON", "TAKEAWAY", "DELIVERY"] as const;
@@ -14,7 +14,7 @@ export function reconcileLegacyPrices(
 ) {
   const books = db
     .prepare(
-      `SELECT a.channel, b.id, b.is_base, b.adjustment_bps
+      `SELECT a.channel, b.id, b.is_base, b.adjustment_bps, b.rounding_increment_minor
     FROM price_book_assignments a JOIN price_books b ON b.id=a.book_id`,
     )
     .all() as Array<{
@@ -22,6 +22,7 @@ export function reconcileLegacyPrices(
     id: string;
     is_base: number;
     adjustment_bps: number;
+    rounding_increment_minor?: number;
   }>;
   const values = new Map(prices.map((p) => [p.priceListCode, p.amountMinor]));
   const prior = db
@@ -81,9 +82,9 @@ export function reconcileLegacyPrices(
         )
           name = stem + " (" + i + ")";
         db.prepare(
-          `INSERT INTO price_books(id,name,adjustment_bps,is_base,sort_order)
-          VALUES (?,?,?,0,(SELECT COALESCE(MAX(sort_order),0)+1 FROM price_books))`,
-        ).run(target, name, source.adjustment_bps);
+          `INSERT INTO price_books(id,name,adjustment_bps,is_base,sort_order,rounding_increment_minor)
+          VALUES (?,?,?,0,(SELECT COALESCE(MAX(sort_order),0)+1 FROM price_books),?)`,
+        ).run(target, name, source.adjustment_bps, source.rounding_increment_minor ?? 1);
         db.prepare(
           `INSERT INTO product_price_book_overrides(product_id,book_id,amount_minor)
           SELECT product_id,?,amount_minor FROM product_price_book_overrides WHERE book_id=?`,
@@ -102,7 +103,8 @@ export function reconcileLegacyPrices(
       if (fixed?.amount_minor === amount) continue; // Do not erase an intentional fixed price on an unrelated edit.
       let calculated: number | undefined;
       try {
-        calculated = calculateBookPrice(base, source.adjustment_bps);
+        calculated = calculateBookPrice(base, source.adjustment_bps, undefined,
+          Number(source.rounding_increment_minor ?? 1) as PriceBookRoundingIncrementMinor);
       } catch {
         /* This fixed legacy price can be valid even if inheritance would overflow. */
       }
@@ -115,13 +117,15 @@ export function reconcileLegacyPrices(
   }
   const effective = db
     .prepare(
-      `SELECT b.adjustment_bps, o.amount_minor FROM price_books b
+      `SELECT b.adjustment_bps, b.rounding_increment_minor, o.amount_minor FROM price_books b
     LEFT JOIN product_price_book_overrides o ON o.book_id=b.id AND o.product_id=?`,
     )
     .all(productId) as Array<{
     adjustment_bps: number;
+    rounding_increment_minor?: number;
     amount_minor: number | null;
   }>;
   for (const b of effective)
-    calculateBookPrice(base, b.adjustment_bps, b.amount_minor ?? undefined);
+    calculateBookPrice(base, b.adjustment_bps, b.amount_minor ?? undefined,
+      Number(b.rounding_increment_minor ?? 1) as PriceBookRoundingIncrementMinor);
 }

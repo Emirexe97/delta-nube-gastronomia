@@ -51,6 +51,7 @@ import {
   auditActionLabel,
   formatMoney,
   humanError,
+  moneyInputValue,
   parseMoneyInput,
   parsePriceInput,
   parseStockInput,
@@ -63,10 +64,9 @@ import {
 
 
 function moneyInput(amountMinor: number) {
-  return (amountMinor / 100).toLocaleString("es-AR", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
+  const [pesos, cents] = moneyInputValue(amountMinor).split(",");
+  const grouped = pesos!.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return cents ? `${grouped},${cents.replace(/0$/, "")}` : grouped;
 }
 
 export interface CatalogProductGroup {
@@ -216,6 +216,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     "PRODUCTS" | "CATEGORIES" | "MODIFIERS" | "COMBOS" | "INGREDIENTS" | "PRICE_BOOKS"
   >("PRODUCTS");
   const [priceBooks, setPriceBooks] = useState<PriceBooksDto | null>(null);
+  const [priceBookDraftState, setPriceBookDraftState] = useState<"saving" | "dirty" | null>(null);
   const [priceBooksError, setPriceBooksError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -512,7 +513,12 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
               type="button"
               role="tab"
               aria-selected={tab === value}
-              onClick={() => setTab(value)}
+              disabled={tab === "PRICE_BOOKS" && priceBookDraftState === "saving" && value !== tab}
+              onClick={() => {
+                if (tab === "PRICE_BOOKS" && value !== tab && priceBookDraftState === "dirty" &&
+                  !window.confirm("¿Descartar los cambios de listas de precios y cambiar de pestaña?")) return;
+                setTab(value);
+              }}
               className={`h-9 flex-1 rounded-lg text-xs font-bold transition ${tab === value ? "bg-brand-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}
             >
               {label}
@@ -553,10 +559,8 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       ) : null}
 
       {tab === "PRICE_BOOKS" ? (
-        <PriceBooksPanel permissions={data.currentUser.permissions} onUpdated={setPriceBooks} />
-      ) : null}
-
-      {tab === "PRODUCTS" ? (
+        <PriceBooksPanel products={data.products} permissions={data.currentUser.permissions} onUpdated={setPriceBooks} onDraftStateChange={setPriceBookDraftState} />
+      ) : tab === "PRODUCTS" ? (
         <>
         <section className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm" aria-label="Sincronización de catálogo web">
           <div><strong>Tienda web</strong><span className="ml-2 text-slate-700" role="status" aria-live="polite">{webSyncError || (!webSync || webSync.state === "UNCONFIGURED" ? "Sin configurar" : webSync.state === "ERROR" ? webSync.message || "Error de sincronización" : webSync.state === "SYNCED" ? "Sincronizado" : "Sincronización pendiente")}</span></div>
@@ -1078,7 +1082,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           onCreate={() => setCategoryOpen(true)}
           onCreateProduct={(category) => openNewProduct(category.id)}
         />
-      ) : (
+      ) : tab === "MODIFIERS" ? (
         <Card className="overflow-x-auto">
           {data.modifiers.length ? (
             <table className="dn-table min-w-[640px]">
@@ -1129,7 +1133,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             </div>
           )}
         </Card>
-      )}
+      ) : null}
 
       <ProductModal
         key={editingProduct?.id ?? "new-product"}
@@ -1697,7 +1701,7 @@ function BulkProductsModal({
                         {books.map(book => {
                           const before = product.priceBook;
                           const after = nextBooks.get(product.id) ?? before;
-                          const amount = (cfg: NonNullable<typeof before>) => formatMoney(book.isBase ? cfg.baseMinor : calculateBookPrice(cfg.baseMinor, book.adjustmentBps, cfg.overrides[book.id]));
+                          const amount = (cfg: NonNullable<typeof before>) => formatMoney(book.isBase ? cfg.baseMinor : calculateBookPrice(cfg.baseMinor, book.adjustmentBps, cfg.overrides[book.id], book.roundingIncrementMinor));
                           return <td key={book.id} className="text-right"><PreviewChange before={before ? amount(before) : "—"} after={after ? amount(after) : "—"} /></td>;
                         })}
                         <td className="text-right">

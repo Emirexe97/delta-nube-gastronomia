@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -21,7 +21,7 @@ test.use({ actionTimeout: 5000 });
 async function launch(tag: string) {
   await mkdir(evidenceDir, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), `gastronomy-us18b2c-${tag}-`));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -82,6 +82,7 @@ async function seed(title: string, amountMinor = 1_234_500) {
       });
       const date = (await api.bootstrap()).cashSession!.businessDate;
       const expense = await api.createFinanceExpense({
+        authorizerPin: "748259",
         title,
         category: "US18A prueba",
         kind: "GENERAL",
@@ -118,9 +119,9 @@ const expenseArticle = (title: string) =>
 test.beforeEach(async()=>launch('case'));test.afterEach(cleanup);
 async function fixture(method='CASH',newBox=false,opening=5000){return page.evaluate(async({method,newBox,opening})=>{
 const api=window.gastronomy,original=await api.openCashSession({openingAmountMinor:100000}),date=original.businessDate;
-const expense=await api.createFinanceExpense({title:'Pago cerrado por error',category:'Prueba cerrada',kind:'GENERAL',amountMinor:23450,incurredOn:date});
+const expense=await api.createFinanceExpense({ authorizerPin: "748259",title:'Pago cerrado por error',category:'Prueba cerrada',kind:'GENERAL',amountMinor:23450,incurredOn:date});
 const pay={expenseId:expense.id,paymentMethodCode:method,fromCash:true,expectedRevision:expense.revision??0,idempotencyKey:'original-pay'};
-const paid=await api.payFinanceExpense(pay);await api.closeCashSession({countedAmountMinor:100000,closingFloatAmountMinor:5000,force:true,reason:'Pago nunca realizado',authorizerPin:'1234'});
+const paid=await api.payFinanceExpense({ authorizerPin: "748259", ...pay });await api.closeCashSession({countedAmountMinor:100000,closingFloatAmountMinor:5000,force:true,reason:'Pago nunca realizado',authorizerPin:'748259'});
 const closed=await api.getCashSessionReport({cashSessionId:original.id});if(newBox)await api.openCashSession({openingAmountMinor:opening});
 return {expense,paid,pay,date,original,closed,report:await api.getFinanceReport({from:date,to:date}),products:(await api.bootstrap()).products};
 },{method,newBox,opening});}
@@ -154,7 +155,7 @@ async function csv() {
 for(const method of ['CASH','TRANSFER'])test('closed '+method+' restores debt without changing closure or currentcash',async()=>{
 const d=await fixture(method,method==='TRANSFER');await openFinance(d.date);const dialog=await modal();
 await expect(dialog.getByText('El gasto volverá a pendiente. No se registrará un ingreso ni se cambiará el cierre anterior.',{exact:true})).toBeVisible();
-await dialog.getByLabel('Motivo',{exact:true}).fill('Confirmo pago nunca realizado y obligación aún adeudada');await dialog.getByLabel('PIN de autorización',{exact:true}).fill('1234');
+await dialog.getByLabel('Motivo',{exact:true}).fill('Confirmo pago nunca realizado y obligación aún adeudada');await dialog.getByLabel('PIN de autorización',{exact:true}).fill('748259');
 const submit=dialog.getByRole('button',{name:'Corregir pago registrado',exact:true});await expect(submit).toBeDisabled();
 await dialog.getByRole('checkbox',{name:'Confirmo que el dinero nunca salió y el gasto todavía se debe pagar.',exact:true}).check();
 await capture('confirm-'+method,d);await submit.click();await expect(dialog).toHaveCount(0);
@@ -166,11 +167,11 @@ const exported=await csv();expect(exported.content.charCodeAt(0)).toBe(0xfeff);c
 });
 test('new pay and real return use new movement, historical correction replay immutable',async()=>{
 const d=await fixture('CASH',true,100000);const after=await page.evaluate(async d=>{
-const api=window.gastronomy,input={expenseId:d.expense.id,expectedRevision:d.paid.revision??0,reason:'Nunca pagado y aún adeudado',authorizerPin:'1234',confirmedUnpaid:true,idempotencyKey:'closed-correction'};
-const first=await api.correctFinanceExpenseClosedCashPayment(input);await api.payFinanceExpense(d.pay);const pending=await api.getFinanceReport({from:d.date,to:d.date});
-const paid=await api.payFinanceExpense({...d.pay,expectedRevision:first.revision,idempotencyKey:'actual-new-payment'});
+const api=window.gastronomy,input={expenseId:d.expense.id,expectedRevision:d.paid.revision??0,reason:'Nunca pagado y aún adeudado',authorizerPin:'748259',confirmedUnpaid:true,idempotencyKey:'closed-correction'};
+const first=await api.correctFinanceExpenseClosedCashPayment(input);await api.payFinanceExpense({ authorizerPin: "748259", ...d.pay });const pending=await api.getFinanceReport({from:d.date,to:d.date});
+const paid=await api.payFinanceExpense({ authorizerPin: "748259",...d.pay,expectedRevision:first.revision,idempotencyKey:'actual-new-payment'});
 const replay=await api.correctFinanceExpenseClosedCashPayment(input);const report=await api.getFinanceReport({from:d.date,to:d.date});
-const returned=await api.receiveFinanceExpenseReturn({expenseId:d.expense.id,expectedRevision:paid.revision??0,destination:'CASH_SESSION',paymentMethodCode:'CASH',reason:'Devolución real del nuevo pago',authorizerPin:'1234',idempotencyKey:'actual-return'});
+const returned=await api.receiveFinanceExpenseReturn({expenseId:d.expense.id,expectedRevision:paid.revision??0,destination:'CASH_SESSION',paymentMethodCode:'CASH',reason:'Devolución real del nuevo pago',authorizerPin:'748259',idempotencyKey:'actual-return'});
 return {first,pending,paid,replay,report,returned,closed:await api.getCashSessionReport({cashSessionId:d.original.id}),boot:await api.bootstrap()};
 },d);expect(after.pending.unpaidMinor).toBe(23450);expect(after.replay).toEqual(after.first);expect(after.report.unpaidMinor).toBe(0);expect(after.report.expensesMinor).toBe(23450);expect(after.closed).toEqual(d.closed);expect(after.boot.cashSession!.expectedAmountMinor).toBe(100000);expect(after.returned.returnInfo?.originalMovementId).not.toBe(d.closed.movements.find(x=>x.type==='EXPENSE')!.id);await capture('repay-and-return',after);
 });

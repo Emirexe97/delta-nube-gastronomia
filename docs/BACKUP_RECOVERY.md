@@ -9,14 +9,18 @@ la presencia de las tablas estructurales.
 
 ## Restauración
 
-Antes de reemplazar la base activa se siguen estos pasos:
-
-1. validar `integrity_check` y tablas requeridas en el archivo seleccionado;
-2. crear `gastronomy.sqlite.before-restore` mediante la API de backup;
-3. cerrar la conexión activa y eliminar `-wal`/`-shm` antiguos;
-4. copiar la base seleccionada y abrir una conexión nueva;
-5. ejecutar migraciones pendientes;
-6. si falla el reemplazo, restaurar automáticamente la copia de emergencia.
+1. Cerrá la caja. En Configuración, elegí restaurar e ingresá el PIN propio
+   de un administrador activo de **esta instalación**. Con caja abierta, PIN
+   pendiente o credenciales inválidas, no se abre el selector ni se cambia la base.
+2. Elegí el archivo. El POS prepara una copia temporal, valida su integridad
+   y las tablas requeridas, y pide confirmación antes de reemplazar datos.
+3. Si confirmás, guarda y valida un respaldo en
+   `recovery/before-restore-…/current.sqlite`. Luego cierra la conexión,
+   elimina los archivos WAL/SHM obsoletos y abre la base restaurada.
+4. Si falla el reemplazo, intenta recuperar la base anterior. Conservá la
+   ruta del respaldo que informa el POS. Si la base activa no permite verificar
+   el PIN o el estado de caja, no intentes reemplazarla con la caja en uso:
+   preservá los archivos y contactá a soporte para la recuperación.
 
 Los handlers IPC consultan los servicios actuales en cada invocación, de modo
 que después de restaurar no conservan referencias a la conexión cerrada.

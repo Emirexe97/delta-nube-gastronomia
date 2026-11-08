@@ -29,6 +29,7 @@ import { isBackgroundTest } from "./e2e-background.cjs";
 import { DesktopLicensing } from "./licensing";
 import { localPilotLicenseOptions } from "./local-pilot-config";
 import { WebSiteProvisioning } from "./web-site-provisioning";
+import { WaiterProvisioning } from "./waiter-provisioning";
 import QRCode from "qrcode";
 import { shareWebSite as performWebSiteShare, type WebSiteShareAction } from "./web-site-sharing";
 import { licenseAllowsMethod } from "@gastronomy/licensing";
@@ -57,6 +58,20 @@ function createDesktopLicensing(options: Omit<ConstructorParameters<typeof Deskt
 let webInstallationId: string | undefined;
 let hostedPilotMode = false;
 const webCommerceEnv: NodeJS.ProcessEnv = { ...process.env };
+// Keep waiter-only credentials out of the catalog/order synchronization client.
+const waiterOrigin = process.env.GASTRONOMY_WAITER_PROVISION_URL ?? process.env.GASTRONOMY_WEB_PROVISION_URL ?? "https://pedidos.deltanubeweb.com";
+const hasManualConnector = Boolean(process.env.GASTRONOMY_WEB_ORDERS_TOKEN || process.env.GASTRONOMY_WEB_ORDERS_URL || process.env.GASTRONOMY_WEB_ORDERS_STORE_ID);
+let waiterProvisioning: WaiterProvisioning | null = null;
+function currentWaiterConfig() {
+  const automatic = !hasManualConnector && waiterProvisioning?.credential();
+  if (automatic) return waiterRelayConfig({
+    GASTRONOMY_WEB_ORDERS_URL: waiterOrigin,
+    GASTRONOMY_WAITER_PUBLIC_URL: process.env.GASTRONOMY_WAITER_PUBLIC_URL,
+    GASTRONOMY_WEB_ORDERS_STORE_ID: automatic.storeId,
+    GASTRONOMY_WEB_ORDERS_TOKEN: automatic.waiterToken,
+  }, webInstallationId);
+  return waiterRelayConfig(webCommerceEnv, webInstallationId);
+}
 const webCommerce = createWebCommerceSync({
   getRepository: () => services().localRepository,
   getInstallationId: () => webInstallationId,
@@ -64,15 +79,20 @@ const webCommerce = createWebCommerceSync({
   isEnabled: () => !hostedPilotMode,
 });
 const waiterRelay = createWaiterRelay({
-  config: () => waiterRelayConfig(webCommerceEnv, webInstallationId),
+  config: currentWaiterConfig,
   cashSessionId: () => repository?.getWaiterCashSessionId() ?? null,
   process: async (request) => {
     const release = operationGate.enterOperation();
     try {
+      if (repository?.isInitialAdminPinSetupRequired()) throw new WaiterRequestError("pos_unavailable", "Configurá el PIN inicial del administrador antes de operar.");
       if (!(await licensing?.getStatus())?.canOperate) throw new WaiterRequestError("pos_unavailable","La caja no está operativa.");
       const result = handleWaiterRequest(services().localRepository, request, dispatchWaiterPrint);
-      if (request.method === "waiter.submitBatch" && result && typeof result === "object" && "status" in result && result.status === "PENDING_REVIEW")
-        mainWindow?.webContents.send("gastronomy:waiterOrderChanged", "Hay un pedido de mozo para revisar en Salón → Mozos. Todavía no se envió a cocina.");
+      if (request.method === "waiter.submitBatch" && result && typeof result === "object" && "status" in result) {
+        if (result.status === "PENDING_REVIEW")
+          mainWindow?.webContents.send("gastronomy:waiterOrderChanged", "Hay un pedido de mozo para revisar en Salón → Mozos. Todavía no se envió a cocina.");
+        else if (result.status === "RECORDED" && "created" in result && result.created)
+          notifyWaiterChange();
+      }
       return result;
     } finally { release(); }
   },
@@ -85,7 +105,7 @@ let webSite: WebSiteProvisioning | null = null;
 // Scheduled work uses the same admission gate and license as an IPC write.
 // An unconfigured installation does not start network or database work.
 async function pollWebCommerce() {
-  if (!webCommerce.getStoreId() || !repository || !licensing) return;
+  if (!webCommerce.getStoreId() || !repository || !licensing || repository.isInitialAdminPinSetupRequired()) return;
   let release: (() => void) | undefined;
   try {
     release = operationGate.enterOperation();
@@ -118,7 +138,7 @@ async function pollLicensing() {
   finally { licensingPollInFlight = false; release(); }
 }
 async function pollWebSiteProvisioning() {
-  if (!licensing || !webSite) return;
+  if (!licensing || !webSite || repository?.isInitialAdminPinSetupRequired()) return;
   let release: (() => void) | undefined;
   try { release = operationGate.enterOperation(); await licensing.retryWebSiteProvisioning(); }
   catch { /* installer/restore admission or offline provisioning is retried later */ }
@@ -387,11 +407,20 @@ async function executePrintJob(
 }
 
 function registerIpcHandlers() {
+  const pinSetupAllowedChannels = new Set([
+    "gastronomy:isInitialAdminPinSetupRequired", "gastronomy:setInitialAdminPin",
+    "gastronomy:getLicenseStatus", "gastronomy:signInLicenseAccount",
+    "gastronomy:requestLicenseAccess", "gastronomy:activateLicense", "gastronomy:refreshLicense",
+  ]);
   // Licensing IPC is admitted too: no state persistence can race the installer.
   const handleOperation: typeof ipcMain.handle = (channel, listener) => {
     ipcMain.handle(channel, async (...args) => {
       const release = operationGate.enterOperation();
-      try { return await listener(...args); } finally { release(); }
+      try {
+        if (!pinSetupAllowedChannels.has(String(channel)) && services().localRepository.isInitialAdminPinSetupRequired())
+          throw new Error("Configurá el PIN inicial del administrador antes de continuar.");
+        return await listener(...args);
+      } finally { release(); }
     });
   };
   const handleData: typeof ipcMain.handle = (channel, listener) => {
@@ -403,6 +432,10 @@ function registerIpcHandlers() {
       return listener(...args);
     });
   };
+  handleOperation("gastronomy:isInitialAdminPinSetupRequired", () =>
+    services().localRepository.isInitialAdminPinSetupRequired());
+  handleOperation("gastronomy:setInitialAdminPin", (_event, input: { currentPin: string; newPin: string }) =>
+    services().localRepository.setInitialAdminPin(input));
   type ForwardedDesktopMethod = Exclude<
     keyof DesktopApi,
     | keyof WaiterDeskApi
@@ -424,6 +457,8 @@ function registerIpcHandlers() {
     | "checkAppUpdate"
     | "installAppUpdate"
     | "askPosAssistantAi"
+    | "isInitialAdminPinSetupRequired"
+    | "setInitialAdminPin"
   >;
   const completeMethodList = <T extends readonly ForwardedDesktopMethod[]>(
     methods: T &
@@ -537,10 +572,13 @@ function registerIpcHandlers() {
       throw new Error("No tenés permiso para buscar actualizaciones.");
     return updater!.check();
   });
+  // Installation acquires the exclusive gate itself, not an ordinary operation slot.
   ipcMain.handle("gastronomy:installAppUpdate", () => {
     if (updater!.getStatus().state !== "READY")
       throw new Error("No hay una actualización lista para instalar.");
     operationGate.beginInstall(() => {
+      if (services().localRepository.isInitialAdminPinSetupRequired())
+        throw new Error("Configurá el PIN inicial del administrador antes de continuar.");
       const state = services().appService.bootstrap();
       return {
         permitted: state.currentUser.permissions.includes("settings.manage"),
@@ -744,13 +782,12 @@ function registerIpcHandlers() {
   handleData("gastronomy:getWaiterDeskStatus",()=>{
     const repo=services().localRepository;
     const kitchen=repo.getSettings().printing.kitchen;
-    return {configured:waiterRelay.configured(), printerReady:kitchen.mode==="SYSTEM_DIRECT" && !!kitchen.deviceName.trim(), sessions:repo.listWaiterDevices(),connectionError:waiterRelay.connectionError()};
+    return {configured:waiterRelay.configured(), automaticEnrollment:!!waiterProvisioning && !!licensing?.waiterIdentity(), printerReady:kitchen.mode==="SYSTEM_DIRECT" && !!kitchen.deviceName.trim(), sessions:repo.listWaiterDevices(),connectionError:waiterRelay.connectionError()};
   });
   handleData("gastronomy:issueWaiterQr",async(_event,input:{waiterId:string})=>{
     const repo=services().localRepository;
     const settings=repo.getSettings();
     if (!settings.modules.diningRoom) throw new Error("Activá el módulo Salón.");
-    if (settings.printing.kitchen.mode!=="SYSTEM_DIRECT" || !settings.printing.kitchen.deviceName.trim()) throw new Error("Configurá impresión directa y elegí el comandero antes de vincular teléfonos.");
     if (!input || typeof input.waiterId!=="string" || input.waiterId.length>128) throw new Error("Elegí un mozo activo.");
     const challenge=repo.createWaiterChallenge(input.waiterId);
     const invite=await waiterRelay.invite(challenge.challengeId);
@@ -946,9 +983,14 @@ function registerIpcHandlers() {
     });
     return { path: result.filePath };
   });
-  ipcMain.handle("gastronomy:restoreBackup", async () => {
+  ipcMain.handle("gastronomy:restoreBackup", async (_event, pin: string) => {
     operationGate.beginRestore();
     try {
+      const { localRepository } = services();
+      // Validate only after acquiring the restore gate and before showing the
+      // picker, so neither a concurrent cash-open nor an unauthorized chooser
+      // can race into a database replacement.
+      localRepository.authorizeBackupRestore(pin);
       const selection = await dialog.showOpenDialog(mainWindow!, {
         title: "Restaurar copia de seguridad",
         properties: ["openFile"],
@@ -956,8 +998,6 @@ function registerIpcHandlers() {
       });
       const source = selection.filePaths[0];
       if (selection.canceled || !source) return { path: null, restored: false };
-      const { localRepository, appService } = services();
-      const cashOpen = appService.bootstrap().cashSession?.status === "OPEN";
       const result = await restoreValidatedCopy({
         source,
         databasePath,
@@ -968,7 +1008,7 @@ function registerIpcHandlers() {
             type: "warning",
             title: "Restaurar copia de seguridad",
             message: "¿Restaurar esta copia?",
-            detail: `Archivo: ${fileName}\nÚltima modificación del archivo: ${modifiedAt.toLocaleString("es-AR")}\n\nSe reemplazará la información actual por los datos de esta copia. No se combinarán. Se guardará una copia de los datos actuales para poder recuperarlos.${cashOpen ? "\n\nHay una caja abierta. También se reemplazarán su estado y sus movimientos por los de la copia elegida." : ""}`,
+            detail: `Archivo: ${fileName}\nÚltima modificación del archivo: ${modifiedAt.toLocaleString("es-AR")}\n\nSe reemplazará la información actual por los datos de esta copia. No se combinarán. Se guardará una copia de los datos actuales para poder recuperarlos.`,
             buttons: ["Cancelar", "Restaurar copia"],
             defaultId: 0,
             cancelId: 0,
@@ -1126,6 +1166,20 @@ app
     await webSite.initialize();
     licensing.setWebSiteProvisioner({ provision: (ticket, signup) => webSite!.provision(ticket, signup), getChoice: () => webSite!.selectedSignup(), selectChoice: (signup) => webSite!.select(signup), getStatus: () => webSite!.status() });
     webInstallationId = (await licensing.getStatus()).installationId;
+    if (!hasManualConnector && !hostedPilotMode) {
+      const connector = new WaiterProvisioning({
+        userDataPath: app.getPath("userData"), baseUrl: waiterOrigin, safeStorage: electronSafeStorage,
+        installationId: () => webInstallationId, licenseId: () => licensing?.waiterIdentity()?.licenseId,
+      });
+      waiterProvisioning = connector;
+      await connector.initialize().catch(() => { /* optional service; the local POS remains available */ });
+      licensing.setWaiterProvisioner(async (ticket, identity) => {
+        if (identity.installationId !== webInstallationId || identity.licenseId !== licensing?.waiterIdentity()?.licenseId) return;
+        // A previously configured shop keeps its working relay (and its paired phones).
+        if (!connector.credential() && waiterRelayConfig(webCommerceEnv, webInstallationId)) return;
+        await connector.provision(ticket);
+      });
+    }
     updater = await createUpdateRuntime({
       isPackaged: app.isPackaged,
       platform: process.platform,

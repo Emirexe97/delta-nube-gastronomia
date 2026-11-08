@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -25,7 +25,7 @@ let destination: string;
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-backup-safety-"));
   destination = join(profile, "snapshot.sqlite");
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });

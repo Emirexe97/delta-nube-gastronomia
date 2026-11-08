@@ -7,6 +7,7 @@ export interface WaiterDevice {
 
 export interface WaiterDeskStatus {
   configured: boolean;
+  automaticEnrollment?: boolean;
   printerReady: boolean;
   sessions: WaiterDevice[];
   connectionError: string | null;

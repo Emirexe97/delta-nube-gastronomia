@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,7 +15,7 @@ function fixture(
 ) {
   const dir = mkdtempSync(join(tmpdir(), "gastronomy-cost-read-"));
   const path = join(dir, "test.sqlite");
-  const repo = new SqliteGastronomyRepository(path, {
+  const repo = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -45,6 +46,7 @@ test("lectura de costos incluye inactivos, cero y compras sin materializar gasto
     });
     db.prepare("UPDATE products SET active = 0 WHERE id = ?").run(manual.id);
     repo.createFinanceRecurring({
+      authorizerPin: "2468",
       title: "No materializar al filtrar",
       category: "Local",
       kind: "FIXED",

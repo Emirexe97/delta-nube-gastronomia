@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -23,7 +23,7 @@ const D2 = "2026-10-07";
 async function launch(tag: string) {
   await mkdir(evidenceDir, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), `gastronomy-us17-${tag}-`));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -250,7 +250,7 @@ test("US17 reports attribute refund and API repayment to immutable cash sessions
           paymentId: x.paymentId,
           amountMinor: 100000,
           reason: "US17 cross-day partial refund",
-          authorizerPin: "1234",
+          authorizerPin: "748259",
         }),
       { orderId: sale.id, paymentId: sale.paymentId },
     );
@@ -383,7 +383,7 @@ test("US17 mixed tender, change and recobro preserve original payment attributio
           paymentId: x.paymentId,
           amountMinor: 100000,
           reason: "US17 mixed refund",
-          authorizerPin: "1234",
+          authorizerPin: "748259",
         }),
       { orderId: sale.id, paymentId: sale.paymentId },
     );
@@ -527,7 +527,7 @@ test("US17 next-day refund and repayment keep refund date while drawer nets in D
           paymentId: x.paymentId,
           amountMinor: 100000,
           reason: "US17 next-day refund",
-          authorizerPin: "1234",
+          authorizerPin: "748259",
         }),
       { orderId: sale.id, paymentId: sale.paymentId },
     );
@@ -589,7 +589,7 @@ test("US17 same-session recobro cannot erase a larger earlier change", async () 
         paymentId: o.payments[0]!.id,
         amountMinor: 100000,
         reason: "Same-day correction",
-        authorizerPin: "1234",
+        authorizerPin: "748259",
       });
       return api.payOrder({
         orderId: o.id,
@@ -711,7 +711,7 @@ test("US17 deposit, account receipt and driver cash retain their original econom
       await api.applyOrderDeposit({
         orderId: deposit.id,
         depositMinor: 300000,
-        authorizerPin: "1234",
+        authorizerPin: "748259",
       });
       await api.payOrder({
         orderId: deposit.id,
@@ -731,7 +731,7 @@ test("US17 deposit, account receipt and driver cash retain their original econom
       await api.updateOrderStatus({ orderId: account.id, status: "DELIVERED" });
       const driver = await api.createDriver({
         fullName: "US17 driver",
-        authorizerPin: "1234",
+        authorizerPin: "748259",
       });
       const delivery = await sale("US17 driver cash", "DELIVERY", driver.id);
       await api.payOrder({

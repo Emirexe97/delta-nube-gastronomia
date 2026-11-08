@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -17,7 +17,7 @@ let app: ElectronApplication,
   profile = "";
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-purchase-metadata-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -136,7 +136,7 @@ async function purchaseFixture() {
       invoiceNumber: "FAC-ORIGINAL",
       notes: "Nota original",
       items: [{ productId: p.id, quantityMinor: 2500, unitCostMinor: 10000 }],
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "purchase-original",
     });
   });
@@ -170,7 +170,7 @@ test("correct purchase metadata keeps economic identity, original receipt and na
   await dialog
     .getByLabel("Motivo", { exact: true })
     .fill("Comprobante cargado incorrectamente");
-  await dialog.getByLabel("PIN autorizador", { exact: true }).fill("1234");
+  await dialog.getByLabel("PIN autorizador", { exact: true }).fill("748259");
   await capture("correction-confirm", { purchase, before });
   await dialog
     .getByRole("button", { name: "Guardar cambios", exact: true })
@@ -213,7 +213,7 @@ test("correct purchase metadata keeps economic identity, original receipt and na
           unitCostMinor: 10000,
         },
       ],
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       idempotencyKey: "purchase-original",
     });
   }, purchase);
@@ -265,7 +265,7 @@ test("stale revision rejected with fields retained and busy blocks closing and r
   await dialog
     .getByLabel("Motivo", { exact: true })
     .fill("Intento concurrente");
-  await dialog.getByLabel("PIN autorizador", { exact: true }).fill("1234");
+  await dialog.getByLabel("PIN autorizador", { exact: true }).fill("748259");
   await page.evaluate(
     async (p) =>
       window.gastronomy.correctPurchaseMetadata({
@@ -273,7 +273,7 @@ test("stale revision rejected with fields retained and busy blocks closing and r
         expectedRevision: p.revision ?? 0,
         supplierName: "Cambio concurrente",
         reason: "Otra corrección",
-        authorizerPin: "1234",
+        authorizerPin: "748259",
         idempotencyKey: "other-correction",
       }),
     p,
@@ -303,7 +303,7 @@ test("stale revision rejected with fields retained and busy blocks closing and r
   await newDialog
     .getByLabel("Motivo", { exact: true })
     .fill("Corrección final");
-  await newDialog.getByLabel("PIN autorizador", { exact: true }).fill("1234");
+  await newDialog.getByLabel("PIN autorizador", { exact: true }).fill("748259");
   await app.evaluate(({ ipcMain }) => {
     const handlers = (ipcMain as any)._invokeHandlers;
     const original = handlers.get("gastronomy:correctPurchaseMetadata");
@@ -347,7 +347,7 @@ test("native 200 percent zoom keeps correction actions reachable without horizon
   );
   const dialog = await openCorrection();
   await dialog.getByLabel("Motivo", { exact: true }).fill("Revisar visual");
-  await dialog.getByLabel("PIN autorizador", { exact: true }).fill("1234");
+  await dialog.getByLabel("PIN autorizador", { exact: true }).fill("748259");
   await dialog
     .getByRole("button", { name: "Guardar cambios", exact: true })
     .scrollIntoViewIfNeeded();

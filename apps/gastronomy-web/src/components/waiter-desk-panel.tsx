@@ -52,7 +52,6 @@ export function WaiterDeskPanel({ data }: { data: BootstrapDto }) {
     cashOpen &&
     data.settings.modules.diningRoom &&
     status.data?.configured &&
-    status.data.printerReady &&
     !!waiterId;
   return (
     <Card id="settings-waiter" className="scroll-mt-20 space-y-3 p-4">
@@ -74,12 +73,14 @@ export function WaiterDeskPanel({ data }: { data: BootstrapDto }) {
       )}
       {status.data && !status.data.configured && (
         <p className="text-xs">
-          El servicio para recibir pedidos desde el teléfono no está listo. Consultá con soporte.
+          {status.data.automaticEnrollment
+            ? "La caja todavía no recibió el acceso de mozos. Se solicita automáticamente al validar la licencia por Internet. Si el aviso persiste, consultá con soporte."
+            : "El servicio para recibir pedidos desde el teléfono no está listo. Consultá con soporte."}
         </p>
       )}
-      {status.data && !status.data.printerReady && (
+      {status.data?.configured && !status.data.printerReady && (
         <p className="text-xs">
-          Configurá una impresora para enviar las comandas a cocina desde Impresión.
+          La impresora de cocina es opcional. Sin ella, los pedidos quedan en su mesa de Salón y no se imprimen.
         </p>
       )}
       {!waiters.length && (

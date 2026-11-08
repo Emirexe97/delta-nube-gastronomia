@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { rmSync } from "node:fs";
@@ -8,7 +9,7 @@ import { SqliteGastronomyRepository } from "./sqlite-repository";
 
 function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
   const path = join(tmpdir(), `salon-service-${randomUUID()}.sqlite`);
-  const repository = new SqliteGastronomyRepository(path, {
+  const repository = configuredTestRepository(path, {
     adminPin: "2468",
     seedStarterCatalog: true,
   });
@@ -181,7 +182,7 @@ test("service triggers are transactional, clear pending state after last-item de
 
 test("legacy active DINE_IN rows migrate with createdAt pending timestamp and revision 1", () => {
   const path = join(tmpdir(), `salon-legacy-${randomUUID()}.sqlite`);
-  let repository = new SqliteGastronomyRepository(path, { adminPin: "2468", seedStarterCatalog: true });
+  let repository = configuredTestRepository(path, { adminPin: "2468", seedStarterCatalog: true });
   try {
     const active = confirmedDine(repository);
     const tableFor = (number: number) => repository.ensureTable(number);
@@ -213,7 +214,7 @@ test("legacy active DINE_IN rows migrate with createdAt pending timestamp and re
       ALTER TABLE orders DROP COLUMN service_revision;`);
     repository.db.prepare("DELETE FROM schema_migrations WHERE version = 38").run();
     repository.close();
-    repository = new SqliteGastronomyRepository(path, { adminPin: "2468" });
+    repository = configuredTestRepository(path, { adminPin: "2468" });
 
     const migrated = repository.getOrder(active.id);
     assert.equal(migrated.servicePendingSince, createdAt);

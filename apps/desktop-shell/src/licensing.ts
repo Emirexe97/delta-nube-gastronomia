@@ -73,6 +73,7 @@ export class DesktopLicensing {
   private getWebSiteStatus: (() => { state?: string }) | null = null;
   private webSiteRetryAt = 0;
   private webSiteFailures = 0;
+  private waiterProvisioner: ((ticket: string, identity: { installationId: string; licenseId: string }) => Promise<unknown>) | null = null;
   private readonly options: Options;
   constructor(options: Options) {
     this.options = options;
@@ -318,6 +319,15 @@ export class DesktopLicensing {
   setWebSiteProvisioner(handlers: { provision: (ticket: string, signup: WebSiteChoice) => Promise<{ state?: string }>; getChoice: () => WebSiteChoice | null; selectChoice: (signup: WebSiteChoice) => Promise<unknown>; getStatus: () => { state?: string } }) {
     this.webSiteProvisioner = handlers.provision; this.getWebSiteChoice = handlers.getChoice; this.selectWebSiteChoice = handlers.selectChoice; this.getWebSiteStatus = handlers.getStatus;
   }
+  setWaiterProvisioner(provision: (ticket: string, identity: { installationId: string; licenseId: string }) => Promise<unknown>) {
+    this.waiterProvisioner = provision;
+  }
+  waiterIdentity(): { installationId: string; licenseId: string } | null {
+    if (this.enrollment.status !== "APPROVED" || !this.identity || !this.identityPrivateKey || this.rollback() || this.invalid) return null;
+    const lease = this.safeLease();
+    if (!lease || leaseAccess(lease, this.effectiveNow()) !== "ACTIVE") return null;
+    return { installationId: this.state.installationId, licenseId: lease.licenseId };
+  }
   hasEnrollmentIdentity() { return !!(this.identity && this.identityPrivateKey); }
   async askPosAssistantAi(input: { actorId: string; requestId: string; prompt: string }) {
     if (
@@ -439,6 +449,7 @@ export class DesktopLicensing {
       this.enrollment = { requestId: result.request.id, status: "APPROVED", keyFingerprint, businessName: result.request.businessName };
       this.identity!.enrollment = this.enrollment; await this.persistIdentity();
       if (typeof result.webSiteTicket === "string") await this.acceptWebSiteTicket(result.webSiteTicket);
+      if (result.request.status === "APPROVED" && typeof result.token === "string" && typeof result.waiterTicket === "string") await this.acceptWaiterTicket(result.waiterTicket);
       return this.getStatus();
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("account:")) throw new Error(error.message.slice(8));
@@ -502,6 +513,7 @@ export class DesktopLicensing {
       if (result.request.status === "APPROVED" && typeof result.token === "string") await this.acceptToken(result.token);
       else if (result.token !== undefined) throw new ResponseProblem("invalid");
       if (typeof result.webSiteTicket === "string") await this.acceptWebSiteTicket(result.webSiteTicket);
+      if (result.request.status === "APPROVED" && typeof result.token === "string" && typeof result.waiterTicket === "string") await this.acceptWaiterTicket(result.waiterTicket);
     } catch (error) {
       this.lastFailure = "offline";
       if (error instanceof Error && (error.message.includes("almacenamiento seguro") || error.message.includes("identidad de este equipo"))) { this.enrollment = { ...this.enrollment, status: null }; this.enrollmentError = error.message; }
@@ -555,6 +567,7 @@ export class DesktopLicensing {
       else if (result.token !== undefined) throw new ResponseProblem("invalid");
       if (typeof result.webSiteTicket === "string") await this.acceptWebSiteTicket(result.webSiteTicket);
       else if (this.getWebSiteChoice?.()) this.scheduleWebSiteRetry();
+      if (result.request.status === "APPROVED" && typeof result.token === "string" && typeof result.waiterTicket === "string") await this.acceptWaiterTicket(result.waiterTicket);
     } catch (error) { this.lastFailure = error instanceof ResponseProblem && error.kind === "invalid" ? "invalid" : "offline"; if (this.enrollment.status === "APPROVED" && this.getWebSiteChoice?.()) this.scheduleWebSiteRetry(); }
     return this.getStatus();
   }
@@ -567,6 +580,13 @@ export class DesktopLicensing {
       if (status.state === "ACTIVE") { this.webSiteFailures = 0; this.webSiteRetryAt = 0; }
       else this.scheduleWebSiteRetry();
     } catch { this.scheduleWebSiteRetry(); }
+  }
+  private async acceptWaiterTicket(ticket: string) {
+    if (!/^[A-Za-z0-9._~+\/-]{20,4096}={0,2}$/.test(ticket)) return;
+    const identity = this.waiterIdentity();
+    if (!identity || !this.waiterProvisioner) return;
+    // Dispatch after license state is committed; never await network I/O here.
+    void Promise.resolve().then(() => this.waiterProvisioner?.(ticket, identity)).catch(() => { /* A later successful online lease supplies a fresh ticket. */ });
   }
   private scheduleWebSiteRetry() { this.webSiteFailures++; this.webSiteRetryAt = this.now() + Math.min(15_000 * 2 ** Math.min(this.webSiteFailures - 1, 5), 5 * 60_000); }
   private async acceptToken(token: string) {

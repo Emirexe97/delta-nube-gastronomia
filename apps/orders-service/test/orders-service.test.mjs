@@ -4,10 +4,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, createServer as createHttpServer } from "node:http";
+import { DatabaseSync } from "node:sqlite";
 import { createOrdersServer } from "../dist/server.js";
 import { WebOrdersClient } from "@gastronomy/web-orders";
-import { issueWebSiteTicket } from "@gastronomy/web-orders/provision";
+import { issueWebSiteTicket, issueWaiterTicket } from "@gastronomy/web-orders/provision";
 
 const token = () => randomBytes(32).toString("base64url");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -29,6 +30,49 @@ const makePayload = (overrides = {}) => ({
   ...overrides,
 });
 const key = () => randomBytes(18).toString("base64url");
+
+test("waiter connections are idempotent and scoped away from commerce credentials", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "orders-waiter-provision-"));
+  const probe = createHttpServer();
+  await new Promise((r) => probe.listen(0, "127.0.0.1", r));
+  const port = probe.address().port;
+  await new Promise((r, reject) => probe.close((e) => e ? reject(e) : r()));
+  const secret = "abcdef0123456789abcdef0123456789";
+  const service = createOrdersServer({
+    dbPath: resolve(dir, "orders.sqlite"), stores: [],
+    waiterProvisionSecret: secret,
+    waiterPublicBaseUrl: `http://127.0.0.1:${port}/`,
+  });
+  await new Promise((r) => service.server.listen(port, "127.0.0.1", r));
+  t.after(async () => { await service.close(); await rm(dir, { recursive: true, force: true }); });
+  const base = `http://127.0.0.1:${port}`;
+  let response;
+  const waiterSecret = secret;
+  const register = (licenseId = "licwait", installationId = "instwait") => fetch(base + "/v1/waiter-connections", { method: "POST", headers: { authorization: `Bearer ${issueWaiterTicket({ licenseId, installationId }, waiterSecret)}`, "content-type": "application/json" }, body: "{}" });
+  response = await register();
+  assert.equal(response.status, 201);
+  const first = await response.json();
+  const retry = await (await register()).json();
+  assert.deepEqual(retry, first);
+  response = await register("someone-else", "instwait");
+  assert.equal(response.status, 409);
+  const other = await (await register("licwait2", "instwait2")).json();
+  assert.notEqual(other.storeId, first.storeId);
+  response = await fetch(base + "/v1/waiter/terminal/requests", { headers: { authorization: `Bearer ${first.waiterToken}`, "x-pos-installation": "instwait", host: `127.0.0.1:${port}` } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { requests: [] });
+  const db = new DatabaseSync(resolve(dir, "orders.sqlite"));
+  db.prepare("UPDATE waiter_connections SET expires_at=0").run();
+  db.close();
+  response = await fetch(base + "/v1/waiter/terminal/requests", { headers: { authorization: `Bearer ${first.waiterToken}`, "x-pos-installation": "instwait", host: `127.0.0.1:${port}` } });
+  assert.equal(response.status, 401);
+  const refreshed = await (await register()).json();
+  assert.equal(refreshed.waiterToken, first.waiterToken);
+  response = await fetch(base + "/v1/web-orders", { headers: { authorization: `Bearer ${first.waiterToken}` } });
+  assert.equal(response.status, 401);
+  response = await fetch(base + "/v1/web-sites/branding", { headers: { authorization: `Bearer ${first.waiterToken}`, "x-pos-installation": "instwait" } });
+  assert.equal(response.status, 401);
+});
 
 test("licensed tenant provisioning is idempotent and receiver token survives restart", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "orders-provision-")),

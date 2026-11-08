@@ -1,11 +1,12 @@
-import { _electron as electron, expect, test } from "@playwright/test";
+import { launchConfiguredPos } from "./pos-fixture";
+import { expect, test } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 test("la ficha protege el borrador antes de editar una variante y reinicia sus pestañas", async () => {
   const profile = await mkdtemp(join(tmpdir(), "gastronomy-product-tabs-"));
-  const app = await electron.launch({
+  const app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HashRouter } from "react-router-dom";
 import { sharedThemeCss } from "@gastronomy/ui/theme";
 import { App } from "./app";
+import { InitialAdminPinGate } from "./components/initial-admin-pin-gate";
 import { installDemoApi } from "./demo/install-demo";
 import { initializeRenderer } from "./demo/startup";
 import "./styles.css";
@@ -21,7 +22,7 @@ const renderApp = () => root.render(
     <style>{sharedThemeCss}</style>
     <QueryClientProvider client={queryClient}>
       <HashRouter>
-        <App />
+        <InitialAdminPinGate><App /></InitialAdminPinGate>
       </HashRouter>
     </QueryClientProvider>
   </React.StrictMode>,

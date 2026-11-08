@@ -1,3 +1,4 @@
+import { configuredTestRepository } from "./configured-test-repository";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -7,7 +8,7 @@ import { SqliteGastronomyRepository } from "./sqlite-repository";
 
 test("ingredientes y receta persisten, recalculan el costo vigente y legacy desactiva receta",()=>{
   const dir=mkdtempSync(join(tmpdir(),"ingredient-costs-")); const path=join(dir,"db.sqlite");
-  let repo=new SqliteGastronomyRepository(path,{adminPin:"2468",seedStarterCatalog:true});
+  let repo=configuredTestRepository(path,{adminPin:"2468",seedStarterCatalog:true});
   try {
     const product=repo.bootstrap().products[0]!;
     const ingredient=repo.saveIngredient({name:"Harina",presentation:"Bolsa 16 kg",baseUnit:"KG",presentationQuantityMicros:16_000_000,presentationCostMinor:1_600_000});
@@ -20,7 +21,7 @@ test("ingredientes y receta persisten, recalculan el costo vigente y legacy desa
     repo.saveIngredient({...ingredient,ingredientId:ingredient.id,presentationCostMinor:3_200_000});
     assert.equal(repo.getFinanceProductCosts().find(c=>c.productId===product.id)?.unitCostMinor,60_000);
     repo.close();
-    repo=new SqliteGastronomyRepository(path,{adminPin:"2468",seedStarterCatalog:true});
+    repo=configuredTestRepository(path,{adminPin:"2468",seedStarterCatalog:true});
     assert.equal(repo.getProductCostConfiguration({productId:product.id}).recipeEnabled,true);
     repo.setFinanceProductCost({productId:product.id,unitCostMinor:700});
     assert.equal(repo.getFinanceProductCosts().find(c=>c.productId===product.id)?.source,"MANUAL");

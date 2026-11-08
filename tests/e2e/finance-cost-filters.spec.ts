@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -318,7 +318,7 @@ test("combina filtros con resultados reales e incluye costo de compras e inactiv
     await api.setFinanceProductCost({ productId: zero.id, unitCostMinor: 0 });
     await api.createPurchase({
       supplierName: "Proveedor filtro",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
       items: [{ productId: low.id, quantityMinor: 1000, unitCostMinor: 100 }],
     });
     await api.updateProduct({
@@ -328,7 +328,7 @@ test("combina filtros con resultados reales e incluye costo de compras e inactiv
       active: false,
       prices,
       reason: "Fixture inactivo",
-      authorizerPin: "1234",
+      authorizerPin: "748259",
     });
     return { zero, low, unknown, categoryId: category.id };
   });
@@ -377,7 +377,7 @@ test("combina filtros con resultados reales e incluye costo de compras e inactiv
 test.beforeEach(async () => {
   await mkdir(out, { recursive: true });
   profile = await mkdtemp(join(tmpdir(), "gastronomy-us03-cost-filters-"));
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -744,7 +744,7 @@ test("compra conserva el costo capturado aunque cambie luego el costo manual", a
         idempotencyKey: crypto.randomUUID(),
         supplierName: "US03 proveedor",
         invoiceNumber: "US03-FAC-1",
-        authorizerPin: "1234",
+        authorizerPin: "748259",
         items: [{ productId, quantityMinor: 1_000, unitCostMinor: 40_000 }],
       }),
     fixture,

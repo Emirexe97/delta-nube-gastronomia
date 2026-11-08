@@ -5,12 +5,13 @@ import {
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
-import { mkdtemp, rm, readdir, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readdir, writeFile, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { launchConfiguredPos } from "./pos-fixture";
 
-const out = join(
+const out = process.env.RESTORE_E2E_OUTPUT ? resolve(process.env.RESTORE_E2E_OUTPUT) : join(
   process.cwd(),
   "docs/qa/evidence/system-usability-us24-fix-2026-10-06",
 );
@@ -22,10 +23,12 @@ let page: Page;
 let profile: string;
 let backup: string;
 
+test.beforeAll(async () => { await mkdir(out, { recursive: true }); });
+
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-restore-us24-"));
   backup = join(profile, "restore-source.sqlite");
-  app = await electron.launch({
+  app = await launchConfiguredPos({
     args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
     cwd: process.cwd(),
   });
@@ -219,13 +222,25 @@ test("canceling source selection does not modify the live database", async () =>
     }),
   );
   await stubNativeDialogs({ canceled: true });
-  const result = await page.evaluate(() => window.gastronomy.restoreBackup());
+  const result = await page.evaluate(() => window.gastronomy.restoreBackup("748259"));
   expect(result).toEqual({ path: null, restored: false });
   expect(await customers("Conservar por selección US24")).toHaveLength(1);
   expect(
     await app.evaluate(() => (globalThis as any).__us24DialogCalls),
   ).toEqual([]);
   await assertNoStaging();
+});
+
+test("an invalid ADMIN PIN is rejected before showing the source picker", async () => {
+  await createBackup();
+  await stubNativeDialogs({ source: backup, confirmResult: 1 });
+  const failure = await page.evaluate(async () => {
+    try { await window.gastronomy.restoreBackup("000000"); return "UNEXPECTED_SUCCESS"; }
+    catch (error) { return String(error); }
+  });
+  expect(failure).toMatch(/PIN incorrecto/i);
+  expect(await app.evaluate(() => (globalThis as any).__us24DialogCalls)).toEqual([]);
+  expect(await recoveryFiles()).toHaveLength(0);
 });
 
 for (const [label, response] of [
@@ -241,7 +256,7 @@ for (const [label, response] of [
       marker,
     );
     await stubNativeDialogs({ source: backup, confirmResult: response });
-    const result = await page.evaluate(() => window.gastronomy.restoreBackup());
+    const result = await page.evaluate(() => window.gastronomy.restoreBackup("748259"));
     expect(result).toEqual({ path: null, restored: false });
     expect(await customers(marker)).toHaveLength(1);
     const calls = await app.evaluate(
@@ -272,7 +287,7 @@ test("successful restore replaces current data and keeps a recovery copy of pre-
     }),
   );
   await stubNativeDialogs({ source: backup, confirmResult: 1 });
-  const result = await page.evaluate(() => window.gastronomy.restoreBackup());
+  const result = await page.evaluate(() => window.gastronomy.restoreBackup("748259"));
   expect(result).toEqual({ path: backup, restored: true });
   expect(await customers("Registro anterior US24")).toHaveLength(1);
   expect(
@@ -328,7 +343,7 @@ test("invalid SQLite source is rejected before confirmation", async () => {
   await stubNativeDialogs({ source: invalid, confirmResult: 1 });
   const failure = await page.evaluate(async () => {
     try {
-      await window.gastronomy.restoreBackup();
+      await window.gastronomy.restoreBackup("748259");
       return "UNEXPECTED_SUCCESS";
     } catch (error) {
       return String(error);
@@ -376,7 +391,7 @@ test("SQLite source that passes integrity but has malformed schema rolls back af
   await stubNativeDialogs({ source: malformed, confirmResult: 1 });
   const failure = await page.evaluate(async () => {
     try {
-      await window.gastronomy.restoreBackup();
+      await window.gastronomy.restoreBackup("748259");
       return "UNEXPECTED_SUCCESS";
     } catch (error) {
       return String(error);
@@ -412,7 +427,7 @@ test("backup failure after confirmation leaves live database intact and cleans s
   await injectBackupFailure();
   const failure = await page.evaluate(async () => {
     try {
-      await window.gastronomy.restoreBackup();
+      await window.gastronomy.restoreBackup("748259");
       return "UNEXPECTED_SUCCESS";
     } catch (error) {
       return String(error);
@@ -438,7 +453,7 @@ test("recovery-copy validation failure does not close or alter the live database
   await injectRecoveryValidationFailure();
   const failure = await page.evaluate(async () => {
     try {
-      await window.gastronomy.restoreBackup();
+      await window.gastronomy.restoreBackup("748259");
       return "UNEXPECTED_SUCCESS";
     } catch (error) {
       return String(error);
@@ -464,7 +479,7 @@ test("source changed while confirmation is open restores the staged bytes, not t
   );
   await stubNativeDialogs({ source: backup, deferConfirmation: true });
   await page.evaluate(() => {
-    (window as any).__restoreInFlight = window.gastronomy.restoreBackup();
+    (window as any).__restoreInFlight = window.gastronomy.restoreBackup("748259");
   });
   await expect
     .poll(
@@ -499,32 +514,27 @@ test("source changed while confirmation is open restores the staged bytes, not t
   await assertNoStaging();
 });
 
-test("an open cash session is disclosed in confirmation but does not block restore", async () => {
+test("an open cash session blocks restore before the source picker", async () => {
   await createBackup();
   await page.evaluate(() =>
     window.gastronomy.openCashSession({ openingAmountMinor: 10_000 }),
   );
   await stubNativeDialogs({ source: backup, confirmResult: 1 });
-  const result = await page.evaluate(() => window.gastronomy.restoreBackup());
-  expect(result.restored).toBe(true);
-  const calls = await app.evaluate(() => (globalThis as any).__us24DialogCalls);
-  expect(calls[0].type).toBe("warning");
-  expect(calls[0].detail).toMatch(/caja abierta/i);
-  const info = calls.find((call: any) => call.type === "info");
-  expect(info).toBeTruthy();
-  const [recoveryPath] = await recoveryFiles();
-  expect(String(info.message + info.detail)).toContain(recoveryPath);
-  expect((await readFile(recoveryPath)).length).toBeGreaterThan(0);
-  await page.screenshot({
-    path: join(out, "restore-open-cash-result.png"),
-    fullPage: true,
+  const result = await page.evaluate(async () => {
+    try { await window.gastronomy.restoreBackup("748259"); return "UNEXPECTED_SUCCESS"; }
+    catch (error) { return String(error); }
   });
+  expect(result).toMatch(/Cerrá la caja/i);
+  const calls = await app.evaluate(() => (globalThis as any).__us24DialogCalls);
+  expect(calls).toEqual([]);
+  expect(await recoveryFiles()).toHaveLength(0);
+  expect(await customers("No debería ser reemplazado")).toHaveLength(0);
 });
 
 test("a closed cash session does not add an open-cash warning", async () => {
   await createBackup();
   await stubNativeDialogs({ source: backup, confirmResult: 0 });
-  await page.evaluate(() => window.gastronomy.restoreBackup());
+  await page.evaluate(() => window.gastronomy.restoreBackup("748259"));
   const calls = await app.evaluate(() => (globalThis as any).__us24DialogCalls);
   expect(calls).toHaveLength(1);
   expect(calls[0].detail).not.toMatch(/caja abierta/i);
@@ -541,7 +551,7 @@ test("live database cannot be selected as its own restore source", async () => {
   await stubNativeDialogs({ source: live, confirmResult: 1 });
   const failure = await page.evaluate(async () => {
     try {
-      await window.gastronomy.restoreBackup();
+      await window.gastronomy.restoreBackup("748259");
       return "UNEXPECTED_SUCCESS";
     } catch (error) {
       return String(error);
@@ -564,7 +574,7 @@ test("restore is single-flight and refuses other IPC writes until confirmation r
   );
   await stubNativeDialogs({ source: backup, deferConfirmation: true });
   await page.evaluate(() => {
-    (window as any).__restoreInFlight = window.gastronomy.restoreBackup();
+    (window as any).__restoreInFlight = window.gastronomy.restoreBackup("748259");
   });
   await expect
     .poll(
@@ -575,7 +585,7 @@ test("restore is single-flight and refuses other IPC writes until confirmation r
     .toBe(1);
   const second = await page.evaluate(async () => {
     try {
-      await window.gastronomy.restoreBackup();
+      await window.gastronomy.restoreBackup("748259");
       return "UNEXPECTED_SUCCESS";
     } catch (error) {
       return String(error);
@@ -621,7 +631,7 @@ test("each successful restore keeps a separate intact recovery snapshot", async 
     }),
   );
   await stubNativeDialogs({ source: backup, confirmResult: 1 });
-  const first = await page.evaluate(() => window.gastronomy.restoreBackup());
+  const first = await page.evaluate(() => window.gastronomy.restoreBackup("748259"));
   expect(first.restored).toBe(true);
   const firstSnapshot = (await recoveryFiles())[0];
   const firstSnapshotBytes = await readFile(firstSnapshot);
@@ -632,7 +642,7 @@ test("each successful restore keeps a separate intact recovery snapshot", async 
     }),
   );
   await stubNativeDialogs({ source: backup, confirmResult: 1 });
-  const second = await page.evaluate(() => window.gastronomy.restoreBackup());
+  const second = await page.evaluate(() => window.gastronomy.restoreBackup("748259"));
   expect(second.restored).toBe(true);
   const snapshots = await recoveryFiles();
   expect(snapshots).toHaveLength(2);
@@ -661,7 +671,7 @@ test("a retained recovery database can itself be selected to restore the previou
   );
   await stubNativeDialogs({ source: backup, confirmResult: 1 });
   expect(
-    (await page.evaluate(() => window.gastronomy.restoreBackup())).restored,
+    (await page.evaluate(() => window.gastronomy.restoreBackup("748259"))).restored,
   ).toBe(true);
   expect(await customers("Dato recuperable US24")).toHaveLength(0);
   const [recovery] = await recoveryFiles();
@@ -670,7 +680,7 @@ test("a retained recovery database can itself be selected to restore the previou
   ).toBeTruthy();
   await stubNativeDialogs({ source: recovery, confirmResult: 1 });
   expect(
-    (await page.evaluate(() => window.gastronomy.restoreBackup())).restored,
+    (await page.evaluate(() => window.gastronomy.restoreBackup("748259"))).restored,
   ).toBe(true);
   expect(await customers("Dato recuperable US24")).toHaveLength(1);
   const snapshots = await recoveryFiles();
@@ -707,7 +717,7 @@ test("restore refuses to start while an existing backup operation is active", as
   await stubNativeDialogs({ source: backup, confirmResult: 1 });
   const failure = await page.evaluate(async () => {
     try {
-      await window.gastronomy.restoreBackup();
+      await window.gastronomy.restoreBackup("748259");
       return "UNEXPECTED_SUCCESS";
     } catch (error) {
       return String(error);

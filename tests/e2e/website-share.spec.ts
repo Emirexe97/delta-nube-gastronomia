@@ -1,7 +1,7 @@
+import { launchConfiguredPos } from "./pos-fixture";
 import {
   test,
   expect,
-  _electron as electron,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
@@ -35,7 +35,7 @@ test("comercio activo abre, copia y descarga su QR; respeta la cancelación", as
     });
     const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const launch = () =>
-      electron.launch({
+      launchConfiguredPos({
         args: ["apps/desktop-shell", `--user-data-dir=${userData}`],
         cwd: process.cwd(),
         env: {

@@ -27,6 +27,7 @@ de una transacción antes de crear datos iniciales.
 - `payment_methods`, `payments`, `payment_refunds`
 - `categories`, `products`, `price_lists`, `product_prices`
 - Desde v48: `price_books` define las listas y `price_book_assignments` vincula los modos de venta. `product_price_book_bases` y `product_price_book_overrides` guardan, respectivamente, Principal y las excepciones. `product_prices` sigue exponiendo los importes efectivos por modo a caja, mozos y catálogo web. Ver [Listas de precios](LISTAS_DE_PRECIOS.md).
+- Desde v49: `price_books.rounding_increment_minor` guarda el múltiplo de redondeo en centavos. Su valor inicial de 1 conserva los precios existentes. Los precios propios por producto se guardan exactos, sin redondeo adicional.
 - `modifier_groups`, `modifiers`, `product_modifiers`
 - `customers`, `customer_addresses`
 - `table_sectors`, `restaurant_tables`, `floor_plan_shapes`
