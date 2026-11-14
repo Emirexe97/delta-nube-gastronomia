@@ -1,0 +1,9 @@
+# Import INSIDE gastronomia.deltanubeweb.com, before the authority catch-all.
+# Existing edge mount: /opt/pos/delta-nube-pos/updates -> /srv/updates (read-only).
+# Manual versioned artifacts only. No updater feed and no directory listing.
+handle_path /instaladores/* {
+    root * /srv/updates/gastronomy
+    header X-Content-Type-Options nosniff
+    header Cache-Control "public, max-age=3600"
+    file_server
+}
