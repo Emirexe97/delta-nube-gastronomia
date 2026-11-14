@@ -65,13 +65,13 @@ test("QR móvil agrega pizzas enteras o mitad y mitad con notas independientes",
     await dialog.getByLabel("Tipo de pizza").selectOption("half");
     await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel("Otra mitad").locator("option", { hasText: "Empanada" })).toHaveCount(0);
-    await dialog.getByLabel("Otra mitad").selectOption("napo");
+    await expect(dialog.getByLabel("Otra mitad", { exact: true }).locator("option", { hasText: "Empanada" })).toHaveCount(0);
+    await dialog.getByLabel("Otra mitad", { exact: true }).selectOption("napo");
     await dialog.getByLabel("Observaciones").fill("Sin aceitunas");
     await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
     await page.getByRole("button", { name: "Agregar Pizza Muzzarella", exact: true }).click();
     await dialog.getByLabel("Tipo de pizza").selectOption("half");
-    await dialog.getByLabel("Otra mitad").selectOption("fugazza");
+    await dialog.getByLabel("Otra mitad", { exact: true }).selectOption("fugazza");
     await dialog.getByLabel("Observaciones").fill("Bien cocida");
     await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
 

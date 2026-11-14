@@ -121,6 +121,11 @@ export const waiterHtml = String.raw`<!doctype html>
         letter-spacing: 0.2em;
         text-align: center;
       }
+      #tableLookup { margin: 0 0 12px; }
+      #tableLookup label { display: block; margin-bottom: 6px; }
+      #tableNumber { font-variant-numeric: tabular-nums; }
+      #secondProductSearch { margin-bottom: 8px; }
+      #menuCard { scroll-margin-top: 96px; }
       .menu-search { margin: 8px 0 12px; }
       #myTables { display: flex; flex-wrap: wrap; gap: 8px; }
       #productSearch { border-color: var(--dn-color-primary); }
@@ -283,6 +288,14 @@ export const waiterHtml = String.raw`<!doctype html>
             <button id="reconnect" type="button">Actualizar</button>
           </div>
           <div id="appMessage" class="status" role="status" tabindex="-1" hidden></div>
+          <form id="tableLookup" novalidate>
+            <label class="muted" for="tableNumber">Número de mesa</label>
+            <div class="row">
+              <input id="tableNumber" type="text" inputmode="numeric" enterkeyhint="go" autocomplete="off" maxlength="4" placeholder="Ej.: 12" aria-describedby="tableLookupMessage" />
+              <button id="openTableNumber" type="submit">Abrir mesa</button>
+            </div>
+            <div id="tableLookupMessage" class="status" role="status" aria-live="polite" hidden></div>
+          </form>
           <div class="row split"><label class="muted" for="table">Mesa</label><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda para elegir mesa" aria-expanded="false" aria-controls="help-table">?</button><span class="help-popover" id="help-table" role="tooltip" hidden>Elegí la mesa antes de agregar productos. El pedido se prepara para esa mesa.</span></span></div>
           <select id="table"></select>
           <section id="myTablesSection" aria-labelledby="myTablesTitle" hidden>
@@ -341,8 +354,11 @@ export const waiterHtml = String.raw`<!doctype html>
           <label for="pizzaMode">Tipo de pizza</label>
           <select id="pizzaMode"><option value="whole">Entera</option><option value="half">Mitad y mitad</option></select>
           <div id="secondChoice" hidden>
+            <label for="secondProductSearch">Buscar otra mitad</label>
+            <input id="secondProductSearch" type="search" autocomplete="off" placeholder="Escribí el nombre de la pizza" aria-describedby="secondProductMessage" />
             <label for="secondProduct">Otra mitad</label>
             <select id="secondProduct"></select>
+            <p id="secondProductMessage" class="muted" role="status" aria-live="polite" hidden></p>
           </div>
         </div>
         <label for="itemNote">Observaciones</label>
@@ -840,6 +856,9 @@ export const waiterHtml = String.raw`<!doctype html>
           sel.disabled =
             locked || Boolean(state.waiterTableWorkflow && draft.lines.length) ||
             Boolean(draft.lines.length && !ts.some((t) => String(t.id) === String(draft.tableId)));
+          el('tableNumber').disabled = sel.disabled;
+          el('openTableNumber').disabled = sel.disabled;
+          syncTableNumber();
           const mine = ts.filter(t => t.servedByMe && t.openOrderId);
           el('myTablesSection').hidden = !mine.length;
           const list = el('myTables');
@@ -922,18 +941,41 @@ export const waiterHtml = String.raw`<!doctype html>
         }
         const productId = (p) => String(p.id ?? p.productId);
         let editingProductId = '', noteTarget = null;
+        function otherPizzaProducts() {
+          const first = allProducts().find(p => productId(p) === editingProductId);
+          return state?.menu?.halfAndHalfEnabled && first?.halfEligible
+            ? allProducts().filter(p => p.halfEligible && productId(p) !== editingProductId) : [];
+        }
+        function searchSecondProducts() {
+          const query = normalizeName(el('secondProductSearch').value);
+          const matches = otherPizzaProducts().filter(p => normalizeName(p.name || p.label || '').includes(query));
+          const select = el('secondProduct');
+          select.replaceChildren(new Option(query && !matches.length ? 'Sin coincidencias' : 'Elegí la otra mitad', ''));
+          for (const p of matches) select.add(new Option(p.name || p.label, productId(p)));
+          // A unique visible result can be accepted directly with Enter.
+          select.value = query && matches.length === 1 ? productId(matches[0]) : '';
+          const message = el('secondProductMessage');
+          message.hidden = !query;
+          message.textContent = !matches.length ? 'No encontramos esa pizza. Probá con otro nombre.'
+            : select.value ? select.selectedOptions[0].textContent + ' seleccionada.'
+            : 'Elegí la otra mitad entre las coincidencias.';
+        }
+        el('secondProductSearch').oninput = searchSecondProducts;
+        el('secondProduct').onchange = () => {
+          el('secondProductMessage').hidden = !el('secondProduct').value;
+          el('secondProductMessage').textContent = el('secondProduct').selectedOptions[0]?.textContent + ' seleccionada.';
+        };
         function openItem(product, existingLine = null) {
           editingProductId = productId(product);
           noteTarget = existingLine && { lineId: existingLine.lineId, note: existingLine.note || '' };
-          const others = state.menu.halfAndHalfEnabled && product.halfEligible
-            ? allProducts().filter((p) => p.halfEligible && productId(p) !== editingProductId) : [];
+          const others = otherPizzaProducts();
           el('itemTitle').textContent = product.name || product.label;
           el('pizzaOptions').hidden = !others.length;
           el('pizzaMode').value = 'whole';
           el('secondChoice').hidden = true;
           const select = el('secondProduct');
-          select.replaceChildren(new Option('Elegí la otra mitad', ''));
-          for (const p of others) select.add(new Option(p.name || p.label, productId(p)));
+          el('secondProductSearch').value = '';
+          searchSecondProducts();
           select.required = false;
           el('itemNote').value = noteTarget?.note || '';
           el('saveItem').textContent = noteTarget ? 'Guardar nota' : 'Agregar al pedido';
@@ -943,6 +985,7 @@ export const waiterHtml = String.raw`<!doctype html>
           const half = el('pizzaMode').value === 'half';
           el('secondChoice').hidden = !half;
           el('secondProduct').required = half;
+          if (half) el('secondProductSearch').focus();
         };
         el('cancelItem').onclick = () => el('itemDialog').close();
         el('itemForm').onsubmit = (event) => {
@@ -950,7 +993,7 @@ export const waiterHtml = String.raw`<!doctype html>
           if (!el('itemDialog').open || !state || busy || pending()) return;
           const first = allProducts().find((p) => productId(p) === editingProductId);
           const half = !el('pizzaOptions').hidden && el('pizzaMode').value === 'half';
-          const second = half && allProducts().find((p) => productId(p) === el('secondProduct').value && p.halfEligible);
+          const second = half && otherPizzaProducts().find((p) => productId(p) === el('secondProduct').value);
           el('itemDialog').close();
           if (!first || (half && !(state?.menu?.halfAndHalfEnabled && first.halfEligible && second))) {
             setMsg('appMessage', 'El menú cambió. Volvé a elegir el producto.', 'warn');
@@ -1176,13 +1219,40 @@ export const waiterHtml = String.raw`<!doctype html>
             el('pairSubmit').textContent = pairReceipt ? 'Consultar estado' : 'Vincular';
           }
         };
+        function syncTableNumber() {
+          const input = el('tableNumber');
+          if (input.dataset.tableId === draft.tableId) return;
+          input.dataset.tableId = draft.tableId;
+          const selected = state?.tables?.find(t => String(t.id) === draft.tableId);
+          input.value = selected?.number == null ? '' : String(selected.number);
+          el('tableLookupMessage').hidden = true;
+        }
+        el('tableNumber').oninput = () => { el('tableLookupMessage').hidden = true; };
+        el('tableLookup').onsubmit = (event) => {
+          event.preventDefault();
+          if (!state || el('table').disabled) return;
+          const value = el('tableNumber').value.trim();
+          if (!/^\d{1,4}$/.test(value) || Number(value) < 1) {
+            setMsg('tableLookupMessage', 'Ingresá un número de mesa válido.', 'warn'); return;
+          }
+          const matches = (state.tables || []).filter(t => t.number != null && Number(t.number) === Number(value));
+          if (matches.length !== 1) {
+            setMsg('tableLookupMessage', matches.length ? 'Hay más de una mesa con ese número. Elegila de la lista.'
+              : 'No existe la mesa ' + Number(value) + '. Revisá el número o actualizá las mesas.', 'warn'); return;
+          }
+          el('table').value = String(matches[0].id);
+          el('table').onchange();
+          setMsg('tableLookupMessage', 'Mesa ' + matches[0].number + ' seleccionada.');
+        };
         el('table').onchange = () => {
-          if (busy || pending()) return;
+          if (!state || busy || pending()) return;
           if (state.waiterTableWorkflow && draft.lines.length) { render(); return; }
           draft.tableId = el('table').value;
           draft.expectedOrderId =
             (state.tables || []).find((t) => String(t.id) === draft.tableId)?.openOrderId ?? null;
           saveDraft();
+          delete el('tableNumber').dataset.tableId;
+          syncTableNumber();
           if (state.waiterTableWorkflow) {
             menuOpen = false;
             el('productSearch').value = '';
@@ -1192,7 +1262,8 @@ export const waiterHtml = String.raw`<!doctype html>
         };
         el('openMenu').onclick = () => {
           menuOpen = true; render();
-          el('productSearch').focus();
+          el('productSearch').focus({ preventScroll: true });
+          el('menuCard').scrollIntoView({ block: 'start', behavior: 'instant' });
         };
         el('confirmOnly').onclick = () => sendBatch('NONE');
         el('reprint').onclick = () => askPrint('copy');
