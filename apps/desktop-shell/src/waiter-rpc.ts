@@ -137,6 +137,17 @@ export function handleWaiterRequest(
   } catch (e) {
     if (e instanceof WaiterRequestError) throw e;
     const msg = e instanceof Error ? e.message : "";
+    if (request.kind === "pair" && msg === "PIN de mozo incorrecto.")
+      return fail("invalid_pin", "El PIN del mozo es incorrecto.");
+    if (
+      request.kind === "pair" &&
+      (msg.startsWith("El QR venció o fue bloqueado.") ||
+        msg === "El QR pertenece a otro turno.")
+    )
+      return fail(
+        "pairing_expired",
+        "El QR venció o pertenece a otro turno. Solicitá uno nuevo en caja.",
+      );
     if (request.kind === "pair")
       return fail(
         "pair_failed",

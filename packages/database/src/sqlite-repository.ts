@@ -259,6 +259,8 @@ const jsonStringArray = (value: unknown): string[] => {
   }
 };
 const normalizePhone = (value: string) => value.replace(/\D/g, "");
+const normalizeCustomerSearch = (value: string) =>
+  value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es-AR");
 
 function requireRow<T>(value: T | undefined | null, message: string): T {
   if (!value) throw new Error(message);
@@ -751,6 +753,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       this.db.pragma("foreign_keys = ON");
       this.db.pragma("busy_timeout = 5000");
       this.db.pragma("synchronous = NORMAL");
+      this.db.function(
+        "customer_search_text",
+        { deterministic: true },
+        (value: unknown) => normalizeCustomerSearch(String(value ?? "")),
+      );
       this.db.function(
         "business_date",
         { deterministic: true },
@@ -6165,7 +6172,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const pageSize = Number.isFinite(input.pageSize)
       ? Math.min(200, Math.max(1, Math.trunc(input.pageSize)))
       : 24;
-    const normalizedQuery = query.trim().toLocaleLowerCase("es-AR");
+    const normalizedQuery = normalizeCustomerSearch(query);
     const term = `%${normalizedQuery}%`;
     const normalizedDigits = normalizePhone(query);
     const hasPhoneQuery =
@@ -6177,12 +6184,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     if (status === "ACTIVE") clauses.push("c.active = 1");
     if (status === "ARCHIVED") clauses.push("c.active = 0");
     if (normalizedQuery) {
-      clauses.push(`(lower(c.name) LIKE ?
+      clauses.push(`(customer_search_text(c.name) LIKE ?
            OR (? = 1 AND c.phone_normalized LIKE ?)
            OR EXISTS (
              SELECT 1 FROM customer_addresses ca
              WHERE ca.customer_id = c.id
-               AND (lower(ca.address) LIKE ? OR lower(COALESCE(ca.notes, '')) LIKE ?)
+               AND (customer_search_text(ca.address) LIKE ? OR customer_search_text(ca.notes) LIKE ?)
            ))`);
       filterArguments.push(term, hasPhoneQuery ? 1 : 0, digits, term, term);
     }

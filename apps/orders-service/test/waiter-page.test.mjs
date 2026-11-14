@@ -89,7 +89,7 @@ test("waiter page persists draft and stable uncertain batch id, not credentials 
   assert.match(waiterHtml, /waiter\.getBatch/);
   assert.match(waiterHtml, /Pedido pendiente de revisión/);
   assert.match(waiterHtml, /Todavía no se envió a cocina/);
-  assert.match(waiterHtml, /El vínculo expiró o fue revocado/);
+  assert.match(waiterHtml, /Tu acceso venció o fue revocado/);
   assert.match(scriptTokens, /constcurrent=awaitrpc\('waiter\.getBatch'/);
 });
 

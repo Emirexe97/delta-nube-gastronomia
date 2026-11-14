@@ -253,9 +253,9 @@ export const waiterHtml = String.raw`<!doctype html>
     <main>
       <section id="pairing" class="card">
         <h2>Ingresar como mozo</h2>
-        <p class="muted" id="pairGuide">Escaneá el QR en caja e ingresá tu PIN.</p>
+        <p class="muted" id="pairGuide" hidden>Ingresá el PIN que te dieron en caja.</p>
         <div id="qrbox" hidden><div class="muted" id="qrtext"></div></div>
-        <form id="pairForm">
+        <form id="pairForm" hidden>
           <div class="row split"><label class="muted" for="pin">PIN</label><span class="help-wrap"><button class="help-trigger" type="button" aria-label="Ayuda sobre el PIN" aria-expanded="false" aria-controls="help-pin">?</button><span class="help-popover" id="help-pin" role="tooltip" hidden>Usá el PIN que te dieron en caja. Si no lo tenés, pedí que te vinculen.</span></span></div>
           <div class="row">
             <input
@@ -264,12 +264,14 @@ export const waiterHtml = String.raw`<!doctype html>
               type="password"
               inputmode="numeric"
               autocomplete="one-time-code"
+              pattern="[0-9]{4,8}"
+              title="Ingresá entre 4 y 8 dígitos"
               maxlength="8"
               required
-            /><button type="submit">Vincular</button>
+            /><button id="pairSubmit" type="submit">Vincular</button>
           </div>
         </form>
-        <div id="pairMessage" class="status" tabindex="-1" hidden></div>
+        <div id="pairMessage" class="status" role="status" aria-live="polite" tabindex="-1" hidden></div>
         <button id="retrySession" type="button" hidden>Reintentar conexión</button>
       </section>
       <section id="app" hidden>
@@ -347,7 +349,7 @@ export const waiterHtml = String.raw`<!doctype html>
         <textarea id="itemNote" maxlength="300" placeholder="Por ejemplo: sin cebolla"></textarea>
         <div class="row">
           <button type="button" class="secondary" id="cancelItem">Cancelar</button>
-          <button type="submit">Agregar al pedido</button>
+          <button id="saveItem" type="submit">Agregar al pedido</button>
         </div>
       </form>
     </dialog>
@@ -469,16 +471,13 @@ export const waiterHtml = String.raw`<!doctype html>
         let tenantId = fragment.get('tenant') || (tabToken && safeGet(sessionStorage, 'waiter:tenant:v1')) || device?.tenantId || '',
           terminalId = fragment.get('terminal') || (tabToken && safeGet(sessionStorage, 'waiter:terminal:v1')) || device?.terminalId || '',
           challengeId = fragment.get('challenge') || '';
-        if (challengeId) safeRemove(sessionStorage, TOKEN_KEY);
-        if (tenantId && terminalId) {
-          safeSet(sessionStorage, 'waiter:tenant:v1', tenantId);
-          safeSet(sessionStorage, 'waiter:terminal:v1', terminalId);
-        }
         if (location.hash) history.replaceState(null, '', location.pathname);
-        let token = '',
+        // Opening a QR in an existing tab may be a fragment-only navigation.
+        window.addEventListener('hashchange', () => { if (location.hash) location.reload(); });
+        let token = tabToken || '',
           state = null,
           selectedCategory = '',
-          challenge = null,
+          invitationHash = '', pairPending = false, pairReceipt = '', accessVersion = 0,
           oldShiftNotFoundId = '',
           oldShiftNotFoundSessionId = '',
           busy = false,
@@ -540,17 +539,16 @@ export const waiterHtml = String.raw`<!doctype html>
               const r = await request('/pair/' + encodeURIComponent(id), {
                 headers: { 'X-Waiter-Challenge': challengeId },
               });
-              if (r.status === 'completed') {
-                if (r.error) throw new Error(errorText(r.error));
-                return r.result;
-              }
-              if (r.status === 'expired' || r.status === 'failed')
-                throw new Error(errorText(r.error) || r.status);
+              if (r.error || r.status === 'failed' || r.status === 'expired')
+                throw Object.assign(new Error('pair'), {code: r.error?.code || r.error || (r.status === 'expired' ? 'pairing_expired' : 'pair_failed'), finished: true});
+              if (r.status === 'completed') return r.result;
+              if (i === 4) setMsg('pairMessage', 'Seguimos esperando la confirmación de caja. No hace falta volver a enviar el PIN.');
               await new Promise((resolve) => setTimeout(resolve, 1000));
             }
             throw new Error('request_timeout');
           },
           rpc = async (method, params = {}, stableId = newRequestId()) => {
+            const version = accessVersion;
             try {
               const queued = await request('/rpc', {
                 method: 'POST',
@@ -558,7 +556,7 @@ export const waiterHtml = String.raw`<!doctype html>
               });
               return await waitRequest(queued.requestId);
             } catch (error) {
-              if (accessEnded(error)) {
+              if (version === accessVersion && accessEnded(error)) {
                 endAccess('Tu acceso venció o fue revocado. Escaneá un QR nuevo en caja para continuar.');
               }
               throw error;
@@ -568,6 +566,7 @@ export const waiterHtml = String.raw`<!doctype html>
           return error.status === 401 || ['unauthorized','session_revoked'].includes(error.code);
         }
         function endAccess(message, forget = true) {
+          accessVersion++;
           if (forget && (!device?.generation || readDevice()?.generation === device.generation))
             safeRemove(localStorage, DEVICE_KEY);
           device = null; token = ''; state = null;
@@ -575,8 +574,9 @@ export const waiterHtml = String.raw`<!doctype html>
           safeRemove(sessionStorage, TAB_GENERATION);
           clearTimeout(watchTimer); clearTimeout(resumeTimer);
           setAppVisible(false); el('sendBar').hidden = true; el('pairing').hidden = false;
-          el('retrySession').hidden = true; el('pairForm').hidden = false; el('pairGuide').hidden = false;
+          el('retrySession').hidden = true; el('pairForm').hidden = true; el('pairGuide').hidden = true;
           el('connection').textContent = 'Sin vincular';
+          el('sessionExpiry').textContent = '';
           setMsg('pairMessage',message,'warn');
         }
         function replaceTab() {
@@ -699,8 +699,11 @@ export const waiterHtml = String.raw`<!doctype html>
               const withNote = document.createElement('button');
               withNote.className = 'secondary with-note';
               withNote.textContent = 'Nota';
-              withNote.setAttribute('aria-label', 'Agregar con observaciones: ' + info.textContent);
-              withNote.onclick = () => openItem(p);
+              withNote.setAttribute('aria-label', 'Observaciones: ' + info.textContent);
+              withNote.onclick = () => {
+                const units = draft.lines.filter(line => line.productId === productId(p) && !line.secondProductId);
+                openItem(p, units.find(line => !line.note?.trim()) || units[units.length - 1]);
+              };
               add.onclick = () => state.menu.halfAndHalfEnabled && p.halfEligible ? openItem(p) : addLine(p);
               if (!(state.menu.halfAndHalfEnabled && p.halfEligible)) control.append(withNote);
               control.append(add); row.append(info, control); ps.append(row);
@@ -728,6 +731,7 @@ export const waiterHtml = String.raw`<!doctype html>
             el('addedToast').hidden = true;
             tableDetail = null; detailVersion++; menuOpen = false;
             if (el('printDialog').open) el('printDialog').close();
+            if (el('itemDialog').open) el('itemDialog').close();
           }
         }
         async function loadTable() {
@@ -917,9 +921,10 @@ export const waiterHtml = String.raw`<!doctype html>
           }
         }
         const productId = (p) => String(p.id ?? p.productId);
-        let editingProductId = '';
-        function openItem(product) {
+        let editingProductId = '', noteTarget = null;
+        function openItem(product, existingLine = null) {
           editingProductId = productId(product);
+          noteTarget = existingLine && { lineId: existingLine.lineId, note: existingLine.note || '' };
           const others = state.menu.halfAndHalfEnabled && product.halfEligible
             ? allProducts().filter((p) => p.halfEligible && productId(p) !== editingProductId) : [];
           el('itemTitle').textContent = product.name || product.label;
@@ -930,7 +935,8 @@ export const waiterHtml = String.raw`<!doctype html>
           select.replaceChildren(new Option('Elegí la otra mitad', ''));
           for (const p of others) select.add(new Option(p.name || p.label, productId(p)));
           select.required = false;
-          el('itemNote').value = '';
+          el('itemNote').value = noteTarget?.note || '';
+          el('saveItem').textContent = noteTarget ? 'Guardar nota' : 'Agregar al pedido';
           el('itemDialog').showModal();
         }
         el('pizzaMode').onchange = () => {
@@ -941,6 +947,7 @@ export const waiterHtml = String.raw`<!doctype html>
         el('cancelItem').onclick = () => el('itemDialog').close();
         el('itemForm').onsubmit = (event) => {
           event.preventDefault();
+          if (!el('itemDialog').open || !state || busy || pending()) return;
           const first = allProducts().find((p) => productId(p) === editingProductId);
           const half = !el('pizzaOptions').hidden && el('pizzaMode').value === 'half';
           const second = half && allProducts().find((p) => productId(p) === el('secondProduct').value && p.halfEligible);
@@ -949,8 +956,36 @@ export const waiterHtml = String.raw`<!doctype html>
             setMsg('appMessage', 'El menú cambió. Volvé a elegir el producto.', 'warn');
             return;
           }
-          addLine(first, second || null, el('itemNote').value.trim());
+          const note = el('itemNote').value.trim();
+          if (noteTarget) {
+            const line = draft.lines.find(x => x.lineId === noteTarget.lineId && x.productId === editingProductId);
+            if (!line || (line.note || '') !== noteTarget.note) {
+              setMsg('appMessage', 'El borrador cambió. Volvé a elegir la unidad que querés anotar.', 'warn');
+              return;
+            }
+            if (note !== noteTarget.note) updateUnitNote(line, note);
+          } else addLine(first, second || null, note);
         };
+        function updateUnitNote(line, note) {
+          // Move one pending unit, never add to the order total.
+          const matching = draft.lines.find(x => x !== line && x.productId === line.productId &&
+            !x.secondProductId && (x.note || '') === note && x.quantity < 99);
+          if (matching) {
+            matching.quantity++;
+            if (--line.quantity === 0) draft.lines = draft.lines.filter(x => x !== line);
+          } else if (line.quantity === 1) {
+            line.note = note;
+          } else {
+            if (draft.lines.length >= 80) {
+              setMsg('appMessage', 'No hay lugar para separar una unidad con otra nota. El pedido no cambió.', 'warn');
+              return;
+            }
+            draft.lines.push({ ...line, lineId: newRequestId(), quantity: 1, note });
+            line.quantity--;
+          }
+          saveDraft();
+          render();
+        }
         function addLine(product, second = null, note = '') {
           if (!state || busy || pending()) return;
           const id = productId(product), secondId = second && productId(second);
@@ -1023,14 +1058,18 @@ export const waiterHtml = String.raw`<!doctype html>
           }
         }
         async function refresh() {
+          const version = accessVersion;
           try {
             const nextState = await rpc('waiter.getState');
-            if (tabReplaced) return;
-            if (device?.waiterId && (device.waiterId !== nextState.waiter?.id || device.cashSessionId !== nextState.cashSessionId)) {
+            if (version !== accessVersion || tabReplaced) return;
+            if (device?.waiterId && device.waiterId !== nextState.waiter?.id) {
               replaceTab(); return;
             }
+            if (device?.cashSessionId && device.cashSessionId !== nextState.cashSessionId) {
+              endAccess('Cambió el turno de caja. Escaneá un QR nuevo para ingresar.'); return;
+            }
             state = nextState;
-            const nextDevice = {tenantId, terminalId, waiterId: state.waiter?.id, cashSessionId: state.cashSessionId,
+            const nextDevice = {...device, tenantId, terminalId, waiterId: state.waiter?.id, cashSessionId: state.cashSessionId,
               generation: device?.generation || newRequestId()};
             if (safeSet(localStorage, DEVICE_KEY, JSON.stringify(nextDevice))) {
               device = nextDevice;
@@ -1075,63 +1114,66 @@ export const waiterHtml = String.raw`<!doctype html>
             if (p) await checkPending();
             else if (readWatch()) await checkPrint();
           } catch (e) {
-            if (tabReplaced) return;
+            if (version !== accessVersion || tabReplaced) return;
             el('connection').textContent = 'Desconectado';
-            const unauthorized = accessEnded(e);
-            setMsg(
-              'appMessage',
-              unauthorized
-                ? 'El vínculo expiró o fue revocado. Escaneá un QR vigente para volver a vincular; el borrador se conserva.'
-                : 'Sin conexión con caja. Tu pedido sigue guardado; tocá «Actualizar» para comprobarlo.',
-              'warn',
-            );
-            if (unauthorized) {
-              token = '';
-              safeRemove(sessionStorage, TOKEN_KEY);
-              state = null;
-              setAppVisible(false);
-              el('pairing').hidden = false;
-            } else if (!state && !challengeId && (token || device)) {
-              el('pairing').hidden = false;
-              el('pairForm').hidden = true; el('pairGuide').hidden = true;
-              el('retrySession').hidden = false;
-              setMsg('pairMessage', 'No pudimos conectar con caja. Tu vínculo se conserva; no necesitás otro QR.', 'warn');
+            setMsg('appMessage', 'Sin conexión con caja. Tu pedido sigue guardado; tocá «Actualizar» para comprobarlo.', 'warn');
+            if (!challengeId && (token || device)) {
+              if (!state) {
+                el('pairing').hidden = false;
+                el('pairForm').hidden = true; el('pairGuide').hidden = true;
+                el('retrySession').hidden = false;
+                setMsg('pairMessage', 'No pudimos conectar con caja. Tu vínculo se conserva; no necesitás otro QR.', 'warn');
+              }
               scheduleResume();
             }
           }
         }
-        async function loadChallenge() {
-          challenge = { tenantId, terminalId, challengeId };
-          el('qrbox').hidden = true;
-          if (!challengeId)
-            setMsg('pairMessage', 'Escaneá un QR nuevo en caja para ingresar.', 'warn');
-        }
         el('pairForm').onsubmit = async (e) => {
           e.preventDefault();
-          if (!challenge) await loadChallenge();
-          if (!challengeId) return;
+          if (!challengeId || pairPending || tabReplaced) return;
+          pairPending = true;
+          el('pairSubmit').disabled = true; el('pin').disabled = true;
+          el('pairSubmit').textContent = 'Verificando…';
+          el('pairForm').setAttribute('aria-busy', 'true');
+          setMsg('pairMessage', pairReceipt ? 'Consultando la respuesta de caja…' : 'Verificando tu PIN con caja…');
           try {
-            const queued = await request('/pair', {
-              method: 'POST',
-              body: JSON.stringify({ tenantId, terminalId, challengeId, pin: el('pin').value }),
-            });
-            const result = await waitPair(queued.requestId);
+            if (!pairReceipt) {
+              const queued = await request('/pair', {
+                method: 'POST',
+                body: JSON.stringify({ tenantId, terminalId, challengeId, pin: el('pin').value }),
+              });
+              pairReceipt = queued.requestId;
+              el('pin').value = '';
+            }
+            const result = await waitPair(pairReceipt);
             token = result.sessionToken;
-            const pairedDevice = {tenantId, terminalId, generation: newRequestId()};
+            const pairedDevice = {tenantId, terminalId, invitationHash, generation: newRequestId()};
             device = safeSet(localStorage, DEVICE_KEY, JSON.stringify(pairedDevice)) ? pairedDevice : null;
+            safeSet(sessionStorage, 'waiter:tenant:v1', tenantId);
+            safeSet(sessionStorage, 'waiter:terminal:v1', terminalId);
             safeSet(sessionStorage, TAB_GENERATION, pairedDevice.generation);
             safeSet(sessionStorage, TOKEN_KEY, token);
-            el('pin').value = '';
-            challengeId = '';
+            challengeId = ''; pairReceipt = '';
+            el('pairForm').hidden = true; el('pairGuide').hidden = true;
+            setMsg('pairMessage', 'PIN aceptado. Cargando tus mesas…');
             await refresh();
           } catch (err) {
-            setMsg(
-              'pairMessage',
-              err.message === 'invalid_pin'
-                ? 'PIN incorrecto.'
-                : 'No se pudo vincular. Verificá el PIN y volvé a escanear si expiró la invitación.',
-              'error',
-            );
+            if (err.finished || err.code === 'pairing_expired' || err.status === 404 || err.status === 401) {
+              challengeId = ''; pairReceipt = ''; el('pin').value = '';
+              el('pairForm').hidden = true; el('pairGuide').hidden = true;
+              setMsg('pairMessage', err.code === 'invalid_pin' ? 'PIN incorrecto. Pedí un QR nuevo en caja para volver a intentar.'
+                : err.code === 'pairing_expired' ? 'El QR venció o ya fue usado. Pedí un QR nuevo en caja.'
+                : 'Caja no confirmó el ingreso. Verificá tu PIN y pedí un QR nuevo en caja.', 'error');
+            } else {
+              setMsg('pairMessage', pairReceipt ? 'No pudimos leer la respuesta de caja. Recuperá la conexión y tocá «Consultar estado»; no reenvíes el PIN.'
+                : err.status === 429 ? 'Hay demasiados intentos. Esperá un momento antes de volver a intentar.'
+                : 'No pudimos confirmar el envío del PIN. Comprobá la conexión y volvé a intentar.', 'warn');
+            }
+          } finally {
+            pairPending = false;
+            el('pairForm').removeAttribute('aria-busy');
+            el('pin').disabled = !!pairReceipt; el('pairSubmit').disabled = false;
+            el('pairSubmit').textContent = pairReceipt ? 'Consultar estado' : 'Vincular';
           }
         };
         el('table').onchange = () => {
@@ -1197,7 +1239,7 @@ export const waiterHtml = String.raw`<!doctype html>
             render();
           }
         };
-        el('reconnect').onclick = refresh;
+        el('reconnect').onclick = resume;
         async function sendBatch(printMode) {
           if (!state || busy || pending() || !draft.lines.length) return;
           if (state.waiterTableWorkflow && (!tableDetail || (tableDetail.orderId || null) !== draft.expectedOrderId ||
@@ -1513,7 +1555,6 @@ export const waiterHtml = String.raw`<!doctype html>
           }
           endAccess('Dispositivo desvinculado. Escaneá un QR nuevo para volver a ingresar.');
         };
-        token = safeGet(sessionStorage, TOKEN_KEY) || '';
         let resuming = false, resumeTimer = null, resumeDelay = 3000;
         function scheduleResume() {
           clearTimeout(resumeTimer);
@@ -1523,19 +1564,41 @@ export const waiterHtml = String.raw`<!doctype html>
           }
         }
         async function resume() {
-          if (resuming || tabReplaced || challengeId || !(token || device)) return;
+          if (resuming || pairPending || tabReplaced || challengeId || !(token || device)) return;
           clearTimeout(resumeTimer);
           resuming = true;
-          el('pairForm').hidden = true; el('pairGuide').hidden = true;
-          el('retrySession').hidden = true;
-          setMsg('pairMessage','Reconectando con caja…');
+          if (!state) {
+            el('pairForm').hidden = true; el('pairGuide').hidden = true;
+            el('retrySession').hidden = true;
+            setMsg('pairMessage','Reconectando con caja…');
+          }
           try { await refresh(); } finally { resuming = false; }
         }
         el('retrySession').onclick = resume;
-        window.addEventListener('online', () => { if (!state) void resume(); });
-        document.addEventListener('visibilitychange', () => { if (!document.hidden && !state) void resume(); });
-        if (!challengeId && (token || device)) void resume();
-        else loadChallenge();
+        window.addEventListener('online', resume);
+        window.addEventListener('pageshow', e => { if (e.persisted) void resume(); });
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) void resume(); });
+        async function start() {
+          if (challengeId) {
+            // Invitations are per waiter, not per terminal. Remember only a digest
+            // of the consumed invitation; a different QR still needs its own PIN.
+            if (crypto.subtle) {
+              const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(challengeId));
+              invitationHash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+            }
+            if (invitationHash && device?.invitationHash === invitationHash && device.tenantId === tenantId && device.terminalId === terminalId) {
+              challengeId = '';
+            } else {
+              token = ''; device = null;
+              safeRemove(sessionStorage, TOKEN_KEY);
+              el('pairGuide').hidden = false; el('pairForm').hidden = false;
+              return;
+            }
+          }
+          if (token || device) await resume();
+          else setMsg('pairMessage', 'Escaneá un QR nuevo en caja para ingresar.', 'warn');
+        }
+        void start();
       })();
     </script>
   </body>

@@ -14,6 +14,31 @@ const request = (lines: unknown[]) => ({
   params: { requestId: "b".repeat(16), tableId: "table-1", expectedOrderId: null, lines },
 });
 const line = (extra: Record<string, unknown> = {}) => ({ lineId: "line-1234", productId: "pizza-a", quantity: 1, ...extra });
+const pairRequest = {
+  requestId: "p".repeat(16),
+  kind: "pair" as const,
+  method: "waiter.pair",
+  expiresAt: Date.now() + 10_000,
+  params: { challengeId: "c".repeat(32), pin: "1234" },
+};
+
+test("pairing exposes safe PIN and expired-QR errors without leaking repository messages", () => {
+  const run = (message: string) => handleWaiterRequest({
+    pairWaiterSession: () => { throw new Error(message); },
+  } as any, pairRequest, () => {});
+
+  assert.throws(() => run("PIN de mozo incorrecto."), (e: unknown) =>
+    e instanceof WaiterRequestError && e.code === "invalid_pin" && e.message === "El PIN del mozo es incorrecto.");
+  for (const message of [
+    "El QR venció o fue bloqueado. Generá uno nuevo en la caja.",
+    "El QR pertenece a otro turno.",
+  ]) {
+    assert.throws(() => run(message), (e: unknown) =>
+      e instanceof WaiterRequestError && e.code === "pairing_expired" && !e.message.includes(message));
+  }
+  assert.throws(() => run("SQLITE_CONSTRAINT: confidential internal detail"), (e: unknown) =>
+    e instanceof WaiterRequestError && e.code === "pair_failed" && !e.message.includes("confidential"));
+});
 
 test("waiter RPC preserves optional second half and classifies pizza validation as rejected", () => {
   let submitted: any;

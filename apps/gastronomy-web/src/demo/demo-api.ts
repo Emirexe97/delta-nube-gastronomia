@@ -225,6 +225,8 @@ const clone = <T>(value: T): T => structuredClone(value);
 const now = () => new Date().toISOString();
 const today = () => now().slice(0, 10);
 const normalizePhone = (value: string) => value.replace(/\D/g, "");
+const normalizeCustomerSearch = (value: string) =>
+  value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es-AR");
 const uid = (prefix: string, state: DemoState) =>
   `${prefix}-demo-${++state.sequence}`;
 const legacySeedStock = new Map<string, number>([
@@ -1662,7 +1664,7 @@ export function createDemoApi(
     query: string,
     status: "ACTIVE" | "ARCHIVED" | "ALL" = "ACTIVE",
   ) => {
-    const normalized = query.trim().toLocaleLowerCase("es");
+    const normalized = normalizeCustomerSearch(query.trim());
     const digits = query.replace(/\D/g, "");
     const hasPhoneQuery = digits.length > 0 && !/[a-záéíóúñü]/i.test(query);
     return state.customers
@@ -1673,8 +1675,7 @@ export function createDemoApi(
           (!normalized ||
             (hasPhoneQuery &&
               customer.phone.replace(/\D/g, "").includes(digits)) ||
-            `${customer.name} ${customer.phone} ${customer.addresses.map((address) => `${address.address} ${address.notes ?? ""}`).join(" ")}`
-              .toLocaleLowerCase("es")
+            normalizeCustomerSearch(`${customer.name} ${customer.phone} ${customer.addresses.map((address) => `${address.address} ${address.notes ?? ""}`).join(" ")}`)
               .includes(normalized)),
       )
       .map((customer) => {

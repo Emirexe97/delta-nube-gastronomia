@@ -339,7 +339,8 @@ test("QR sin impresora, tandas con y sin comandero y revocación", async ({
     await pos.getByRole("tab", { name: "Modo Mozo", exact: true }).click();
     await panel.getByRole("button", { name: "Revocar", exact: true }).click();
     await phone.locator("#reconnect").click();
-    await expect(phone.locator("#pin")).toBeVisible({ timeout: 12000 });
+    await expect(phone.locator("#pin")).toBeHidden({ timeout: 12000 });
+    await expect(phone.locator("#pairMessage")).toContainText(/QR nuevo/i);
     expect(await tickets()).toHaveLength(4);
   } finally {
     await app

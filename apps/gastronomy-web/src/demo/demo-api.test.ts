@@ -20,6 +20,25 @@ class MemoryStorage implements DemoStorage {
 }
 
 describe("API de demostración", () => {
+  it("busca clientes con o sin tildes en nombre, dirección y observación antes de paginar", async () => {
+    const api = createDemoApi(new MemoryStorage());
+    const accented = await api.createCustomer({ name: "HÉCTOR Pérez", phone: "11 5555-1001",
+      addresses: [{ label: "Casa", address: "Avenida Córdoba 123", notes: "Portón marrón" }] });
+    const plain = await api.createCustomer({ name: "Hector Gomez", phone: "11 5555-1002" });
+    const decomposed = await api.createCustomer({ name: "He\u0301ctor López", phone: "11 5555-1003" });
+    for (const query of ["Hector", "Héctor", "HÉCTOR", "He\u0301ctor"]) {
+      expect((await api.searchCustomers(query)).map(c => c.id).sort())
+        .toEqual([accented.id, plain.id, decomposed.id].sort());
+      const page = await api.searchCustomersPage({ query, page: 2, pageSize: 2 });
+      expect(page.total).toBe(3);
+      expect(page.items).toHaveLength(1);
+    }
+    for (const query of ["Cordoba", "CÓRDOBA", "porton marron"]) {
+      expect((await api.searchCustomers(query)).map(c => c.id)).toEqual([accented.id]);
+    }
+    expect((await api.searchCustomers("55551002"))[0]?.id).toBe(plain.id);
+    expect((await api.searchCustomers("Hector")).find(c => c.id === accented.id)?.name).toBe(accented.name);
+  });
   it("aplica redondeo y parches de precios propios de forma atómica", async () => {
     const storage = new MemoryStorage();
     const api = createDemoApi(storage);

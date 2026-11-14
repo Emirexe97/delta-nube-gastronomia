@@ -81,10 +81,12 @@ test("QR móvil agrega pizzas enteras o mitad y mitad con notas independientes",
     await expect(productNote).toBeVisible();
     await expect(productNote).toBeEditable();
     await productNote.fill("Sin sal");
-    await page.getByRole("button", { name: "Agregar con observaciones: Empanada" }).click();
+    // A second empanada is deliberate: + changes quantity, Nota only personalizes it.
+    await page.getByRole("button", { name: "Agregar Empanada", exact: true }).click();
+    await page.getByRole("button", { name: "Observaciones: Empanada", exact: true }).click();
     await expect(dialog.getByLabel("Tipo de pizza")).toBeHidden();
     await dialog.getByLabel("Observaciones").fill("Sin cebolla");
-    await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
+    await dialog.getByRole("button", { name: "Guardar nota", exact: true }).click();
 
     await page.locator("#send").click();
     await expect.poll(() => submitted.length).toBe(5);
