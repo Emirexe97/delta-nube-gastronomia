@@ -19,6 +19,7 @@ export type TenantSite = {
   accent: string;
   design_mode: "STANDARD" | "CUSTOM";
   template_key: string | null;
+  access_until?: string | null;
 };
 export type TenantStorefrontOptions = {
   dbPath: string;
@@ -147,6 +148,11 @@ export function createTenantStorefront(options: TenantStorefrontOptions) {
       "referrer-policy": "no-referrer",
       "content-security-policy": `default-src 'self'; script-src 'sha256-${storefrontScriptCspHash}'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
     };
+    const expired = site.access_until !== null && site.access_until !== undefined && Date.now() >= Date.parse(site.access_until);
+    if (expired && req.method === "GET" && url.pathname === "/") {
+      res.writeHead(200, headers); res.end("<!doctype html><html lang=\"es\"><meta charset=\"utf-8\"><title>Sitio pausado</title><h1>Sitio pausado</h1><p>La publicación está temporalmente pausada.</p></html>"); return true;
+    }
+    if (expired && ((req.method === "GET" && url.pathname === "/api/catalog") || (req.method === "POST" && url.pathname === "/api/checkout"))) { json(res, 403, { error: "site_expired" }); return true; }
     if (req.method === "GET" && url.pathname === "/") {
       const catalog = db.getCatalog(site.store_id);
       const html = renderTenantStorefront(site, Boolean(catalog));

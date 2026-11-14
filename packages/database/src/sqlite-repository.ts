@@ -285,8 +285,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     hashes: Map<string, string>;
   } | null = null;
 
-  /** Yield during expensive bcrypt work, then recheck the credential snapshot
-   * and run the original authorization/write/audit in one synchronous transaction.
+  /** Yield during expensive bcrypt work once per PIN/hash for this command,
+   * then recheck the credential snapshot and run authorization/write/audit in
+   * one synchronous transaction. Permission and identity checks still run on
+   * each call; only cryptographic comparisons are reused within this command.
    * Never hold a SQLite transaction across an await or reuse this work later. */
   async withPreparedUserPins<T>(input: unknown, operation: () => T): Promise<T> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
@@ -295,6 +297,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const readCredentials = () => this.db.prepare("SELECT id,pin_hash FROM users WHERE active=1 ORDER BY id")
       .all() as { id: string; pin_hash: string }[];
     const snapshot = readCredentials();
+    const cashSessionId = this.getOpenCashSessionRow()?.id ?? null;
     const comparisons = new Map<string, Map<string, boolean>>();
     const hashes = new Map<string, string>();
     try {
@@ -309,12 +312,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       return this.db.transaction(() => {
         if (JSON.stringify(readCredentials()) !== JSON.stringify(snapshot))
           throw new Error("Los usuarios cambiaron mientras se verificaba el PIN. Volvé a guardar.");
+        if ((this.getOpenCashSessionRow()?.id ?? null) !== cashSessionId)
+          throw new Error("Cambió el turno de caja mientras se verificaba el PIN. Revisá el movimiento y volvé a intentar.");
         if (this.preparedUserPins) throw new Error("Ya hay un cambio de usuario en curso.");
         this.preparedUserPins = { comparisons, hashes };
         try {
           const result = operation();
           if (result && typeof (result as { then?: unknown }).then === "function")
-            throw new Error("El guardado del usuario debe ser una operación sincrónica.");
+            throw new Error("El guardado autorizado debe ser una operación sincrónica.");
           return result;
         } finally { this.preparedUserPins = null; }
       })();

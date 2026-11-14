@@ -100,3 +100,61 @@ test("finance expense requests an authorization PIN and preserves entered detail
   );
   expect(authorizer).toBeTruthy();
 });
+
+test("cash movement shows authorization verification and blocks repeat submits while IPC is pending", async () => {
+  await app.evaluate(({ ipcMain }) => {
+    const original = (ipcMain as any)._invokeHandlers.get("gastronomy:registerCashMovement");
+    if (typeof original !== "function") throw Error("Cash movement IPC handler missing");
+    (globalThis as any).__movementCalls = 0;
+    ipcMain.removeHandler("gastronomy:registerCashMovement");
+    ipcMain.handle("gastronomy:registerCashMovement", async (event, input) => {
+      (globalThis as any).__movementCalls++;
+      await new Promise<void>((resolve) => { (globalThis as any).__releaseMovement = resolve; });
+      return original(event, input);
+    });
+  });
+  await page.getByRole("link", { name: "Caja", exact: true }).click();
+  await page.getByRole("button", { name: /Registrar movimiento/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Movimiento de caja" });
+  await dialog.getByLabel("Tipo").selectOption("WITHDRAWAL");
+  await dialog.getByLabel("Importe").fill("1250");
+  await dialog.getByLabel("Motivo").fill("Retiro pendiente UX");
+  await dialog.getByLabel("PIN de autorización").fill("748259");
+  const submit = dialog.getByRole("button", { name: "Registrar" });
+  await submit.click();
+  await expect(dialog.getByRole("button", { name: "Verificando autorización…" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Cancelar" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Verificando autorización…" }).click({ force: true });
+  await dialog.locator("form").evaluate((form: HTMLFormElement) => form.requestSubmit());
+  expect(await app.evaluate(() => (globalThis as any).__movementCalls)).toBe(1);
+  await app.evaluate(() => (globalThis as any).__releaseMovement());
+  await expect(dialog).toBeHidden();
+});
+
+test("finance expense shows authorization verification while IPC is pending", async () => {
+  await app.evaluate(({ ipcMain }) => {
+    const original = (ipcMain as any)._invokeHandlers.get("gastronomy:createFinanceExpense");
+    if (typeof original !== "function") throw Error("Finance expense IPC handler missing");
+    (globalThis as any).__expenseCalls = 0;
+    ipcMain.removeHandler("gastronomy:createFinanceExpense");
+    ipcMain.handle("gastronomy:createFinanceExpense", async (event, input) => {
+      (globalThis as any).__expenseCalls++;
+      await new Promise<void>((resolve) => { (globalThis as any).__releaseExpense = resolve; });
+      return original(event, input);
+    });
+  });
+  await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByLabel("Categoría").fill("Prueba UX");
+  await page.getByLabel("Concepto").fill("Gasto pendiente UX");
+  await page.getByLabel("Importe").fill("1500");
+  await page.getByLabel("PIN de autorización").fill("748259");
+  const submit = page.getByRole("button", { name: "Registrar gasto", exact: true });
+  await submit.click();
+  await expect(page.getByRole("button", { name: "Verificando autorización y procesando…" })).toBeDisabled();
+  await page.getByRole("button", { name: "Verificando autorización y procesando…" }).click({ force: true });
+  await page.getByRole("button", { name: "Verificando autorización y procesando…" })
+    .evaluate((button: HTMLButtonElement) => button.form?.requestSubmit());
+  expect(await app.evaluate(() => (globalThis as any).__expenseCalls)).toBe(1);
+  await app.evaluate(() => (globalThis as any).__releaseExpense());
+  await expect(page.getByLabel("Concepto")).toHaveValue("");
+});

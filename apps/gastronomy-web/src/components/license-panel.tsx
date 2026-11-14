@@ -101,7 +101,7 @@ export function LicensePanel() {
       <div className="border-b border-slate-100 bg-gradient-to-r from-brand-50/70 to-white px-4 py-4">
         <h3 className="text-sm font-bold">Licencia</h3>
         <p className="mt-1 text-xs text-slate-600">
-          Estado del acceso de este equipo y período contratado.
+          Estado y vigencia del permiso de este equipo.
         </p>
       </div>
       <div className="grid gap-4 p-4">
@@ -131,6 +131,11 @@ export function LicensePanel() {
                 {status.message}
               </p>
             ) : null}
+            {status.trial ? (
+              <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900">
+                Prueba gratuita · {remainingDays(status.trial.endsAt) ?? 0} días restantes. Al finalizar no hay período de gracia.
+              </p>
+            ) : null}
             {status.account?.email ? <Info label="Cuenta de licencia" value={status.account.email} extra="Este equipo conserva su permiso local. No necesita iniciar sesión en cada venta." /> : null}
             {status.state !== "DEVELOPMENT" ? (
               <form className="grid gap-3 rounded-xl border border-brand-100 bg-brand-50/30 p-3" onSubmit={(event) => {
@@ -141,7 +146,7 @@ export function LicensePanel() {
               }}>
                 <div>
                   <h4 className="text-sm font-bold">Ingresar con mi cuenta</h4>
-                  <p className="mt-1 text-xs leading-5 text-slate-600">Usá la cuenta de licencia que te habilitó Delta Nube. Se vincula a esta PC; no es el PIN del cajero ni del mozo. Internet se necesita para activar o actualizar el permiso, no para cada pedido local.</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">Usá la cuenta de tu negocio. Si te registraste para probar el sistema, el primer ingreso inicia la prueba gratuita de 30 días y la vincula a esta PC; no se solicita tarjeta. No es el PIN del cajero ni del mozo. Internet se necesita para activar o actualizar el permiso, no para cada pedido local.</p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Field label="Correo de la cuenta"><Input type="email" autoComplete="username" required maxLength={254} value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
@@ -153,7 +158,7 @@ export function LicensePanel() {
             ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               <Info
-                label="Período abonado hasta"
+                label={status.trial ? "Vigencia de la prueba hasta" : "Vigencia abonada hasta"}
                 value={exclusiveDate(status.paidThrough)}
                 extra={
                   remainingDays(status.paidThrough) != null
@@ -161,7 +166,7 @@ export function LicensePanel() {
                     : undefined
                 }
               />
-              {status.graceUntil ? (
+              {!status.trial && status.graceUntil ? (
                 <Info
                   label="Gracia hasta"
                   value={exclusiveDate(status.graceUntil)}

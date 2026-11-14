@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es-AR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f5f7fa" />
+    <title>Recuperar acceso — Delta Nube Gastronomía</title>
+    <link rel="stylesheet" href="/public-assets/account.css" />
+    <script src="/public-assets/account.js" defer></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Saltar al contenido</a>
+    <header>
+      <a class="brand" href="/">DELTA NUBE <span>/ GASTRONOMÍA</span></a
+      ><a href="/registro/">Crear cuenta</a>
+    </header>
+    <main id="main" class="shell">
+      <section class="intro">
+        <p class="eyebrow">VOLVÉ A ENTRAR</p>
+        <h1>Recuperá tu acceso.</h1>
+        <p>
+          Te enviamos un enlace seguro a tu correo para que elijas una nueva
+          contraseña.
+        </p>
+      </section>
+      <section class="card">
+        <h2 id="title">Restablecer contraseña</h2>
+        <p id="intro">Ingresá el correo asociado a tu cuenta.</p>
+        <form id="form" novalidate>
+          <label for="email">Correo electrónico</label
+          ><input
+            id="email"
+            name="email"
+            type="email"
+            autocomplete="email"
+            required
+          /><button type="submit">Enviar enlace</button>
+        </form>
+        <p id="status" role="status" aria-live="polite"></p>
+        <nav>
+          <a href="/registro/">Crear cuenta</a
+          ><a href="/descargas/">Descargar el programa</a>
+        </nav>
+      </section>
+    </main>
+    <footer>
+      <a href="/registro/">Crear cuenta</a
+      ><a href="/recuperar/">Recuperar contraseña</a
+      ><a href="/descargas/">Descargas</a><span>© Delta Nube Gastronomía</span>
+    </footer>
+  </body>
+</html>

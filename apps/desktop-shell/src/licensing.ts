@@ -68,6 +68,7 @@ export class DesktopLicensing {
     null;
   private enrollmentError: string | null = null;
   private webSiteProvisioner: ((ticket: string, signup: WebSiteChoice) => Promise<{ state?: string }>) | null = null;
+  private refreshWebSiteAccess: ((ticket: string) => Promise<unknown>) | null = null;
   private getWebSiteChoice: (() => WebSiteChoice | null) | null = null;
   private selectWebSiteChoice: ((signup: WebSiteChoice) => Promise<unknown>) | null = null;
   private getWebSiteStatus: (() => { state?: string }) | null = null;
@@ -254,7 +255,7 @@ export class DesktopLicensing {
         "EXPIRED",
         false,
         lease,
-        "El período de licencia y gracia venció. Renovala para continuar operando.",
+        lease.trial ? "La prueba gratuita venció. Activá una licencia para continuar operando." : "El período de licencia y gracia venció. Renovala para continuar operando.",
       );
     const message = this.lastFailure
       ? this.failureMessage("")
@@ -303,6 +304,7 @@ export class DesktopLicensing {
       businessName: lease?.businessName ?? null,
       paidThrough: lease?.paidThrough ?? null,
       graceUntil: lease?.graceUntil ?? null,
+      ...(lease?.trial ? { trial: { ...lease.trial } } : {}),
       lastVerifiedAt: this.state.lastVerifiedAt,
       verificationOverdue:
         !!lease &&
@@ -316,8 +318,8 @@ export class DesktopLicensing {
   activate(code: string) {
     return this.enqueue(() => { this.lastFailure = null; return this.online("/v1/activate", { code }); });
   }
-  setWebSiteProvisioner(handlers: { provision: (ticket: string, signup: WebSiteChoice) => Promise<{ state?: string }>; getChoice: () => WebSiteChoice | null; selectChoice: (signup: WebSiteChoice) => Promise<unknown>; getStatus: () => { state?: string } }) {
-    this.webSiteProvisioner = handlers.provision; this.getWebSiteChoice = handlers.getChoice; this.selectWebSiteChoice = handlers.selectChoice; this.getWebSiteStatus = handlers.getStatus;
+  setWebSiteProvisioner(handlers: { provision: (ticket: string, signup: WebSiteChoice) => Promise<{ state?: string }>; refreshAccess?: (ticket: string) => Promise<unknown>; getChoice: () => WebSiteChoice | null; selectChoice: (signup: WebSiteChoice) => Promise<unknown>; getStatus: () => { state?: string } }) {
+    this.webSiteProvisioner = handlers.provision; this.refreshWebSiteAccess = handlers.refreshAccess ?? null; this.getWebSiteChoice = handlers.getChoice; this.selectWebSiteChoice = handlers.selectChoice; this.getWebSiteStatus = handlers.getStatus;
   }
   setWaiterProvisioner(provision: (ticket: string, identity: { installationId: string; licenseId: string }) => Promise<unknown>) {
     this.waiterProvisioner = provision;
@@ -434,7 +436,7 @@ export class DesktopLicensing {
       const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
       let response: Response; let raw: string;
       try {
-        response = await this.fetcher(new URL("/v2/accounts/activate", this.config.serverUrl), { method: "POST", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password: input.password, installationId: this.state.installationId, publicKey: this.identity!.publicKey, challengeId: challenge.challengeId, signature }), signal: controller.signal });
+        response = await this.fetcher(new URL("/v2/accounts/activate", this.config.serverUrl), { method: "POST", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password: input.password, installationId: this.state.installationId, publicKey: this.identity!.publicKey, challengeId: challenge.challengeId, signature, trialProtocol: 1 }), signal: controller.signal });
         raw = await this.readBoundedBody(response, controller.signal);
       } finally { clearTimeout(timer); }
       if (!response.ok) { let code = ""; try { code = String((JSON.parse(raw) as any).error ?? ""); } catch {} throw new Error(`account:${accountError(code, response.status)}`); }
@@ -476,7 +478,8 @@ export class DesktopLicensing {
     return this.getWebSiteStatus();
   }
   retryWebSiteProvisioning() {
-    if (!this.identity || this.enrollment.status !== "APPROVED" || !this.getWebSiteChoice?.() || this.getWebSiteStatus?.().state === "ACTIVE" || this.now() < this.webSiteRetryAt) return Promise.resolve(this.getWebSiteStatus?.());
+    const activeSite = this.getWebSiteStatus?.().state === "ACTIVE";
+    if (!this.identity || this.enrollment.status !== "APPROVED" || (!activeSite && !this.getWebSiteChoice?.()) || (!activeSite && this.now() < this.webSiteRetryAt) || (activeSite && (!this.refreshWebSiteAccess || this.webSiteFailures === 0 || this.now() < this.webSiteRetryAt))) return Promise.resolve(this.getWebSiteStatus?.());
     return this.refresh();
   }
   requestLicenseAccess(input: { businessName: string; webSite?: WebSiteChoice }) {
@@ -573,8 +576,14 @@ export class DesktopLicensing {
   }
   private async acceptWebSiteTicket(ticket: string) {
     if (!/^[A-Za-z0-9._~+\/-]{20,4096}={0,2}$/.test(ticket)) throw new ResponseProblem("invalid");
-    if (!this.webSiteProvisioner || !this.getWebSiteChoice || this.now() < this.webSiteRetryAt) return;
-    const choice = this.getWebSiteChoice(); if (!choice || this.getWebSiteStatus?.().state === "ACTIVE") return;
+    if (this.now() < this.webSiteRetryAt) return;
+    const choice = this.getWebSiteChoice?.();
+    if (this.getWebSiteStatus?.().state === "ACTIVE") {
+      if (!this.refreshWebSiteAccess) return;
+      try { await this.refreshWebSiteAccess(ticket); this.webSiteFailures = 0; this.webSiteRetryAt = 0; } catch { this.scheduleWebSiteRetry(); }
+      return;
+    }
+    if (!choice || !this.webSiteProvisioner) return;
     try {
       const status = await this.webSiteProvisioner(ticket, choice);
       if (status.state === "ACTIVE") { this.webSiteFailures = 0; this.webSiteRetryAt = 0; }
@@ -785,6 +794,7 @@ function mapAiError(
 }
 
 function accountError(code: string, status: number): string {
+  if (code === "trial_client_update_required") return "Actualizá la aplicación para iniciar la prueba gratuita.";
   if (code === "invalid_credentials") return "Email o contraseña incorrectos.";
   if (code === "installation_mismatch") return "Esta cuenta no puede activarse en esta instalación. Contactá a soporte.";
   if (code === "rate_limited" || status === 429) return "Demasiados intentos. Esperá un momento y volvé a intentar.";

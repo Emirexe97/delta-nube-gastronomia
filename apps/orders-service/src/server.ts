@@ -309,6 +309,15 @@ export function createOrdersServer(options: OrdersServerOptions): {
           receiveToken,
         });
       }
+      if (req.method === "POST" && url.pathname === "/v1/web-sites/access") {
+        if (!options.provisioning) error(404, "not_found");
+        if (!isJson(req)) error(415, "unsupported_media_type");
+        const body = await readJson(req) as Record<string, unknown>;
+        if (!body || Object.keys(body).length !== 1 || typeof body.ticket !== "string") error(400, "bad_request");
+        let claims; try { claims = verifyWebSiteTicket(body.ticket, options.provisioning.secret); } catch { error(401, "unauthorized"); }
+        if (claims.accessUntil) store.extendTenantAccess(claims.licenseId, claims.installationId, claims.accessUntil);
+        return json(res, 200, { ok: true });
+      }
       if (req.method === "POST" && url.pathname === "/v1/waiter-connections") {
         if (!waiterRelay) error(404, "not_found");
         const secret = options.waiterProvisionSecret ?? options.provisioning?.secret;
@@ -392,6 +401,7 @@ export function createOrdersServer(options: OrdersServerOptions): {
       if (url.pathname === "/v1/web-catalog" && req.method === "GET") {
         if (!scope || scope.role !== "submit" || !scope.siteId)
           error(401, "unauthorized");
+        if (store.tenantAccessExpired(scope.storeId)) error(403, "site_expired");
         const catalog = store.getCatalog(scope.storeId);
         return catalog
           ? json(res, 200, catalog)
@@ -404,6 +414,7 @@ export function createOrdersServer(options: OrdersServerOptions): {
           error(400, "bad_request");
         if (!scope || scope.role !== "submit" || !scope.siteId)
           error(401, "unauthorized");
+        if (store.tenantAccessExpired(scope.storeId)) error(403, "site_expired");
         const result = store.submit(
           scope.storeId,
           scope.siteId,
@@ -465,7 +476,7 @@ export function createOrdersServer(options: OrdersServerOptions): {
       return json(res, status, {
         error:
           typeof candidate.code === "string" &&
-          ["pairing_expired", "queue_full"].includes(candidate.code)
+          ["pairing_expired", "queue_full", "site_expired"].includes(candidate.code)
             ? candidate.code
             :
           status === 409 &&

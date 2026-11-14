@@ -847,7 +847,11 @@ function registerIpcHandlers() {
         payload.terminalId = require("node:os").hostname();
       }
       const invoke = () => target.call(appService, payload);
-      const result = userWrites.has(method)
+      // Prepare bcrypt only for this command; the repository still resolves
+      // identity and permissions inside the synchronous write transaction.
+      const hasAuthorizerPin = payload !== null && typeof payload === "object" &&
+        Object.prototype.hasOwnProperty.call(payload, "authorizerPin");
+      const result = userWrites.has(method) || hasAuthorizerPin
         ? await localRepository.withPreparedUserPins(payload, invoke)
         : await invoke();
       if (catalogWrites.has(method)) catalogChanged();
@@ -1169,7 +1173,7 @@ app
     await licensing.initialize();
     webSite = new WebSiteProvisioning({ userDataPath: app.getPath("userData"), baseUrl: process.env.GASTRONOMY_WEB_PROVISION_URL ?? "https://pedidos.deltanubeweb.com", env: webCommerceEnv, safeStorage: electronSafeStorage, installationId: () => webInstallationId, onConfigured: () => { webCommerce.invalidate(); void pollWebCommerce(); } });
     await webSite.initialize();
-    licensing.setWebSiteProvisioner({ provision: (ticket, signup) => webSite!.provision(ticket, signup), getChoice: () => webSite!.selectedSignup(), selectChoice: (signup) => webSite!.select(signup), getStatus: () => webSite!.status() });
+    licensing.setWebSiteProvisioner({ provision: (ticket, signup) => webSite!.provision(ticket, signup), refreshAccess: (ticket) => webSite!.refreshAccess(ticket), getChoice: () => webSite!.selectedSignup(), selectChoice: (signup) => webSite!.select(signup), getStatus: () => webSite!.status() });
     webInstallationId = (await licensing.getStatus()).installationId;
     if (!hasManualConnector && !hostedPilotMode) {
       const connector = new WaiterProvisioning({

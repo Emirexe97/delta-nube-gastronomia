@@ -103,6 +103,14 @@ export class WebSiteProvisioning {
     return this.requestFlight;
   }
 
+  /** Refresh an existing trial-origin site's access using a one-shot signed lease ticket. */
+  async refreshAccess(ticket: string): Promise<void> {
+    if (this.data.status.state !== "ACTIVE" || !this.credential || !this.baseUrl) return;
+    if (!/^[A-Za-z0-9._~+\/-]{20,4096}={0,2}$/.test(ticket)) throw new Error("invalid ticket");
+    const response = await this.fetcher(new URL("/v1/web-sites/access", this.baseUrl), { method: "POST", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ ticket }), signal: AbortSignal.timeout(5000) });
+    if (!response.ok) throw new Error("site access refresh failed");
+  }
+
   async getStatus(reconcile = true): Promise<WebSiteStatus> {
     if (!reconcile || !this.credential || this.credentialInvalid || this.now() - this.lastReconciledAt < 30_000) return this.status();
     if (this.requestFlight) return this.requestFlight;

@@ -30,9 +30,13 @@ import { arsToCents, BillingError, createSandboxBilling, type SandboxGateway } f
 import { createMpGateway, readSandboxConfig, verifyWebhookSignature, MercadoPagoSandboxError } from "./mercadopago-sandbox.js";
 import { createPosAiProvider } from "./pos-ai-provider.js";
 import { createPosAiQuota } from "./pos-ai-quota.js";
+import { createPublicAccountHttp, downloadsFromEnv, type PublicAccountConfig, type Downloads } from "./public-account-http.js";
+import { createRegistrationMailer } from "./registration-mail.js";
 
 const MAX_BODY = 16 * 1024;
 type Env = {
+  publicRegistration?: PublicAccountConfig;
+  publicDownloads?: Downloads;
   sandboxBilling?: { gateway: SandboxGateway; webhookSecret: string };
   webSiteProvisionSecret?: string;
   waiterProvisionSecret?: string;
@@ -58,6 +62,8 @@ type LicenseRow = {
   installation_id: string | null;
 };
 type AccountRow = { email: string; password_hash: string; license_id: string; status: "ACTIVE" };
+type TrialRow = { license_id: string; started_at: number | null; ends_at: number | null };
+const TRIAL_MS = 30 * 86_400_000;
 type RateEntry = { count: number; reset: number; blockedUntil: number };
 type DeviceStatus = "PENDING" | "APPROVED" | "REJECTED";
 type DeviceRequestRow = {
@@ -235,6 +241,11 @@ export function createLicenseServer(
       license_id TEXT, request_id TEXT, reason TEXT NOT NULL, created_at TEXT NOT NULL
     );`;
   db.exec(schema);
+  // Additive schema is present even when new public signups are disabled.
+  db.exec(`CREATE TABLE IF NOT EXISTS license_trials (
+    license_id TEXT PRIMARY KEY REFERENCES licenses(id), started_at INTEGER, ends_at INTEGER
+  );`);
+  const publicAccountHttp = createPublicAccountHttp(db, env.publicRegistration, env.publicDownloads);
   const merchants = createMerchantLedger(db);
   const posAiQuota = createPosAiQuota(db);
   const posAiProvider = env.posAi?.apiKey
@@ -288,6 +299,10 @@ export function createLicenseServer(
   };
   const issueToken = (row: LicenseRow, installationId: string): string => {
     const paid = Date.parse(row.paid_through);
+    const trial = db.prepare("SELECT * FROM license_trials WHERE license_id=?").get(row.id) as TrialRow | undefined;
+    const activeTrial = trial?.started_at != null && trial.ends_at != null && paid === trial.ends_at
+      ? { startedAt: new Date(trial.started_at).toISOString(), endsAt: new Date(trial.ends_at).toISOString() }
+      : undefined;
     const lease: LicenseLease = {
       schema: 1,
       product: "delta-nube-gastronomia",
@@ -296,9 +311,10 @@ export function createLicenseServer(
       businessName: row.business_name,
       issuedAt: new Date().toISOString(),
       paidThrough: row.paid_through,
-      graceUntil: new Date(paid + GRACE_MS).toISOString(),
+      graceUntil: activeTrial ? row.paid_through : new Date(paid + GRACE_MS).toISOString(),
       revision: row.revision,
       status: row.status,
+      ...(activeTrial ? { trial: activeTrial } : {}),
     };
     return signLease(lease, privateKey);
   };
@@ -309,7 +325,9 @@ export function createLicenseServer(
       return { token };
     const credentials: { token: string; webSiteTicket?: string; waiterTicket?: string } = { token };
     if (env.webSiteProvisionSecret)
-      credentials.webSiteTicket = issueWebSiteTicket({ licenseId: row.id, installationId, businessName: row.business_name }, env.webSiteProvisionSecret);
+      credentials.webSiteTicket = issueWebSiteTicket({ licenseId: row.id, installationId, businessName: row.business_name,
+        ...(db.prepare("SELECT license_id FROM license_trials WHERE license_id=?").get(row.id) ? { accessUntil: row.paid_through } : {}),
+      }, env.webSiteProvisionSecret);
     const waiterSecret = env.waiterProvisionSecret ?? env.webSiteProvisionSecret;
     if (waiterSecret)
       credentials.waiterTicket = issueWaiterTicket({ licenseId: row.id, installationId }, waiterSecret);
@@ -943,6 +961,7 @@ export function createLicenseServer(
       )
         return json(res, 400, { error: "invalid_request_target" });
       const ip = req.socket.remoteAddress ?? "unknown";
+      if (await publicAccountHttp(req, res, url, ip)) return;
       if (req.method === "POST" && url.pathname === "/billing/test/mercadopago/webhook") {
         const config = env.sandboxBilling;
         if (!config) return json(res, 404, { error: "not_found" });
@@ -1375,6 +1394,8 @@ export function createLicenseServer(
           const dummyHash = "account-scrypt-v1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
           const validPassword = await verifyAccountPassword(password, account?.password_hash ?? dummyHash);
           if (!account || !validPassword) return json(res, 401, { error: "invalid_credentials" });
+          if (db.prepare("SELECT license_id FROM license_trials WHERE license_id=?").get(account.license_id) && b.trialProtocol !== 1)
+            return json(res, 409, { error: "trial_client_update_required" });
           let fingerprint: string;
           try { fingerprint = devicePublicKeyFingerprint(publicKey); } catch { return json(res, 401, { error: "invalid_credentials" }); }
           const challenge = db.prepare("SELECT * FROM device_challenges WHERE id = ?").get(b.challengeId) as ChallengeRow | undefined;
@@ -1391,7 +1412,18 @@ export function createLicenseServer(
               const now = new Date().toISOString();
               const consumed = db.prepare("UPDATE device_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?").run(now, challenge.id, now);
               if (Number(consumed.changes) !== 1) throw Object.assign(new Error("challenge_replayed"), { accountStatus: 409 });
-              const license = rowById(account.license_id);
+              let license = rowById(account.license_id);
+              const trial = db.prepare("SELECT * FROM license_trials WHERE license_id=?").get(account.license_id) as TrialRow | undefined;
+              // Registration alone never grants time. The first authenticated, bound device
+              // starts the trial in this same transaction; a rejected/racing device rolls it back.
+              if (license?.status === "ACTIVE" && trial && trial.started_at === null && trial.ends_at === null) {
+                const started = Date.parse(now), ends = started + TRIAL_MS;
+                // Do not shorten a license manually paid before its first desktop login.
+                const paidThrough = new Date(Math.max(ends, Date.parse(license.paid_through))).toISOString();
+                db.prepare("UPDATE license_trials SET started_at=?,ends_at=? WHERE license_id=? AND started_at IS NULL").run(started, ends, license.id);
+                db.prepare("UPDATE licenses SET paid_through=?,revision=revision+1 WHERE id=?").run(paidThrough, license.id);
+                license = rowById(license.id);
+              }
               if (!license || license.status !== "ACTIVE" || Date.parse(license.paid_through) <= Date.now())
                 throw Object.assign(new Error("license_unavailable"), { accountStatus: 403 });
               if (license.installation_id && license.installation_id !== challenge.installation_id)
@@ -1556,6 +1588,13 @@ if (
       "Set PANEL_USERNAME, PANEL_PASSWORD_HASH_FILE and PANEL_ORIGIN together to enable the owner panel",
     );
   const { server, close } = createLicenseServer({
+    publicDownloads: downloadsFromEnv(process.env),
+    ...(process.env.PUBLIC_REGISTRATION_ENABLED === "true" ? {
+      publicRegistration: {
+        origin: process.env.PUBLIC_REGISTRATION_ORIGIN ?? "",
+        sendMail: createRegistrationMailer(process.env),
+      },
+    } : {}),
     ...(process.env.MP_SANDBOX_ENABLED === "true" ? {
       sandboxBilling: {
         gateway: createMpGateway(readSandboxConfig({

@@ -8,6 +8,9 @@ COPY packages/web-orders/package.json ./node_modules/@gastronomy/web-orders/pack
 COPY packages/web-orders/dist ./node_modules/@gastronomy/web-orders/dist
 COPY apps/licensing-service/package.json ./apps/licensing-service/package.json
 COPY apps/licensing-service/dist ./apps/licensing-service/dist
+# The offline runtime image consumes the exact pnpm-lockfile artifact; Nodemailer is
+# an ESM runtime dependency imported by registration-mail.js.
+COPY --chmod=0555 node_modules/.pnpm/nodemailer@10.5.0/node_modules/nodemailer ./apps/licensing-service/node_modules/nodemailer
 RUN mkdir -p /data && chown node:node /data
 USER node
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:8097/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

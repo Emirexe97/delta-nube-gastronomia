@@ -65,6 +65,9 @@ export function createMerchantLedger(db: DatabaseSync, options: Options = {}) {
   const idFactory =
     options.idFactory ?? (() => randomUUID().replaceAll("-", ""));
   db.exec(`
+    CREATE TABLE IF NOT EXISTS license_trials (
+      license_id TEXT PRIMARY KEY REFERENCES licenses(id), started_at INTEGER, ends_at INTEGER
+    );
     CREATE TABLE IF NOT EXISTS merchant_payments (
       idempotency_key TEXT PRIMARY KEY, license_id TEXT NOT NULL REFERENCES licenses(id),
       kind TEXT NOT NULL CHECK(kind IN ('PAYMENT','COURTESY')),
@@ -95,7 +98,16 @@ export function createMerchantLedger(db: DatabaseSync, options: Options = {}) {
     if (row.status === "SUSPENDED") return "SUSPENDED";
     const paid = Date.parse(row.paid_through),
       t = Date.parse(at);
+    const trial = db.prepare("SELECT started_at,ends_at FROM license_trials WHERE license_id=?").get(row.id) as {started_at:number|null;ends_at:number|null}|undefined;
+    if (trial && trial.started_at === null) return "PENDING_ACTIVATION";
+    if (trial && trial.started_at !== null && trial.ends_at !== null && paid === trial.ends_at)
+      return t < trial.ends_at ? "ACTIVE" : "EXPIRED";
     return t < paid ? "ACTIVE" : t < paid + GRACE_MS ? "GRACE" : "EXPIRED";
+  }
+  function trialShape(id:string) {
+    const trial=db.prepare("SELECT t.started_at,t.ends_at,l.paid_through FROM license_trials t JOIN licenses l ON l.id=t.license_id WHERE t.license_id=?").get(id) as {started_at:number|null;ends_at:number|null;paid_through:string}|undefined;
+    if (!trial || (trial.started_at !== null && (trial.ends_at === null || Date.parse(trial.paid_through) !== trial.ends_at))) return null;
+    return {startedAt:trial.started_at===null?null:new Date(trial.started_at).toISOString(),endsAt:trial.ends_at===null?null:new Date(trial.ends_at).toISOString()};
   }
   function paymentSummary(id: string) {
     return db
@@ -152,6 +164,7 @@ export function createMerchantLedger(db: DatabaseSync, options: Options = {}) {
       revision: row.revision,
       status: row.status,
       accessStatus: effective(row),
+      trial: trialShape(row.id),
       installationId: row.installation_id,
       lastPayment: lastPayment
         ? {
@@ -192,7 +205,7 @@ export function createMerchantLedger(db: DatabaseSync, options: Options = {}) {
     const q = opts.query?.trim();
     const atIso = now();
     const graceBoundary = new Date(Date.parse(atIso) - GRACE_MS).toISOString();
-    const effectiveSql = `CASE WHEN l.status='SUSPENDED' THEN 'SUSPENDED' WHEN ? < l.paid_through THEN 'ACTIVE' WHEN ? < l.paid_through THEN 'GRACE' ELSE 'EXPIRED' END`;
+    const effectiveSql = `CASE WHEN l.status='SUSPENDED' THEN 'SUSPENDED' WHEN lt.license_id IS NOT NULL AND lt.started_at IS NULL THEN 'PENDING_ACTIVATION' WHEN lt.started_at IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',lt.ends_at/1000.0,'unixepoch')=l.paid_through AND ? < l.paid_through THEN 'ACTIVE' WHEN lt.started_at IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',lt.ends_at/1000.0,'unixepoch')=l.paid_through THEN 'EXPIRED' WHEN ? < l.paid_through THEN 'ACTIVE' WHEN ? < l.paid_through THEN 'GRACE' ELSE 'EXPIRED' END`;
     const clauses: string[] = [],
       args: unknown[] = [];
     if (q) {
@@ -204,20 +217,20 @@ export function createMerchantLedger(db: DatabaseSync, options: Options = {}) {
     }
     if (opts.status) {
       clauses.push(`${effectiveSql} = ?`);
-      args.push(atIso, graceBoundary, opts.status);
+      args.push(atIso, atIso, graceBoundary, opts.status);
     }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const sqlArgs = args as (string | number | null)[];
     const total = (
       db
         .prepare(
-          `SELECT count(*) AS n FROM licenses l LEFT JOIN accounts a ON a.license_id=l.id AND a.status='ACTIVE' ${where}`,
+          `SELECT count(*) AS n FROM licenses l LEFT JOIN license_trials lt ON lt.license_id=l.id LEFT JOIN accounts a ON a.license_id=l.id AND a.status='ACTIVE' ${where}`,
         )
         .get(...sqlArgs) as { n: number }
     ).n;
     const rows = db
       .prepare(
-        `SELECT l.*, a.email AS account_email, mp.kind AS pay_kind, mp.amount_cents AS pay_amount_cents, mp.paid_through AS pay_paid_through, mp.reason AS pay_reason, mp.actor AS pay_actor, mp.created_at AS pay_created_at FROM licenses l LEFT JOIN accounts a ON a.license_id=l.id AND a.status='ACTIVE' LEFT JOIN merchant_payments mp ON mp.rowid=(SELECT p.rowid FROM merchant_payments p WHERE p.license_id=l.id AND p.kind='PAYMENT' ORDER BY p.created_at DESC,p.rowid DESC LIMIT 1) ${where} ORDER BY l.created_at DESC,l.id ASC LIMIT ? OFFSET ?`,
+        `SELECT l.*, a.email AS account_email, mp.kind AS pay_kind, mp.amount_cents AS pay_amount_cents, mp.paid_through AS pay_paid_through, mp.reason AS pay_reason, mp.actor AS pay_actor, mp.created_at AS pay_created_at FROM licenses l LEFT JOIN license_trials lt ON lt.license_id=l.id LEFT JOIN accounts a ON a.license_id=l.id AND a.status='ACTIVE' LEFT JOIN merchant_payments mp ON mp.rowid=(SELECT p.rowid FROM merchant_payments p WHERE p.license_id=l.id AND p.kind='PAYMENT' ORDER BY p.created_at DESC,p.rowid DESC LIMIT 1) ${where} ORDER BY l.created_at DESC,l.id ASC LIMIT ? OFFSET ?`,
       )
       .all(...sqlArgs, limit, offset) as MerchantRow[];
     return { items: rows.map(shape), total, limit, offset };

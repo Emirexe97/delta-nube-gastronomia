@@ -5,7 +5,11 @@ export type WebSiteIdentity = {
   licenseId: string;
   installationId: string;
   businessName: string;
+  accessUntil?: string;
 };
+function validAccessUntil(v: unknown): v is string {
+  return typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v)) && new Date(v).toISOString() === v;
+}
 const prefix = "dn-web-site-v1";
 const waiterPrefix = "dn-waiter-v1";
 const ttl = 5 * 60_000;
@@ -35,12 +39,14 @@ export function issueWebSiteTicket(
 ): string {
   if (!validIdentity(identity) || !Number.isSafeInteger(now))
     throw new Error("Invalid web site identity");
+  if (identity.accessUntil !== undefined && !validAccessUntil(identity.accessUntil)) throw new Error("Invalid web site identity");
   const { licenseId, installationId, businessName } = identity;
   const payload = Buffer.from(
     JSON.stringify({
       licenseId,
       installationId,
       businessName,
+      ...(identity.accessUntil === undefined ? {} : { accessUntil: identity.accessUntil }),
       iat: now,
       exp: now + ttl,
     }),
@@ -78,6 +84,7 @@ export function verifyWebSiteTicket(
   const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
   if (
     !validIdentity(data) ||
+    (data.accessUntil !== undefined && !validAccessUntil(data.accessUntil)) ||
     !Number.isSafeInteger(data.iat) ||
     !Number.isSafeInteger(data.exp) ||
     data.exp !== data.iat + ttl ||
@@ -89,6 +96,7 @@ export function verifyWebSiteTicket(
     licenseId: data.licenseId,
     installationId: data.installationId,
     businessName: data.businessName,
+    ...(data.accessUntil === undefined ? {} : { accessUntil: data.accessUntil }),
   };
 }
 

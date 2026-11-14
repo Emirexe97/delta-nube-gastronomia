@@ -1,5 +1,7 @@
 # Portada pública y carta del comercio: dos destinos distintos
 
+**Cambio local — 14/11/2026:** la portada del repositorio incorpora CTA a `/registro/` y `/descargas/`, servidos por la autoridad de licencias. No se publicó este cambio. [Habilitación y límites del registro sin tarjeta](REGISTRO_Y_PRUEBA_GRATUITA.md). El estado público documentado a continuación corresponde a la publicación anterior.
+
 `gastronomia.deltanubeweb.com` presenta Delta Nube, una carta de demostración ficticia y ayuda operativa. No registra comercios ni acepta pedidos. El local solicita **su propia web** desde la PC ya autorizada; sus clientes van al subdominio del comercio, no a la portada.
 
 | Dirección | Contenido |

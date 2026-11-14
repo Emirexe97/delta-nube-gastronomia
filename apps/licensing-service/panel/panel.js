@@ -198,6 +198,7 @@
       GRACE: "Gracia",
       EXPIRED: "Vencido",
       SUSPENDED: "Suspendido",
+      PENDING_ACTIVATION: "Pendiente de activación",
     };
     return el(
       "span",
@@ -266,7 +267,11 @@
         el(
           "span",
           "secondary-line",
-          `Vigente hasta ${isIndefinite(merchant.paidThrough) ? "sin vencimiento" : formatDate(merchant.paidThrough)}`,
+          merchant.trial?.startedAt === null
+            ? "Pendiente del primer ingreso"
+            : merchant.trial?.endsAt
+              ? `Prueba hasta ${formatDate(merchant.trial.endsAt)} · ${Math.max(0,Math.ceil((Date.parse(merchant.trial.endsAt)-Date.now())/86400000))} días`
+              : `Vigente hasta ${isIndefinite(merchant.paidThrough) ? "sin vencimiento" : formatDate(merchant.paidThrough)}`,
         ),
       );
       tableCell(row, access);
@@ -382,7 +387,11 @@
       el(
         "span",
         "secondary-line",
-        `Vigente hasta ${isIndefinite(merchant.paidThrough) ? "sin vencimiento" : formatDate(merchant.paidThrough)}`,
+        merchant.trial?.startedAt === null
+          ? "Pendiente del primer ingreso"
+          : merchant.trial?.endsAt
+            ? `Prueba hasta ${formatDate(merchant.trial.endsAt)} · ${Math.max(0,Math.ceil((Date.parse(merchant.trial.endsAt)-Date.now())/86400000))} días`
+            : `Vigente hasta ${isIndefinite(merchant.paidThrough) ? "sin vencimiento" : formatDate(merchant.paidThrough)}`,
       ),
     );
     const charge = el("article", "merchant-status-card");

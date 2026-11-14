@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { signLease, devicePublicKeyFingerprint, verifyDeviceProof } from "@gastronomy/licensing";
+import { signLease, devicePublicKeyFingerprint, verifyDeviceProof, verifyLease, leaseAccess } from "@gastronomy/licensing";
 // @ts-expect-error Node 24 runs TypeScript test files directly.
 import { DesktopLicensing } from "./licensing.ts";
 
@@ -31,6 +31,7 @@ function responseToken(
     paidThrough: string;
     businessName: string;
     status: "ACTIVE" | "SUSPENDED";
+    trial: { startedAt: string; endsAt: string };
   }> = {},
 ) {
   return signLease(
@@ -42,15 +43,28 @@ function responseToken(
       businessName: fields.businessName ?? "Demo",
       issuedAt: new Date(now).toISOString(),
       paidThrough: fields.paidThrough ?? future(20, now),
-      graceUntil: new Date(
+      graceUntil: fields.trial?.endsAt ?? new Date(
         Date.parse(fields.paidThrough ?? future(20, now)) + 3 * DAY,
       ).toISOString(),
+      ...(fields.trial ? { trial: fields.trial } : {}),
       revision: fields.revision ?? 1,
       status: fields.status ?? "ACTIVE",
     },
     privateKey,
   );
 }
+
+test("signed trial lease ends exactly at 30 days with no grace and rejects malformed trial dates", () => {
+  const { publicKey, privateKey } = keys();
+  const now = Date.parse("2026-01-01T00:00:00.000Z");
+  const startedAt = new Date(now).toISOString();
+  const endsAt = new Date(now + 30 * DAY).toISOString();
+  const token = signLease({ schema: 1, product: "delta-nube-gastronomia", licenseId: "license_123", installationId: "install_123", businessName: "Demo", issuedAt: startedAt, paidThrough: endsAt, graceUntil: endsAt, trial: { startedAt, endsAt }, revision: 1, status: "ACTIVE" }, privateKey);
+  const lease = verifyLease(token, publicKey, "install_123");
+  assert.equal(leaseAccess(lease, now + 30 * DAY - 1), "ACTIVE");
+  assert.equal(leaseAccess(lease, now + 30 * DAY), "EXPIRED");
+  assert.throws(() => signLease({ schema: 1, product: "delta-nube-gastronomia", licenseId: "license_123", installationId: "install_123", businessName: "Demo", issuedAt: startedAt, paidThrough: endsAt, graceUntil: new Date(now + 33 * DAY).toISOString(), trial: { startedAt, endsAt }, revision: 1, status: "ACTIVE" }, privateKey));
+});
 async function setup(
   dir: string,
   getNow: () => number,
@@ -449,12 +463,13 @@ test("approved signed enrollment persists across restart, stays active offline, 
   try {
     let now = Date.parse("2026-02-01T12:00:00.000Z");
     const { publicKey, privateKey } = keys();
-    let leaseStatus: "ACTIVE" | "SUSPENDED" = "ACTIVE"; let revision = 1; let issue = now; let goOffline = false;
+    let leaseStatus: "ACTIVE" | "SUSPENDED" = "ACTIVE"; let revision = 1; let issue = now; let goOffline = false; let leaseCalls = 0;
     const server = async (url: RequestInfo | URL, init?: RequestInit) => {
       if (goOffline) throw new Error("offline");
       const path = new URL(String(url)).pathname; const body = JSON.parse(String(init?.body));
       if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-123", nonce: "x".repeat(43), expiresAt: new Date(now + 60_000).toISOString() }));
       if (path.endsWith("request") || path.endsWith("lease")) {
+        if (path.endsWith("lease")) leaseCalls++;
         const purpose = path.endsWith("request") ? "request" as const : "lease" as const;
         assert.equal("webSite" in body, false, "site signup data must not be included in licensing requests");
         const proof = { purpose, challengeId: body.challengeId, nonce: "x".repeat(43), installationId: body.installationId, keyFingerprint: devicePublicKeyFingerprint(body.publicKey), ...(purpose === "request" ? { businessName: body.businessName } : {}) };
@@ -472,12 +487,19 @@ test("approved signed enrollment persists across restart, stays active offline, 
     let selected: { slug: string; whatsappNumber: string } | null = null;
     let provisions = 0;
     let websiteActive = false;
-    first.setWebSiteProvisioner({ getChoice: () => selected, getStatus: () => ({ state: websiteActive ? "ACTIVE" : selected ? "PENDING" : "NOT_REGISTERED" }), selectChoice: async (choice) => { selected = choice; }, provision: async (ticket, choice) => { provisions++; assert.equal(ticket, "fresh-ticket-1234567890123456789"); assert.deepEqual(choice, { slug: "cafe-norte", whatsappNumber: "541112345678" }); selected = null; websiteActive = true; return { state: "ACTIVE" }; } });
+    let accessRefreshes = 0;
+    first.setWebSiteProvisioner({ getChoice: () => selected, getStatus: () => ({ state: websiteActive ? "ACTIVE" : selected ? "PENDING" : "NOT_REGISTERED" }), selectChoice: async (choice) => { selected = choice; }, provision: async (ticket, choice) => { provisions++; assert.equal(ticket, "fresh-ticket-1234567890123456789"); assert.deepEqual(choice, { slug: "cafe-norte", whatsappNumber: "541112345678" }); selected = null; websiteActive = true; return { state: "ACTIVE" }; }, refreshAccess: async (ticket) => { accessRefreshes++; assert.equal(ticket, "fresh-ticket-1234567890123456789"); } });
     const active = await first.requestLicenseAccess({ businessName: "Cafe Norte" });
     assert.equal(active.state, "ACTIVE"); assert.equal(active.canOperate, true);
     issue = now + 1;
     assert.equal((await first.registerWebSite({ slug: "cafe-norte", whatsappNumber: "+54 11 1234-5678" })).state, "ACTIVE");
     assert.equal(provisions, 1, "approved existing identity receives a fresh lease ticket on later signup");
+    issue = now + 2;
+    await first.refresh();
+    assert.equal(accessRefreshes, 1);
+    const successfulRefreshLeaseCalls = leaseCalls;
+    await first.retryWebSiteProvisioning();
+    assert.equal(leaseCalls, successfulRefreshLeaseCalls, "the 15-second timer must not refresh an active site after successful access refresh");
     goOffline = true; now += 8 * 86_400_000;
     const restarted = await make();
     assert.equal((await restarted.getStatus()).canOperate, true);
@@ -538,6 +560,7 @@ test("account activation signs a device lease challenge, persists only email and
       if (path.endsWith("challenge")) return new Response(JSON.stringify({ challengeId: "challenge-account", nonce: "q".repeat(43), expiresAt: new Date(now + 60_000).toISOString() }));
       assert.equal(path, "/v2/accounts/activate");
       assert.equal(body.email, "owner@example.com"); assert.equal(body.password, "secret-not-on-disk");
+      assert.equal(body.trialProtocol, 1);
       return new Response(JSON.stringify({
         request: { id: "request-account", installationId: body.installationId, businessName: "Cafe Norte", keyFingerprint: devicePublicKeyFingerprint(body.publicKey), status: "APPROVED", licenseId: "license_123", createdAt: new Date(now).toISOString() },
         token: responseToken(body.installationId, now, privateKey), account: { email: "owner@example.com" }, waiterTicket: "waiter-ticket-account-1234567890",

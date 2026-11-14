@@ -561,6 +561,10 @@ function MovementModal({
   const close = () => {
     if (!mutation.isPending) onClose();
   };
+  const requiresAuthorization =
+    type === "WITHDRAWAL" ||
+    type === "EXPENSE" ||
+    (type === "ADJUSTMENT" && amount.trim().startsWith("-"));
   return (
     <Modal
       open={open}
@@ -572,6 +576,7 @@ function MovementModal({
       <form
         onSubmit={(event) => {
           event.preventDefault();
+          if (mutation.isPending) return;
           const parsed = parseMoneyInput(
             amount.startsWith("-") ? amount.slice(1) : amount,
           );
@@ -677,6 +682,7 @@ function MovementModal({
           </Button>
           <Button
             type="submit"
+            aria-live="polite"
             disabled={
               !reason.trim() ||
               mutation.isPending ||
@@ -686,7 +692,11 @@ function MovementModal({
                 !/^\d{4,8}$/.test(authorizerPin))
             }
           >
-            {type === "INCOME" ? <ArrowUp /> : <ArrowDown />} Registrar
+            {mutation.isPending
+              ? requiresAuthorization
+                ? "Verificando autorización…"
+                : "Registrando…"
+              : <>{type === "INCOME" ? <ArrowUp /> : <ArrowDown />} Registrar</>}
           </Button>
         </div>
       </form>

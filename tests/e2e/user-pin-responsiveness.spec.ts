@@ -68,6 +68,37 @@ test("el proceso principal mantiene sus temporizadores mientras cambia un PIN en
   expect(heartbeat.maxGap, "PIN cryptography must not stall the Electron main loop for half a second").toBeLessThan(500);
 });
 
+test("un retiro autorizado mantiene el proceso principal disponible durante la verificación del PIN", async () => {
+  await page.evaluate(() => window.gastronomy.openCashSession({ openingAmountMinor: 10000 }));
+  await app.evaluate(() => {
+    const state = { last: Date.now(), maxGap: 0, ticks: 0, timer: undefined as ReturnType<typeof setInterval> | undefined };
+    state.timer = setInterval(() => {
+      const now = Date.now(); state.maxGap = Math.max(state.maxGap, now - state.last); state.last = now; state.ticks++;
+    }, 25);
+    (globalThis as any).movementHeartbeat = state;
+  });
+  const result = await page.evaluate(async () => {
+    const start = performance.now();
+    const cash = await window.gastronomy.registerCashMovement({
+      type: "WITHDRAWAL", amountMinor: 1000, reason: "Retiro autorizado QA",
+      authorizerPin: "748259", idempotencyKey: crypto.randomUUID(),
+    });
+    return { expected: cash.expectedAmountMinor, elapsed: Math.round(performance.now() - start) };
+  });
+  const heartbeat = await app.evaluate(async () => {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const state = (globalThis as any).movementHeartbeat;
+    clearInterval(state.timer);
+    return { maxGap: state.maxGap, ticks: state.ticks };
+  });
+  await test.info().attach("Authorized withdrawal responsiveness", {
+    body: JSON.stringify({ ...result, ...heartbeat }), contentType: "application/json",
+  });
+  expect(result.expected).toBe(9000);
+  expect(heartbeat.ticks).toBeGreaterThan(2);
+  expect(heartbeat.maxGap, "Authorization must yield instead of blocking the main loop").toBeLessThan(500);
+});
+
 test("el cambio de PIN muestra avance, evita cierre y conserva el borrador si el PIN está repetido", async () => {
   await page.getByRole("link", { name: "Usuarios", exact: true }).click();
   await page.getByRole("button", { name: "Editar Usuario PIN QA 0", exact: true }).click();
@@ -83,6 +114,9 @@ test("el cambio de PIN muestra avance, evita cierre y conserva el borrador si el
   await expect(modal).not.toBeVisible({ timeout: 30000 });
 
   await page.getByRole("button", { name: "Editar Usuario PIN QA 0", exact: true }).click();
+  // Wait for the modal's initialization effect before typing the next draft.
+  await expect(modal.getByLabel("Nuevo PIN (opcional)", { exact: true })).toHaveValue("");
+  await expect(modal.getByLabel("Motivo", { exact: true })).toHaveValue("");
   await modal.getByLabel("Nuevo PIN (opcional)", { exact: true }).fill("748259");
   await modal.getByLabel("Motivo", { exact: true }).fill("Intento duplicado QA");
   await modal.getByLabel("PIN de autorización", { exact: true }).fill("748259");

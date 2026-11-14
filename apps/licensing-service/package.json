@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@gastronomy/licensing": "workspace:*",
-    "@gastronomy/web-orders": "workspace:*"
+    "@gastronomy/web-orders": "workspace:*",
+    "nodemailer": "10.5.0"
   },
   "devDependencies": {
     "@types/node": "^22.8.1",

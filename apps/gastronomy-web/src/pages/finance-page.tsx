@@ -823,6 +823,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                 className="mt-3 grid gap-3"
                 onSubmit={async (event) => {
                   event.preventDefault();
+                  if (busy) return;
                   if (!/^\d{4,8}$/.test(createPin)) {
                     setError("Ingresá un PIN de autorización válido.");
                     return;
@@ -992,9 +993,8 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                     required
                   />
                 </Field>
-                <Button type="submit" disabled={busy}>
-                  <Plus size={16} />{" "}
-                  {repeat ? "Crear gasto mensual" : "Registrar gasto"}
+                <Button type="submit" aria-live="polite" disabled={busy}>
+                  {busy ? "Verificando autorización y procesando…" : <><Plus size={16} />{" "}{repeat ? "Crear gasto mensual" : "Registrar gasto"}</>}
                 </Button>
               </form>
             </Card>

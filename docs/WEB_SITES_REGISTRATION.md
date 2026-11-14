@@ -1,5 +1,7 @@
 # Alta automática de la web de pedidos
 
+**Actualización local — 14/11/2026:** las licencias nacidas de la prueba pública transmiten una vigencia firmada para el subdominio; al vencer, la carta se pausa y no acepta nuevos pedidos. Una renovación verificada por el POS extiende esa vigencia. Los sitios anteriores sin fecha no cambian; suspensión administrativa y vencimiento no son lo mismo. Ver [Registro y prueba gratuita](REGISTRO_Y_PRUEBA_GRATUITA.md). Sin despliegue realizado.
+
 Cada **comercio** tiene una carta y un POS receptor. En el alta de licencia se eligen el subdominio y el WhatsApp. Cuando el equipo recibe la aprobación del negocio, registra la tienda sin crear un proyecto aparte, copiar tokens ni dar de alta DNS por cliente. Abrir sesión o crear otro empleado **no** crea otra tienda.
 
 ## Lo que ve el comercio

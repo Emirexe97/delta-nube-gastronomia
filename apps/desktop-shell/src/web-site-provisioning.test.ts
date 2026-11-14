@@ -44,6 +44,21 @@ test("idempotent retry trusts only the canonical server slug and matching HTTPS 
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("refreshes access for an ACTIVE site without provisioning it again or persisting its ticket", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "web-site-refresh-"));
+  try {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const value = await make(dir, async (url, init) => { calls.push({ url: String(url), init }); return calls.length === 1 ? new Response(JSON.stringify(registration)) : new Response("{}", { status: 200 }); });
+    await value.select({ slug: "cafe-norte", whatsappNumber: "1112345678" });
+    await value.provision("n".repeat(40), { slug: "cafe-norte", whatsappNumber: "1112345678" });
+    await value.refreshAccess("r".repeat(40));
+    assert.equal(new URL(calls[1]!.url).pathname, "/v1/web-sites/access");
+    assert.deepEqual(JSON.parse(String(calls[1]!.init?.body)), { ticket: "r".repeat(40) });
+    assert.equal(calls.length, 2);
+    assert.doesNotMatch(await readFile(join(dir, "web-site-state.json"), "utf8"), /r{20}/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("manual sync env prevents accidental second storefront registration", async () => {
   const dir = await mkdtemp(join(tmpdir(), "web-site-"));
   try {

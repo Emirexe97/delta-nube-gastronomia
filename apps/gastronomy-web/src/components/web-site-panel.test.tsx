@@ -112,4 +112,17 @@ describe("web site settings renderer", () => {
     expect(html).toContain("WhatsApp de pedidos");
     expect(html).toContain("Solicitar habilitación");
   });
+
+  it("labels a free trial and does not display a grace period", () => {
+    const client = new QueryClient();
+    client.setQueryData(["license-status"], {
+      state: "ACTIVE", canOperate: true, installationId: "install-1", businessName: "Cafe",
+      paidThrough: "2026-11-30T00:00:00.000Z", graceUntil: "2026-11-30T00:00:00.000Z",
+      trial: { startedAt: "2026-10-31T00:00:00.000Z", endsAt: "2026-11-30T00:00:00.000Z" },
+      lastVerifiedAt: null, verificationOverdue: false, message: "Prueba",
+    });
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(LicensePanel)));
+    expect(html).toContain("Prueba gratuita");
+    expect(html).not.toContain("Gracia hasta");
+  });
 });

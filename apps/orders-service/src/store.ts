@@ -65,7 +65,8 @@ export class OrdersStore {
         store_id TEXT NOT NULL UNIQUE REFERENCES stores(id), slug TEXT NOT NULL UNIQUE,
         display_name TEXT NOT NULL, tagline TEXT NOT NULL DEFAULT '', accent TEXT NOT NULL DEFAULT '#1f6f50',
         design_mode TEXT NOT NULL DEFAULT 'STANDARD' CHECK(design_mode IN ('STANDARD','CUSTOM')),
-        template_key TEXT, receive_hash TEXT NOT NULL UNIQUE
+        template_key TEXT, receive_hash TEXT NOT NULL UNIQUE,
+        access_until TEXT
       );
       CREATE TABLE IF NOT EXISTS waiter_connections (
         license_id TEXT PRIMARY KEY,
@@ -75,6 +76,8 @@ export class OrdersStore {
         expires_at INTEGER NOT NULL DEFAULT 0
       );
     `);
+    const tenantCols = this.db.prepare("PRAGMA table_info(tenant_sites)").all() as { name: string }[];
+    if (!tenantCols.some(c => c.name === "access_until")) this.db.exec("ALTER TABLE tenant_sites ADD COLUMN access_until TEXT");
     const syncStore = this.db.prepare(
       "INSERT INTO stores(id,whatsapp_number) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET whatsapp_number=excluded.whatsapp_number",
     );
@@ -164,6 +167,7 @@ export class OrdersStore {
     licenseId: string;
     installationId: string;
     businessName: string;
+    accessUntil?: string;
     slug: string;
     whatsappNumber: string;
     receiveToken: string;
@@ -179,7 +183,7 @@ export class OrdersStore {
     try {
       const existing = this.db
         .prepare(
-          "SELECT license_id,installation_id,store_id,slug,display_name,tagline,accent,design_mode FROM tenant_sites WHERE license_id=? OR installation_id=?",
+          "SELECT license_id,installation_id,store_id,slug,display_name,tagline,accent,design_mode,access_until FROM tenant_sites WHERE license_id=? OR installation_id=?",
         )
         .get(input.licenseId, input.installationId) as
         | (Omit<TenantSite, "template_key"> & {
@@ -194,6 +198,7 @@ export class OrdersStore {
         )
           throw Object.assign(new Error("conflict"), { status: 409 });
         const nextReceiveHash = digest(input.receiveToken);
+        if (input.accessUntil) this.db.prepare("UPDATE tenant_sites SET access_until=? WHERE license_id=? AND (access_until IS NULL OR access_until < ?)").run(input.accessUntil, input.licenseId, input.accessUntil);
         this.db
           .prepare(
             "UPDATE tenant_sites SET receive_hash=? WHERE store_id=? AND receive_hash<>?",
@@ -236,7 +241,7 @@ export class OrdersStore {
         .run(storeId, "web");
       this.db
         .prepare(
-          "INSERT INTO tenant_sites(license_id,installation_id,store_id,slug,display_name,receive_hash) VALUES(?,?,?,?,?,?)",
+          "INSERT INTO tenant_sites(license_id,installation_id,store_id,slug,display_name,receive_hash,access_until) VALUES(?,?,?,?,?,?,?)",
         )
         .run(
           input.licenseId,
@@ -245,6 +250,7 @@ export class OrdersStore {
           input.slug,
           displayName,
           digest(input.receiveToken),
+          input.accessUntil ?? null,
         );
       this.db.exec("COMMIT");
       return {
@@ -265,9 +271,17 @@ export class OrdersStore {
   getTenantBySlug(slug: string): TenantSite | undefined {
     return this.db
       .prepare(
-        "SELECT store_id,slug,display_name,tagline,accent,design_mode,template_key FROM tenant_sites WHERE slug=?",
+        "SELECT store_id,slug,display_name,tagline,accent,design_mode,template_key,access_until FROM tenant_sites WHERE slug=?",
       )
       .get(slug) as TenantSite | undefined;
+  }
+  tenantAccessExpired(storeId: string, now = Date.now()): boolean {
+    const row = this.db.prepare("SELECT access_until FROM tenant_sites WHERE store_id=?").get(storeId) as { access_until: string | null } | undefined;
+    return !!row?.access_until && now >= Date.parse(row.access_until);
+  }
+  extendTenantAccess(licenseId: string, installationId: string, accessUntil: string): boolean {
+    const r = this.db.prepare("UPDATE tenant_sites SET access_until=? WHERE license_id=? AND installation_id=? AND (access_until IS NULL OR access_until < ?)").run(accessUntil, licenseId, installationId, accessUntil);
+    return Number(r.changes) > 0;
   }
   updateTenantBranding(
     storeId: string,
@@ -425,6 +439,11 @@ export class OrdersStore {
             ),
           },
         };
+      }
+      const access = this.db.prepare("SELECT access_until FROM tenant_sites WHERE store_id=?").get(storeId) as { access_until: string | null } | undefined;
+      if (access?.access_until && Date.now() >= Date.parse(access.access_until)) {
+        this.db.exec("ROLLBACK");
+        throw Object.assign(new Error("site_expired"), { status: 403, code: "site_expired" });
       }
       const currentCatalog = this.getCatalog(storeId);
       if (!currentCatalog && requirePublishedCatalog) {

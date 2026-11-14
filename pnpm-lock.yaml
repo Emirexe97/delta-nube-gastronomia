@@ -166,6 +166,9 @@ importers:
       '@gastronomy/web-orders':
         specifier: workspace:*
         version: link:../../packages/web-orders
+      nodemailer:
+        specifier: 10.5.0
+        version: 10.5.0
     devDependencies:
       '@types/node':
         specifier: ^22.8.1
@@ -2234,6 +2237,10 @@ packages:
   node-releases@2.0.54:
     resolution: {integrity: sha512-YHs7BmmcsdAI5Ozuf8JZo6PT0mv2GIWC9vMfvUC3dp65M8hn7Ux8CPL+2oBI7juNuj9d0ndhTcznq2ODBps9cQ==}
     engines: {node: '>=18'}
+
+  nodemailer@10.5.0:
+    resolution: {integrity: sha512-L/w/HH5MqpzMDuZD7fQdt/+KqymuvrpaApaIjAH2XA3ILePwlcvXCVVvP75xVrXCEt2ggK2marrrHHFB5Qu0kA==}
+    engines: {node: '>=20.0.0'}
 
   nopt@9.0.0:
     resolution: {integrity: sha512-Zhq3a+yFKrYwSBluL4H9XP3m3y5uvQkB/09CwDruCiRmR/UJYnn9W4R48ry0uGC70aeTPKLynBtscP9efFFcPw==}
@@ -4925,6 +4932,8 @@ snapshots:
   node-int64@0.4.0: {}
 
   node-releases@2.0.54: {}
+
+  nodemailer@10.5.0: {}
 
   nopt@9.0.0:
     dependencies:

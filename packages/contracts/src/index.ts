@@ -21,6 +21,7 @@ export interface LicenseStatusDto {
   businessName: string | null;
   paidThrough: IsoDateTime | null;
   graceUntil: IsoDateTime | null;
+  trial?: { startedAt: IsoDateTime; endsAt: IsoDateTime } | null;
   lastVerifiedAt: IsoDateTime | null;
   verificationOverdue: boolean;
   message: string;

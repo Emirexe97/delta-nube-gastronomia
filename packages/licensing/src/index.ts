@@ -21,6 +21,7 @@ export interface LicenseLease {
   issuedAt: string;
   paidThrough: string;
   graceUntil: string;
+  trial?: { startedAt: string; endsAt: string };
   revision: number;
   status: "ACTIVE" | "SUSPENDED";
 }
@@ -51,8 +52,13 @@ export function parseLease(value: unknown): LicenseLease {
   )
     throw new Error("Permiso de uso inválido.");
   const lease = x as unknown as LicenseLease;
-  if (Date.parse(lease.graceUntil) !== Date.parse(lease.paidThrough) + GRACE_MS)
+  if (x.trial !== undefined) {
+    const trial = x.trial as Record<string, unknown>;
+    if (!trial || typeof trial !== "object" || typeof trial.startedAt !== "string" || typeof trial.endsAt !== "string" || !iso(trial.startedAt) || !iso(trial.endsAt) || Date.parse(trial.endsAt) - Date.parse(trial.startedAt) !== 30 * DAY_MS || lease.paidThrough !== trial.endsAt || lease.graceUntil !== trial.endsAt)
+      throw new Error("Prueba gratuita inválida.");
+  } else if (Date.parse(lease.graceUntil) !== Date.parse(lease.paidThrough) + GRACE_MS) {
     throw new Error("Período de gracia inválido.");
+  }
   return lease;
 }
 /** Exact serialized bytes are signed; no secrets or private keys belong in the client. */
