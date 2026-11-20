@@ -3097,3 +3097,26 @@ Implementación local cerrada y validada: workspace test9/9 (SQLite236, dominio3
 Integrado electron-updater6.8.9: búsqueda automática/consulta manual, descarga en segundo plano, banner READY y Configuración → Actualizaciones con confirmación de instalación. Admisión atómica de IPC/licencias/impresión/restauración; requiere permiso y caja cerrada, no instalación al cerrar ni reinicio forzado a mitad de turno. Fallos de configuración/firma deshabilitan sólo el updater. Feed HTTPS vinculado a target plataforma/arquitectura, publisherName obligatorio Windows y Developer ID/Team ID Mac; cleanup de listener nativo Mac y guard de salida tardía NSIS. Config por defecto deshabilitada; scripts de release firmada opt-in, sin modificar workflow DMG ad-hoc.
 
 Evidencia y runbook en [AUTOMATIC_UPDATES.md](AUTOMATIC_UPDATES.md): tests/typecheck/build9/9; shell76 (26 nuevas), web301, SQLite236/dominio38/protocolo7/servicio14; Electron focal3/3 (dos updater incluyendo fixture de estados, uno mitad y mitad con reinicio). Corregida normalización demo previa que cambiaba updatedAt/idempotencia de combos. Un EPERM transitorio del test concurrente backup previo, repetición aprobada sin tocar backups. No nueva integral ni actualización binaria N→N+1 real. Faltan hosting, certificados, release firmada y ensayo por plataforma; primera instalación compatible será manual. Sin commit/push/versión/instalador/despliegue.
+
+## 2026-11-15 — Rapidez operativa, etapas 1 y 2
+
+- [Etapa 1: carga directa y lecturas agrupadas](OPERATIONAL_SPEED_STAGE1.md): producto simple por clic/Enter, caché autoritativa de borradores y SQL por lotes. Evidencia y límites del benchmark documentados.
+- [Etapa 2: datos dentro del pedido y cobro progresivo](OPERATIONAL_SPEED_STAGE2.md): cliente/envío inline para pedidos sin pagos, un medio prellenado y expansión Pago mixto; preserva autorización y reglas financieras.
+- Etapa 2 validada localmente: 392 unitarias web, 50 escenarios E2E distintos, typecheck/build 11/11. Logs incluyen los intentos fallidos y revalidación de fixtures/selectores.
+- Sin commit, publicación, cambio de versión ni instaladores. Móvil Comandas, catálogo e integración física no forman parte de estas dos entregas.
+
+## 2026-11-15 — Rapidez operativa, etapa 3
+
+- [Comandas y alta rápida de catálogo](OPERATIONAL_SPEED_STAGE3.md): pizza entera directa, Nota sin duplicar unidades y acción explícita de mitades; menú móvil por bloques de 100 con búsqueda global e índice reutilizable.
+- Catálogo: duplicación revisable sólo de bases simples, sin código ni existencias; Guardar y crear otro reinicia datos y foco, respeta la política de stock de categoría y protege errores/doble envío/descarte.
+- Validación local: 53 E2E distintos (10 móvil focal, 13 móvil/integración, 5 catálogo nuevos, 25 regresión desktop), 392 unitarias web, 54 pruebas del servicio y typecheck/build 11/11. Informe detalla correcciones de fixtures y logs de revalidación.
+- Sin commit/push, publicación, cambio de versión ni instaladores. Importación masiva y medición en teléfonos/hardware reales quedan fuera de esta entrega.
+
+## 2026-11-15 — Rapidez operativa, ampliación CSV y preparación Windows
+
+- [Etapa 4](OPERATIONAL_SPEED_STAGE4.md): importación CSV UTF-8 de hasta 500 productos simples, vista previa, validación integral, transacción e idempotencia durable; no sobrescribe catálogo ni inventario existentes.
+- Medición con 2.500 pedidos y 20 muestras: bootstrap SQLite P50 173,2 ms / P95 181,6 ms, sin equipararlo a latencia UI/red ni operación física.
+- Unitarias 1.058 aprobadas, typecheck/build finales 11/11. Corrida general de 498 casos: 412 aprobados, 84 fallidos y 2 omitidos IA; los 84 fallos se corrigieron/revalidaron mediante repeticiones focalizadas. Build final: 46 E2E aprobados. No afirmar una segunda corrida general verde; informe conserva errores iniciales, dos teardowns, matriz de reruns y exclusión de 2 pruebas empaquetadas.
+- Corregidos contraste de Compras/Caja y clipping del editor/título de ruta a zoom 200%, sin relajar controles monetarios, permisos o viewport.
+- Updater Windows **no activo**: preflight local agregado y validado, pero faltan feed HTTPS definitivo, certificado Authenticode y actualización firmada N→N+1. Mac permanece manual. Sin commit/push, versión, instalador ni despliegue.
+- Incidente informado al usuario: limpieza QA falló con ruta nula y cerró 15 `cmd.exe` ajenos; no borró archivos, impacto en comandos desconocido y no se reiniciaron sesiones. Detalles y prevención en el informe de etapa 4.

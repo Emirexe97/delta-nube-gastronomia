@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { businessDateFromOpening } from "@gastronomy/domain";
 import { createDemoApi, DEMO_STORAGE_KEY, type DemoStorage } from "./demo-api";
 
 class MemoryStorage implements DemoStorage {
@@ -42,7 +43,7 @@ describe("documentary purchase corrections in demo", () => {
       (row) => row.id === product.id,
     )?.stockMinor;
     const cash = (await api.bootstrap()).cashSession;
-    const from = purchase.createdAt.slice(0, 10);
+    const from = businessDateFromOpening(purchase.createdAt);
     const reportBefore = await api.getFinanceReport({ from, to: from });
     const input = {
       purchaseId: purchase.id,

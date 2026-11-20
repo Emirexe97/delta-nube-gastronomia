@@ -1191,4 +1191,108 @@ ALTER TABLE waiter_pending_batches ADD COLUMN print_mode TEXT;
 CREATE TABLE waiter_reprints(request_id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), table_id TEXT NOT NULL, scope TEXT NOT NULL CHECK(scope IN ('FULL','ADDED')), print_job_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL);
 `,
   },
+  {
+    version: 51,
+    name: "tutorial_progress",
+    sql: String.raw`
+CREATE TABLE tutorial_progress (
+  account_key TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL CHECK(version = 1),
+  status TEXT NOT NULL CHECK(status IN ('IN_PROGRESS','SKIPPED','COMPLETED')),
+  step_id TEXT NOT NULL CHECK(step_id IN ('welcome','preparation','order','payment','finish')),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(account_key,user_id,version)
+);`
+  },
+  {
+    version: 52,
+    name: "web_commerce_catalog_revision",
+    sql: String.raw`
+CREATE TABLE web_catalog_revision (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  revision INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO web_catalog_revision(id, revision) VALUES (1, 0);
+
+-- A REPLACE can remove a published row without a DELETE trigger when
+-- recursive_triggers is off. Keep INSERT conservative; catalog edits are rare.
+CREATE TRIGGER web_catalog_revision_products_insert AFTER INSERT ON products
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+CREATE TRIGGER web_catalog_revision_products_delete AFTER DELETE ON products
+WHEN OLD.web_published = 1
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+CREATE TRIGGER web_catalog_revision_products_update AFTER UPDATE OF id, category_id, name, active, sort_order, stock_minor, combo_definition_json, web_published ON products
+WHEN (OLD.web_published = 1 OR NEW.web_published = 1) AND (
+  OLD.id IS NOT NEW.id OR OLD.category_id IS NOT NEW.category_id OR OLD.name IS NOT NEW.name
+  OR OLD.active IS NOT NEW.active OR OLD.sort_order IS NOT NEW.sort_order
+  OR (OLD.combo_definition_json IS NULL) != (NEW.combo_definition_json IS NULL)
+  OR OLD.web_published IS NOT NEW.web_published
+  OR (coalesce(OLD.stock_minor,1000) < 1000) != (coalesce(NEW.stock_minor,1000) < 1000)
+)
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER web_catalog_revision_categories_insert AFTER INSERT ON categories
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+CREATE TRIGGER web_catalog_revision_categories_delete AFTER DELETE ON categories
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+CREATE TRIGGER web_catalog_revision_categories_update AFTER UPDATE OF id, name, active, sort_order, stock_control_enabled ON categories
+WHEN OLD.id IS NOT NEW.id OR OLD.name COLLATE BINARY IS NOT NEW.name OR OLD.active IS NOT NEW.active
+  OR OLD.sort_order IS NOT NEW.sort_order OR OLD.stock_control_enabled IS NOT NEW.stock_control_enabled
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER web_catalog_revision_prices_insert AFTER INSERT ON product_prices
+WHEN (SELECT code FROM price_lists WHERE id = NEW.price_list_id) IN ('TAKEAWAY', 'DELIVERY')
+  AND (SELECT web_published FROM products WHERE id = NEW.product_id) = 1
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+CREATE TRIGGER web_catalog_revision_prices_delete AFTER DELETE ON product_prices
+WHEN (SELECT code FROM price_lists WHERE id = OLD.price_list_id) IN ('TAKEAWAY', 'DELIVERY')
+  AND (SELECT web_published FROM products WHERE id = OLD.product_id) = 1
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+CREATE TRIGGER web_catalog_revision_prices_update AFTER UPDATE OF product_id, price_list_id, amount_minor ON product_prices
+WHEN (OLD.amount_minor != NEW.amount_minor OR OLD.product_id != NEW.product_id OR OLD.price_list_id != NEW.price_list_id)
+ AND (((SELECT code FROM price_lists WHERE id = OLD.price_list_id) IN ('TAKEAWAY', 'DELIVERY')
+       AND (SELECT web_published FROM products WHERE id = OLD.product_id) = 1)
+   OR ((SELECT code FROM price_lists WHERE id = NEW.price_list_id) IN ('TAKEAWAY', 'DELIVERY')
+       AND (SELECT web_published FROM products WHERE id = NEW.product_id) = 1))
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER web_catalog_revision_price_lists_insert AFTER INSERT ON price_lists
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+CREATE TRIGGER web_catalog_revision_price_lists_delete AFTER DELETE ON price_lists
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+CREATE TRIGGER web_catalog_revision_price_lists_update AFTER UPDATE OF id, code ON price_lists
+WHEN OLD.id IS NOT NEW.id OR OLD.code IS NOT NEW.code
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER web_catalog_revision_settings_insert AFTER INSERT ON settings
+WHEN NEW.key = 'app'
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+CREATE TRIGGER web_catalog_revision_settings_delete AFTER DELETE ON settings
+WHEN OLD.key = 'app'
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER web_catalog_revision_settings_update AFTER UPDATE OF key, value_json ON settings
+WHEN (OLD.key = 'app' OR NEW.key = 'app') AND (OLD.key IS NOT NEW.key
+  OR json_extract(OLD.value_json, '$.stockEnabled') IS NOT json_extract(NEW.value_json, '$.stockEnabled'))
+BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
+`
+  },
+  {
+    version: 53,
+    name: "cash_reversal_and_history_indexes",
+    sql: `CREATE INDEX cash_movements_reference_idx
+          ON cash_movements(reference_id) WHERE reference_id IS NOT NULL;
+          CREATE INDEX cash_sessions_closed_history_idx
+          ON cash_sessions(status, closed_at DESC, opened_at DESC, id DESC);`,
+  },
+  {
+    version: 54,
+    name: "delivery_dispatch_and_pending_history_indexes",
+    sql: `CREATE INDEX IF NOT EXISTS orders_delivery_shift_idx
+          ON orders(COALESCE(cash_session_paid_id, cash_session_created_id), driver_user_id)
+          WHERE type = 'DELIVERY';
+          CREATE INDEX IF NOT EXISTS delivery_outstanding_order_idx
+          ON delivery_ledger(order_id) WHERE status = 'PENDING' AND amount_due_minor > settled_amount_minor;`,
+  },
 ];

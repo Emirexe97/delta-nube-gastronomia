@@ -155,6 +155,7 @@ test("cancelar no asigna chofer ni cobra y cambiar de medio no reactiva la casil
     exact: true,
   });
   await check.check();
+  await f.modal.getByRole("button", { name: "Pago mixto", exact: true }).click();
   await f.modal.getByLabel("Efectivo", { exact: true }).fill("");
   await f.modal
     .getByLabel("Transferencia", { exact: true })

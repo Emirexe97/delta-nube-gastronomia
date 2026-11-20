@@ -1,18 +1,16 @@
 import {
   useEffect,
   useId,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import { isOrderPrintActive, orderPrintCoordinator, type OrderPrintRequest } from "../order-print";
 import type {
   BootstrapDto,
-  CustomerDto,
   KitchenPrintScope,
   OrderDto,
   OrderItemDto,
@@ -48,10 +46,15 @@ import {
   cn,
   useWorkspaceActive,
 } from "@gastronomy/ui";
-import { bootstrapKey, useApiMutation } from "../api";
+import { bootstrapKey, useApiMutation, useOrderEntryMutation, useOrderDispatchMutation } from "../api";
+import { refreshOrderPrintState } from "../order-print-cache";
+import { applyTakeawayConfirmation } from "../order-confirm-cache";
 import { isDemoMode } from "../demo/install-demo";
+import { PaymentModal } from "./payment-modal";
+import { NewOrderModal } from "./order-details-form";
 import { ComboOrderModal } from "./combo-order-modal";
 import { calculateHalfAndHalfBase, getKitchenAdditions, guardOrderAction } from "@gastronomy/domain";
+import { buildProductSearchIndex, searchProductIndex } from "./order-editor-search";
 import {
   formatMoney,
   moneyInputValue,
@@ -66,7 +69,7 @@ import {
 } from "../lib";
 
 export function OrderEditor({
-  data,
+  data: bootstrapData,
   orderId,
   fallbackOrder,
   onClose,
@@ -85,19 +88,47 @@ export function OrderEditor({
   currentOrderId.current = orderId;
   const orderPrint = useStore(orderPrintCoordinator.store, (state) => state.jobs[orderId ?? ""]);
   const orderPrintBusy = isOrderPrintActive(orderPrint);
-  const bootstrapOrder = data.orders.find((candidate) => candidate.id === orderId);
+  let bootstrapOrder = bootstrapData.orders.find((candidate) => candidate.id === orderId);
+  // Opening a just-created pickup can precede the batched notification to
+  // this component's parent. It is already in the operational cache, not history.
+  if (orderId && !bootstrapOrder && bootstrapData.cashSession) {
+    const current = queryClient.getQueryState<BootstrapDto>(bootstrapKey);
+    if (current?.data && current.data !== bootstrapData && !current.isInvalidated &&
+        current.fetchStatus === "idle" && current.data.cashSession?.id === bootstrapData.cashSession.id)
+      bootstrapOrder = current.data.orders.find(o => o.id === orderId && o.type === "TAKEAWAY" && o.lifecycleStatus === "DRAFT");
+  }
   const historicalOrder = useQuery({
-    queryKey: [...bootstrapKey, "order", orderId],
-    queryFn: () => window.gastronomy.getOrder({ orderId: orderId! }),
+    queryKey: [...bootstrapKey, "historical-editor", orderId],
+    queryFn: async () => {
+      const order = await window.gastronomy.getOrder({ orderId: orderId! });
+      if (order.type !== "DELIVERY") return { order };
+      const detail = await window.gastronomy.getDeliveryProjection({ orderId: order.id });
+      return { order: detail.order, ledger: detail.deliveryLedger };
+    },
     enabled: Boolean(orderId) && !bootstrapOrder,
   });
+  const data = useMemo(() => {
+    const ledger = !bootstrapOrder && historicalOrder.data?.ledger;
+    return ledger ? { ...bootstrapData, deliveryLedger: [...bootstrapData.deliveryLedger.filter(row => row.orderId !== orderId), ...ledger] } : bootstrapData;
+  }, [bootstrapData, bootstrapOrder, historicalOrder.data, orderId]);
   const order =
-    bootstrapOrder ?? historicalOrder.data ??
-    (fallbackOrder?.id === orderId ? fallbackOrder : undefined);
+    bootstrapOrder ?? historicalOrder.data?.order ??
+    (fallbackOrder?.id === orderId && fallbackOrder?.type !== "DELIVERY" ? fallbackOrder : undefined);
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [completeOnPay, setCompleteOnPay] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsState, setDetailsState] = useState({ dirty: false, pending: false });
+  useEffect(() => {
+    setDetailsOpen(false);
+    setDetailsState({ dirty: false, pending: false });
+  }, [orderId]);
+  const returnToProducts = () => {
+    setDetailsOpen(false);
+    setDetailsState({ dirty: false, pending: false });
+    window.requestAnimationFrame(() => searchRef.current?.focus());
+  };
   const [payOpen, setPayOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const [halfOpen, setHalfOpen] = useState(false);
@@ -134,6 +165,7 @@ export function OrderEditor({
   const addingQuantityRef = useRef<HTMLInputElement>(null);
   const addingPriceRef = useRef<HTMLInputElement>(null);
   const addItemLockRef = useRef(false);
+  const submittedAddSearchRef = useRef("");
   const addComboLockRef = useRef(false);
   const [activeProductIndex, setActiveProductIndex] = useState(0);
   const halfAndHalfEnabled = data.settings.halfAndHalfEnabled ?? true;
@@ -141,8 +173,14 @@ export function OrderEditor({
     if (!halfAndHalfEnabled) setHalfOpen(false);
   }, [halfAndHalfEnabled]);
   useEffect(() => {
-    if (orderId) window.setTimeout(() => searchRef.current?.focus(), 80);
-  }, [orderId]);
+    if (!order?.id || !workspaceActive) return;
+    const frame = window.requestAnimationFrame(() => {
+      const input = searchRef.current;
+      if (input?.closest('[role="dialog"][data-top-dialog="true"]'))
+        input.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [order?.id, workspaceActive]);
   useEffect(() => {
     setComboProduct(null);
     setComboAddError(null);
@@ -157,73 +195,19 @@ export function OrderEditor({
     );
   }, [search]);
 
-  const products = useMemo(() => {
-    // En la grilla principal sólo se muestran los productos base/padres
-    const baseProducts = data.products.filter(
-      (p) =>
-        !p.parentProductId ||
-        !data.products.some((cand) => cand.id === p.parentProductId),
-    );
-
-    if (!search.trim()) {
-      return rankProducts(baseProducts, search, categoryId).slice(0, 30);
-    }
-
-    const normalizedQuery = normalizeSearch(search);
-    const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-
-    return baseProducts
-      .filter(
-        (product) =>
-          product.active && (!categoryId || product.categoryId === categoryId),
-      )
-      .map((product, index) => {
-        const variants = data.products.filter(
-          (v) => v.parentProductId === product.id && v.active,
-        );
-        const code = normalizeSearch(product.code ?? "");
-        const name = normalizeSearch(product.name);
-        const variantHaystack = variants
-          .map(
-            (v) =>
-              `${normalizeSearch(v.code ?? "")} ${normalizeSearch(v.name)}`,
-          )
-          .join(" ");
-        const haystack = `${code} ${name} ${variantHaystack} ${normalizeSearch(product.categoryName)}`;
-
-        if (!tokens.every((token) => haystack.includes(token))) return null;
-
-        let bestScore = 5;
-        const candidates = [product, ...variants];
-        for (const cand of candidates) {
-          const cCode = normalizeSearch(cand.code ?? "");
-          const cName = normalizeSearch(cand.name);
-          const score =
-            cCode === normalizedQuery
-              ? 0
-              : cCode.startsWith(normalizedQuery)
-                ? 1
-                : cName.startsWith(normalizedQuery)
-                  ? 2
-                  : cName
-                        .split(/\s+/)
-                        .some((w) => w.startsWith(normalizedQuery))
-                    ? 3
-                    : 4;
-          if (score < bestScore) bestScore = score;
-        }
-        return { product, score: bestScore, index };
-      })
-      .filter(
-        (
-          entry,
-        ): entry is { product: ProductDto; score: number; index: number } =>
-          Boolean(entry),
-      )
-      .sort((a, b) => a.score - b.score || a.index - b.index)
-      .slice(0, 30)
-      .map((entry) => entry.product);
-  }, [data.products, search, categoryId]);
+  const productSearchIndex = useMemo(
+    () => buildProductSearchIndex(data.products),
+    [data.products],
+  );
+  const products = useMemo(
+    () => searchProductIndex(productSearchIndex, search, categoryId),
+    [productSearchIndex, search, categoryId],
+  );
+  const variantsByParent = useMemo(
+    () => new Map(productSearchIndex.filter(entry => entry.variants.length)
+      .map((entry) => [entry.product.id, entry.variants.map((variant) => variant.product)])),
+    [productSearchIndex],
+  );
 
   useEffect(() => {
     setActiveProductIndex(0);
@@ -236,14 +220,16 @@ export function OrderEditor({
     el?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeProductIndex]);
 
-  const addItem = useApiMutation(
+  const addItem = useOrderEntryMutation(
     (input: Parameters<typeof window.gastronomy.addOrderItem>[0]) =>
       window.gastronomy.addOrderItem(input),
     {
-      onSuccess: () => {
+      secondRound: true,
+      onSuccess: (_saved, variables) => {
+        if (currentOrderId.current !== variables.orderId) return;
         setAddingProduct(null);
         setAddingError(null);
-        setSearch("");
+        setSearch((current) => current === submittedAddSearchRef.current ? "" : current);
         window.setTimeout(() => searchRef.current?.focus(), 50);
       },
       onError: (value) => {
@@ -256,7 +242,7 @@ export function OrderEditor({
       },
     },
   );
-  const addCombo = useApiMutation((input: Parameters<typeof window.gastronomy.addComboItem>[0]) => window.gastronomy.addComboItem(input), {
+  const addCombo = useOrderEntryMutation((input: Parameters<typeof window.gastronomy.addComboItem>[0]) => window.gastronomy.addComboItem(input), {
     onSuccess: () => { setComboProduct(null); setComboAddError(null); setSearch(""); window.setTimeout(() => searchRef.current?.focus(), 50); },
     onError: (value) => { const message = humanError(value); setComboAddError(message); setError(message); },
     onSettled: () => { addComboLockRef.current = false; },
@@ -270,6 +256,7 @@ export function OrderEditor({
     );
   };
   const openProduct = (product: ProductDto) => {
+    if (addItemLockRef.current || addItem.isPending) return;
     if (product.comboDefinition) {
       setComboAddError(null);
       setComboProduct(product);
@@ -290,17 +277,27 @@ export function OrderEditor({
       addingQuantityRef.current?.select();
     }, 50);
   };
+  const addCatalogUnit = (product: ProductDto) => {
+    if (!order || locked || addItemLockRef.current || addItem.isPending) return;
+    if (productPrice(product) == null) {
+      setError("El producto no tiene un precio configurado para este canal.");
+      return;
+    }
+    addItemLockRef.current = true;
+    submittedAddSearchRef.current = search;
+    setError(null);
+    setAddingError(null);
+    addItem.mutate({ orderId: order.id, productId: product.id, quantity: 1 });
+  };
   const handleProductCardClick = (product: ProductDto) => {
-    if (locked || addItem.isPending || addCombo.isPending) return;
+    if (locked || addItemLockRef.current || addItem.isPending || addCombo.isPending) return;
     if (product.comboDefinition) { setComboProduct(product); return; }
-    const variants = data.products.filter(
-      (p) => p.parentProductId === product.id && p.active,
-    );
+    const variants = variantsByParent.get(product.id) ?? [];
     if (variants.length > 0) {
       searchRef.current?.blur();
       setVariantPickerProduct(product);
     } else {
-      openProduct(product);
+      addCatalogUnit(product);
     }
   };
   const addProduct = () => {
@@ -323,6 +320,7 @@ export function OrderEditor({
       return;
     }
     addItemLockRef.current = true;
+    submittedAddSearchRef.current = search;
     setError(null);
     setAddingError(null);
     addItem.mutate({
@@ -334,7 +332,7 @@ export function OrderEditor({
         : {}),
     });
   };
-  const updateItemQuantity = useApiMutation(
+  const updateItemQuantity = useOrderEntryMutation(
     (input: { orderId: string; itemId: string; quantity: number }) =>
       window.gastronomy.updateOrderItemQuantity(input),
     {
@@ -378,17 +376,17 @@ export function OrderEditor({
       quantity: newQty,
     });
   };
-  const removeItem = useApiMutation(
+  const removeItem = useOrderEntryMutation(
     (input: { orderId: string; itemId: string }) =>
       window.gastronomy.removeOrderItem(input),
     { onError: (value) => setError(humanError(value)) },
   );
-  const removeModifier = useApiMutation(
+  const removeModifier = useOrderEntryMutation(
     (input: { orderId: string; modifierId: string }) =>
       window.gastronomy.removeOrderItemModifier(input),
     { onError: (value) => setError(humanError(value)) },
   );
-  const updateItemNotes = useApiMutation(
+  const updateItemNotes = useOrderEntryMutation(
     (input: { orderId: string; itemId: string; notes: string | null }) =>
       window.gastronomy.updateOrderItemNotes(input),
     {
@@ -400,9 +398,10 @@ export function OrderEditor({
       },
     },
   );
-  const updateStatus = useApiMutation(
+  const updateStatus = useOrderDispatchMutation(
     (input: { orderId: string; status: OrderOperationalStatus }) =>
       window.gastronomy.updateOrderStatus(input),
+    "state",
     {
       onSuccess: (_data, variables) => {
         if (variables.status === "DELIVERED") {
@@ -412,9 +411,10 @@ export function OrderEditor({
       onError: (value) => setError(humanError(value)),
     },
   );
-  const assignDriver = useApiMutation(
+  const assignDriver = useOrderDispatchMutation(
     (input: Parameters<typeof window.gastronomy.assignDeliveryDriver>[0]) =>
       window.gastronomy.assignDeliveryDriver(input),
+    "assign",
     {
       onSuccess: () => {
         setDriverError(null);
@@ -427,9 +427,28 @@ export function OrderEditor({
       },
     },
   );
+  const confirmSnapshots = useRef(new WeakMap<object, { bootstrap?: BootstrapDto; order?: OrderDto }>());
   const confirm = useApiMutation(
     (input: { orderId: string }) => window.gastronomy.confirmOrder(input),
-    { onError: (value) => setError(humanError(value)) },
+    {
+      onMutate: (input) => {
+        const state = queryClient.getQueryState<BootstrapDto>(bootstrapKey);
+        const order = state?.data?.orders.find((row) => row.id === input.orderId);
+        if (state?.data && !state.isInvalidated && state.fetchStatus === "idle" &&
+            order?.type === "TAKEAWAY" && order.lifecycleStatus === "DRAFT" && order.version !== undefined)
+          confirmSnapshots.current.set(input, { bootstrap: state.data, order });
+      },
+      applyBootstrapResult: async (confirmed, input) => {
+        const snapshot = confirmSnapshots.current.get(input);
+        confirmSnapshots.current.delete(input);
+        if (!snapshot?.bootstrap || !snapshot.order || queryClient.getQueryData(bootstrapKey) !== snapshot.bootstrap) return false;
+        const delta = await window.gastronomy.getOrderPrintState({
+          orderId: input.orderId, includeConfirmation: true,
+        });
+        return applyTakeawayConfirmation(queryClient, snapshot.bootstrap, snapshot.order, confirmed, delta);
+      },
+      onError: (value) => setError(humanError(value)),
+    },
   );
   const discard = useApiMutation(
     (input: { orderId: string }) => window.gastronomy.discardDraftOrder(input),
@@ -442,12 +461,17 @@ export function OrderEditor({
       },
     },
   );
-  const print = useApiMutation(
-    (input: OrderPrintRequest) => orderPrintCoordinator.run(input, () => {
-      // Confirmation is already durable. Refresh it while native printing continues.
-      void queryClient.invalidateQueries({ queryKey: bootstrapKey }).catch(() => undefined);
-    }),
-    {
+  const runPrint = (input: OrderPrintRequest) => {
+    let confirmed = false;
+    return orderPrintCoordinator.run(input, () => {
+      confirmed = true;
+      return refreshOrderPrintState(queryClient, input.orderId, true);
+    }, () => input.confirmFirst && !confirmed
+      ? queryClient.invalidateQueries({ queryKey: bootstrapKey })
+      : refreshOrderPrintState(queryClient, input.orderId));
+  };
+  const print = useMutation({
+      mutationFn: runPrint, retry: false,
       onSuccess: (result, input) => {
         if (currentOrderId.current !== input.orderId) return;
         const label = input.kind === "KITCHEN_ORDER" ? "Comanda" : "Cuenta";
@@ -462,15 +486,12 @@ export function OrderEditor({
         setPrintConfirmKind(null);
       },
       onError: (value, input) => { if (currentOrderId.current === input.orderId) setError(humanError(value)); },
-    },
-  );
-  const retryPrint = useApiMutation(
-    (input: OrderPrintRequest) => orderPrintCoordinator.run(input),
-    {
+  });
+  const retryPrint = useMutation({
+      mutationFn: runPrint, retry: false,
       onSuccess: (_result, input) => { if (currentOrderId.current === input.orderId) setError(null); },
       onError: (value, input) => { if (currentOrderId.current === input.orderId) setError(humanError(value)); },
-    },
-  );
+  });
 
   useEffect(() => {
     setPrintFeedback(null);
@@ -524,7 +545,7 @@ export function OrderEditor({
   };
 
   useEffect(() => {
-    if (!workspaceActive || !orderId || !order) return;
+    if (!workspaceActive || !orderId || !order || detailsOpen) return;
     const handler = (event: KeyboardEvent) => {
       if (event.repeat) return;
       const nestedDialogOpen =
@@ -604,6 +625,7 @@ export function OrderEditor({
     refundOpen,
     variantPickerProduct,
     workspaceActive,
+    detailsOpen,
   ]);
 
   if (!order) return orderId ? (
@@ -654,6 +676,8 @@ export function OrderEditor({
   };
   const editorBusy =
     addItem.isPending ||
+    addCombo.isPending ||
+    updateItemQuantity.isPending ||
     removeItem.isPending ||
     removeModifier.isPending ||
     updateItemNotes.isPending ||
@@ -683,7 +707,8 @@ export function OrderEditor({
     <Modal
       open={Boolean(orderId)}
       onClose={onClose}
-      closeDisabled={editorBusy}
+      closeDisabled={editorBusy || (detailsOpen && detailsState.pending)}
+      confirmClose={detailsOpen && detailsState.dirty}
       title={`Pedido #${order.number} · ${typeLabels[order.type]}`}
       description={
         order.tableNumber
@@ -700,7 +725,32 @@ export function OrderEditor({
         </p>
       ) : null}
       <div className="order-editor-layout grid min-h-0 gap-3 min-[900px]:grid-cols-[1.1fr_.9fr] lg:gap-4 lg:grid-cols-[1.35fr_.9fr]">
-        <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+        {detailsOpen ? (
+          <div className="min-h-0 min-w-0 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+            <NewOrderModal
+              inline
+              open
+              type={order.type}
+              data={data}
+              editingOrder={order}
+              initialCustomer={null}
+              onFormStateChange={setDetailsState}
+              onClose={returnToProducts}
+              onSaved={returnToProducts}
+            />
+          </div>
+        ) : null}
+        <section hidden={detailsOpen} className={cn("min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-slate-50/70 p-3", detailsOpen ? "hidden" : "flex")}>
+          {order.type !== "DINE_IN" && order.paidMinor === 0 && !locked ? (
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-600">
+                {order.customerNameSnapshot || "Cliente pendiente"}
+              </span>
+              <Button type="button" variant="secondary" disabled={editorBusy} onClick={() => setDetailsOpen(true)}>
+                Cliente y envío
+              </Button>
+            </div>
+          ) : null}
           <div className="relative">
             <MagnifyingGlass
               className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
@@ -741,6 +791,7 @@ export function OrderEditor({
                 }
                 if (
                   event.key === "Enter" &&
+                  !event.repeat &&
                   !locked &&
                   !addItem.isPending &&
                   !variantPickerProduct &&
@@ -800,7 +851,7 @@ export function OrderEditor({
                 </button>
               ))}
           </div>
-          <div className="mt-2 grid min-h-0 flex-1 auto-rows-min grid-cols-2 gap-2 overflow-y-auto p-1.5 xl:grid-cols-3">
+          <div className="order-editor-products mt-2 grid min-h-0 flex-1 auto-rows-min grid-cols-2 gap-2 overflow-y-auto p-1.5 xl:grid-cols-3">
             {showHalfAndHalfCard ? (
               <div
                 id="order-editor-half-and-half-card"
@@ -852,40 +903,46 @@ export function OrderEditor({
               const price = product.prices.find(
                 (item) => item.priceListCode === code,
               )?.amountMinor;
-              const variants = data.products.filter(
-                (p) => p.parentProductId === product.id && p.active,
-              );
+              const variants = variantsByParent.get(product.id) ?? [];
               const hasVariants = variants.length > 0;
               const disabled =
                 locked || addItem.isPending || (!hasVariants && price == null);
               const isSelected = index === activeProductIndex;
 
               return (
-                <div
-                  key={product.id}
-                  id={`order-editor-product-${index}`}
-                  role="button"
-                  tabIndex={disabled ? -1 : 0}
-                  aria-disabled={disabled}
-                  onMouseEnter={() => setActiveProductIndex(index)}
-                  onClick={() => {
-                    if (!disabled) handleProductCardClick(product);
-                  }}
-                  onKeyDown={(event) => {
-                    if (disabled) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      handleProductCardClick(product);
-                    }
-                  }}
-                  className={cn(
-                    "focus-ring group m-1 flex min-h-[76px] cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-300 hover:shadow-sm scroll-m-2",
-                    isSelected &&
-                      "border-brand-500 ring-2 ring-brand-500/80 shadow-md bg-brand-50/20",
-                    disabled && "cursor-not-allowed opacity-50",
-                  )}
-                >
+                <div key={product.id} className="relative m-1">
+                  <div
+                    id={`order-editor-product-${index}`}
+                    role="button"
+                    tabIndex={disabled ? -1 : 0}
+                    aria-disabled={disabled}
+                    onMouseEnter={() => setActiveProductIndex(index)}
+                    onClick={(event) => {
+                      if (event.detail > 1) return;
+                      if (!disabled) handleProductCardClick(product);
+                    }}
+                    onKeyDown={(event) => {
+                      if (disabled) return;
+                      if (
+                        event.repeat &&
+                        (event.key === "Enter" || event.key === " ")
+                      ) {
+                        event.preventDefault();
+                        return;
+                      }
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        handleProductCardClick(product);
+                      }
+                    }}
+                    className={cn(
+                      "focus-ring group flex min-h-[76px] cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-brand-300 hover:shadow-sm scroll-m-2",
+                      isSelected &&
+                        "border-brand-500 ring-2 ring-brand-500/80 shadow-md bg-brand-50/20",
+                      disabled && "cursor-not-allowed opacity-50",
+                    )}
+                  >
                   <div>
                     <div className="flex items-start justify-between gap-1">
                       <p className="line-clamp-2 text-[12px] font-bold text-slate-800 group-hover:text-brand-800">
@@ -959,6 +1016,21 @@ export function OrderEditor({
                       </span>
                     </div>
                   )}
+                  </div>
+                  {!hasVariants && !product.comboDefinition ? (
+                    <div className="flex justify-end px-1 pb-1 pt-0.5">
+                      <button
+                        type="button"
+                        className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-100 hover:text-brand-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                        aria-label={`Cantidad y precio de ${product.name}`}
+                        title={`Cantidad y precio de ${product.name}`}
+                        disabled={locked || addItem.isPending}
+                        onClick={() => openProduct(product)}
+                      >
+                        Cantidad y precio
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
@@ -973,7 +1045,7 @@ export function OrderEditor({
             {halfAndHalfEnabled ? <kbd className="text-xs">F6</kbd> : null}
           </Button>
         </section>
-        <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-white">
+        <fieldset disabled={detailsOpen} aria-label="Detalle del pedido" className="m-0 flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-white p-0">
           <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
             <div>
               <div className="flex items-center gap-2">
@@ -1014,7 +1086,7 @@ export function OrderEditor({
               ) : null}
             </div>
           </header>
-          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <div className="order-editor-items min-h-0 flex-1 overflow-y-auto p-3">
             {order.items.length ? (
               <div className="space-y-1.5">
                 {order.items.map((item) => (
@@ -1243,10 +1315,15 @@ export function OrderEditor({
             </div>
           ) : null}
           {error ? (
-            <div className="mx-3 mb-2 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">
+            <div role="alert" className="mx-3 mb-2 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">
               <X className="mt-0.5 shrink-0" />
               {error}
             </div>
+          ) : null}
+          {addItem.isPending ? (
+            <p role="status" aria-live="polite" className="sr-only">
+              Agregando producto al pedido…
+            </p>
           ) : null}
           {printFeedback ? (
             <div
@@ -1442,11 +1519,12 @@ export function OrderEditor({
                   : nextOperationalLabel}
               </Button>
             </div>
-            {order.type !== "DINE_IN" && onEditDraft && !locked ? (
+            {order.type !== "DINE_IN" && (order.paidMinor === 0 || onEditDraft) && !locked ? (
               <Button
                 variant="secondary"
                 className="mt-2 w-full"
-                onClick={() => onEditDraft(order.id)}
+                disabled={editorBusy}
+                onClick={() => order.paidMinor === 0 ? setDetailsOpen(true) : onEditDraft?.(order.id)}
               >
                 <ArrowLeft size={16} />
                 {order.paidMinor > 0
@@ -1539,7 +1617,7 @@ export function OrderEditor({
               </button>
             ) : null}
           </footer>
-        </section>
+        </fieldset>
       </div>
       <Modal
         open={Boolean(addingProduct)}
@@ -1665,10 +1743,7 @@ export function OrderEditor({
         parentProduct={variantPickerProduct}
         variants={
           variantPickerProduct
-            ? data.products.filter(
-                (p) =>
-                  p.parentProductId === variantPickerProduct.id && p.active,
-              )
+            ? variantsByParent.get(variantPickerProduct.id) ?? []
             : []
         }
         orderType={order.type}
@@ -1682,8 +1757,8 @@ export function OrderEditor({
           window.setTimeout(() => searchRef.current?.focus(), 50);
         }}
       />
-      <HalfAndHalfModal
-        open={halfOpen && halfAndHalfEnabled}
+      {halfOpen && halfAndHalfEnabled && <HalfAndHalfModal
+        open
         order={order}
         data={data}
         onClose={() => {
@@ -1692,7 +1767,7 @@ export function OrderEditor({
           window.setTimeout(() => searchRef.current?.focus(), 50);
         }}
         onError={setError}
-      />
+      />}
       <ComboOrderModal open={Boolean(comboProduct)} product={comboProduct} data={data} orderType={order.type} pending={addCombo.isPending} error={comboAddError} onClose={() => { if (!addCombo.isPending) { setComboProduct(null); setComboAddError(null); } }} onSelect={(product, selections, quantity, idempotencyKey) => {
         if (!order || addComboLockRef.current || addCombo.isPending) return;
         addComboLockRef.current = true;
@@ -1771,13 +1846,13 @@ export function OrderEditor({
         onCancelled={onClose}
         onError={setError}
       />
-      <ChangeTableModal
-        open={changeTableOpen}
+      {changeTableOpen && <ChangeTableModal
+        open
         order={order}
         data={data}
         onClose={() => setChangeTableOpen(false)}
         onError={setError}
-      />
+      />}
       <Modal
         open={driverOpen}
         onClose={() => setDriverOpen(false)}
@@ -2356,7 +2431,7 @@ function ModifierModal({
     setScope("FULL_PIZZA");
     setLocalError(null);
   }, [open, itemId]);
-  const mutation = useApiMutation(
+  const mutation = useOrderEntryMutation(
     (input: Parameters<typeof window.gastronomy.addOrderItemModifier>[0]) =>
       window.gastronomy.addOrderItemModifier(input),
     {
@@ -3265,749 +3340,6 @@ function HalfAndHalfModal({
   );
 }
 
-function PaymentModal({
-  open,
-  order,
-  data,
-  onClose,
-  onError,
-  completeOnPay,
-  onOpenDeposit,
-}: {
-  open: boolean;
-  order: OrderDto;
-  data: BootstrapDto;
-  onClose(): void;
-  onError(value: string): void;
-  completeOnPay: boolean;
-  onOpenDeposit?(): void;
-}) {
-  const remaining = Math.max(0, order.totalMinor - order.paidMinor);
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [references, setReferences] = useState<Record<string, string>>({});
-  const [received, setReceived] = useState("");
-  const [customerId, setCustomerId] = useState<string | null>(order.customerId);
-  const [customerQuery, setCustomerQuery] = useState("");
-  const [customerResults, setCustomerResults] = useState<CustomerDto[]>([]);
-  const [customerName, setCustomerName] = useState("");
-  const [customerPhone, setCustomerPhone] = useState("");
-  const activeDeliveryDrivers = data.users.filter(
-    (user) => user.roleCode === "DELIVERY_DRIVER" && user.active,
-  );
-  const currentDriverIsActive = activeDeliveryDrivers.some(
-    (driver) => driver.id === order.driverUserId,
-  );
-  const initialDriverUserId =
-    order.driverUserId && (currentDriverIsActive || order.paidMinor > 0)
-      ? order.driverUserId
-      : "";
-  const initialCollectedByDriver =
-    order.paidMinor > 0 && order.collectedByDriver;
-  const [driverUserId, setDriverUserId] = useState(initialDriverUserId);
-  const [collectedByDriver, setCollectedByDriver] = useState(
-    initialCollectedByDriver,
-  );
-  const defaultCashUntouched = useRef(true);
-  const [localError, setLocalError] = useState<string | null>(null);
-  const [initialized, setInitialized] = useState(false);
-  const defaultChangeMethod = useMemo(
-    () =>
-      data.paymentMethods.find((m) => m.code === "CASH" && m.active)?.code ??
-      data.paymentMethods.find((m) => m.active)?.code ??
-      "CASH",
-    [data.paymentMethods],
-  );
-  const [changeMethodCode, setChangeMethodCode] =
-    useState<string>(defaultChangeMethod);
-  const deliveryFeeBelongsToDriver =
-    order.deliveryFeeBelongsToDriver ??
-    data.settings.deliveryFeeBelongsToDriver ??
-    true;
-  const completionDriverUserId =
-    completeOnPay && order.type === "DELIVERY"
-      ? driverUserId
-      : order.driverUserId;
-  const initialCanSettleDriverFee =
-    order.type === "DELIVERY" &&
-    Boolean(initialDriverUserId) &&
-    data.settings.deliverySettlementEnabled &&
-    deliveryFeeBelongsToDriver &&
-    order.deliveryFeeMinor > 0;
-  const [payDriverNow, setPayDriverNow] = useState(
-    initialCanSettleDriverFee &&
-      data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
-  );
-  const firstPaymentInputRef = useRef<HTMLInputElement>(null);
-
-  useLayoutEffect(() => {
-    if (!open) {
-      setInitialized(false);
-      return;
-    }
-    const exact = moneyInputValue(remaining);
-    setValues({ CASH: exact });
-    defaultCashUntouched.current = true;
-    setCustomerId(order.customerId);
-    setCustomerQuery(
-      order.customerNameSnapshot ?? order.customerPhoneSnapshot ?? "",
-    );
-    setCustomerResults([]);
-    setCustomerName(order.customerNameSnapshot ?? "");
-    setCustomerPhone(order.customerPhoneSnapshot ?? "");
-    setDriverUserId(initialDriverUserId);
-    setCollectedByDriver(initialCollectedByDriver);
-    setReferences({});
-    setChangeMethodCode(defaultChangeMethod);
-    setPayDriverNow(
-      initialCanSettleDriverFee &&
-        data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
-    );
-    setLocalError(null);
-    setInitialized(true);
-    const focusFrame = window.requestAnimationFrame(() =>
-      firstPaymentInputRef.current?.focus(),
-    );
-    return () => window.cancelAnimationFrame(focusFrame);
-  }, [
-    open,
-    remaining,
-    defaultChangeMethod,
-    order.id,
-    initialDriverUserId,
-    initialCollectedByDriver,
-    initialCanSettleDriverFee,
-    deliveryFeeBelongsToDriver,
-    order.deliveryFeeMinor,
-    data.settings.deliverySettlementEnabled,
-    data.settings.deliveryDriverPaymentMode,
-  ]);
-
-  const mutation = useApiMutation(
-    (input: Parameters<typeof window.gastronomy.payOrder>[0]) => {
-      return completeOnPay
-        ? window.gastronomy.completeOrder({
-            ...input,
-            finalStatus: "DELIVERED",
-            ...(order.type === "DELIVERY"
-              ? { driverUserId, collectedByDriver }
-              : {}),
-          })
-        : window.gastronomy.payOrder(input);
-    },
-    {
-      onSuccess: () => onClose(),
-      onError: (value) => {
-        const message = humanError(value);
-        setLocalError(message);
-        onError(message);
-      },
-    },
-  );
-
-  const payments = data.paymentMethods
-    .map((method) => {
-      const amountMinor = parseMoneyInput(values[method.code] ?? "") ?? 0;
-      return {
-        methodCode: method.code,
-        amountMinor,
-        ...(method.code !== "CASH"
-          ? { reference: references[method.code]?.trim() || null }
-          : {}),
-      };
-    })
-    .filter((item) => item.amountMinor > 0);
-
-  const allocated = payments.reduce((sum, item) => sum + item.amountMinor, 0);
-  const accountAmount =
-    payments.find((item) => item.methodCode === "ACCOUNT")?.amountMinor ?? 0;
-  const changeDue = Math.max(0, allocated - remaining);
-
-  const selectedChangeMethod = data.paymentMethods.find(
-    (m) => m.code === changeMethodCode,
-  );
-  const incomingCashMinor =
-    payments.find((item) => item.methodCode === "CASH")?.amountMinor ?? 0;
-  const isDeliveryWithDriver =
-    order.type === "DELIVERY" &&
-    Boolean(completionDriverUserId) &&
-    data.settings.deliverySettlementEnabled &&
-    deliveryFeeBelongsToDriver &&
-    order.deliveryFeeMinor > 0;
-
-  const deliveryCashTotal = payments
-    .filter((payment) => payment.methodCode === "CASH")
-    .reduce((sum, payment) => sum + payment.amountMinor, 0);
-  const deliveryPrepaidTotal = payments
-    .filter(
-      (payment) =>
-        payment.methodCode !== "CASH" && payment.methodCode !== "ACCOUNT",
-    )
-    .reduce((sum, payment) => sum + payment.amountMinor, 0);
-  const atDoorCash =
-    order.type === "DELIVERY" &&
-    collectedByDriver &&
-    deliveryCashTotal > 0 &&
-    accountAmount === 0 &&
-    deliveryPrepaidTotal === 0 &&
-    payments.every((payment) => payment.methodCode === "CASH");
-  const invalidDriverCollection = collectedByDriver && !atDoorCash;
-  const drawerCashAvailable =
-    (data.cashSession?.expectedAmountMinor ?? 0) +
-    (collectedByDriver ? 0 : incomingCashMinor);
-  const isCashChangeInsufficient =
-    changeDue > 0 &&
-    Boolean(selectedChangeMethod?.affectsCash) &&
-    !collectedByDriver &&
-    changeDue > drawerCashAvailable;
-  const collectionDriver = data.users.find(
-    (user) => user.id === completionDriverUserId,
-  )?.fullName;
-  const invalidDriverChange =
-    atDoorCash && changeDue > 0 && changeMethodCode !== "CASH";
-  const driverRequired =
-    completeOnPay && order.type === "DELIVERY" && !driverUserId;
-  const hasNonCashPayment = payments.some(
-    (payment) => payment.methodCode !== "CASH",
-  );
-  const driverSelectionLocked =
-    order.paidMinor > 0 && Boolean(order.driverUserId);
-  const collectorLocked = order.paidMinor > 0;
-  const assignedDriver = data.users.find((user) => user.id === driverUserId);
-
-  const canSubmit =
-    !invalidDriverCollection &&
-    !invalidDriverChange &&
-    !driverRequired &&
-    initialized &&
-    allocated >= remaining &&
-    (!accountAmount || (Boolean(customerId) && allocated === remaining)) &&
-    !isCashChangeInsufficient &&
-    !mutation.isPending;
-
-  const loadToAccount = () => {
-    defaultCashUntouched.current = false;
-    if (!collectorLocked) setCollectedByDriver(false);
-    setValues({ ACCOUNT: moneyInputValue(remaining) });
-    setLocalError(null);
-  };
-
-  const submitPayment = () => {
-    if (!canSubmit) return;
-    mutation.mutate({
-      orderId: order.id,
-      customerId: accountAmount ? customerId : undefined,
-      ...(order.type === "DELIVERY" ? { collectedByDriver } : {}),
-      payments,
-      change:
-        changeDue > 0
-          ? { methodCode: changeMethodCode, amountMinor: changeDue }
-          : null,
-      payDriverNow:
-        isDeliveryWithDriver && !collectedByDriver ? payDriverNow : false,
-    });
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      closeDisabled={mutation.isPending}
-      title={
-        completeOnPay
-          ? order.type === "DINE_IN"
-            ? "Cobrar y cerrar mesa"
-            : "Cobrar y entregar"
-          : "Cobrar pedido"
-      }
-      description={
-        completeOnPay
-          ? "El cobro y el cierre se guardan como una única operación"
-          : "Podés sobrepagar y entregar el vuelto en el medio que desees"
-      }
-    >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          submitPayment();
-        }}
-      >
-        <div className="rounded-xl bg-slate-950 p-4 text-white">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
-              Saldo a cobrar
-            </p>
-            {onOpenDeposit ? (
-              <button
-                type="button"
-                onClick={onOpenDeposit}
-                className="text-xs font-semibold text-indigo-300 hover:text-indigo-100 underline inline-flex items-center gap-1"
-              >
-                <Receipt size={13} />
-                {order.depositMinor > 0
-                  ? `Seña: −${formatMoney(order.depositMinor)} (Editar)`
-                  : "Restar seña"}
-              </button>
-            ) : null}
-          </div>
-          <p className="text-3xl font-extrabold">{formatMoney(remaining)}</p>
-          {order.depositMinor > 0 ? (
-            <p className="mt-1 text-xs text-indigo-200">
-              Total {formatMoney(order.totalMinor + order.depositMinor)} − Seña{" "}
-              {formatMoney(order.depositMinor)}
-            </p>
-          ) : null}
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {data.paymentMethods
-            .filter((method) => method.active)
-            .map((method, index) => (
-              <div key={method.code} className="space-y-2">
-                <Field label={method.name}>
-                  <Input
-                    ref={index === 0 ? firstPaymentInputRef : undefined}
-                    inputMode="decimal"
-                    value={values[method.code] ?? ""}
-                    onChange={(event) => {
-                      setLocalError(null);
-                      if (method.code === "CASH")
-                        defaultCashUntouched.current = false;
-                      else if (
-                        !collectorLocked &&
-                        (parseMoneyInput(event.target.value) ?? 0) > 0
-                      )
-                        setCollectedByDriver(false);
-                      if (
-                        method.code === "ACCOUNT" &&
-                        defaultCashUntouched.current &&
-                        (parseMoneyInput(event.target.value) ?? 0) > 0
-                      ) {
-                        defaultCashUntouched.current = false;
-                        setValues((current) => ({
-                          ...current,
-                          CASH: "0",
-                          [method.code]: event.target.value,
-                        }));
-                        return;
-                      }
-                      setValues((current) => ({
-                        ...current,
-                        [method.code]: event.target.value,
-                      }));
-                    }}
-                    placeholder="0"
-                  />
-                </Field>
-                {method.code === "TRANSFER" &&
-                (parseMoneyInput(values[method.code] ?? "") ?? 0) > 0 ? (
-                  <Field label="Referencia / comprobante">
-                    <Input
-                      value={references[method.code] ?? ""}
-                      onChange={(event) =>
-                        setReferences((current) => ({
-                          ...current,
-                          [method.code]: event.target.value,
-                        }))
-                      }
-                      placeholder="Opcional"
-                    />
-                  </Field>
-                ) : null}
-              </div>
-            ))}
-        </div>
-
-        {completeOnPay && order.type === "DELIVERY" ? (
-          <div className="mt-3 grid gap-3">
-            <Field
-              label="Repartidor"
-              hintMode={driverSelectionLocked ? "inline" : "help"}
-              hint={
-                driverSelectionLocked
-                  ? "Se mantiene el repartidor asignado porque el pedido ya tiene un pago parcial."
-                  : "Elegí quién realizará la entrega; no se asignará automáticamente."
-              }
-            >
-              <Select
-                value={driverUserId}
-                onChange={(event) => {
-                  setDriverUserId(event.target.value);
-                  setLocalError(null);
-                }}
-                disabled={driverSelectionLocked || mutation.isPending}
-              >
-                <option value="">Elegir repartidor…</option>
-                {activeDeliveryDrivers.map((driver) => (
-                  <option key={driver.id} value={driver.id}>
-                    {driver.fullName}
-                  </option>
-                ))}
-                {driverSelectionLocked &&
-                driverUserId &&
-                !activeDeliveryDrivers.some(
-                  (driver) => driver.id === driverUserId,
-                ) ? (
-                  <option value={driverUserId}>
-                    {assignedDriver?.fullName ?? "Repartidor asignado"}{" "}
-                    (inactivo)
-                  </option>
-                ) : null}
-              </Select>
-            </Field>
-            {driverRequired ? (
-              <p role="alert" className="text-xs font-semibold text-rose-700">
-                Elegí un repartidor para entregar el pedido.
-              </p>
-            ) : null}
-            {!activeDeliveryDrivers.length && !driverSelectionLocked ? (
-              <p role="alert" className="text-xs font-semibold text-rose-700">
-                No hay repartidores activos. Activá o creá uno antes de
-                entregar.
-              </p>
-            ) : null}
-            <label className="flex cursor-pointer select-none items-start gap-3 rounded-xl border border-slate-200 p-3 text-xs">
-              <input
-                type="checkbox"
-                aria-label="Cobró el repartidor"
-                checked={collectedByDriver}
-                onChange={(event) => setCollectedByDriver(event.target.checked)}
-                disabled={
-                  collectorLocked ||
-                  !driverUserId ||
-                  hasNonCashPayment ||
-                  mutation.isPending
-                }
-                className="mt-0.5 h-4 w-4 rounded accent-brand-600"
-              />
-              <span>
-                <strong>Cobró el repartidor</strong>
-                <span className="mt-0.5 block text-slate-600">
-                  {collectorLocked
-                    ? "Se conserva el responsable de los pagos ya registrados."
-                    : hasNonCashPayment
-                      ? "Sólo se permite para cobro exclusivamente en efectivo. Al volver a efectivo, no se marcará automáticamente."
-                      : "Marcá sólo si el repartidor recibe el efectivo del cliente contra entrega."}
-                </span>
-              </span>
-            </label>
-            {allocated > 0 ? (
-              <div
-                className="space-y-1 text-xs text-slate-600"
-                aria-label="Quién recibe el cobro"
-              >
-                {atDoorCash ? (
-                  <>
-                    <p>
-                      El efectivo lo recibe el repartidor
-                      {collectionDriver ? `: ${collectionDriver}` : " elegido"};
-                      no ingresa efectivo a esta caja.
-                    </p>
-                    {isDeliveryWithDriver ? (
-                      <p>
-                        El repartidor retiene el importe de su envío; el resto
-                        queda pendiente de rendición. No se paga el envío desde
-                        caja.
-                      </p>
-                    ) : null}
-                  </>
-                ) : (
-                  <p>
-                    {accountAmount > 0
-                      ? "El importe en cuenta corriente queda como deuda del cliente al negocio; no es efectivo ni una deuda del repartidor."
-                      : incomingCashMinor > 0
-                        ? "El cobro lo recibe el negocio. La parte en efectivo ingresa a esta caja; elegir efectivo no crea por sí solo una deuda del repartidor. Los otros medios no aumentan el efectivo."
-                        : "El cobro lo recibe el negocio mediante medios no efectivos; no aumenta el efectivo de caja."}
-                  </p>
-                )}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {data.paymentMethods.some(
-          (method) => method.code === "ACCOUNT" && method.active,
-        ) && remaining > 0 ? (
-          <Button
-            type="button"
-            variant="secondary"
-            className="mt-3"
-            onClick={loadToAccount}
-          >
-            Cargar saldo completo a cuenta corriente
-          </Button>
-        ) : null}
-
-        {accountAmount > 0 ? (
-          <section className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3 space-y-2">
-            <p className="text-xs font-bold text-indigo-900">
-              Cuenta corriente · cliente obligatorio
-            </p>
-            <p className="text-xs text-indigo-700">
-              {completeOnPay
-                ? "Se registrará el cobro y el pedido se entregará/cerrará."
-                : "Se registrará el cobro y el pedido quedará pagado, sin entregarse ni cerrarse."}{" "}
-              El importe {formatMoney(accountAmount)} se cargará como deuda, sin
-              ingreso de efectivo.
-            </p>
-            {order.type === "DELIVERY" &&
-            payments.some((payment) => payment.methodCode === "CASH") ? (
-              <p className="text-xs font-semibold text-indigo-700">
-                El efectivo de este cobro mixto se registra como recibido en la
-                caja del negocio, no por el repartidor.
-              </p>
-            ) : null}
-            {!customerId ? (
-              <p role="alert" className="text-xs font-semibold text-rose-700">
-                Seleccioná una ficha de cliente activa para habilitar el cobro
-                en cuenta corriente. Los datos escritos en el pedido son sólo
-                una referencia y no vinculan una ficha.
-              </p>
-            ) : null}
-            {customerId ? (
-              <div className="flex items-center gap-2 text-xs">
-                <span className="font-bold">
-                  {customerResults.find(
-                    (customer) => customer.id === customerId,
-                  )?.name ??
-                    order.customerNameSnapshot ??
-                    customerName ??
-                    "Cliente seleccionado"}
-                </span>
-                {!order.customerId ? (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => setCustomerId(null)}
-                  >
-                    Cambiar
-                  </Button>
-                ) : null}
-              </div>
-            ) : (
-              <>
-                <div className="flex gap-2">
-                  <Input
-                    aria-label="Buscar cliente para cuenta corriente"
-                    value={customerQuery}
-                    onChange={(event) => setCustomerQuery(event.target.value)}
-                    placeholder="Nombre o teléfono"
-                  />
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={async () => {
-                      try {
-                        setCustomerResults(
-                          (
-                            await window.gastronomy.searchCustomers(
-                              customerQuery,
-                            )
-                          ).filter((customer) => customer.active),
-                        );
-                        setLocalError(null);
-                      } catch (error) {
-                        setLocalError(humanError(error));
-                      }
-                    }}
-                  >
-                    Buscar
-                  </Button>
-                </div>
-                {customerResults.map((customer) => (
-                  <button
-                    type="button"
-                    key={customer.id}
-                    className="block w-full rounded-lg bg-white p-2 text-left text-xs hover:bg-indigo-100"
-                    onClick={() => setCustomerId(customer.id)}
-                  >
-                    {customer.name} · {customer.phone}
-                  </button>
-                ))}
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <Input
-                    aria-label="Nombre del cliente nuevo"
-                    value={customerName}
-                    onChange={(event) => setCustomerName(event.target.value)}
-                    placeholder="Nuevo cliente · nombre"
-                  />
-                  <Input
-                    aria-label="Teléfono del cliente nuevo"
-                    value={customerPhone}
-                    onChange={(event) => setCustomerPhone(event.target.value)}
-                    placeholder="Teléfono"
-                  />
-                </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={!customerName.trim() || !customerPhone.trim()}
-                  onClick={async () => {
-                    try {
-                      const customer = await window.gastronomy.createCustomer({
-                        name: customerName.trim(),
-                        phone: customerPhone.trim(),
-                      });
-                      setCustomerId(customer.id);
-                      setCustomerResults([customer]);
-                      setLocalError(null);
-                    } catch (error) {
-                      setLocalError(humanError(error));
-                    }
-                  }}
-                >
-                  Crear y seleccionar cliente
-                </Button>
-              </>
-            )}
-          </section>
-        ) : null}
-
-        {changeDue > 0 && !accountAmount ? (
-          <div className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50/80 p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-xs font-bold uppercase tracking-wider text-emerald-800">
-                  Vuelto a entregar
-                </span>
-                <p className="text-xs text-emerald-700">
-                  Sobrepago recibido: {formatMoney(changeDue)}
-                </p>
-              </div>
-              <span className="text-2xl font-black text-emerald-700">
-                {formatMoney(changeDue)}
-              </span>
-            </div>
-            <Field label="Entregar vuelto en:">
-              <Select
-                value={changeMethodCode}
-                onChange={(event) => {
-                  setChangeMethodCode(event.target.value);
-                  setLocalError(null);
-                }}
-              >
-                {data.paymentMethods
-                  .filter(
-                    (method) => method.active && method.code !== "ACCOUNT",
-                  )
-                  .map((method) => (
-                    <option key={method.code} value={method.code}>
-                      {method.name}{" "}
-                      {method.affectsCash
-                        ? "(Efectivo de caja)"
-                        : "(Electrónico / No caja)"}
-                    </option>
-                  ))}
-              </Select>
-            </Field>
-            {invalidDriverChange ? (
-              <p role="alert" className="text-xs font-semibold text-rose-700">
-                Cuando cobra el repartidor, el vuelto debe ser en efectivo.
-                Elegí Efectivo para el vuelto.
-              </p>
-            ) : null}
-            {isCashChangeInsufficient ? (
-              <p
-                role="alert"
-                className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs font-semibold text-rose-700"
-              >
-                La caja no cuenta con efectivo suficiente (
-                {formatMoney(drawerCashAvailable)}) para entregar este vuelto (
-                {formatMoney(changeDue)}).
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-
-        {isDeliveryWithDriver && !atDoorCash ? (
-          <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/70 p-3">
-            <label className="flex items-start gap-3 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={payDriverNow}
-                onChange={(event) => setPayDriverNow(event.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded accent-brand-600"
-              />
-              <div className="text-xs">
-                <span className="font-bold text-slate-800">
-                  Pagar envío al repartidor ahora (
-                  {formatMoney(order.deliveryFeeMinor)})
-                </span>
-                <p className="text-slate-600 mt-0.5">
-                  {payDriverNow
-                    ? `Se registrará el egreso de caja (${formatMoney(order.deliveryFeeMinor)}) y el reparto quedará liquidado.`
-                    : "El envío se acumulará en la cuenta corriente del repartidor para liquidarse luego en la sección Repartidores."}
-                </p>
-              </div>
-            </label>
-          </div>
-        ) : null}
-
-        <div
-          className={cn(
-            "mt-4 flex items-center justify-between rounded-lg p-3 text-xs font-bold",
-            allocated === remaining
-              ? "bg-emerald-50 text-emerald-700"
-              : allocated > remaining
-                ? "bg-blue-50 text-blue-800"
-                : "bg-amber-50 text-amber-700",
-          )}
-        >
-          <span>
-            {allocated > remaining
-              ? accountAmount > 0
-                ? "Exceso asignado"
-                : "Total abonado (con sobrepago)"
-              : allocated === remaining
-                ? "Asignado"
-                : "Falta abonar"}
-          </span>
-          <span>
-            {allocated > remaining
-              ? accountAmount > 0
-                ? `${formatMoney(allocated)} / ${formatMoney(remaining)}`
-                : `${formatMoney(allocated)} · Vuelto: ${formatMoney(changeDue)}`
-              : `${formatMoney(allocated)} / ${formatMoney(remaining)}`}
-          </span>
-        </div>
-
-        {accountAmount > 0 && allocated > remaining ? (
-          <p role="alert" className="mt-2 text-xs font-semibold text-rose-700">
-            La cuenta corriente no admite vuelto: hay{" "}
-            {formatMoney(allocated - remaining)} de más. Ajustá los importes
-            para que el total coincida exactamente con el saldo.
-          </p>
-        ) : null}
-
-        {localError ? (
-          <p
-            role="alert"
-            className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700"
-          >
-            {localError}
-          </p>
-        ) : null}
-
-        <div className="mt-4 flex justify-end gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={onClose}
-            disabled={mutation.isPending}
-          >
-            Cancelar
-          </Button>
-          <Button type="submit" disabled={!canSubmit}>
-            <CreditCard size={16} />
-            {completeOnPay
-              ? order.type === "DINE_IN"
-                ? "Cobrar y cerrar"
-                : "Cobrar y entregar"
-              : "Confirmar cobro"}
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
 function CancelModal({
   open,
   order,

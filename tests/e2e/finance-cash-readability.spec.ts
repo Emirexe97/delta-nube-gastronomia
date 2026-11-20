@@ -13,7 +13,7 @@ import { formatMoney } from "../../packages/domain/src/money";
 
 const out = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-us07b1-fix-2026-10-07",
+  "docs/qa/evidence/release-readiness-20261115/final-layout/finance-cash-readability",
 );
 let app: ElectronApplication;
 let page: Page;

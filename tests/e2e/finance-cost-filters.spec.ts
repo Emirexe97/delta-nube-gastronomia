@@ -194,7 +194,7 @@ test("aviso permanece aunque la cobertura redondeada muestre 100 por ciento", as
   ).toContainText("Hay ventas de productos sin costo cargado");
 });
 
-test("aviso y acceso por teclado siguen utilizables con ampliación 200 por ciento", async () => {
+test("aviso y acceso por teclado siguen utilizables con ampliación 200 por ciento", async ({}, testInfo) => {
   const fixture = await makeConfirmedMuzg(false);
   await page.reload();
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
@@ -211,15 +211,22 @@ test("aviso y acceso por teclado siguen utilizables con ampliación 200 por cien
   const card = page
     .getByText("Resultado operativo estimado", { exact: true })
     .locator("..");
-  await card.evaluate((element) =>
-    element.scrollIntoView({ block: "center", behavior: "instant" }),
-  );
+  await card.scrollIntoViewIfNeeded();
   await page.evaluate(
     () =>
       new Promise<void>((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       ),
   );
+  const viewportEvidence = await card.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      scroll: { x: window.scrollX, y: window.scrollY },
+      card: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, right: rect.right, bottom: rect.bottom },
+    };
+  });
+  await writeFile(testInfo.outputPath("operating-card-viewport.json"), JSON.stringify(viewportEvidence, null, 2));
   await expect(card).toBeInViewport({ ratio: 1 });
   await expect(card.locator("p").nth(1)).toHaveText(
     formatMoney(fixture.report.estimatedOperatingProfitMinor),

@@ -11,7 +11,7 @@ import { basename, dirname, join, resolve } from "node:path";
 
 const out = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-us07a-fix-2026-10-07",
+  "docs/qa/evidence/release-readiness-20261115/secondary-text-rerun",
 );
 let app: ElectronApplication;
 let page: Page;
@@ -279,13 +279,65 @@ for (const width of [1100, 1366]) {
     await expect(
       page.getByText(`${1} pedido con pago · día comercial`, { exact: true }),
     ).toBeVisible();
-    await expect(
-      page
-        .getByText("Incluye pagos parciales y cuenta corriente", {
-          exact: true,
-        })
-        .first(),
-    ).toBeVisible();
+    const dashboardCard = page
+      .locator('section[aria-label="Estado de la operación"] > *')
+      .filter({ has: page.getByText("Pagos registrados", { exact: true }) });
+    const salesHelp = dashboardCard.getByRole("button", {
+      name: "Pagos registrados",
+      exact: true,
+    });
+    await salesHelp.click();
+    const salesTooltip = page.getByRole("tooltip").filter({
+      hasText: /^Incluye pagos parciales y ventas a cuenta corriente\.$/,
+    });
+    await expect(salesTooltip).toHaveCount(1);
+    await expect(salesTooltip).toHaveText(
+      "Incluye pagos parciales y ventas a cuenta corriente.",
+    );
+    await expect
+      .poll(() =>
+        salesTooltip.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          return (
+            box.left >= -1 &&
+            box.right <= window.innerWidth + 1 &&
+            box.top >= -1 &&
+            box.bottom <= window.innerHeight + 1
+          );
+        }),
+      )
+      .toBe(true);
+    const tooltipReadability = await salesTooltip.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const channels = (color: string) => color.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [];
+      const luminance = (color: string) => {
+        const rgb = channels(color);
+        if (rgb.length !== 3) return null;
+        return rgb.map((channel) => {
+          const value = channel / 255;
+          return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+        }).reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index]!, 0);
+      };
+      const foreground = luminance(style.color);
+      const background = luminance(style.backgroundColor);
+      const box = element.getBoundingClientRect();
+      return {
+        text: element.textContent?.trim().replace(/\s+/g, " "),
+        fontSize: Number.parseFloat(style.fontSize),
+        contrast: foreground === null || background === null ? null :
+          (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05),
+        reachable: box.left >= -1 && box.right <= window.innerWidth + 1 && box.top >= -1 && box.bottom <= window.innerHeight + 1,
+      };
+    });
+    expect(tooltipReadability.text).toBe(
+      "Incluye pagos parciales y ventas a cuenta corriente.",
+    );
+    expect(tooltipReadability.fontSize).toBeGreaterThanOrEqual(12);
+    expect(tooltipReadability.contrast).not.toBeNull();
+    expect(tooltipReadability.contrast!).toBeGreaterThanOrEqual(4.5);
+    expect(tooltipReadability.reachable).toBe(true);
+    await salesHelp.press("Escape");
+    await expect(salesTooltip).toHaveCount(0);
     if (width === 1366) {
       const activeTable = page
         .getByRole("heading", {

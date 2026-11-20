@@ -7,12 +7,27 @@ import type {
 import {
   filterDeliveryLedger,
   filterDriverDeliveryActivity,
+  visibleDeliveryRange,
 } from "./delivery-history";
 
 const ledger = (id: string, cashSessionId: string, businessDate: string) =>
   ({ id, cashSessionId, businessDate }) as DeliveryLedgerDto;
 
 describe("historial de repartidores", () => {
+  it("calcula el rango virtual visible con overscan y espacios completos", () => {
+    expect(visibleDeliveryRange(1000, 560, 280)).toEqual({
+      start: 5,
+      end: 20,
+      top: 280,
+      bottom: 54880,
+    });
+    expect(visibleDeliveryRange(3, 0, 500)).toEqual({
+      start: 0,
+      end: 3,
+      top: 0,
+      bottom: 0,
+    });
+  });
   const rows = [
     ledger("current", "cash-current", "2026-09-13"),
     ledger("previous", "cash-previous", "2026-09-12"),

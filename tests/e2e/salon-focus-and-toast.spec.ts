@@ -71,7 +71,7 @@ test.describe("foco al entrar a Salón (Electron aislado)", () => {
       .first();
     await tableCard.click();
     const opening = page.getByRole("dialog", { name: /Abrir mesa \d+/ });
-    await expect(opening.getByLabel("Mesero responsable")).toBeFocused();
+    await expect(opening.getByRole("combobox", { name: /^Mesero responsable/ })).toBeFocused();
     await expect(tableInput).not.toBeFocused();
     await opening.getByRole("button", { name: "Cancelar" }).click();
     await expect(tableInput).toBeFocused();
@@ -100,7 +100,7 @@ test.describe("foco al entrar a Salón (Electron aislado)", () => {
     const openDialog = page.getByRole("dialog", {
       name: `Abrir mesa ${tableNumber}`,
     });
-    await expect(openDialog.getByLabel("Mesero responsable")).toBeFocused();
+    await expect(openDialog.getByRole("combobox", { name: /^Mesero responsable/ })).toBeFocused();
     await openDialog
       .getByRole("button", { name: "Abrir mesa", exact: true })
       .click();
@@ -108,7 +108,7 @@ test.describe("foco al entrar a Salón (Electron aislado)", () => {
     const search = editor.getByPlaceholder(/Código, nombre, categoría/);
     await expect(search).toBeFocused();
     await search.fill("MUZG");
-    await editor.getByRole("button", { name: /Muzzarella grande/ }).click();
+    await editor.getByRole("button", { name: "Cantidad y precio de Muzzarella grande" }).click();
     const addItem = page.getByRole("dialog", {
       name: "Agregar · Muzzarella grande",
     });

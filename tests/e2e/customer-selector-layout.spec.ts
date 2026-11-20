@@ -278,7 +278,7 @@ test("Enter/clic explícitos seleccionan cliente; Escape no cierra ni altera ped
   );
   const address = delivery.getByLabel("Dirección *", { exact: true });
   await expect(address).toHaveValue("Calle Uno 10");
-  const savedAddress = delivery.getByLabel("Dirección guardada");
+  const savedAddress = delivery.getByRole("combobox", { name: /^Dirección guardada/ });
   await savedAddress.selectOption(fixture.customer.addresses[1]!.id);
   await expect(address).toHaveValue("Calle Dos 20");
   await delivery.getByLabel("Modalidad del pedido").selectOption("TAKEAWAY");
@@ -375,11 +375,7 @@ test("productos primero conserva borrador y validación al confirmar sin datos d
     .click();
   const editor = page.getByRole("dialog", { name: /Pedido #\d+ · Envío/ });
   await expect(editor).toBeVisible();
-  await editor.getByRole("button", { name: /Muzzarella grande/ }).click();
-  await page
-    .getByRole("dialog", { name: /Agregar · Muzzarella grande/ })
-    .getByRole("button", { name: "Agregar al pedido" })
-    .click();
+  await editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Muzzarella grande" }).click();
   await expect(
     editor.getByRole("button", { name: "Confirmar pedido" }),
   ).toBeDisabled();
@@ -390,7 +386,7 @@ test("productos primero conserva borrador y validación al confirmar sin datos d
   await editor
     .getByRole("button", { name: "Volver a datos del cliente y envío" })
     .click();
-  const metadata = page.getByRole("dialog", { name: "Editar datos · Envío" });
+  const metadata = page.getByRole("region", { name: "Datos del cliente y envío" });
   await expect(
     metadata.getByLabel("Nombre del cliente *", { exact: true }),
   ).toHaveValue("");
@@ -398,9 +394,9 @@ test("productos primero conserva borrador y validación al confirmar sin datos d
     "",
   );
   await expect(
-    metadata.getByRole("button", { name: "Guardar y volver al pedido" }),
+    metadata.getByRole("button", { name: "Guardar datos" }),
   ).toBeDisabled();
-  await metadata.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await metadata.getByRole("button", { name: "Volver a productos", exact: true }).click();
   await expect(metadata).toBeHidden();
   expect(await page.evaluate(() => window.gastronomy.bootstrap())).toEqual(
     baseline,

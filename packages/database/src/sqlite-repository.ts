@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import Database from "better-sqlite3-multiple-ciphers";
 import bcrypt from "bcryptjs";
 import type { GastronomyRepository } from "@gastronomy/application";
-import { AUDIT_FILTER_ACTIONS, isPriceBookRoundingIncrementMinor } from "@gastronomy/contracts";
+import { AUDIT_FILTER_ACTIONS, assertTutorialProgressInput, isPriceBookRoundingIncrementMinor, normalizeImportProductsInput } from "@gastronomy/contracts";
 import type {
   AddHalfAndHalfItemInput,
   AddComboItemInput,
@@ -15,7 +15,10 @@ import type {
   AppSettingsDto,
   AuditEntryDto,
   BootstrapDto,
+  DeliveryHistoryInput,
+  DeliveryHistoryDto,
   BulkUpdateProductsInput,
+  ImportProductsInput,
   BusinessDate,
   CancelOrderInput,
   ChangeOrderTableInput,
@@ -24,6 +27,7 @@ import type {
   CashSessionDto,
   CashMovementType,
   CashSessionHistoryItemDto,
+  CashSessionHistoryPageDto,
   CashSessionReportDto,
   CashSessionReportFilters,
   CategoryDto,
@@ -35,12 +39,14 @@ import type {
   DashboardSummaryDto,
   DeliveryLedgerDto,
   DriverDeliveryActivityDto,
+  DeliveryProjectionDto,
   DetailedReportDto,
   FloorPlanShapeDto,
   Id,
   MoneyMinor,
   OpenCashSessionInput,
   OrderDto,
+  OrderPrintStateDto,
   KitchenPrintScope,
   OrderType,
   OrderOperationalStatus,
@@ -95,6 +101,8 @@ import type {
   WebOrderDraft,
   WebInboxEntry,
   WebCatalogSnapshot,
+  SaveTutorialProgressInput,
+  TutorialProgressDto,
 } from "@gastronomy/contracts";
 import {
   csvCell,
@@ -136,6 +144,11 @@ const waiterMenuSql = `SELECT p.id,p.category_id,p.name,p.print_destination,c.na
   JOIN categories c ON c.id=p.category_id WHERE p.active=1 AND p.combo_definition_json IS NULL
   AND c.active=1 AND pl.code='SALON' AND pl.active=1`;
 const waiterPizza = (row: Row) => `${row.category_name} ${row.name}`.toLocaleLowerCase("es-AR").includes("pizza");
+function waiterMenuProduct(p: Row) {
+  return { id: String(p.id), categoryId: String(p.category_id), name: String(p.name),
+    priceMinor: Number(p.amount_minor), printDestination: p.print_destination == null ? null : String(p.print_destination),
+    halfEligible: waiterPizza(p) };
+}
 function webInboxEntry(row: Row): WebInboxEntry {
   return {
     original: JSON.parse(String(row.original_json)),
@@ -284,6 +297,22 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     comparisons: Map<string, Map<string, boolean>>;
     hashes: Map<string, string>;
   } | null = null;
+  private waiterMenuCache?: {
+    changeStamp: string; version: string; inline: boolean; products: ReturnType<typeof waiterMenuProduct>[];
+  };
+
+  private waiterMenuSnapshot() {
+    // total_changes sees writes on this connection; data_version sees commits on
+    // other connections. Both are cheap without scanning prices on every page.
+    const { stamp } = this.db.prepare(`SELECT total_changes() || ':' || data_version AS stamp FROM pragma_data_version`).get() as { stamp: string };
+    if (!this.db.inTransaction && this.waiterMenuCache?.changeStamp === stamp) return this.waiterMenuCache;
+    const products = (this.db.prepare(waiterMenuSql + " ORDER BY c.sort_order,p.sort_order,p.name,p.id").all() as Row[]).map(waiterMenuProduct);
+    const serialized = JSON.stringify(products);
+    const snapshot = { changeStamp: stamp, products, inline: Buffer.byteLength(serialized) < 48 * 1024,
+      version: createHash("sha256").update(serialized).digest("hex") };
+    if (!this.db.inTransaction) this.waiterMenuCache = snapshot;
+    return snapshot;
+  }
 
   /** Yield during expensive bcrypt work once per PIN/hash for this command,
    * then recheck the credential snapshot and run authorization/write/audit in
@@ -441,10 +470,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return { ...row, tokenHash: hash } as Row & { tokenHash: string };
   }
 
-  getWaiterSessionState(token: string) {
+  getWaiterSessionState(token: string, paged = false) {
     const session = this.requireWaiterSession(token);
     const categories = this.db.prepare("SELECT id,name,sort_order FROM categories WHERE active=1 ORDER BY sort_order,name").all() as Row[];
-    const products = this.db.prepare(waiterMenuSql + " ORDER BY c.sort_order,p.sort_order,p.name").all() as Row[];
+    const snapshot = this.waiterMenuSnapshot();
     const tables = this.db.prepare(`SELECT t.id,t.number,t.name,
       CASE WHEN o.id IS NULL THEN 'AVAILABLE' ELSE 'OCCUPIED' END AS status,o.id AS open_order_id,
       CASE WHEN o.waiter_user_id=? AND o.cash_session_created_id=? THEN 1 ELSE 0 END AS served_by_me
@@ -459,9 +488,35 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       cashSessionId: String(session.cash_session_id),
       menu: { halfAndHalfEnabled: this.getSettings().halfAndHalfEnabled ?? true,
         categories: categories.map((c) => ({ id: String(c.id), name: String(c.name), sortOrder: Number(c.sort_order) })),
-        products: products.map((p) => ({ id: String(p.id), categoryId: String(p.category_id), name: String(p.name), priceMinor: Number(p.amount_minor), printDestination: p.print_destination == null ? null : String(p.print_destination), halfEligible: waiterPizza(p) })) },
+        products: paged && !snapshot.inline ? [] : snapshot.products,
+        ...(paged ? {version: snapshot.version, productCount: snapshot.products.length} : {}) },
       tables: tables.map((t) => ({ id: String(t.id), number: Number(t.number), name: t.name == null ? `Mesa ${Number(t.number)}` : String(t.name), status: String(t.status), servedByMe: flag(t.served_by_me), ...(t.open_order_id ? { openOrderId: String(t.open_order_id) } : {}) })),
     };
+  }
+
+  getWaiterMenuPage(token: string, input: { offset: number; version: string }) {
+    this.requireWaiterSession(token);
+    const { offset, version: expected } = input;
+    if (!Number.isSafeInteger(offset) || offset < 0 || typeof expected !== "string" || !/^[a-f0-9]{64}$/.test(expected))
+      throw new Error("Página de menú inválida.");
+    const { version, products } = this.waiterMenuSnapshot();
+    const page: typeof products = [];
+    if (version !== expected) return { version, products: page, nextOffset: null };
+    if (offset > products.length) throw new Error("Página de menú inválida.");
+    // Bound serialized UTF-8 bytes, not just row count. Reserve space for both relay envelopes.
+    let bytes = 0;
+    for (let i = offset; i < products.length && page.length < 1000; i++) {
+      const product = products[i]!;
+      const size = Buffer.byteLength(JSON.stringify(product)) + 1;
+      if (bytes + size > 400 * 1024) {
+        if (!page.length) throw new Error("Un producto excede el tamaño admitido para el menú.");
+        break;
+      }
+      bytes += size;
+      page.push(product);
+    }
+    const next = offset + page.length;
+    return { version, products: page, nextOffset: next < products.length ? next : null };
   }
 
   revokeWaiterSession(token: string) {
@@ -1231,6 +1286,36 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     };
   }
 
+  getTutorialProgress(accountKey = "local"): TutorialProgressDto {
+    const account = this.normalizeTutorialAccountKey(accountKey);
+    const userId = this.currentUser().id;
+    const row = this.db.prepare(
+      "SELECT version,status,step_id FROM tutorial_progress WHERE account_key=? AND user_id=? AND version=1",
+    ).get(account, userId) as Row | undefined;
+    return row ? {
+      version: 1,
+      status: String(row.status) as TutorialProgressDto["status"],
+      stepId: String(row.step_id) as TutorialProgressDto["stepId"],
+    } : { version: 1, status: "NOT_STARTED", stepId: "welcome" };
+  }
+
+  saveTutorialProgress(input: SaveTutorialProgressInput, accountKey = "local"): TutorialProgressDto {
+    assertTutorialProgressInput(input);
+    const account = this.normalizeTutorialAccountKey(accountKey);
+    const userId = this.currentUser().id;
+    this.db.prepare(`INSERT INTO tutorial_progress(account_key,user_id,version,status,step_id,updated_at)
+      VALUES (?,?,1,?,?,?) ON CONFLICT(account_key,user_id,version) DO UPDATE SET
+      status=excluded.status,step_id=excluded.step_id,updated_at=excluded.updated_at`)
+      .run(account, userId, input.status, input.stepId, nowIso());
+    return this.getTutorialProgress(account);
+  }
+
+  private normalizeTutorialAccountKey(accountKey: string): string {
+    if (typeof accountKey !== "string" || !accountKey.trim() || accountKey.length > 320)
+      throw new Error("La cuenta del tutorial no es válida.");
+    return accountKey.trim().toLocaleLowerCase("en-US");
+  }
+
   private getOpenCashSessionRow() {
     return this.db
       .prepare(
@@ -1299,7 +1384,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       .all(...params) as Row[];
   }
 
-  private cashSessionDto(row: Row): CashSessionDto {
+  private cashSessionDto(row: Row, scopedPayments?: Row[]): CashSessionDto {
     const movements = this.db
       .prepare(
         `SELECT cm.*, pm.code AS payment_method_code, pm.name AS payment_method_name,
@@ -1331,7 +1416,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const user = this.db
       .prepare("SELECT full_name FROM users WHERE id = ?")
       .get(row.opened_by_user_id) as Row;
-    const sessionPayments = this.reportOrderPayments(String(row.id));
+    const sessionPayments = scopedPayments ?? this.reportOrderPayments(String(row.id));
     const sales = new Map<string, { type: string; amount: number }>();
     for (const payment of sessionPayments) {
       const entry = sales.get(String(payment.order_id)) ?? {
@@ -1483,8 +1568,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
   }
 
-  bootstrap(): BootstrapDto {
+  bootstrap(options?: { deliveryScope?: "OPERATIONAL" }): BootstrapDto {
     const currentCash = this.getOpenCashSessionRow();
+    const operationalDelivery = options?.deliveryScope === "OPERATIONAL";
     return {
       settings: this.getSettings(),
       currentUser: this.currentUser(),
@@ -1499,13 +1585,37 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         ? this.listBootstrapOrders(String(currentCash.id))
         : [],
       users: this.listUsers(),
-      deliveryLedger: this.listDeliveryLedger(),
-      driverDeliveryActivity: this.listDriverDeliveryActivity(),
+      deliveryLedger: operationalDelivery
+        ? this.queryDeliveryLedger({
+            ...(currentCash ? { cashSessionId: String(currentCash.id) } : {}),
+            includeAllPending: true,
+            ...(!currentCash ? { pendingOnly: true } : {}),
+          })
+        : this.listDeliveryLedger(),
+      driverDeliveryActivity: operationalDelivery
+        ? currentCash
+          ? this.queryDriverDeliveryActivity({ cashSessionId: String(currentCash.id) })
+          : []
+        : this.listDriverDeliveryActivity(),
       paymentMethods: this.listPaymentMethods(),
       printJobs: this.listPrintJobs(),
       dashboard: this.getDashboard(
         currentCash ? String(currentCash.business_date) : undefined,
       ),
+    };
+  }
+
+  getDeliveryHistory(input: DeliveryHistoryInput): DeliveryHistoryDto {
+    if (!input || (input.scope !== "ALL" && input.scope !== "DATE"))
+      throw new Error("El alcance del historial no es válido.");
+    if (input.scope === "DATE" && !/^\d{4}-\d{2}-\d{2}$/.test(input.date ?? ""))
+      throw new Error("Elegí una fecha válida.");
+    const filters = input.scope === "DATE"
+      ? { businessDateFrom: input.date!, businessDateTo: input.date! }
+      : {};
+    return {
+      deliveryLedger: this.queryDeliveryLedger(filters),
+      driverDeliveryActivity: this.queryDriverDeliveryActivity(filters),
     };
   }
 
@@ -1515,6 +1625,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const result = this.db.prepare("UPDATE products SET web_published=?, updated_at=? WHERE id=?")
       .run(input.enabled ? 1 : 0, nowIso(), input.productId);
     if (!result.changes) throw new Error("El producto no existe.");
+  }
+
+  getWebCommerceCatalogRevision(): number {
+    const row = this.db.prepare("SELECT revision FROM web_catalog_revision WHERE id = 1").get() as Row | undefined;
+    return Number(requireRow(row, "Falta la revisión del catálogo web.").revision);
   }
 
   getWebCommerceCatalogSnapshot(): WebCatalogSnapshot {
@@ -1537,6 +1652,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       result.push({ productRef: String(row.id), name: String(row.name), category: String(row.category_name), takeawayPriceMinor: Number(row.takeaway), deliveryPriceMinor: Number(row.delivery) });
     }
     return { products: result };
+  }
+
+  /** Photo selection is frequent; don't rebuild a 3,000-item bootstrap just to authorize it. */
+  assertCanManageWebMedia(productRef?: string): void {
+    assertPermission(this.currentUser().permissions, "settings.manage");
+    if (productRef !== undefined && (typeof productRef !== "string" || productRef.length > 128 ||
+      !this.db.prepare("SELECT 1 FROM products WHERE id=? AND combo_definition_json IS NULL").get(productRef))) {
+      throw new Error("Elegí un producto válido de este POS.");
+    }
   }
 
   getWebOrderCursor(storeId: string): number {
@@ -1639,25 +1763,25 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   ensureTable(number: number): RestaurantTableDto {
     const run = this.db.transaction(() => {
-      const existing = this.listTables().find(
-        (table) => table.number === number,
-      );
+      if (!Number.isSafeInteger(number) || number < 1 || number > 9999)
+        throw new Error("Ingresá un número de mesa válido.");
+      const existing = this.db.prepare(
+        "SELECT id, active FROM restaurant_tables WHERE number = ?",
+      ).get(number) as Row | undefined;
       if (existing) {
-        if (!existing.active) {
+        const tableId = String(existing.id);
+        if (!flag(existing.active)) {
           this.db
             .prepare("UPDATE restaurant_tables SET active = 1 WHERE id = ?")
-            .run(existing.id);
+            .run(tableId);
           this.audit({
             entityType: "RESTAURANT_TABLE",
-            entityId: existing.id,
+            entityId: tableId,
             action: "TABLE_REACTIVATED",
             after: { number },
           });
         }
-        return requireRow(
-          this.listTables().find((table) => table.number === number),
-          "No se pudo leer la mesa.",
-        );
+        return requireRow(this.listTables(tableId)[0], "No se pudo leer la mesa.");
       }
       const id = randomUUID();
       const defaultSector = requireRow(
@@ -1685,10 +1809,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         after: { number },
       });
       this.event("RestaurantTable", id, "RestaurantTableCreated", { number });
-      return requireRow(
-        this.listTables().find((table) => table.id === id),
-        "No se pudo leer la mesa creada.",
-      );
+      return requireRow(this.listTables(id)[0], "No se pudo leer la mesa creada.");
     });
     return run();
   }
@@ -2339,33 +2460,51 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     })();
   }
 
-  private listProducts(): ProductDto[] {
+  getProductImage({ productId }: { productId: Id }): string | null {
+    const row = requireRow(this.db.prepare("SELECT image_data_url FROM products WHERE id = ?").get(productId) as Row | undefined, "El producto no existe.");
+    return row.image_data_url == null ? null : String(row.image_data_url);
+  }
+
+  private listProducts(ids?: string[], includeImage = false): ProductDto[] {
+    // One bind works for both a single edit and a whole import/selection.
+    const args = ids ? [JSON.stringify(ids)] : [];
+    const where = (column: string) => ids ? `WHERE ${column} IN (SELECT value FROM json_each(?))` : "";
     const rows = this.db
       .prepare(
-        `SELECT p.*, c.name AS category_name FROM products p
-         JOIN categories c ON c.id = p.category_id ORDER BY c.sort_order, p.sort_order, p.name`,
+        `SELECT p.id,p.category_id,p.name,p.code,p.parent_product_id,p.sort_order,p.active,
+           p.web_published,p.stock_minor,p.stock_target_minor,p.stock_min_minor,p.stock_critical_minor,
+           p.combo_definition_json, p.image_data_url IS NOT NULL AS has_image,
+           ${includeImage ? "p.image_data_url" : "NULL"} AS image_data_url, c.name AS category_name
+         FROM products p JOIN categories c ON c.id = p.category_id ${where("p.id")}
+         ORDER BY c.sort_order, p.sort_order, p.name`,
       )
-      .all() as Row[];
-    const pricesStatement = this.db.prepare(
-      `SELECT pp.price_list_id, pl.code AS price_list_code, pp.amount_minor
+      .all(...args) as Row[];
+    const pricesByProduct = new Map<string, Row[]>();
+    for (const price of this.db.prepare(
+      `SELECT pp.product_id, pp.price_list_id, pl.code AS price_list_code, pp.amount_minor
        FROM product_prices pp JOIN price_lists pl ON pl.id = pp.price_list_id
-       WHERE pp.product_id = ? ORDER BY pl.sort_order`,
-    );
+       ${where("pp.product_id")} ORDER BY pp.product_id, pl.sort_order`,
+    ).all(...args) as Row[]) {
+      const productId = String(price.product_id);
+      const prices = pricesByProduct.get(productId) ?? [];
+      prices.push(price);
+      pricesByProduct.set(productId, prices);
+    }
     const bookBases = new Map(
       (
         this.db
           .prepare(
-            "SELECT product_id,amount_minor FROM product_price_book_bases",
+            `SELECT product_id,amount_minor FROM product_price_book_bases ${where("product_id")}`,
           )
-          .all() as Row[]
+          .all(...args) as Row[]
       ).map((r) => [String(r.product_id), Number(r.amount_minor)]),
     );
     const bookOverrides = new Map<string, Record<string, number>>();
     for (const row of this.db
       .prepare(
-        "SELECT product_id,book_id,amount_minor FROM product_price_book_overrides",
+        `SELECT product_id,book_id,amount_minor FROM product_price_book_overrides ${where("product_id")}`,
       )
-      .all() as Row[]) {
+      .all(...args) as Row[]) {
       const id = String(row.product_id);
       const entries = bookOverrides.get(id) ?? {};
       entries[String(row.book_id)] = Number(row.amount_minor);
@@ -2393,6 +2532,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           : Number(row.stock_critical_minor),
       imageDataUrl:
         row.image_data_url == null ? null : String(row.image_data_url),
+      ...(!includeImage && flag(row.has_image) ? { hasImage: true } : {}),
       comboDefinition:
         row.combo_definition_json == null
           ? null
@@ -2403,7 +2543,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             overrides: bookOverrides.get(String(row.id)) ?? {},
           }
         : undefined,
-      prices: (pricesStatement.all(row.id) as Row[]).map((price) => ({
+      prices: (pricesByProduct.get(String(row.id)) ?? []).map((price) => ({
         priceListId: String(price.price_list_id),
         priceListCode: String(price.price_list_code),
         amountMinor: Number(price.amount_minor),
@@ -2493,21 +2633,33 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       throw new Error(`El número de usuario ${staffNumber} ya está ocupado.`);
   }
 
-  private listDeliveryLedger(): DeliveryLedgerDto[] {
-    return (
-      this.db
-        .prepare(
-          `SELECT dl.*, COALESCE(o.shift_number, o.number) AS order_number,
-                  COALESCE(o.cash_session_paid_id, o.cash_session_created_id) AS cash_session_id,
-                  cs.business_date, u.full_name AS driver_name
-      FROM delivery_ledger dl JOIN orders o ON o.id = dl.order_id
-      JOIN cash_sessions cs ON cs.id = COALESCE(o.cash_session_paid_id, o.cash_session_created_id)
-      JOIN users u ON u.id = dl.driver_user_id
-      WHERE dl.status <> 'PENDING' OR dl.amount_due_minor > dl.settled_amount_minor
-      ORDER BY dl.created_at DESC`,
-        )
-        .all() as Row[]
-    ).map((row) => ({
+  queryDeliveryLedger(filters: { orderId?: Id; cashSessionId?: Id; businessDateFrom?: BusinessDate; businessDateTo?: BusinessDate; includeAllPending?: boolean; pendingOnly?: boolean } = {}): DeliveryLedgerDto[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    where.push("(dl.status <> 'PENDING' OR dl.amount_due_minor > dl.settled_amount_minor)");
+    if (filters.pendingOnly) where.push("(dl.status = 'PENDING' AND dl.amount_due_minor > dl.settled_amount_minor)");
+    if (filters.orderId) { where.push("dl.order_id = ?"); params.push(filters.orderId); }
+    if (filters.cashSessionId && filters.includeAllPending) {
+      // Enumerate this shift and outstanding balances via indexes. An OR
+      // across the joined tables would scan the entire settled history.
+      where.push(`dl.order_id IN (
+        SELECT id FROM orders WHERE type = 'DELIVERY' AND COALESCE(cash_session_paid_id, cash_session_created_id) = ?
+        UNION SELECT order_id FROM delivery_ledger WHERE status = 'PENDING' AND amount_due_minor > settled_amount_minor)`);
+      params.push(filters.cashSessionId);
+    } else if (filters.cashSessionId) { where.push("COALESCE(o.cash_session_paid_id, o.cash_session_created_id) = ?"); params.push(filters.cashSessionId); }
+    if (filters.businessDateFrom) { where.push("cs.business_date >= ?"); params.push(filters.businessDateFrom); }
+    if (filters.businessDateTo) { where.push("cs.business_date <= ?"); params.push(filters.businessDateTo); }
+    const rows = this.db.prepare(
+      `SELECT dl.*, o.delivery_fee_belongs_to_driver, COALESCE(o.shift_number, o.number) AS order_number,
+              COALESCE(o.cash_session_paid_id, o.cash_session_created_id) AS cash_session_id,
+              cs.business_date, u.full_name AS driver_name
+       FROM delivery_ledger dl JOIN orders o ON o.id = dl.order_id
+       JOIN cash_sessions cs ON cs.id = COALESCE(o.cash_session_paid_id, o.cash_session_created_id)
+       JOIN users u ON u.id = dl.driver_user_id
+       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY dl.created_at DESC, dl.id DESC`,
+    ).all(...params) as Row[];
+    return rows.map((row) => ({
       id: String(row.id),
       orderId: String(row.order_id),
       orderNumber: Number(row.order_number),
@@ -2517,6 +2669,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       driverName: String(row.driver_name),
       restaurantAmountMinor: Number(row.restaurant_amount_minor),
       deliveryFeeMinor: Number(row.delivery_fee_minor),
+      deliveryFeeBelongsToDriver: flag(row.delivery_fee_belongs_to_driver),
       direction: String(row.direction) as DeliveryLedgerDto["direction"],
       amountDueMinor: Number(row.amount_due_minor),
       settledAmountMinor: Number(row.settled_amount_minor),
@@ -2526,11 +2679,18 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }));
   }
 
-  private listDriverDeliveryActivity(): DriverDeliveryActivityDto[] {
-    return (
-      this.db
-        .prepare(
-          `SELECT o.driver_user_id,
+  private listDeliveryLedger(): DeliveryLedgerDto[] { return this.queryDeliveryLedger(); }
+
+  queryDriverDeliveryActivity(filters: { cashSessionId?: Id; driverUserIds?: Id[]; businessDateFrom?: BusinessDate; businessDateTo?: BusinessDate } = {}): DriverDeliveryActivityDto[] {
+    if (filters.driverUserIds && filters.driverUserIds.length === 0) return [];
+    const where = ["o.type = 'DELIVERY'", "o.operational_status = 'DELIVERED'", "o.driver_user_id IS NOT NULL"];
+    const params: unknown[] = [];
+    if (filters.cashSessionId) { where.push("COALESCE(o.cash_session_paid_id, o.cash_session_created_id) = ?"); params.push(filters.cashSessionId); }
+    if (filters.driverUserIds) { where.push(`o.driver_user_id IN (${filters.driverUserIds.map(() => "?").join(",")})`); params.push(...filters.driverUserIds); }
+    if (filters.businessDateFrom) { where.push("cs.business_date >= ?"); params.push(filters.businessDateFrom); }
+    if (filters.businessDateTo) { where.push("cs.business_date <= ?"); params.push(filters.businessDateTo); }
+    const rows = this.db.prepare(
+      `SELECT o.driver_user_id,
                   COALESCE(o.cash_session_paid_id, o.cash_session_created_id) AS cash_session_id,
                   cs.business_date, COUNT(*) AS delivery_count,
                   COALESCE(SUM(CASE WHEN COALESCE(o.delivery_fee_belongs_to_driver, 1) = 1
@@ -2538,14 +2698,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
                   MAX(o.updated_at) AS last_delivery_at
            FROM orders o
            JOIN cash_sessions cs ON cs.id = COALESCE(o.cash_session_paid_id, o.cash_session_created_id)
-           WHERE o.type = 'DELIVERY'
-             AND o.operational_status = 'DELIVERED'
-             AND o.driver_user_id IS NOT NULL
+           WHERE ${where.join(" AND ")}
            GROUP BY o.driver_user_id, cash_session_id, cs.business_date
-           ORDER BY last_delivery_at DESC`,
-        )
-        .all() as Row[]
-    ).map((row) => ({
+           ORDER BY last_delivery_at DESC, o.driver_user_id ASC, cash_session_id ASC`,
+    ).all(...params) as Row[];
+    return rows.map((row) => ({
       driverUserId: String(row.driver_user_id),
       cashSessionId: String(row.cash_session_id),
       businessDate: String(row.business_date),
@@ -2555,22 +2712,26 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }));
   }
 
-  private listPrintJobs(): PrintJobDto[] {
+  private listDriverDeliveryActivity(): DriverDeliveryActivityDto[] { return this.queryDriverDeliveryActivity(); }
+
+  private listPrintJobs(orderId?: Id): PrintJobDto[] {
     return (
       this.db
         .prepare(
           `WITH recent_printed AS (
              SELECT id FROM print_jobs
              WHERE status = 'PRINTED'
-             ORDER BY created_at DESC LIMIT 100
+             ORDER BY created_at DESC, id DESC LIMIT 100
            )
-           SELECT pj.*, COALESCE(o.shift_number, o.number) AS order_number FROM print_jobs pj
+           SELECT pj.id, pj.order_id, pj.kind, pj.status, pj.printer_name, pj.copies,
+                  pj.attempts, pj.last_error, pj.created_at, pj.printed_at,
+                  COALESCE(o.shift_number, o.number) AS order_number FROM print_jobs pj
            JOIN orders o ON o.id = pj.order_id
-            WHERE pj.status IN ('QUEUED', 'RECOVERING', 'FAILED')
-              OR pj.id IN (SELECT id FROM recent_printed)
-           ORDER BY pj.created_at DESC`,
+            WHERE ${orderId === undefined ? "" : "pj.order_id = ? AND"}
+               (pj.status IN ('QUEUED', 'RECOVERING', 'FAILED') OR pj.id IN (SELECT id FROM recent_printed))
+           ORDER BY pj.created_at DESC, pj.id DESC`,
         )
-        .all() as Row[]
+        .all(...(orderId === undefined ? [] : [orderId])) as Row[]
     ).map((row) => ({
       id: String(row.id),
       orderId: String(row.order_id),
@@ -2607,7 +2768,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     throw new Error("PIN incorrecto o usuario sin permiso.");
   }
 
-  private listTables(): RestaurantTableDto[] {
+  private listTables(tableId?: Id): RestaurantTableDto[] {
     const rows = this.db
       .prepare(
         `SELECT t.*, o.id AS current_order_id, o.total_minor AS current_total_minor,
@@ -2615,9 +2776,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
          FROM restaurant_tables t
          LEFT JOIN orders o ON o.table_id = t.id AND o.operational_status NOT IN ('DELIVERED','CANCELLED')
          LEFT JOIN users u ON u.id = o.waiter_user_id
-         ORDER BY t.number`,
+         ${tableId === undefined ? "" : "WHERE t.id = ?"} ORDER BY t.number`,
       )
-      .all() as Row[];
+      .all(...(tableId === undefined ? [] : [tableId])) as Row[];
     return rows.map((row) => ({
       id: String(row.id),
       number: Number(row.number),
@@ -2690,210 +2851,297 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   private listBootstrapOrders(cashSessionId: string): OrderDto[] {
-    return (
-      this.db
-        .prepare(
-          `SELECT DISTINCT id, created_at FROM orders
-           WHERE cash_session_created_id = ? OR cash_session_paid_id = ?
-           ORDER BY created_at DESC`,
-        )
-        .all(cashSessionId, cashSessionId) as Row[]
-    ).map((row) => this.getOrder(String(row.id)));
+    return this.loadOrderDtos(this.db.prepare(
+      this.orderRowsSql(`o.cash_session_created_id = ? OR o.cash_session_paid_id = ?`) +
+      " ORDER BY o.created_at DESC",
+    ).all(cashSessionId, cashSessionId) as Row[]);
+  }
+
+  private orderRowsByIds(ids: string[]): Row[] {
+    const rows: Row[] = [];
+    for (let offset = 0; offset < ids.length; offset += 400) {
+      const chunk = ids.slice(offset, offset + 400);
+      const placeholders = chunk.map(() => "?").join(",");
+      rows.push(...this.db
+        .prepare(this.orderRowsSql(`o.id IN (${placeholders})`))
+        .all(...chunk) as Row[]);
+    }
+    return rows;
+  }
+
+  private orderRowsSql(where: string): string {
+    return `SELECT o.*, t.number AS table_number, waiter.full_name AS waiter_name, driver.full_name AS driver_name,
+                   pm.name AS change_method_name
+            FROM orders o
+            LEFT JOIN restaurant_tables t ON t.id = o.table_id
+            LEFT JOIN users waiter ON waiter.id = o.waiter_user_id
+            LEFT JOIN users driver ON driver.id = o.driver_user_id
+            LEFT JOIN payment_methods pm ON pm.code = o.change_method_code
+            WHERE ${where}`;
   }
 
   getOrder(id: string): OrderDto {
     const row = requireRow(
-      this.db
-        .prepare(
-          `SELECT o.*, t.number AS table_number, waiter.full_name AS waiter_name, driver.full_name AS driver_name,
-                  pm.name AS change_method_name
-           FROM orders o
-           LEFT JOIN restaurant_tables t ON t.id = o.table_id
-           LEFT JOIN users waiter ON waiter.id = o.waiter_user_id
-           LEFT JOIN users driver ON driver.id = o.driver_user_id
-           LEFT JOIN payment_methods pm ON pm.code = o.change_method_code
-           WHERE o.id = ?`,
-        )
-        .get(id) as Row | undefined,
+      this.db.prepare(this.orderRowsSql("o.id = ?")).get(id) as Row | undefined,
       "El pedido no existe.",
     );
-    const itemRows = this.db
-      .prepare(
-        "SELECT * FROM order_items WHERE order_id = ? ORDER BY sort_order, created_at",
-      )
-      .all(id) as Row[];
-    const halfStatement = this.db.prepare(
-      "SELECT * FROM order_item_halves WHERE order_item_id = ? ORDER BY position",
-    );
-    const modifierStatement = this.db.prepare(
-      "SELECT * FROM order_item_modifiers WHERE order_item_id = ? ORDER BY rowid",
-    );
-    const items = itemRows.map((item) => {
-      const halves = (halfStatement.all(item.id) as Row[]).map((half) => ({
-        productId: String(half.product_id),
-        nameSnapshot: String(half.product_name_snapshot),
-        priceMinorSnapshot: Number(half.price_minor_snapshot),
-        position: String(half.position) as "FIRST" | "SECOND",
-      }));
-      const modifiers = (modifierStatement.all(item.id) as Row[]).map(
-        (modifier) => ({
-          id: String(modifier.id),
-          modifierId: String(modifier.modifier_id),
-          nameSnapshot: String(modifier.name_snapshot),
-          unitPriceMinorSnapshot: Number(modifier.unit_price_minor_snapshot),
-          scope: String(modifier.scope) as never,
-        }),
-      );
-      const comboComponents = item.combo_components_json == null ? undefined : JSON.parse(String(item.combo_components_json));
-      const lineTotalMinor = calculateLineTotal({
-        unitPriceMinor: Number(item.unit_price_minor_snapshot),
-        quantity: Number(item.quantity),
-        discountMinor: Number(item.discount_minor_snapshot),
-        modifierChargesMinor: modifiers.map(
-          (modifier) => modifier.unitPriceMinorSnapshot,
-        ),
-      });
-      return {
-        id: String(item.id),
-        productId: item.product_id == null ? null : String(item.product_id),
-        productNameSnapshot: String(item.product_name_snapshot),
-        quantity: Number(item.quantity),
-        unitPriceMinorSnapshot: Number(item.unit_price_minor_snapshot),
-        discountMinorSnapshot: Number(item.discount_minor_snapshot),
-        notes: item.notes == null ? null : String(item.notes),
-        halves,
-        modifiers,
-        ...(comboComponents ? { comboComponents } : {}),
-        lineTotalMinor,
+    return this.loadOrderDtos([row])[0]!;
+  }
+
+  getDeliveryProjection(input: { orderId: Id; previousDriverId?: Id | null; includeFinancials?: boolean }): DeliveryProjectionDto {
+    return this.db.transaction(() => {
+      const order = this.getOrder(input.orderId);
+      const cashSessionId = order.cashSessionPaidId ?? order.cashSessionCreatedId;
+      const driverIds = [...new Set([input.previousDriverId, order.driverUserId].filter((id): id is Id => Boolean(id)))];
+      const session = this.getOpenCashSessionRow();
+      const projection: DeliveryProjectionDto = {
+        order,
+        cashSessionId,
+        openCashSessionId: session ? String(session.id) : null,
+        deliveryLedger: order.type === "DELIVERY" ? this.queryDeliveryLedger({ orderId: order.id }) : [],
+        driverDeliveryActivity: order.type === "DELIVERY" && cashSessionId && driverIds.length
+          ? this.queryDriverDeliveryActivity({ cashSessionId, driverUserIds: driverIds })
+          : [],
       };
-    });
-    const payments = (
-      this.db
-        .prepare(
-          `SELECT p.*, pm.code AS method_code, pm.name AS method_name,
-             COALESCE((SELECT SUM(pr.amount_minor) FROM payment_refunds pr WHERE pr.payment_id = p.id), 0) AS refunded_minor
-           FROM payments p
-           JOIN payment_methods pm ON pm.id = p.payment_method_id WHERE p.order_id = ? ORDER BY p.created_at`,
-        )
-        .all(id) as Row[]
-    ).map((payment) => {
-      const amountMinor = Number(payment.amount_minor);
-      const refundedMinor = Number(payment.refunded_minor);
-      const refundableMinor = Math.max(0, amountMinor - refundedMinor);
-      return {
-        id: String(payment.id),
-        methodCode: String(payment.method_code),
-        methodName: String(payment.method_name),
-        amountMinor,
-        receivedMinor:
-          payment.received_minor == null
-            ? null
-            : Number(payment.received_minor),
-        reference: payment.reference == null ? null : String(payment.reference),
-        createdAt: String(payment.created_at),
-        refundedMinor,
-        refundableMinor,
-        status:
-          refundableMinor === 0
-            ? ("REFUNDED" as const)
-            : refundedMinor > 0
-              ? ("PARTIALLY_REFUNDED" as const)
-              : ("ACTIVE" as const),
-      };
-    });
-    const kitchenBaseline = this.db.prepare(
-      `SELECT kitchen_snapshot_json FROM print_jobs
-       WHERE order_id = ? AND kind = 'KITCHEN_ORDER' AND status = 'PRINTED'
-       ORDER BY rowid DESC LIMIT 1`,
-    ).get(id) as Row | undefined;
-    let kitchenPrintedQuantities: Record<string, number> | null = {};
-    if (kitchenBaseline) {
-      const snapshotJson = kitchenBaseline.kitchen_snapshot_json;
-      kitchenPrintedQuantities = snapshotJson == null
-        ? null
-        : (JSON.parse(String(snapshotJson)) as { quantities: Record<string, number> }).quantities;
-    }
-    return {
-      id: String(row.id),
-      number: Number(row.shift_number ?? row.number),
-      type: String(row.type) as OrderDto["type"],
-      operationalStatus: String(
-        row.operational_status,
-      ) as OrderDto["operationalStatus"],
-      paymentStatus: String(row.payment_status) as OrderDto["paymentStatus"],
-      lifecycleStatus: String(
-        row.lifecycle_status ?? "CONFIRMED",
-      ) as OrderDto["lifecycleStatus"],
-      cashSessionCreatedId: String(row.cash_session_created_id),
-      cashSessionPaidId:
-        row.cash_session_paid_id == null
-          ? null
-          : String(row.cash_session_paid_id),
-      tableId: row.table_id == null ? null : String(row.table_id),
-      tableNumber: row.table_number == null ? null : Number(row.table_number),
-      customerId: row.customer_id == null ? null : String(row.customer_id),
-      customerNameSnapshot:
-        row.customer_name_snapshot == null
-          ? null
-          : String(row.customer_name_snapshot),
-      customerPhoneSnapshot:
-        row.customer_phone_snapshot == null
-          ? null
-          : String(row.customer_phone_snapshot),
-      deliveryAddressSnapshot:
-        row.delivery_address_snapshot == null
-          ? null
-          : String(row.delivery_address_snapshot),
-      deliveryAddressNotesSnapshot:
-        row.delivery_address_notes_snapshot == null
-          ? null
-          : String(row.delivery_address_notes_snapshot),
-      deliveryFeeMinor: Number(row.delivery_fee_minor),
-      ...(row.delivery_fee_belongs_to_driver == null
-        ? {}
-        : {
-            deliveryFeeBelongsToDriver: flag(
-              row.delivery_fee_belongs_to_driver,
-            ),
-          }),
-      promisedAt: row.promised_at == null ? null : String(row.promised_at),
-      scheduled: flag(row.scheduled),
-      waiterUserId:
-        row.waiter_user_id == null ? null : String(row.waiter_user_id),
-      waiterName: row.waiter_name == null ? null : String(row.waiter_name),
-      driverUserId:
-        row.driver_user_id == null ? null : String(row.driver_user_id),
-      driverName: row.driver_name == null ? null : String(row.driver_name),
-      collectedByDriver: flag(row.collected_by_driver),
-      notes: row.notes == null ? null : String(row.notes),
-      subtotalMinor: Number(row.subtotal_minor),
-      discountMinor: Number(row.discount_minor),
-      depositMinor: Number(row.deposit_minor ?? 0),
-      depositNotes:
-        row.deposit_notes == null ? null : String(row.deposit_notes),
-      totalMinor: Number(row.total_minor),
-      paidMinor: Number(row.paid_minor),
-      changeAmountMinor:
-        row.change_amount_minor == null
-          ? null
-          : Number(row.change_amount_minor),
-      changeMethodCode:
-        row.change_method_code == null ? null : String(row.change_method_code),
-      changeMethodName:
-        row.change_method_name == null ? null : String(row.change_method_name),
-      printedAt: row.printed_at == null ? null : String(row.printed_at),
-      printCount: Number(row.print_count),
-      printAttemptCount: Number(row.print_attempt_count ?? 0),
-      kitchenPrintedQuantities,
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at),
-      servicePendingSince:
-        row.service_pending_since == null ? null : String(row.service_pending_since),
-      servedAt: row.served_at == null ? null : String(row.served_at),
-      serviceRevision: Number(row.service_revision ?? 0),
-      items,
-      payments,
+      if (input.includeFinancials) {
+        if (session) {
+          const cashSession = this.cashSessionDto(session);
+          projection.financials = {
+            cashSession,
+            dashboard: this.getDashboard(String(session.business_date)),
+          };
+        }
+      }
+      return projection;
+    })();
+  }
+
+  getOrderPrintState(input: { orderId: Id; includeConfirmation?: boolean }): OrderPrintStateDto {
+    // Keep this read coherent with confirm/print mutations and deliberately avoid bootstrap-sized lists.
+    return this.db.transaction(() => {
+      const order = this.getOrder(input.orderId);
+      const cash = this.getOpenCashSessionRow();
+      const result: OrderPrintStateDto = { order, cashSessionId: cash ? String(cash.id) : null, printJobs: this.listPrintJobs(order.id) };
+      if (!input.includeConfirmation) return result;
+      const ids = new Set<Id>();
+      for (const item of order.items) {
+        if (item.comboComponents?.length) for (const c of item.comboComponents) ids.add(c.productId);
+        else if (item.productId) ids.add(item.productId);
+        else for (const h of item.halves) ids.add(h.productId);
+      }
+      const stocks = (this.db.prepare("SELECT id, stock_minor FROM products WHERE id IN (SELECT value FROM json_each(?))")
+        .all(JSON.stringify([...ids])) as Row[]).map(row => ({ productId: String(row.id), stockMinor: row.stock_minor == null ? null : Number(row.stock_minor) }));
+      result.confirmation = { stocks, table: order.tableId ? this.listTables(order.tableId)[0] ?? null : null,
+        dashboard: this.getDashboard(cash ? String(cash.business_date) : undefined) };
+      return result;
+    })();
+  }
+
+
+  /** Read-only, call-local batches also work inside mutation transactions.
+   * Bound IDs (not item count) keep SQLite below even its legacy 999-variable limit.
+   */
+  private loadOrderDtos(rows: Row[], categoryByItem?: Map<string, string>): OrderDto[] {
+    const itemsByOrder = new Map<string, Row[]>();
+    const halvesByItem = new Map<string, Row[]>();
+    const modifiersByItem = new Map<string, Row[]>();
+    const paymentsByOrder = new Map<string, Row[]>();
+    const kitchenByOrder = new Map<string, Row>();
+    const group = (target: Map<string, Row[]>, values: Row[], key: string) => {
+      for (const value of values) {
+        const id = String(value[key]);
+        const existing = target.get(id);
+        if (existing) existing.push(value);
+        else target.set(id, [value]);
+      }
     };
+    for (let offset = 0; offset < rows.length; offset += 400) {
+      const ids = rows.slice(offset, offset + 400).map((row) => String(row.id));
+      const placeholders = ids.map(() => "?").join(",");
+      const items = this.db.prepare(
+        `SELECT * FROM order_items WHERE order_id IN (${placeholders}) ORDER BY sort_order, created_at`,
+      ).all(...ids) as Row[];
+      group(itemsByOrder, items, "order_id");
+      if (categoryByItem) for (const item of items)
+        categoryByItem.set(String(item.id), String(item.category_name_snapshot ?? "Sin categoría"));
+      group(halvesByItem, this.db.prepare(
+        `SELECT h.* FROM order_item_halves h JOIN order_items i ON i.id = h.order_item_id
+         WHERE i.order_id IN (${placeholders}) ORDER BY h.position`,
+      ).all(...ids) as Row[], "order_item_id");
+      group(modifiersByItem, this.db.prepare(
+        `SELECT m.* FROM order_item_modifiers m JOIN order_items i ON i.id = m.order_item_id
+         WHERE i.order_id IN (${placeholders}) ORDER BY m.rowid`,
+      ).all(...ids) as Row[], "order_item_id");
+      group(paymentsByOrder, this.db.prepare(
+        `SELECT p.*, pm.code AS method_code, pm.name AS method_name,
+           COALESCE((SELECT SUM(pr.amount_minor) FROM payment_refunds pr WHERE pr.payment_id = p.id), 0) AS refunded_minor
+         FROM payments p JOIN payment_methods pm ON pm.id = p.payment_method_id
+         WHERE p.order_id IN (${placeholders}) ORDER BY p.created_at`,
+      ).all(...ids) as Row[], "order_id");
+      for (const job of this.db.prepare(
+        `SELECT order_id, kitchen_snapshot_json FROM print_jobs WHERE rowid IN (
+           SELECT MAX(rowid) FROM print_jobs WHERE order_id IN (${placeholders})
+           AND kind = 'KITCHEN_ORDER' AND status = 'PRINTED' GROUP BY order_id
+         )`,
+      ).all(...ids) as Row[]) kitchenByOrder.set(String(job.order_id), job);
+    }
+    return rows.map((row) => {
+      const itemRows = itemsByOrder.get(String(row.id)) ?? [];
+      const items = itemRows.map((item) => {
+        const halves = (halvesByItem.get(String(item.id)) ?? []).map((half) => ({
+          productId: String(half.product_id),
+          nameSnapshot: String(half.product_name_snapshot),
+          priceMinorSnapshot: Number(half.price_minor_snapshot),
+          position: String(half.position) as "FIRST" | "SECOND",
+        }));
+        const modifiers = (modifiersByItem.get(String(item.id)) ?? []).map(
+          (modifier) => ({
+            id: String(modifier.id),
+            modifierId: String(modifier.modifier_id),
+            nameSnapshot: String(modifier.name_snapshot),
+            unitPriceMinorSnapshot: Number(modifier.unit_price_minor_snapshot),
+            scope: String(modifier.scope) as never,
+          }),
+        );
+        const comboComponents = item.combo_components_json == null ? undefined : JSON.parse(String(item.combo_components_json));
+        const lineTotalMinor = calculateLineTotal({
+          unitPriceMinor: Number(item.unit_price_minor_snapshot),
+          quantity: Number(item.quantity),
+          discountMinor: Number(item.discount_minor_snapshot),
+          modifierChargesMinor: modifiers.map(
+            (modifier) => modifier.unitPriceMinorSnapshot,
+          ),
+        });
+        return {
+          id: String(item.id),
+          productId: item.product_id == null ? null : String(item.product_id),
+          productNameSnapshot: String(item.product_name_snapshot),
+          quantity: Number(item.quantity),
+          unitPriceMinorSnapshot: Number(item.unit_price_minor_snapshot),
+          discountMinorSnapshot: Number(item.discount_minor_snapshot),
+          notes: item.notes == null ? null : String(item.notes),
+          halves,
+          modifiers,
+          ...(comboComponents ? { comboComponents } : {}),
+          lineTotalMinor,
+        };
+      });
+      const payments = (paymentsByOrder.get(String(row.id)) ?? []).map((payment) => {
+        const amountMinor = Number(payment.amount_minor);
+        const refundedMinor = Number(payment.refunded_minor);
+        const refundableMinor = Math.max(0, amountMinor - refundedMinor);
+        return {
+          id: String(payment.id),
+          methodCode: String(payment.method_code),
+          methodName: String(payment.method_name),
+          amountMinor,
+          receivedMinor:
+            payment.received_minor == null
+              ? null
+              : Number(payment.received_minor),
+          reference: payment.reference == null ? null : String(payment.reference),
+          createdAt: String(payment.created_at),
+          refundedMinor,
+          refundableMinor,
+          status:
+            refundableMinor === 0
+              ? ("REFUNDED" as const)
+              : refundedMinor > 0
+                ? ("PARTIALLY_REFUNDED" as const)
+                : ("ACTIVE" as const),
+        };
+      });
+      const kitchenBaseline = kitchenByOrder.get(String(row.id));
+      let kitchenPrintedQuantities: Record<string, number> | null = {};
+      if (kitchenBaseline) {
+        const snapshotJson = kitchenBaseline.kitchen_snapshot_json;
+        kitchenPrintedQuantities = snapshotJson == null
+          ? null
+          : (JSON.parse(String(snapshotJson)) as { quantities: Record<string, number> }).quantities;
+      }
+      return {
+        id: String(row.id),
+        number: Number(row.shift_number ?? row.number),
+        type: String(row.type) as OrderDto["type"],
+        operationalStatus: String(
+          row.operational_status,
+        ) as OrderDto["operationalStatus"],
+        paymentStatus: String(row.payment_status) as OrderDto["paymentStatus"],
+        lifecycleStatus: String(
+          row.lifecycle_status ?? "CONFIRMED",
+        ) as OrderDto["lifecycleStatus"],
+        cashSessionCreatedId: String(row.cash_session_created_id),
+        cashSessionPaidId:
+          row.cash_session_paid_id == null
+            ? null
+            : String(row.cash_session_paid_id),
+        tableId: row.table_id == null ? null : String(row.table_id),
+        tableNumber: row.table_number == null ? null : Number(row.table_number),
+        customerId: row.customer_id == null ? null : String(row.customer_id),
+        customerNameSnapshot:
+          row.customer_name_snapshot == null
+            ? null
+            : String(row.customer_name_snapshot),
+        customerPhoneSnapshot:
+          row.customer_phone_snapshot == null
+            ? null
+            : String(row.customer_phone_snapshot),
+        deliveryAddressSnapshot:
+          row.delivery_address_snapshot == null
+            ? null
+            : String(row.delivery_address_snapshot),
+        deliveryAddressNotesSnapshot:
+          row.delivery_address_notes_snapshot == null
+            ? null
+            : String(row.delivery_address_notes_snapshot),
+        deliveryFeeMinor: Number(row.delivery_fee_minor),
+        ...(row.delivery_fee_belongs_to_driver == null
+          ? {}
+          : {
+              deliveryFeeBelongsToDriver: flag(
+                row.delivery_fee_belongs_to_driver,
+              ),
+            }),
+        promisedAt: row.promised_at == null ? null : String(row.promised_at),
+        scheduled: flag(row.scheduled),
+        waiterUserId:
+          row.waiter_user_id == null ? null : String(row.waiter_user_id),
+        waiterName: row.waiter_name == null ? null : String(row.waiter_name),
+        driverUserId:
+          row.driver_user_id == null ? null : String(row.driver_user_id),
+        driverName: row.driver_name == null ? null : String(row.driver_name),
+        collectedByDriver: flag(row.collected_by_driver),
+        notes: row.notes == null ? null : String(row.notes),
+        subtotalMinor: Number(row.subtotal_minor),
+        discountMinor: Number(row.discount_minor),
+        depositMinor: Number(row.deposit_minor ?? 0),
+        depositNotes:
+          row.deposit_notes == null ? null : String(row.deposit_notes),
+        totalMinor: Number(row.total_minor),
+        paidMinor: Number(row.paid_minor),
+        changeAmountMinor:
+          row.change_amount_minor == null
+            ? null
+            : Number(row.change_amount_minor),
+        changeMethodCode:
+          row.change_method_code == null ? null : String(row.change_method_code),
+        changeMethodName:
+          row.change_method_name == null ? null : String(row.change_method_name),
+        printedAt: row.printed_at == null ? null : String(row.printed_at),
+        printCount: Number(row.print_count),
+        printAttemptCount: Number(row.print_attempt_count ?? 0),
+        kitchenPrintedQuantities,
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+        servicePendingSince:
+          row.service_pending_since == null ? null : String(row.service_pending_since),
+        servedAt: row.served_at == null ? null : String(row.served_at),
+        serviceRevision: Number(row.service_revision ?? 0),
+        version: Number(row.version),
+        items,
+        payments,
+      };
+    });
   }
 
   markOrderServed(input: MarkOrderServedInput): OrderDto {
@@ -3919,7 +4167,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       }
       this.db.prepare("UPDATE products SET combo_definition_json = ?, updated_at = ? WHERE id = ?").run(input.definition ? JSON.stringify(input.definition) : null, nowIso(), input.productId);
       this.audit({ entityType: "PRODUCT", entityId: input.productId, action: "PRODUCT_COMBO_CONFIGURED", permission: "prices.bulk_update", reason: input.reason.trim(), before: { comboDefinition: product.combo_definition_json ? JSON.parse(String(product.combo_definition_json)) : null }, after: { comboDefinition: input.definition }, authorizerUserId: String(authorizer.id) });
-      return this.listProducts().find((p) => p.id === input.productId)!;
+      return this.listProducts([input.productId], true)[0]!;
     });
   }
 
@@ -4020,7 +4268,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   addOrderItem(input: AddOrderItemInput): OrderDto {
-    const run = this.db.transaction(() => {
+    const append = () => {
       const order = this.editableOrder(input.orderId);
       const product = requireRow(
         this.db
@@ -4169,9 +4417,17 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         action: existingItem ? "ITEM_QUANTITY_UPDATED" : "ITEM_ADDED",
         priceWasOverridden,
       });
-      return this.getOrder(input.orderId);
-    });
-    return run();
+      return input.orderId;
+    };
+    return this.db.transaction(() => {
+      // A retransmission of the same gesture must not reserve stock twice.
+      // Persist just the order id, not a growing copy of the whole ticket.
+      const orderId = input.idempotencyKey
+        ? this.idempotentTransaction(input.idempotencyKey, input.terminalId, "addOrderItem",
+            input.cashSessionId, { operation: "addOrderItem", ...input }, append)
+        : append();
+      return this.getOrder(orderId);
+    })();
   }
 
   updateOrderItemQuantity(input: UpdateOrderItemQuantityInput): OrderDto {
@@ -4949,10 +5205,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
               incomingCash += payment.amountMinor;
             }
           }
-          const currentExpectedCash =
-            this.cashSessionDto(session).expectedAmountMinor;
-          const availableCash =
-            currentExpectedCash + (input.collectedByDriver ? 0 : incomingCash);
+          // Only change and immediate driver payouts use this balance. Capture it
+          // before posting payments so that incoming cash is not counted twice.
+          const availableCash = changeAmountMinor > 0 || input.payDriverNow === true
+            ? this.cashSessionDto(session).expectedAmountMinor + (input.collectedByDriver ? 0 : incomingCash)
+            : 0;
           if (changeAmountMinor > 0) {
             if (accountPayments.length)
               throw new Error(
@@ -5594,7 +5851,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         throw new Error(
           "Asigná un repartidor al envío antes de completar la entrega.",
         );
-      const paymentInput = input;
+      // Assignment has already been validated under this same transaction.
+      // The payment command and the entire completion must not share a receipt key.
+      const paymentInput = {
+        ...input, driverUserId: undefined,
+        idempotencyKey: input.idempotencyKey ? `complete-pay:${input.idempotencyKey}` : undefined,
+      };
       if (order.type === "DELIVERY" && order.paymentStatus !== "PAID") {
         const cashMinor = input.payments
           .filter((payment) => payment.methodCode === "CASH")
@@ -5621,7 +5883,18 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       assertOrderAction(order, "DELIVER");
       return this.updateOrderStatus(input.orderId, input.finalStatus);
     });
-    return run();
+    if (!input.idempotencyKey) return run();
+    // Check the complete command *before* testing whether the order is still
+    // assignable: after a lost IPC response the order is already delivered.
+    let result: OrderDto | undefined;
+    const orderId = this.idempotentTransaction(
+      input.idempotencyKey, input.terminalId, "completeOrder", input.cashSessionId,
+      { operation: "completeOrder", input }, () => {
+        result = run();
+        return result.id;
+      },
+    );
+    return result ?? this.getOrder(orderId);
   }
 
   cancelOrder(input: CancelOrderInput): OrderDto {
@@ -7253,6 +7526,19 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       amountMinor: number;
     }>;
   }): ProductDto {
+    return this.db.transaction(() => {
+      const id = this.insertProductRecord(input);
+      return requireRow(
+        this.listProducts([id], true)[0],
+        "No se pudo leer el producto creado.",
+      );
+    })();
+  }
+
+  private insertProductRecord(
+    input: Parameters<GastronomyRepository["createProduct"]>[0],
+    deferMaterialization = false,
+  ): string {
     if (input.priceBook) this.validateProductPriceBook("", input.priceBook);
     const run = this.db.transaction(() => {
       const category = requireRow(
@@ -7340,18 +7626,66 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
             .run(id, bookId, amount);
         }
       if (!input.priceBook) reconcileLegacyPrices(this.db, id, input.prices);
-      this.materializePriceBooks([id]);
+      if (!deferMaterialization) this.materializePriceBooks([id]);
       this.audit({
         entityType: "PRODUCT",
         entityId: id,
         action: "PRODUCT_CREATED",
       });
-      return requireRow(
-        this.listProducts().find((product) => product.id === id),
-        "No se pudo leer el producto creado.",
-      );
+      return id;
     });
     return run();
+  }
+
+  importProducts(input: ImportProductsInput): ProductDto[] {
+    assertPermission(this.currentUser().permissions, "prices.bulk_update");
+    const normalized = normalizeImportProductsInput(input);
+    return this.idempotentTransaction(
+      `catalog-import:${normalized.idempotencyKey}`,
+      undefined,
+      "importProducts",
+      undefined,
+      { operation: "importProducts", rows: normalized.rows },
+      () => {
+        const transaction = this.db.transaction(() => {
+          const categoryIds = [...new Set(normalized.rows.map((row) => row.categoryId))];
+          const categories = this.db.prepare(
+            `SELECT id, stock_control_enabled FROM categories WHERE active = 1 AND id IN (${categoryIds.map(() => "?").join(",")})`,
+          ).all(...categoryIds) as Row[];
+          const categoryById = new Map(categories.map((row) => [String(row.id), row]));
+          for (const row of normalized.rows) {
+            if (!categoryById.has(row.categoryId))
+              throw new Error(`La categoría ${row.categoryId} no existe o está inactiva.`);
+          }
+          const existingCodes = this.db.prepare("SELECT code FROM products WHERE code IS NOT NULL").all() as Row[];
+          const codeSet = new Set(existingCodes.map((row) => String(row.code).trim().normalize("NFC").toLocaleLowerCase("en-US")));
+          for (const row of normalized.rows) {
+            const code = row.code.normalize("NFC").toLocaleLowerCase("en-US");
+            if (codeSet.has(code)) throw new Error(`El código ${row.code} ya existe.`);
+            codeSet.add(code);
+          }
+          const productIds = normalized.rows.map((row) => {
+            const category = categoryById.get(row.categoryId)!;
+            const stock = flag(category.stock_control_enabled) ? 0 : null;
+            return this.insertProductRecord({
+              categoryId: row.categoryId,
+              code: row.code,
+              name: row.name,
+              stockMinor: stock,
+              stockTargetMinor: null,
+              stockMinMinor: null,
+              stockCriticalMinor: null,
+              prices: [],
+              priceBook: { baseMinor: row.basePriceMinor, overrides: {} },
+            }, true);
+          });
+          this.materializePriceBooks(productIds);
+          const productsById = new Map(this.listProducts(productIds).map((product) => [product.id, product]));
+          return productIds.map((id) => requireRow(productsById.get(id), "No se pudo leer un producto importado."));
+        });
+        return transaction();
+      },
+    );
   }
 
   updateProduct(input: UpdateProductInput): ProductDto {
@@ -7364,7 +7698,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         "prices.bulk_update",
       );
       const before = requireRow(
-        this.listProducts().find((product) => product.id === input.productId),
+        this.listProducts([input.productId], true)[0],
         "El producto no existe.",
       );
       if (input.stockMinor != null && before.comboDefinition)
@@ -7489,7 +7823,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       } else reconcileLegacyPrices(this.db, input.productId, input.prices);
       this.materializePriceBooks([input.productId]);
       const after = requireRow(
-        this.listProducts().find((product) => product.id === input.productId),
+        this.listProducts([input.productId], true)[0],
         "No se pudo leer el producto actualizado.",
       );
       this.audit({
@@ -7521,7 +7855,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }): { deleted: true } {
     const run = this.db.transaction(() => {
       const before = requireRow(
-        this.listProducts().find((product) => product.id === input.productId),
+        this.listProducts([input.productId], true)[0],
         "El producto no existe.",
       );
       if (!input.reason.trim())
@@ -7607,9 +7941,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         "prices.bulk_update",
       );
       const requestedIds = [...new Set(input.productIds)];
-      const before = this.listProducts().filter((product) =>
-        requestedIds.includes(product.id),
-      );
+      const before = this.listProducts(requestedIds);
       if (before.length !== requestedIds.length)
         throw new Error("Uno o más productos seleccionados ya no existen.");
       if (input.categoryId != null) {
@@ -7696,9 +8028,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         }
       }
 
-      const after = this.listProducts().filter((product) =>
-        requestedIds.includes(product.id),
-      );
+      const after = this.listProducts(requestedIds);
       const batchId = randomUUID();
       this.audit({
         entityType: "PRODUCT_BATCH",
@@ -9299,9 +9629,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         authorizerUserId: String(authorizer.id),
       });
       return requireRow(
-        this.listProducts().find(
-          (candidate) => candidate.id === input.productId,
-        ),
+        this.listProducts([input.productId], true)[0],
         "No se pudo leer el producto.",
       );
     });
@@ -10495,9 +10823,83 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     }));
   }
 
+  /** Lightweight, stable page for the history screen. Deliberately does not
+   * hydrate movements or orders; net sales are aggregated only for the page. */
+  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number }): CashSessionHistoryPageDto {
+    return this.db.transaction(() => this.readClosedCashSessionPage(input))();
+  }
+
+  private readClosedCashSessionPage(input?: { page?: number; pageSize?: number }): CashSessionHistoryPageDto {
+    const requestedSize = Number(input?.pageSize ?? 20);
+    const requestedPage = Number(input?.page ?? 1);
+    const pageSize = Number.isFinite(requestedSize) ? Math.min(100, Math.max(1, Math.floor(requestedSize))) : 20;
+    const totalCount = Number(
+      (this.db.prepare("SELECT COUNT(*) AS count FROM cash_sessions WHERE status = 'CLOSED'").get() as Row).count,
+    );
+    const lastPage = Math.max(1, Math.ceil(totalCount / pageSize));
+    const page = Number.isFinite(requestedPage) ? Math.min(lastPage, Math.max(1, Math.floor(requestedPage))) : 1;
+    const offset = (page - 1) * pageSize;
+    const cutoff = new Date();
+    cutoff.setDate(1);
+    cutoff.setMonth(cutoff.getMonth() - 2);
+    const cutoffDate = cutoff.toISOString().slice(0, 10);
+    const rows = this.db.prepare(`
+      SELECT cs.id, cs.number, cs.business_date, cs.opened_at, cs.closed_at,
+        cs.status, u.full_name AS opened_by_name
+      FROM cash_sessions cs LEFT JOIN users u ON u.id = cs.opened_by_user_id
+      WHERE cs.status = 'CLOSED'
+      ORDER BY cs.closed_at DESC, cs.opened_at DESC, cs.id DESC
+      LIMIT ? OFFSET ?
+    `).all(pageSize, offset) as Row[];
+    const ids = rows.map((row) => String(row.id));
+    const sales = new Map<string, number>();
+    if (ids.length) {
+      const placeholders = ids.map(() => "?").join(",");
+      const saleRows = this.db.prepare(`
+        SELECT p.cash_session_id AS session_id,
+          SUM(p.amount_minor - COALESCE((SELECT SUM(pr.amount_minor) FROM payment_refunds pr WHERE pr.payment_id = p.id), 0)) AS amount
+        FROM payments p JOIN orders o ON o.id = p.order_id JOIN payment_methods pm ON pm.id = p.payment_method_id
+        WHERE p.cash_session_id IN (${placeholders})
+          AND o.lifecycle_status = 'CONFIRMED' AND o.operational_status <> 'CANCELLED'
+        GROUP BY p.cash_session_id
+        UNION ALL
+        SELECT cm.cash_session_id AS session_id, -SUM(cm.amount_minor) AS amount
+        FROM cash_movements cm JOIN orders o ON o.id = cm.order_id
+        JOIN payment_methods pm ON pm.id = cm.payment_method_id
+        WHERE cm.cash_session_id IN (${placeholders})
+          AND o.lifecycle_status = 'CONFIRMED' AND o.operational_status <> 'CANCELLED'
+          AND cm.type = 'REFUND' AND cm.reason LIKE 'Vuelto cobro pedido #%'
+        GROUP BY cm.cash_session_id
+      `).all(...ids, ...ids) as Row[];
+      for (const row of saleRows)
+        sales.set(String(row.session_id), (sales.get(String(row.session_id)) ?? 0) + Number(row.amount ?? 0));
+    }
+    return {
+      page,
+      pageSize,
+      totalCount,
+      hasNextPage: offset + rows.length < totalCount,
+      items: rows.map((row) => ({
+        id: String(row.id),
+        number: Number(row.number),
+        businessDate: String(row.business_date),
+        openedAt: String(row.opened_at),
+        closedAt: row.closed_at == null ? null : String(row.closed_at),
+        openedByName: String(row.opened_by_name ?? ""),
+        salesTotalMinor: sales.get(String(row.id)) ?? 0,
+        detailAvailable: String(row.closed_at ?? row.opened_at).slice(0, 10) >= cutoffDate,
+        status: String(row.status) as "CLOSED",
+      })),
+    };
+  }
+
   getCashSessionReport(
     filters: CashSessionReportFilters,
   ): CashSessionReportDto {
+    return this.db.transaction(() => this.readCashSessionReport(filters))();
+  }
+
+  private readCashSessionReport(filters: CashSessionReportFilters): CashSessionReportDto {
     const permissions = this.currentUser().permissions;
     if (!permissions.includes("*"))
       assertPermission(permissions, "reports.view");
@@ -10507,7 +10909,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         .get(filters.cashSessionId) as Row | undefined,
       "La caja no existe.",
     );
-    const session = this.cashSessionDto(sessionRow);
+    const scopedPayments = this.reportOrderPayments(String(sessionRow.id));
+    const session = this.cashSessionDto(sessionRow, scopedPayments);
     const cutoff = new Date();
     cutoff.setDate(1);
     cutoff.setMonth(cutoff.getMonth() - 2);
@@ -10528,7 +10931,6 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       ] as const)
         delete (effectiveFilters as Record<string, unknown>)[key];
     }
-    const scopedPayments = this.reportOrderPayments(session.id);
     const scopedOrderMoney = new Map<
       string,
       { amount: number; refunds: number }
@@ -10549,12 +10951,26 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const allRows = detailAvailable
       ? (this.db
           .prepare(
-            "SELECT id FROM orders WHERE cash_session_created_id = ? OR cash_session_paid_id = ? OR EXISTS (SELECT 1 FROM payments p WHERE p.order_id = orders.id AND p.cash_session_id = ?) ORDER BY created_at",
+            this.orderRowsSql("o.cash_session_created_id = ? OR o.cash_session_paid_id = ? OR EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id AND p.cash_session_id = ?) ORDER BY o.created_at"),
           )
           .all(session.id, session.id, session.id) as Row[])
       : [];
-    const allOrders = allRows.map((r) => this.getOrder(String(r.id)));
-    const paidOrders = paidIds.map((id) => this.getOrder(id));
+    // Preserve each view's ordering, but materialize their union just once.
+    const detailIds = allRows.map(row => String(row.id));
+    const inDetail = new Set(detailIds);
+    const missingRows = this.orderRowsByIds(paidIds.filter(id => !inDetail.has(id)));
+    const categoryByItem = new Map<string, string>();
+    const dtos = this.loadOrderDtos([...allRows, ...missingRows], categoryByItem);
+    const byId = new Map(dtos.map(order => [order.id, order]));
+    const allOrders = dtos.slice(0, detailIds.length);
+    const paidOrders = paidIds.map(id => requireRow(byId.get(id), "El pedido no existe."));
+    const paymentsByOrder = new Map<string, Row[]>();
+    for (const payment of scopedPayments) {
+      const id = String(payment.order_id);
+      const entries = paymentsByOrder.get(id);
+      if (entries) entries.push(payment);
+      else paymentsByOrder.set(id, [payment]);
+    }
     const matches = (o: OrderDto) => {
       if (effectiveFilters.tableId && o.tableId !== effectiveFilters.tableId)
         return false;
@@ -10582,15 +10998,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       if (
         effectiveFilters.categoryName &&
         !o.items.some((i) => {
-          const row = this.db
-            .prepare(
-              "SELECT category_name_snapshot FROM order_items WHERE id = ?",
-            )
-            .get(i.id) as Row | undefined;
-          return (
-            String(row?.category_name_snapshot ?? "Sin categoría") ===
-            effectiveFilters.categoryName
-          );
+          return (categoryByItem.get(i.id) ?? "Sin categoría") === effectiveFilters.categoryName;
         })
       )
         return false;
@@ -10599,10 +11007,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         !o.payments.some(
           (p) =>
             p.methodCode === effectiveFilters.paymentMethodCode &&
-            scopedPayments.some(
-              (sp) =>
-                String(sp.order_id) === o.id &&
-                String(sp.method_code) === p.methodCode,
+            (paymentsByOrder.get(o.id) ?? []).some(
+              (sp) => String(sp.method_code) === p.methodCode,
             ),
         )
       )
@@ -10666,15 +11072,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       { name: string; quantity: number; amountMinor: number }
     >();
     for (const o of selected) {
-      const sessionCount = Number(
-        (
-          this.db
-            .prepare(
-              "SELECT COUNT(DISTINCT cash_session_id) AS count FROM payments WHERE order_id = ?",
-            )
-            .get(o.id) as Row
-        ).count,
-      );
+      const sessionCount = Number(paymentsByOrder.get(o.id)?.[0]?.payment_session_count ?? 1);
       const quantityScale =
         sessionCount > 1 ? scopedAmount(o) / Math.max(o.totalMinor, 1) : 1;
       const tableKey = o.tableId ?? "none";
@@ -10716,9 +11114,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       ty.orderCount++;
       ty.amountMinor += scopedAmount(o);
       byType.set(o.type, ty);
-      for (const p of scopedPayments.filter(
-        (p) => String(p.order_id) === o.id,
-      )) {
+      for (const p of paymentsByOrder.get(o.id) ?? []) {
         const methodCode = String(p.method_code);
         const x = byPayment.get(methodCode) ?? {
           code: methodCode,
@@ -10741,12 +11137,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           (i.lineTotalMinor * scopedAmount(o)) / Math.max(o.totalMinor, 1),
         );
         byProduct.set(i.productId ?? name, x);
-        const catRow = this.db
-          .prepare(
-            "SELECT category_name_snapshot FROM order_items WHERE id = ?",
-          )
-          .get(i.id) as Row | undefined;
-        const cat = String(catRow?.category_name_snapshot ?? "Sin categoría");
+        const cat = categoryByItem.get(i.id) ?? "Sin categoría";
         const c = byCategory.get(cat) ?? {
           name: cat,
           quantity: 0,
@@ -10759,33 +11150,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         byCategory.set(cat, c);
       }
     }
-    const movements = (
-      this.db
-        .prepare(
-          `SELECT cm.*, pm.code AS payment_method_code, pm.name AS payment_method_name,
-             (SELECT id FROM cash_movements WHERE reference_id = cm.id) AS reversed_by_id
-           FROM cash_movements cm
-           LEFT JOIN payment_methods pm ON pm.id = cm.payment_method_id
-           WHERE cm.cash_session_id = ?
-           ORDER BY cm.created_at DESC`,
-        )
-        .all(session.id) as Row[]
-    ).map((m) => ({
-      id: String(m.id),
-      type: String(m.type) as CashMovementType,
-      amountMinor: Number(m.amount_minor),
-      affectsCash: flag(m.affects_cash),
-      paymentMethodCode:
-        m.payment_method_code == null ? null : String(m.payment_method_code),
-      paymentMethodName:
-        m.payment_method_name == null ? null : String(m.payment_method_name),
-      orderId: m.order_id == null ? null : String(m.order_id),
-      userId: String(m.user_id),
-      reason: m.reason == null ? null : String(m.reason),
-      createdAt: String(m.created_at),
-      referenceId: m.reference_id == null ? null : String(m.reference_id),
-      reversedById: m.reversed_by_id == null ? null : String(m.reversed_by_id),
-    }));
+    const movements = session.movements ?? [];
     return {
       session,
       detailAvailable,

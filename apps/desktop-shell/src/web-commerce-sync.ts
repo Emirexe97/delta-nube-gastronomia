@@ -12,6 +12,8 @@ const MAX_BACKOFF_MS = 5 * 60_000;
 
 export interface WebCommerceRepository {
   getWebCommerceCatalogSnapshot(): WebCatalogSnapshot;
+  /** Monotonic local catalog revision; changes whenever the snapshot changes. */
+  getWebCommerceCatalogRevision(): number | string;
   getWebOrderCursor(storeId: string): number;
   /** Must persist the order and advance its cursor atomically. */
   ingestWebOrder(storeId: string, record: WebOrderRecord): void;
@@ -40,6 +42,8 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
   const enabled = () => options.isEnabled?.() !== false;
   let inFlight: Promise<WebSyncStatus> | null = null;
   let lastCatalogHash: string | null = null;
+  let publishedCatalogRevision: number | string | null = null;
+  let publishedRepository: WebCommerceRepository | null = null;
   let lastSuccessAt: string | null = null;
   let lastError: string | null = null;
   let nextRetryAt = 0;
@@ -127,23 +131,48 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
       // Publish before polling. A publish failure does not prevent inbound orders from being persisted.
       const generation = catalogGeneration;
       try {
-        const snapshot = repository.getWebCommerceCatalogSnapshot();
-        const hash = createHash("sha256")
-          .update(JSON.stringify(snapshot))
-          .digest("hex");
+        const revision = repository.getWebCommerceCatalogRevision();
         if (
           catalogDirty ||
           publishedStore !== storeId ||
-          lastCatalogHash !== hash
+          publishedRepository !== repository ||
+          publishedCatalogRevision !== revision
         ) {
-          await client.publishCatalog(snapshot, storeId);
-          if (generation === catalogGeneration) {
+          // Only materialize the (potentially expensive) snapshot when the
+          // cheap revision check says a PUT is actually needed.
+          const snapshot = repository.getWebCommerceCatalogSnapshot();
+          const hash = createHash("sha256")
+            .update(JSON.stringify(snapshot))
+            .digest("hex");
+          const forcePublish =
+            catalogDirty ||
+            publishedStore !== storeId ||
+            publishedRepository !== repository ||
+            lastCatalogHash === null;
+          if (forcePublish || hash !== lastCatalogHash)
+            await client.publishCatalog(snapshot, storeId);
+          const revisionStillCurrent =
+            repository.getWebCommerceCatalogRevision() === revision;
+          if (
+            generation === catalogGeneration &&
+            revisionStillCurrent &&
+            config().storeId === storeId &&
+            options.getRepository() === repository
+          ) {
+            publishedCatalogRevision = revision;
             lastCatalogHash = hash;
             publishedStore = storeId;
+            publishedRepository = repository;
             catalogDirty = false;
+          } else {
+            catalogDirty = true;
           }
         }
       } catch {
+        // A remote PUT may have been accepted before reporting failure. Keep
+        // this dirty so a later tick retries even if the revision/hash returns
+        // to a previously published value.
+        catalogDirty = true;
         lastError = "No se pudo publicar el catálogo";
       }
 
@@ -220,6 +249,8 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
     },
     invalidate(): void {
       catalogGeneration++;
+      publishedCatalogRevision = null;
+      publishedRepository = null;
       lastCatalogHash = null;
       publishedStore = null;
       catalogDirty = true;

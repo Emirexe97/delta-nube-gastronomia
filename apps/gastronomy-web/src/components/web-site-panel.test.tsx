@@ -10,7 +10,11 @@ function render(status: WebSiteStatus) {
   const client = new QueryClient();
   client.setQueryData(["website-status"], status);
   return renderToStaticMarkup(
-    createElement(QueryClientProvider, { client }, createElement(WebSitePanel)),
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(WebSitePanel, { products: [] }),
+    ),
   );
 }
 const base: WebSiteStatus = {
@@ -41,7 +45,10 @@ describe("web site settings renderer", () => {
       url: "https://cafe-norte.deltanubeweb.com",
       displayName: "Café Norte",
     });
-    expect(standard).toContain("Guardar presentación");
+    expect(standard).toContain("Publicar cambios");
+    expect(standard).toContain("Vista previa móvil");
+    expect(standard).toContain("Imagen de portada");
+    expect(standard).toContain("Publicado");
     expect(standard).toContain("Color de acento");
     expect(standard).toContain("Abrir carta");
     expect(standard).toContain("Copiar enlace");
@@ -54,7 +61,7 @@ describe("web site settings renderer", () => {
       url: "https://cafe-norte.deltanubeweb.com",
     });
     expect(custom).toContain("administrado por el equipo de Delta Nube");
-    expect(custom).not.toContain("Guardar presentación");
+    expect(custom).not.toContain("Publicar cambios");
     expect(custom).toContain("Descargar QR");
   });
 
@@ -116,12 +123,27 @@ describe("web site settings renderer", () => {
   it("labels a free trial and does not display a grace period", () => {
     const client = new QueryClient();
     client.setQueryData(["license-status"], {
-      state: "ACTIVE", canOperate: true, installationId: "install-1", businessName: "Cafe",
-      paidThrough: "2026-11-30T00:00:00.000Z", graceUntil: "2026-11-30T00:00:00.000Z",
-      trial: { startedAt: "2026-10-31T00:00:00.000Z", endsAt: "2026-11-30T00:00:00.000Z" },
-      lastVerifiedAt: null, verificationOverdue: false, message: "Prueba",
+      state: "ACTIVE",
+      canOperate: true,
+      installationId: "install-1",
+      businessName: "Cafe",
+      paidThrough: "2026-11-30T00:00:00.000Z",
+      graceUntil: "2026-11-30T00:00:00.000Z",
+      trial: {
+        startedAt: "2026-10-31T00:00:00.000Z",
+        endsAt: "2026-11-30T00:00:00.000Z",
+      },
+      lastVerifiedAt: null,
+      verificationOverdue: false,
+      message: "Prueba",
     });
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(LicensePanel)));
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(LicensePanel),
+      ),
+    );
     expect(html).toContain("Prueba gratuita");
     expect(html).not.toContain("Gracia hasta");
   });

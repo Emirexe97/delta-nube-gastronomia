@@ -102,10 +102,10 @@ test("el mozo abre mesas por número y busca la otra mitad sin perder el flujo h
 
     // Adding a draft locks table switching; the fallback select stays visible.
     await page.locator("#openMenu").click();
-    await page.getByRole("button", { name: "Agregar Pizza Muzzarella", exact: true }).click();
+    await page.getByRole("button", { name: "Mitad y mitad: Pizza Muzzarella", exact: true }).click();
     const dialog = page.locator("#itemDialog");
     await expect(dialog).toBeVisible();
-    await dialog.getByLabel("Tipo de pizza").selectOption("half");
+    await expect(dialog.getByLabel("Tipo de pizza")).toHaveValue("half");
     const search = dialog.getByLabel("Buscar otra mitad");
     await expect(search).toBeVisible();
     await search.fill("napo");
@@ -123,10 +123,10 @@ test("el mozo abre mesas por número y busca la otra mitad sin perder el flujo h
     await expect(table).toHaveValue("table-20");
 
     // Search normalization and empty feedback are independent of the menu search.
-    await page.getByRole("button", { name: "Agregar Pizza Muzzarella", exact: true }).click();
+    await page.getByRole("button", { name: "Mitad y mitad: Pizza Muzzarella", exact: true }).click();
     await expect(dialog.getByLabel("Buscar otra mitad")).toHaveValue("");
     await expect(second).toHaveValue("");
-    await dialog.getByLabel("Tipo de pizza").selectOption("half");
+    await expect(dialog.getByLabel("Tipo de pizza")).toHaveValue("half");
     await search.fill("Pizza");
     await expect(second).toHaveValue("");
     await dialog.getByLabel("Buscar otra mitad").fill("roque");

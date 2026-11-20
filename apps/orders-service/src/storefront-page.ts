@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { renderStorefrontCover, storefrontAccentForeground, storefrontCoverCss, storefrontProductCss } from "@gastronomy/ui/storefront-cover";
+import { storefrontLayoutCss } from "./storefront-layout.js";
 
 /** A tenant-neutral storefront document. All catalogue/customer data is rendered as text, never HTML. */
-export const storefrontHtml = String.raw`<!doctype html>
+const storefrontTemplate = String.raw`<!doctype html>
 <html lang="es">
   <head>
     <meta charset="utf-8" />
@@ -9,404 +11,14 @@ export const storefrontHtml = String.raw`<!doctype html>
     <meta name="color-scheme" content="light" />
     <title>Menú online</title>
     <style>
-      :root {
-        color-scheme: light;
-        --ink: #29251f;
-        --muted: #756d61;
-        --paper: #f7f3eb;
-        --card: #fffdf8;
-        --line: #ded6c8;
-        --accent: #9c4329;
-        --accent-dark: #71301e;
-        --sage: #435d4b;
-        --shadow: 0 16px 42px #382b1a12;
-        font-family: Georgia, "Times New Roman", serif;
-      }
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        background: radial-gradient(ellipse at 90% 0%, #eadfc9 0, transparent 32rem), var(--paper);
-        color: var(--ink);
-        font-family: Arial, Helvetica, sans-serif;
-        line-height: 1.5;
-      }
-      button,
-      input,
-      select,
-      textarea {
-        font: inherit;
-      }
-      button {
-        cursor: pointer;
-      }
-      button:disabled {
-        cursor: not-allowed;
-        opacity: 0.52;
-      }
-      .wrap {
-        max-width: 1120px;
-        margin: 0 auto;
-        padding: 0 22px;
-      }
-      .hero {
-        padding: 42px 0 28px;
-        border-bottom: 1px solid var(--line);
-      }
-      .eyebrow {
-        font-size: 0.74rem;
-        letter-spacing: 0.18em;
-        text-transform: uppercase;
-        color: var(--accent);
-        font-weight: 700;
-      }
-      .hero h1 {
-        font:
-          clamp(2.5rem, 7vw, 5rem)/0.97 Georgia,
-          "Times New Roman",
-          serif;
-        letter-spacing: -0.045em;
-        margin: 0.28rem 0 0.8rem;
-      }
-      .hero p {
-        max-width: 650px;
-        margin: 0.35rem 0;
-        color: var(--muted);
-      }
-      .topline {
-        display: flex;
-        justify-content: space-between;
-        gap: 1.5rem;
-        align-items: flex-end;
-      }
-      .channel {
-        min-width: 220px;
-      }
-      .channel label,
-      .field label {
-        display: block;
-        font-size: 0.9rem;
-        font-weight: 700;
-        margin-bottom: 0.35rem;
-      }
-      .channel select,
-      .field input,
-      .field textarea {
-        width: 100%;
-        border: 1px solid #cfc5b5;
-        border-radius: 8px;
-        background: #fffdf8;
-        color: var(--ink);
-        padding: 0.78rem 0.85rem;
-      }
-      .channel select:focus,
-      .field input:focus,
-      .field textarea:focus,
-      button:focus-visible,
-      a:focus-visible {
-        outline: 3px solid #c8795f;
-        outline-offset: 2px;
-      }
-      .layout {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 340px;
-        gap: 34px;
-        padding: 30px 0 80px;
-      }
-      .section-head {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        border-bottom: 1px solid var(--line);
-        padding-bottom: 12px;
-        margin-bottom: 20px;
-      }
-      .section-head h2,
-      .checkout h2 {
-        font:
-          2rem Georgia,
-          "Times New Roman",
-          serif;
-        margin: 0;
-      }
-      .category {
-        margin: 28px 0 36px;
-      }
-      .category h3 {
-        font:
-          1.38rem Georgia,
-          "Times New Roman",
-          serif;
-        margin: 0 0 12px;
-        color: var(--sage);
-      }
-      .menu-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 12px;
-      }
-      .item {
-        background: var(--card);
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        padding: 17px 17px 15px;
-        box-shadow: var(--shadow);
-        display: flex;
-        flex-direction: column;
-        min-height: 154px;
-      }
-      .item h4 {
-        font:
-          1.12rem Georgia,
-          "Times New Roman",
-          serif;
-        margin: 0 0 5px;
-      }
-      .item .cat {
-        font-size: 0.78rem;
-        color: var(--muted);
-      }
-      .item .price {
-        font-weight: 700;
-        margin: auto 0 12px;
-        padding-top: 14px;
-      }
-      .add,
-      .primary {
-        border: 0;
-        border-radius: 8px;
-        background: var(--accent);
-        color: white;
-        padding: 0.72rem 1rem;
-        font-weight: 700;
-      }
-      .add:hover,
-      .primary:hover {
-        background: var(--accent-dark);
-      }
-      .aside {
-        position: relative;
-      }
-      .cartbox {
-        position: sticky;
-        top: 16px;
-        background: #fffdf9;
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        padding: 20px;
-        box-shadow: var(--shadow);
-      }
-      .cartbox h2 {
-        font:
-          1.75rem Georgia,
-          "Times New Roman",
-          serif;
-        margin: 0;
-      }
-      .subtle {
-        font-size: 0.82rem;
-        color: var(--muted);
-      }
-      .cart-empty {
-        padding: 18px 0;
-        color: var(--muted);
-      }
-      .cart-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 10px;
-        padding: 12px 0;
-        border-bottom: 1px solid #ece6dc;
-      }
-      .cart-title {
-        font-weight: 700;
-      }
-      .cart-price {
-        font-size: 0.85rem;
-        color: var(--muted);
-      }
-      .quantity {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .quantity button {
-        width: 32px;
-        height: 32px;
-        border: 1px solid var(--line);
-        border-radius: 50%;
-        background: transparent;
-        font-size: 1.1rem;
-        color: var(--ink);
-      }
-      .total {
-        display: flex;
-        justify-content: space-between;
-        font-weight: 700;
-        font-size: 1.07rem;
-        padding: 16px 0 7px;
-      }
-      .fee-note {
-        font-size: 0.77rem;
-        color: var(--muted);
-        margin: 0 0 16px;
-      }
-      .checkout {
-        border-top: 1px solid var(--line);
-        margin-top: 14px;
-        padding-top: 16px;
-      }
-      .checkout h3 {
-        font:
-          1.25rem Georgia,
-          "Times New Roman",
-          serif;
-        margin: 0 0 12px;
-      }
-      .field {
-        margin: 11px 0;
-      }
-      .field textarea {
-        min-height: 82px;
-        resize: vertical;
-      }
-      .primary {
-        width: 100%;
-        margin-top: 12px;
-      }
-      .notice {
-        padding: 14px 15px;
-        border: 1px solid #d2a96c;
-        border-left: 5px solid #c17a2f;
-        background: #fff6e6;
-        border-radius: 8px;
-        margin: 16px 0;
-      }
-      .notice h2 {
-        font:
-          1.1rem Georgia,
-          "Times New Roman",
-          serif;
-        margin: 0 0 5px;
-      }
-      .notice p {
-        margin: 0.25rem 0;
-      }
-      .notice ul {
-        margin: 0.35rem 0;
-        padding-left: 1.3rem;
-      }
-      .notice button {
-        margin-top: 9px;
-      }
-      .status {
-        min-height: 1.5em;
-        font-size: 0.91rem;
-        margin: 12px 0 0;
-      }
-      .status[aria-live] {
-        color: var(--sage);
-      }
-      .success {
-        padding: 14px;
-        border-radius: 8px;
-        background: #eaf1e9;
-        border: 1px solid #b8c9b5;
-        margin-top: 12px;
-      }
-      .success a {
-        color: var(--accent-dark);
-        font-weight: 700;
-      }
-      .hidden {
-        display: none !important;
-      }
-      .sr-only {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0, 0, 0, 0);
-        white-space: nowrap;
-        border: 0;
-      }
-      .skeleton {
-        color: var(--muted);
-        padding: 2rem 0;
-      }
-      @media (max-width: 760px) {
-        .wrap {
-          padding: 0 16px;
-        }
-        .hero {
-          padding-top: 28px;
-        }
-        .topline {
-          align-items: flex-start;
-          flex-direction: column;
-        }
-        .channel {
-          width: 100%;
-          max-width: 360px;
-        }
-        .layout {
-          grid-template-columns: 1fr;
-          gap: 18px;
-          padding-top: 18px;
-        }
-        .menu-grid {
-          grid-template-columns: 1fr;
-        }
-        .item {
-          min-height: 132px;
-        }
-        .aside {
-          order: -1;
-        }
-        .cartbox {
-          position: static;
-        }
-        .cartbox .checkout-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 0 12px;
-        }
-        .cartbox .checkout-grid .wide {
-          grid-column: 1/-1;
-        }
-      }
-      @media (prefers-reduced-motion: no-preference) {
-        .item {
-          animation: rise 0.35s both;
-        }
-        @keyframes rise {
-          from {
-            opacity: 0;
-            transform: translateY(7px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-      }
+${storefrontLayoutCss}
     </style>
   </head>
   <body>
-    <header class="hero">
+    <!-- STOREFRONT_COVER -->
+    <section class="order-controls">
       <div class="wrap">
         <div class="topline">
-          <div>
-            <div class="eyebrow">Carta · pedidos online</div>
-            <h1>Menú online</h1>
-            <p>
-              Elegí tus favoritos. La solicitud queda pendiente hasta que el comercio confirme
-              disponibilidad e importe.
-            </p>
-          </div>
           <div class="channel">
             <label for="channel">¿Cómo lo recibís?</label>
             <select id="channel">
@@ -419,21 +31,28 @@ export const storefrontHtml = String.raw`<!doctype html>
           El costo y la zona de envío se confirman al aceptar tu solicitud.
         </p>
       </div>
-    </header>
+    </section>
     <div class="wrap">
       <div id="catalogNotice" class="notice hidden" role="alert"></div>
       <div id="recoveryNotice" class="notice hidden" role="alert"></div>
       <div class="layout">
         <main>
+          <div id="catalogTop" class="catalog-jump"></div>
           <div class="section-head">
-            <h2>La carta</h2>
-            <span id="itemCount" class="subtle"></span>
+            <div><h2>La carta</h2><span id="itemCount" class="subtle" role="status" aria-live="polite" aria-atomic="true"></span></div>
+            <div class="catalog-tools" id="catalogTools" hidden>
+              <label class="catalog-search"><span class="sr-only">Buscar en la carta</span><input id="catalogSearch" type="search" autocomplete="off" placeholder="Buscar por nombre o categoría" aria-controls="menu" /></label>
+              <button id="catalogSearchClear" class="catalog-search-clear" type="button" hidden>Limpiar</button>
+              <div id="categoryFilters" class="category-filters" role="group" aria-label="Filtros de categoría"></div>
+              <label class="sr-only" for="categoryJump">Ir a una categoría</label><select id="categoryJump" class="catalog-nav" aria-label="Ir a una categoría" hidden><option value="">Ir a categoría…</option></select>
+            </div>
           </div>
           <div id="menu" class="skeleton">Cargando carta…</div>
         </main>
         <aside class="aside">
           <section class="cartbox" aria-labelledby="cartTitle">
-            <h2 id="cartTitle">Tu pedido</h2>
+            <h2 id="cartTitle" tabindex="-1">Tu pedido</h2>
+            <a class="return-menu" href="#catalogTop">Volver a la carta</a>
             <p class="subtle">Precios en pesos argentinos</p>
             <div id="cart" aria-live="polite"></div>
             <div class="total">
@@ -441,8 +60,7 @@ export const storefrontHtml = String.raw`<!doctype html>
               <span id="total">$ 0,00</span>
             </div>
             <p class="fee-note">
-              El total no incluye delivery. El importe final se confirma con el comercio; enviar no
-              implica pago.
+              El total no incluye el costo de envío.
             </p>
             <form id="checkout" class="checkout">
               <h3>Tus datos</h3>
@@ -486,9 +104,7 @@ export const storefrontHtml = String.raw`<!doctype html>
                   <textarea id="notes" name="notes" maxlength="1000"></textarea>
                 </div>
               </div>
-              <p class="subtle">
-                Pago: a coordinar con el comercio. No se realiza ningún cobro online.
-              </p>
+              <p class="confirmation-note">La solicitud queda pendiente hasta que el comercio confirme disponibilidad e importe. Enviar no implica ningún pago.</p>
               <button id="submit" class="primary" type="submit" disabled>Enviar solicitud</button>
               <p id="status" class="status" role="status" aria-live="polite"></p>
               <div id="success" class="success hidden" role="status"></div>
@@ -497,6 +113,7 @@ export const storefrontHtml = String.raw`<!doctype html>
         </aside>
       </div>
     </div>
+    <a id="cartJump" class="cart-jump" href="#cartTitle" hidden>Ver mi pedido</a>
     <script>
       (() => {
         "use strict";
@@ -506,6 +123,12 @@ export const storefrontHtml = String.raw`<!doctype html>
           cart: byId("cart"),
           total: byId("total"),
           count: byId("itemCount"),
+          search: byId("catalogSearch"),
+          searchClear: byId("catalogSearchClear"),
+          categoryFilters: byId("categoryFilters"),
+          categoryJump: byId("categoryJump"),
+          tools: byId("catalogTools"),
+          cartJump: byId("cartJump"),
           channel: byId("channel"),
           address: byId("addressField"),
           addressInput: byId("address"),
@@ -517,10 +140,8 @@ export const storefrontHtml = String.raw`<!doctype html>
           recovery: byId("recoveryNotice"),
           success: byId("success"),
         };
-        const money = (value) =>
-          new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS" }).format(
-            value / 100,
-          );
+        const pesos = new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS" });
+        const money = (value) => pesos.format(value / 100);
         const state = {
           catalog: null,
           cart: new Map(),
@@ -529,6 +150,12 @@ export const storefrontHtml = String.raw`<!doctype html>
           locked: false,
           priceApproval: false,
           catalogMismatch: false,
+          cartIsVisible: false,
+          productPhotos: new Map(),
+          searchQuery: "",
+          activeCategory: "",
+          categories: [],
+          filterIndex: [],
         };
         const catalogUrl = "/api/catalog",
           checkoutUrl = "/api/checkout",
@@ -565,8 +192,58 @@ export const storefrontHtml = String.raw`<!doctype html>
             !state.catalog ||
             !state.priceApproval;
         }
+        const fold = (value) => String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es");
+        function filterMenu() {
+          const query = fold(state.searchQuery.trim());
+          let visible = 0;
+          for (const {section, category, items} of state.filterIndex) {
+            const categoryMatch = !state.activeCategory || category === state.activeCategory;
+            let sectionVisible = 0;
+            if (categoryMatch) {
+              for (const {card, text} of items) {
+                const matches = !query || text.includes(query);
+                if (card.hidden === matches) card.hidden = !matches;
+                if (matches) sectionVisible++;
+              }
+            }
+            visible += sectionVisible;
+            section.hidden = sectionVisible === 0;
+          }
+          let empty = els.menu.querySelector(".catalog-no-results");
+          if (!visible && state.catalog?.products.length) {
+            if (!empty) { empty = make("p", "catalog-no-results", "No encontramos opciones con esos filtros."); els.menu.append(empty); }
+            empty.hidden = false;
+          } else if (empty) empty.hidden = true;
+          els.count.textContent = visible + " " + (visible === 1 ? "opción" : "opciones");
+          els.searchClear.hidden = !state.searchQuery;
+        }
+        function setCategory(value) {
+          state.activeCategory = value;
+          els.categoryFilters.querySelectorAll(".category-filter").forEach((chip) =>
+            chip.setAttribute("aria-pressed", String(chip.dataset.category === value)));
+          const index = state.categories.findIndex(([name]) => name === value);
+          els.categoryJump.value = index < 0 ? "" : "category-" + index;
+          filterMenu();
+        }
+        function renderCategoryFilters(categories) {
+          const focused = els.categoryFilters.contains(document.activeElement) ? document.activeElement.dataset.category : undefined;
+          els.categoryFilters.replaceChildren();
+          const visibleCategories = categories.slice(0, 8);
+          const addFilter = (label, value) => {
+            const button = make("button", "category-filter", label);
+            button.type = "button";
+            button.dataset.category = value;
+            button.setAttribute("aria-pressed", String(state.activeCategory === value));
+            button.addEventListener("click", () => setCategory(value));
+            els.categoryFilters.append(button);
+          };
+          addFilter("Todos", "");
+          visibleCategories.forEach(([category]) => addFilter(category, category));
+          if (focused !== undefined) [...els.categoryFilters.children].find(chip => chip.dataset.category === focused)?.focus({preventScroll:true});
+        }
         function renderMenu() {
           els.menu.replaceChildren();
+          state.filterIndex = [];
           if (!state.catalog) {
             els.menu.textContent = "No se pudo cargar la carta.";
             return;
@@ -577,39 +254,76 @@ export const storefrontHtml = String.raw`<!doctype html>
             grouped.get(product.category).push(product);
           }
           const categories = [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0], "es"));
+          state.categories = categories;
+          els.menu.classList.remove("skeleton");
+          const categoryPrompt = make("option", "", "Todas las categorías");
+          categoryPrompt.value = "";
+          els.categoryJump.replaceChildren(categoryPrompt);
+          els.categoryJump.hidden = categories.length <= 8;
+          els.tools.hidden = !categories.length;
           if (!categories.length) {
+            els.count.textContent = "";
             els.menu.textContent = "La carta no tiene productos disponibles por el momento.";
             return;
           }
-          let index = 0;
-          for (const [category, products] of categories) {
+          if (state.activeCategory && !categories.some(([category]) => category === state.activeCategory)) state.activeCategory = "";
+          renderCategoryFilters(categories);
+          categories.forEach(([category], index) => {
+            const option = make("option", "", category);
+            option.value = "category-" + index;
+            option.selected = state.activeCategory === category;
+            els.categoryJump.append(option);
+          });
+          for (const [index, [category, products]] of categories.entries()) {
             const section = make("section", "category");
+            section.id = "category-" + index;
+            section.dataset.category = category;
             const heading = make("h3", "", category);
+            heading.tabIndex = -1;
             section.append(heading);
             const grid = make("div", "menu-grid");
+            const items = [];
+            state.filterIndex.push({section, category, items});
             for (const product of products) {
-              const card = make("article", "item");
-              card.style.animationDelay = index++ * 35 + "ms";
-              card.append(
-                make("h4", "", product.name),
-                make("span", "cat", category),
-                make("div", "price", money(priceOf(product))),
+              const photoVersion = state.productPhotos.get(product.productRef);
+              const card = make("article", "item dn-product" + (photoVersion ? "" : " dn-product--text-only"));
+              items.push({card, text:fold(product.name + " " + category)});
+              if (photoVersion) {
+                const image = make("img", "dn-product__photo");
+                const segment = encodeURIComponent(product.productRef).replace(/[!'()*]/g, (char) => "%" + char.charCodeAt(0).toString(16).toUpperCase());
+                image.src = "/media/products/" + segment + ".jpg?v=" + photoVersion;
+                image.width = 1200;
+                image.height = 900;
+                image.alt = "";
+                image.sizes = "(max-width: 760px) 46vw, (max-width: 1120px) 32vw, 360px";
+                image.loading = "lazy";
+                image.decoding = "async";
+                const frame = make("figure", "dn-product__photo-wrap");
+                frame.append(image);
+                image.addEventListener("error", () => {
+                  frame.remove();
+                  card.classList.add("dn-product--text-only");
+                }, { once: true });
+                card.append(frame);
+              }
+              const content = make("div", "dn-product__content");
+              content.append(
+                make("h4", "dn-product__name", product.name),
+                make("p", "dn-product__price", money(priceOf(product))),
               );
-              const add = make("button", "add", "Agregar");
+              const add = make("button", "add dn-product__add", "Agregar");
               add.type = "button";
               add.disabled = state.locked;
               add.setAttribute("aria-label", "Agregar " + product.name);
               add.addEventListener("click", () => addProduct(product));
-              card.append(add);
+              content.append(add);
+              card.append(content);
               grid.append(card);
             }
             section.append(grid);
             els.menu.append(section);
           }
-          els.count.textContent =
-            state.catalog.products.length +
-            " " +
-            (state.catalog.products.length === 1 ? "opción" : "opciones");
+          filterMenu();
         }
         function addProduct(product) {
           if (state.locked) return;
@@ -667,6 +381,10 @@ export const storefrontHtml = String.raw`<!doctype html>
             els.cart.append(row);
           }
           els.total.textContent = money(total);
+          const quantity = [...state.cart.values()].reduce((sum, item) => sum + item.quantity, 0);
+          els.cartJump.hidden = quantity === 0 || state.cartIsVisible;
+          els.cartJump.replaceChildren(make("span", "cart-jump__label", quantity ? "Ver mi pedido · " + quantity : "Ver mi pedido"),
+            make("span", "cart-jump__total", money(total)));
           updateSubmit();
         }
         function validateCatalog(snapshot) {
@@ -680,7 +398,18 @@ export const storefrontHtml = String.raw`<!doctype html>
             cache: "no-store",
           });
           if (!response.ok) throw Error("No se pudo actualizar la carta.");
-          return validateCatalog((await response.json()).snapshot);
+          const envelope = await response.json();
+          const snapshot = validateCatalog(envelope.snapshot);
+          const refs = new Set(snapshot.products.map((product) => product.productRef));
+          const productPhotos = new Map();
+          if (Array.isArray(envelope.productPhotos)) {
+            for (const entry of envelope.productPhotos) {
+              if (entry && typeof entry.productRef === "string" && refs.has(entry.productRef) && typeof entry.version === "string" && /^[a-f0-9]{64}$/i.test(entry.version)) {
+                productPhotos.set(entry.productRef, entry.version.toLowerCase());
+              }
+            }
+          }
+          return { snapshot, productPhotos };
         }
         function operationBody() {
           const form = new FormData(els.form);
@@ -763,7 +492,8 @@ export const storefrontHtml = String.raw`<!doctype html>
             }
           } catch {}
         }
-        function renderCatalogConflict(latest) {
+        function renderCatalogConflict(latestResult) {
+          const latest = latestResult.snapshot;
           const available = new Map(
             latest.products.map((product) => [product.productRef, product]),
           );
@@ -808,6 +538,7 @@ export const storefrontHtml = String.raw`<!doctype html>
           accept.type = "button";
           accept.addEventListener("click", () => {
             state.catalog = latest;
+            state.productPhotos = latestResult.productPhotos;
             for (const [ref] of state.cart) if (!available.has(ref)) state.cart.delete(ref);
             state.priceApproval = true;
             state.catalogMismatch = false;
@@ -823,8 +554,8 @@ export const storefrontHtml = String.raw`<!doctype html>
         }
         async function refreshCatalogConflict() {
           try {
-            const latest = await fetchCatalog();
-            renderCatalogConflict(latest);
+            const latestResult = await fetchCatalog();
+            renderCatalogConflict(latestResult);
           } catch {
             els.notice.replaceChildren(
               make("h2", "", "La carta todavía no está disponible"),
@@ -943,6 +674,30 @@ export const storefrontHtml = String.raw`<!doctype html>
           renderMenu();
           renderCart();
         });
+        els.search.addEventListener("input", () => {
+          state.searchQuery = els.search.value;
+          filterMenu();
+        });
+        els.searchClear.addEventListener("click", () => {
+          state.searchQuery = "";
+          els.search.value = "";
+          filterMenu();
+          els.search.focus();
+        });
+        els.categoryJump.addEventListener("change", () => {
+          if (!els.categoryJump.value) { setCategory(""); return; }
+          const target = byId(els.categoryJump.value);
+          if (target) {
+            setCategory(target.dataset.category || "");
+          }
+        });
+        const cartBox = document.querySelector(".cartbox");
+        if (cartBox && "IntersectionObserver" in window) {
+          new IntersectionObserver(([entry]) => {
+            state.cartIsVisible = entry.isIntersecting;
+            els.cartJump.hidden = !state.cart.size || state.cartIsVisible;
+          }, { threshold: 0.15 }).observe(cartBox);
+        }
         els.form.addEventListener("submit", (event) => {
           event.preventDefault();
           if (state.locked || state.sending) return;
@@ -967,7 +722,6 @@ export const storefrontHtml = String.raw`<!doctype html>
           if (
             !initialized ||
             document.visibilityState !== "visible" ||
-            state.cart.size ||
             state.pending ||
             state.locked ||
             state.catalogMismatch ||
@@ -976,18 +730,27 @@ export const storefrontHtml = String.raw`<!doctype html>
             return;
           refreshingCatalog = true;
           try {
-            const latest = await fetchCatalog();
+            const latestResult = await fetchCatalog();
+            const latest = latestResult.snapshot;
             if (
               document.visibilityState !== "visible" ||
-              state.cart.size ||
               state.pending ||
               state.locked
             )
               return;
-            if (JSON.stringify(latest.products) !== JSON.stringify(state.catalog?.products)) {
+            const productsChanged = JSON.stringify(latest.products) !== JSON.stringify(state.catalog?.products);
+            const photoProducts = state.cart.size ? (state.catalog?.products ?? []) : latest.products;
+            const photoRefs = new Set(photoProducts.map((product) => product.productRef));
+            const updatedPhotos = new Map([...latestResult.productPhotos].filter(([ref]) => photoRefs.has(ref)));
+            const photosChanged = updatedPhotos.size !== state.productPhotos.size || [...updatedPhotos].some(([ref, version]) => state.productPhotos.get(ref) !== version);
+            if (productsChanged && !state.cart.size) {
               state.catalog = latest;
+              state.productPhotos = updatedPhotos;
               renderMenu();
               renderCart();
+            } else if (photosChanged) {
+              state.productPhotos = updatedPhotos;
+              renderMenu();
             }
           } catch {
           } finally {
@@ -1002,7 +765,9 @@ export const storefrontHtml = String.raw`<!doctype html>
         async function init() {
           restorePending();
           try {
-            state.catalog = await fetchCatalog();
+            const initial = await fetchCatalog();
+            state.catalog = initial.snapshot;
+            state.productPhotos = initial.productPhotos;
             renderMenu();
             renderCart();
           } catch {
@@ -1020,25 +785,39 @@ export const storefrontHtml = String.raw`<!doctype html>
 </html>
 `;
 
+const defaultCover = `<div class="hero">${renderStorefrontCover({ displayName: "Menú online", tagline: "Elegí tus favoritos.", accent: "#9c4329" })}</div>`;
+export const storefrontHtml = storefrontTemplate
+  .replace("<!-- STOREFRONT_COVER -->", () => defaultCover)
+  .replace("</style>", () => `${storefrontCoverCss}\n${storefrontProductCss}\n</style>`);
+
 const inlineScript = [...storefrontHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
 if (inlineScript.length !== 1) throw new Error("Expected exactly one bundled inline storefront script");
 export const storefrontScriptCspHash = createHash("sha256").update(inlineScript[0]!).digest("base64");
 
 /** Merchant-controlled branding is text-only; the only style input is a validated color. */
-export function renderTenantStorefront(site: { display_name: string; tagline: string; accent: string; design_mode: string; template_key: string | null }, published: boolean): string {
+export function renderTenantStorefront(site: { display_name: string; tagline: string; accent: string; design_mode: string; template_key: string | null; has_banner?: boolean | number; has_logo?: boolean | number }, published: boolean): string {
   const esc = (value: string) => value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
   const color = /^#[0-9a-fA-F]{6}$/.test(site.accent) ? site.accent : "#1f6f50";
-  const name = esc(site.display_name.slice(0, 80)), tagline = esc(site.tagline.slice(0, 180));
-  let html = storefrontHtml.replace("<title>Menú online</title>", () => `<title>${name} · Pedidos</title>`)
+  const accentForeground = storefrontAccentForeground(color);
+  const name = esc(site.display_name.slice(0, 80));
+  const cover = `<div class="hero">${renderStorefrontCover({
+    displayName: site.display_name.slice(0, 80),
+    tagline: site.tagline.slice(0, 180) || "Elegí tus favoritos.",
+    accent: color,
+    bannerSrc: site.has_banner ? "/media/banner.jpg" : null,
+    logoSrc: site.has_logo ? "/media/logo.jpg" : null,
+    unpublished: !published,
+  })}</div>`;
+  let html = storefrontTemplate.replace("<title>Menú online</title>", () => `<title>${name} · Pedidos</title>`)
     .replace("--accent: #9c4329;", `--accent: ${color};`).replace("--accent-dark: #71301e;", `--accent-dark: ${color};`)
-    .replace("<h1>Menú online</h1>", () => `<h1>${name}</h1>`);
-  if (tagline) html = html.replace("Elegí tus favoritos. La solicitud queda pendiente hasta que el comercio confirme\n              disponibilidad e importe.", () => `${tagline}\n              La solicitud queda pendiente hasta que el comercio confirme disponibilidad e importe.`);
+    .replace("--accent-foreground: #ffffff;", `--accent-foreground: ${accentForeground};`)
+    .replace("<!-- STOREFRONT_COVER -->", () => cover)
+    .replace("</style>", () => `${storefrontCoverCss}\n${storefrontProductCss}\n</style>`);
   // Do not vary the inline script: its digest is pinned in the CSP for every tenant.
-  if (!published) html = html.replace("<div class=\"eyebrow\">Carta · pedidos online</div>", "<div class=\"eyebrow\">Tienda en preparación</div>")
-    .replace("<h2>La carta</h2>", "<h2>La carta todavía no está publicada</h2>");
+  if (!published) html = html.replace("<h2>La carta</h2>", "<h2>La carta todavía no está publicada</h2>");
   // Developer-owned templates are allowlisted. The custom template key selects a fixed, bundled design.
   if (site.design_mode === "CUSTOM" && site.template_key === "midnight-market-v1") {
-    html = html.replace("</style>", `.hero{background:#172321;color:#f6f1e8;padding-top:70px}.hero p{color:#d7dfd3}.eyebrow{color:#e4b85c}.item{border-radius:2px;box-shadow:none}.card{border-radius:2px}\n      </style>`);
+    html = html.replace("</style>", `.hero{background-color:#172321}[data-storefront-cover]{--dn-field:#172321;--dn-ivory:#f6f1e8;background:#172321}.item{border-radius:2px;box-shadow:none}.cartbox{border-radius:2px}\n      </style>`);
   }
   return html;
 }

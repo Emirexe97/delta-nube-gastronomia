@@ -12,7 +12,7 @@ import { formatMoney } from "../../packages/domain/src/money";
 
 const out = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-summary-table-fix-2026-10-07",
+  "docs/qa/evidence/release-readiness-20261115/summary-table-rerun",
 );
 let app: ElectronApplication;
 let page: Page;
@@ -334,7 +334,71 @@ test("Resumen mantiene la tabla de retiros y envíos legible en tamaños y zoom"
   }
 
   await page.getByRole("link", { name: "Ver todos", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Pedidos" })).toBeVisible();
+  const ordersHeading = page.getByRole("heading", {
+    name: "Pedidos",
+    exact: true,
+  });
+  await expect(ordersHeading).toBeVisible();
+  await settleRenderer();
+  const headerLayout = await ordersHeading.evaluate((heading) => {
+    const header = heading.closest("header")!;
+    const controls = header.children[1] as HTMLElement;
+    const headingBounds = heading.getBoundingClientRect();
+    const controlsBounds = controls.getBoundingClientRect();
+    const overlaps =
+      headingBounds.left < controlsBounds.right &&
+      headingBounds.right > controlsBounds.left &&
+      headingBounds.top < controlsBounds.bottom &&
+      headingBounds.bottom > controlsBounds.top;
+    return {
+      viewportWidth: window.innerWidth,
+      zoom: window.devicePixelRatio,
+      headerClientWidth: header.clientWidth,
+      headerScrollWidth: header.scrollWidth,
+      documentClientWidth: document.documentElement.clientWidth,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      heading: {
+        text: heading.textContent?.trim(),
+        x: headingBounds.x,
+        y: headingBounds.y,
+        width: headingBounds.width,
+        height: headingBounds.height,
+      },
+      controls: {
+        x: controlsBounds.x,
+        y: controlsBounds.y,
+        width: controlsBounds.width,
+        height: controlsBounds.height,
+      },
+      headingAndControlsOverlap: overlaps,
+    };
+  });
+  expect(headerLayout.heading.width, "el título conserva ancho a 200%").toBeGreaterThan(0);
+  expect(
+    headerLayout.headingAndControlsOverlap,
+    "el título y los controles del encabezado no colisionan a 200%",
+  ).toBe(false);
+  expect(
+    headerLayout.headerScrollWidth,
+    "el encabezado no desborda horizontalmente a 200%",
+  ).toBeLessThanOrEqual(headerLayout.headerClientWidth + 1);
+  expect(
+    headerLayout.documentScrollWidth,
+    "la navegación a Pedidos no crea overflow horizontal de página a 200%",
+  ).toBeLessThanOrEqual(headerLayout.documentClientWidth + 1);
+  await writeFile(
+    join(out, "summary-table-header-1366-200.json"),
+    JSON.stringify({ ...headerLayout, route: "#/pedidos" }, null, 2),
+  );
+  const headerPixels = await app.evaluate(async ({ BrowserWindow }) =>
+    (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage())
+      .toPNG()
+      .toString("base64"),
+  );
+  await writeFile(
+    join(out, "summary-table-header-1366-200.png"),
+    Buffer.from(headerPixels, "base64"),
+  );
   const afterNavigation = await page.evaluate(async () => {
     const current = await window.gastronomy.bootstrap();
     return {

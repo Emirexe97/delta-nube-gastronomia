@@ -57,9 +57,46 @@ test("catalog and table rendering skips DOM rebuilds for quantity-only rerenders
   assert.equal(rebuilds, 1, "unchanged input keeps the same rendered children");
   renderIfChanged(node, '["table-1","table-2"]', build); // table/catalog input changed
   assert.equal(rebuilds, 2);
-  assert.match(waiterHtml, /const productSignature = JSON\.stringify\(\[selectedCategory, state\.menu\?\.halfAndHalfEnabled, visibleProducts\]\)/);
+  assert.match(waiterHtml, /const productSignature = JSON\.stringify\(\[selectedCategory, state\.menu\?\.halfAndHalfEnabled, filteredMenu\.signature\]\)/);
   assert.match(waiterHtml, /const categorySignature = JSON\.stringify\(cats\.map/);
   assert.match(waiterHtml, /const tableSignature = JSON\.stringify\(\[ts, state\.waiterTableWorkflow, missingTable \? draft\.tableId : null\]\)/);
+});
+
+test("catalog caches normalized names per menu reference and pages full-catalog search", () => {
+  assert.match(waiterHtml, /function getMenuIndex\(\)/);
+  assert.match(waiterHtml, /indexedMenu !== state\.menu/);
+  assert.match(waiterHtml, /name\.includes\(query\)/);
+  assert.match(waiterHtml, /visible: matches\.slice\(0, limit\)/);
+  assert.match(waiterHtml, /menuLimit \+= 100/);
+  assert.match(waiterHtml, /Mostrando .* de .* productos/);
+  const indexMatch = waiterHtml.match(/function getMenuIndex\(\) \{([\s\S]*?)\n        \}/);
+  const filteredMatch = waiterHtml.match(/function getFilteredMenu\(query, category, limit\) \{([\s\S]*?)\n        \}/);
+  assert.ok(indexMatch && filteredMatch);
+  const execute = new Function('menuRef', `let indexedMenu = null, menuIndex = [], filteredMenu = null, indexBuilds = 0, normalizations = 0; let state = {menu: menuRef}; const allProducts = () => state.menu.products; const productId = p => String(p.id); const normalizeName = v => { normalizations++; return v.toLowerCase(); }; const getMenuIndex = function() {${indexMatch[1]}\n}; const getFilteredMenu = function(query, category, limit) {${filteredMatch[1]}\n}; return {state, getMenuIndex, getFilteredMenu, counts: () => [normalizations]};`);
+  const firstMenu = { products: [{id:'a', name:'Pizza A', categoryId:'c'}, {id:'b', name:'Pizza B', categoryId:'c'}] };
+  const cache = execute(firstMenu);
+  const firstIndex = cache.getMenuIndex();
+  const firstFilter = cache.getFilteredMenu('pizza', 'c', 1);
+  assert.equal(cache.getFilteredMenu('pizza', 'c', 1), firstFilter, 'quantity-only render reuses filter and signature');
+  assert.equal(cache.getMenuIndex(), firstIndex);
+  assert.equal(firstFilter.visible.length, 1);
+  assert.equal(cache.counts()[0], 2, 'normalization occurs once per product');
+  assert.equal(cache.getFilteredMenu('pizza', 'c', 2).visible.length, 2, 'batch limit invalidates visible result');
+  assert.equal(cache.getFilteredMenu('b', 'c', 2).matches[0].product.id, 'b', 'query invalidates filter');
+  cache.state.menu = {products: [{id:'z', name:'Zucchini', categoryId:'c'}]};
+  assert.equal(cache.getFilteredMenu('z', 'c', 2).matches[0].product.id, 'z', 'new RPC menu reference invalidates index and filter');
+});
+
+test("simple add and unit notes are separate from explicit half-and-half selection", () => {
+  assert.match(waiterHtml, /add\.onclick = \(\) => addLine\(p\)/);
+  assert.match(waiterHtml, /Mitad y mitad: /);
+  assert.match(waiterHtml, /half\.onclick = \(\) => openItem\(p, null, true\)/);
+  assert.match(waiterHtml, /el\('pizzaOptions'\)\.hidden = noteMode \|\| !!noteTarget/);
+  assert.match(waiterHtml, /control\.append\(withNote\)/);
+  assert.match(waiterHtml, /querySelectorAll\('\.product-actions button'\)\) button\.disabled = locked/);
+  assert.match(waiterHtml, /querySelectorAll\('\.product-actions button\[data-product-id\]'\)/);
+  assert.match(waiterHtml, /if \(!state \|\| busy \|\| pending\(\)\) return;/);
+  assert.match(waiterHtml, /const hasOtherHalf = .*halfIds\.size > 1/);
 });
 
 test("waiter page labels cash-close sessions without an artificial expiry", () => {

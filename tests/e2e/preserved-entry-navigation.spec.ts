@@ -94,7 +94,7 @@ test("retoma carga de mesa y pedido de envío al alternar secciones", async () =
   const tableEditor = await openTable(61);
   const search = tableEditor.getByPlaceholder(/Código, nombre, categoría/);
   await search.fill("MUZG");
-  await tableEditor.getByRole("button", { name: /Muzzarella grande/ }).click();
+  await tableEditor.getByRole("button", { name: "Cantidad y precio de Muzzarella grande" }).click();
   const add = page.getByRole("dialog", { name: "Agregar · Muzzarella grande" });
   await add.getByLabel("Cantidad", { exact: true }).fill("2");
   await capture("table-add-modal-with-navigation");
@@ -133,7 +133,7 @@ test("retoma carga de mesa y pedido de envío al alternar secciones", async () =
   await delivery
     .getByLabel("Dirección *", { exact: true })
     .fill("Calle Retenida 61");
-  await delivery.getByLabel("Costo de envío").fill("1250");
+  await delivery.getByLabel("Costo de envío", { exact: true }).fill("1250");
   await delivery
     .getByLabel("Observaciones", { exact: true })
     .fill("tocar timbre");
@@ -180,7 +180,7 @@ test("retoma carga de mesa y pedido de envío al alternar secciones", async () =
   await expect(delivery.getByLabel("Dirección *", { exact: true })).toHaveValue(
     "Calle Retenida 61",
   );
-  await expect(delivery.getByLabel("Costo de envío")).toHaveValue("1250");
+  await expect(delivery.getByLabel("Costo de envío", { exact: true })).toHaveValue("1250");
   await expect(
     delivery.getByPlaceholder("Detalles para cocina o entrega"),
   ).toHaveValue("tocar timbre");
@@ -247,7 +247,7 @@ test("el editor de pedido conserva búsqueda y teclado solo opera en la sección
   });
   const search = editor.getByPlaceholder(/Código, nombre, categoría/);
   await search.fill("MUZG");
-  await editor.getByRole("button", { name: /Muzzarella grande/ }).click();
+  await editor.getByRole("button", { name: "Cantidad y precio de Muzzarella grande" }).click();
   const add = page.getByRole("dialog", { name: "Agregar · Muzzarella grande" });
   await add.getByLabel("Cantidad", { exact: true }).fill("3");
   await add.getByRole("button", { name: "Agregar al pedido" }).click();

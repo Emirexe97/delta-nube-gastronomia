@@ -13,9 +13,21 @@ La [portada pública, la carta de ejemplo y la ayuda](GASTRONOMIA_PORTADA.md) no
 3. **Productos → Mostrar en la web** publica los artículos elegidos y sus precios de retiro y delivery. Sin productos publicados la carta queda vacía. El cliente envía una solicitud; el local puede editarla en **Pedidos → Pedidos web** antes de confirmar. La web no cobra ni confirma en nombre del local.
 4. Con la web activa, desde **Página web** se puede **Abrir carta** en el navegador, **Copiar enlace** o **Descargar QR** como PNG para imprimir o compartir.
 
+### Probar el logo y las fotos antes de publicarlos
+
+En **Configuración → Página web**, con la tienda activa y el diseño estándar:
+
+1. Elegí una **imagen de portada** JPG, PNG o WebP de hasta 8 MB. Una foto horizontal con el motivo principal en el centro funciona mejor: la carta usa un recorte panorámico **5:2** (por ejemplo, 1440 × 576). No hace falta subir la imagen a un sitio externo.
+2. Elegí el **logo del comercio**. Se conserva entero sobre fondo blanco, incluso si es horizontal o tiene transparencia. Para un plato, buscá el producto por su nombre o código y elegí una foto, o usá la que ya tiene en el POS. La foto de carta se recorta al centro en **4:3**. Es independiente de la foto de uso interno.
+3. Revisá la composición en la **vista previa móvil del POS**. Para probarla en un teléfono real, tocá **Ver en mi celular** y escaneá el QR. Esto envía una copia del borrador al servicio por **10 minutos**, accesible para quien tenga el enlace. Muestra la presentación, el producto que estás editando y hasta tres platos ya publicados para verlos juntos; **no recibe pedidos**. Es distinto del QR público del comercio. Un QR nuevo invalida el anterior.
+4. **Publicar cambios** actualiza la identidad y la foto del producto seleccionado en una sola operación. Podés preparar una foto para un producto todavía oculto: **eso no publica el producto**. Para que se vea en la carta debe estar habilitado y disponible en el catálogo web. Para trabajar en otro plato, publicá o descartá primero el cambio de foto pendiente.
+5. Para retirar una imagen, quitála en el editor y tocá **Publicar cambios**. **Descartar cambios** mantiene la carta en vivo como estaba. Sin logo se conserva el nombre del negocio; los productos sin foto siguen mostrando nombre y precio.
+
+Si hay un error, no hace falta volver a elegir el archivo para reintentar mientras mantengas el editor abierto. Ante una interrupción de red después de enviar, verificá el estado de la carta: el servidor puede haber recibido la publicación aunque el POS no haya recibido la confirmación.
+
 | Quién | Qué puede cambiar |
 |---|---|
-| Responsable con permiso de configuración | Nombre visible, descripción breve y color del diseño estándar. No se admite HTML/CSS/JS del comercio. |
+| Responsable con permiso de configuración | Nombre visible, descripción breve, color, banner, logo y una foto por producto del diseño estándar. No se admite HTML/CSS/JS del comercio. |
 | Dueño/desarrollador de Delta Nube | Asignar un diseño propio versionado al comercio sin interrumpir catálogo ni pedidos. En este modo el comercio no puede sobrescribir el diseño. |
 
 ## Preparación de infraestructura (una vez por plataforma)

@@ -11,7 +11,7 @@ import { basename, dirname, join, resolve } from "node:path";
 
 const evidence = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-report-tables-fix-2026-10-08",
+  "docs/qa/evidence/release-readiness-20261115/report-tables-rerun",
 );
 let app: ElectronApplication;
 let page: Page;
@@ -169,14 +169,14 @@ test("las seis tablas de tres columnas caben a 1100 y 1366 px con texto y montos
         (item) => item.textContent?.trim() === "Diferencias de caja por turno",
       )!;
       const cashWrapper = cashHeading
-        .closest(".rounded-xl")!
+        .closest(".dn-card")!
         .querySelector(".overflow-x-auto")! as HTMLElement;
       const cashTable = cashWrapper.querySelector("table")! as HTMLElement;
       const tables = titles.map((title) => {
         const heading = [...document.querySelectorAll("h3")].find(
           (item) => item.textContent?.trim() === title,
         )!;
-        const card = heading.closest(".rounded-xl")!;
+        const card = heading.closest(".dn-card")!;
         const wrapper = card.querySelector(".overflow-x-auto")! as HTMLElement;
         const table = wrapper.querySelector("table")! as HTMLElement;
         return {

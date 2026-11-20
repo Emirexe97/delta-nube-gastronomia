@@ -181,7 +181,7 @@ export function WebOrdersInbox({
       try {
         const latest = await queryClient.fetchQuery({
           queryKey: bootstrapKey,
-          queryFn: () => window.gastronomy.bootstrap(),
+          queryFn: () => window.gastronomy.bootstrap({ deliveryScope: "OPERATIONAL" }),
         });
         const failedJob = latest.printJobs.find(
           (job) =>

@@ -95,7 +95,12 @@ export function handleWaiterRequest(
     const token = request.sessionId;
     switch (request.method) {
       case "waiter.getState":
-        return repo.getWaiterSessionState(token);
+        return repo.getWaiterSessionState(token, p.menuProtocol === 2);
+      case "waiter.getMenuPage": {
+        if (!Number.isSafeInteger(p.offset) || Number(p.offset) < 0 || typeof p.version !== "string" || !/^[a-f0-9]{64}$/.test(p.version))
+          return fail("invalid_request", "Página de menú inválida.");
+        return repo.getWaiterMenuPage(token, {offset: Number(p.offset), version: p.version});
+      }
       case "waiter.getTable": {
         if (!id(p.tableId)) return fail("invalid_request", "Mesa inválida.");
         return repo.getWaiterTable(token, { tableId: p.tableId });

@@ -277,7 +277,7 @@ test("el informe financiero del período no incorpora compras fuera de sus fecha
   await modal.getByLabel("Producto").selectOption(setup.productId);
   await modal.getByLabel("Cantidad", { exact: true }).fill("2,5");
   await modal.getByLabel("Costo unit.", { exact: true }).fill("100");
-  await modal.getByLabel("PIN autorizador").fill("748259");
+  await modal.getByLabel("PIN autorizador", { exact: true }).fill("748259");
   await modal
     .getByRole("button", { name: "Confirmar ingreso", exact: true })
     .click();

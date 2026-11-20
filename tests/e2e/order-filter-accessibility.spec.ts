@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 
 const evidence = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-order-filter-a11y-fix-2026-10-08",
+  "docs/qa/evidence/release-readiness-20261115/order-filter-rerun",
 );
 const labels = [
   "Todos",
@@ -297,7 +297,10 @@ test("Tab, Enter y Space alcanzan y activan botones nativos; estados y texto sob
     if (index < labels.length - 1) await page.keyboard.press("Tab");
   }
   expect(reached).toEqual(labels);
-  expect(await root.getByRole("tablist").count()).toBe(0);
+  const filterStrip = root
+    .getByRole("button", { name: "Todos", exact: true })
+    .locator("..");
+  expect(await filterStrip.getByRole("tablist").count()).toBe(0);
   await root.getByRole("button", { name: "Pagados", exact: true }).focus();
   await root
     .getByPlaceholder("Pedido, cliente, teléfono o dirección")

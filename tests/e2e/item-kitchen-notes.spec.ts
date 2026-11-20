@@ -48,11 +48,8 @@ test("agrega, persiste y quita observación de comanda por producto", async () =
 
   const editor = page.getByRole("dialog", { name: /Pedido #\d+ · Salón/ });
   await expect(editor).toBeVisible();
-  await editor.getByRole("button", { name: /Muzzarella grande/ }).click();
-  const addDialog = page.getByRole("dialog", {
-    name: "Agregar · Muzzarella grande",
-  });
-  await addDialog.getByRole("button", { name: "Agregar a la mesa" }).click();
+  await editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Muzzarella grande" }).click();
+  await expect(page.getByRole("dialog", { name: "Agregar · Muzzarella grande" })).toHaveCount(0);
   await expect(
     editor.getByRole("article").getByText("Muzzarella grande", { exact: true }),
   ).toBeVisible();

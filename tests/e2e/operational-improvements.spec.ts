@@ -78,7 +78,7 @@ test("purchase product correction and cancellation are contextual, authorized an
     .getByRole("combobox", { name: /^Producto vigente/ })
     .selectOption(seeded.second.id);
   await correction
-    .getByLabel("Motivo", { exact: false })
+    .getByLabel("Motivo", { exact: true })
     .fill("Producto ingresado por error");
   await correction.getByLabel("PIN autorizador").fill("0000");
   await correction
@@ -112,7 +112,7 @@ test("purchase product correction and cancellation are contextual, authorized an
   await expect(cancel).toContainText(
     "Existencias, ventas, costo de ventas y caja permanecen intactos",
   );
-  await cancel.getByLabel("Motivo", { exact: false }).fill("Compra duplicada");
+  await cancel.getByLabel("Motivo", { exact: true }).fill("Compra duplicada");
   await cancel.getByLabel("PIN autorizador").fill("748259");
   await cancel
     .getByRole("button", { name: "Anular compra", exact: true })
@@ -161,11 +161,14 @@ test("configure and order a real combo with variant extras, fixed price and comp
       stockMinor: 10000,
       prices,
     });
-    const combo = await api.createProduct({
+    const combo = await api.createCombo({
       categoryId: base.categoryId,
       name: "Combo QA",
       code: "COMBOQA",
       prices,
+      definition: { slots: [{ id: "principal", name: "Inicial", quantity: 1, productIds: [base.id] }] },
+      reason: "Fixture de combo existente para editar opciones",
+      authorizerPin: "748259",
     });
     const extra = await api.createModifier({
       groupName: "Extras QA",
@@ -185,15 +188,17 @@ test("configure and order a real combo with variant extras, fixed price and comp
   });
   await page.reload();
   await page.getByRole("link", { name: "Productos", exact: true }).click();
+  await page.getByRole("tab", { name: "Combos", exact: true }).click();
   await page
-    .getByRole("button", { name: "Configurar combo Combo QA", exact: true })
+    .getByRole("button", { name: "Editar opciones de Combo QA", exact: true })
     .click();
   const config = page.getByRole("dialog", {
-    name: "Configurar combo · Combo QA",
+    name: "Editar opciones · Combo QA",
     exact: true,
   });
-  await config.getByLabel("Opción 1", { exact: true }).fill("Principal");
-  await config.getByLabel("Cantidad", { exact: true }).fill("2");
+  await config.getByLabel("Nombre de opción 1", { exact: true }).fill("Principal");
+  await config.getByLabel("Cantidad de opción 1", { exact: true }).fill("2");
+  await config.getByRole("checkbox", { name: "Burger base QA", exact: true }).uncheck();
   await config
     .getByRole("checkbox", { name: "Burger doble QA", exact: true })
     .check();
@@ -297,6 +302,7 @@ test("repeat from customer history opens a current-price unpaid draft that can e
       ...product,
       productId: product.id,
       prices: prices.map((price) => ({ ...price, amountMinor: 200000 })),
+      priceBook: { baseMinor: 200000, overrides: {} },
       reason: "Precio de hoy",
       authorizerPin: "748259",
     });
@@ -348,8 +354,8 @@ test("repeat from customer history opens a current-price unpaid draft that can e
       exact: true,
     })
     .click();
-  const details = page.getByRole("dialog", {
-    name: "Editar datos · Para retirar",
+  const details = page.getByRole("region", {
+    name: "Datos del cliente y envío",
     exact: true,
   });
   await expect(details).toBeVisible();
@@ -357,7 +363,7 @@ test("repeat from customer history opens a current-price unpaid draft that can e
     .getByLabel("Nombre del cliente *", { exact: true })
     .fill("Repetir QA editado");
   await details
-    .getByRole("button", { name: "Guardar y volver al pedido", exact: true })
+    .getByRole("button", { name: "Guardar datos", exact: true })
     .click();
   await expect(editor).toBeVisible();
   expect(

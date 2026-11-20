@@ -31,6 +31,7 @@ import { LicensePanel } from "../components/license-panel";
 import { AppUpdatePanel } from "../components/app-update-panel";
 import { WaiterDeskPanel } from "../components/waiter-desk-panel";
 import { WebSitePanel } from "../components/web-site-panel";
+import { TutorialSettingsPanel } from "../components/user-tutorial";
 
 const SETTINGS_SECTIONS = [
   ["settings-general", "General"],
@@ -41,6 +42,7 @@ const SETTINGS_SECTIONS = [
   ["settings-license", "Licencia"],
   ["settings-website", "Página web"],
   ["settings-updates", "Actualizaciones"],
+  ["settings-tutorial", "Tutorial"],
 ] as const;
 
 export function SettingsPage({ data }: { data: BootstrapDto }) {
@@ -199,6 +201,16 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
             {mutation.isPending ? "Guardando…" : "Guardar configuración"}
           </Button>
         </div>
+      </div>
+      <div
+        id="panel-settings-tutorial"
+        role="tabpanel"
+        aria-labelledby="tab-settings-tutorial"
+        hidden={activeSection !== "settings-tutorial"}
+      >
+        {visitedSections.has("settings-tutorial") ? (
+          <TutorialSettingsPanel />
+        ) : null}
       </div>
       <div id="panel-settings-general" role="tabpanel" aria-labelledby="tab-settings-general" hidden={activeSection !== "settings-general"} className="space-y-4">
       <section id="settings-general" className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
@@ -474,7 +486,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
       {visitedSections.has("settings-waiter") ? <WaiterDeskPanel data={data} /> : null}
       </div>
       <div id="panel-settings-website" role="tabpanel" aria-labelledby="tab-settings-website" hidden={activeSection !== "settings-website"}>
-      {visitedSections.has("settings-website") ? <WebSitePanel /> : null}
+      {visitedSections.has("settings-website") ? <WebSitePanel products={data.products} /> : null}
       </div>
       <div id="panel-settings-updates" role="tabpanel" aria-labelledby="tab-settings-updates" hidden={activeSection !== "settings-updates"}>
       {visitedSections.has("settings-updates") ? <AppUpdatePanel /> : null}

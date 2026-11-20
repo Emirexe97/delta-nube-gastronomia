@@ -1,3 +1,5 @@
+import type { ImportProductsInput } from "./catalog-import";
+
 export type Id = string;
 export type IsoDateTime = string;
 export type BusinessDate = string;
@@ -261,6 +263,8 @@ export interface ProductDto {
   stockMinMinor: number | null;
   stockCriticalMinor: number | null;
   imageDataUrl: string | null;
+  /** Bootstrap never carries photo bytes. If present, fetch this product's photo on demand. */
+  hasImage?: boolean;
   prices: ProductPriceDto[];
   comboDefinition?: ComboDefinitionDto | null;
 }
@@ -530,6 +534,8 @@ export interface PaymentDto {
 export type KitchenPrintScope = "FULL" | "ADDED";
 
 export interface OrderDto {
+  /** SQLite order revision. Absent in older snapshots and non-native clients. */
+  version?: number;
   /** Quantities in the last successful kitchen snapshot; null for legacy prints. */
   kitchenPrintedQuantities?: Record<Id, number> | null;
   /** Present on an immutable kitchen print ticket. */
@@ -635,6 +641,26 @@ export interface CashSessionHistoryItemDto {
   detailAvailable: boolean;
 }
 
+export interface CashSessionHistoryRowDto {
+  id: Id;
+  number: number;
+  businessDate: BusinessDate;
+  openedAt: IsoDateTime;
+  closedAt: IsoDateTime | null;
+  openedByName: string;
+  salesTotalMinor: MoneyMinor;
+  detailAvailable: boolean;
+  status: CashSessionStatus;
+}
+
+export interface CashSessionHistoryPageDto {
+  items: CashSessionHistoryRowDto[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  hasNextPage: boolean;
+}
+
 export interface CashSessionReportFilters {
   cashSessionId: Id;
   tableId?: Id;
@@ -723,6 +749,7 @@ export interface DeliveryLedgerDto {
   driverName: string;
   restaurantAmountMinor: MoneyMinor;
   deliveryFeeMinor: MoneyMinor;
+  deliveryFeeBelongsToDriver?: boolean;
   direction: "DRIVER_OWES_BUSINESS" | "BUSINESS_OWES_DRIVER";
   amountDueMinor: MoneyMinor;
   settledAmountMinor: MoneyMinor;
@@ -738,6 +765,18 @@ export interface DriverDeliveryActivityDto {
   deliveryCount: number;
   earningsMinor: MoneyMinor;
   lastDeliveryAt: IsoDateTime;
+}
+
+/** Dispatch projection. TAKEAWAY reuses the same register/dashboard snapshot;
+ * ledger and driver activity apply only to DELIVERY. */
+export interface DeliveryProjectionDto {
+  order: OrderDto;
+  /** The order's payment/origin shift, not necessarily the register that is open now. */
+  cashSessionId: Id | null;
+  openCashSessionId: Id | null;
+  deliveryLedger: DeliveryLedgerDto[];
+  driverDeliveryActivity: DriverDeliveryActivityDto[];
+  financials?: { cashSession: CashSessionDto; dashboard: DashboardSummaryDto };
 }
 
 export interface PaymentMethodDto {
@@ -760,6 +799,17 @@ export interface PrintJobDto {
   lastError: string | null;
   createdAt: IsoDateTime;
   printedAt: IsoDateTime | null;
+}
+
+export interface OrderPrintStateDto {
+  order: OrderDto;
+  cashSessionId: Id | null;
+  printJobs: PrintJobDto[];
+  confirmation?: {
+    stocks: Array<{ productId: Id; stockMinor: MoneyMinor | null }>;
+    table: RestaurantTableDto | null;
+    dashboard: DashboardSummaryDto;
+  };
 }
 
 export interface DashboardSummaryDto {
@@ -866,6 +916,16 @@ export interface BootstrapDto {
   paymentMethods: PaymentMethodDto[];
   printJobs: PrintJobDto[];
   dashboard: DashboardSummaryDto;
+}
+
+export interface DeliveryHistoryInput {
+  scope: "ALL" | "DATE";
+  date?: string;
+}
+
+export interface DeliveryHistoryDto {
+  deliveryLedger: DeliveryLedgerDto[];
+  driverDeliveryActivity: DriverDeliveryActivityDto[];
 }
 
 export interface IdempotentRequest {
@@ -1098,7 +1158,7 @@ export interface UpdateOrderItemQuantityInput {
   quantity: number;
 }
 
-export interface AddOrderItemInput {
+export interface AddOrderItemInput extends IdempotentRequest {
   orderId: Id;
   productId: Id;
   quantity?: number;
@@ -1378,11 +1438,15 @@ export interface AppUpdateStatusDto {
 }
 
 export * from "./web-commerce";
+export * from "./tutorial";
+import type { SaveTutorialProgressInput, TutorialProgressDto } from "./tutorial";
 import type { WebCommerceApi } from "./web-commerce";
 
 export * from "./waiter-desk";
 import type { WaiterDeskApi } from "./waiter-desk";
 export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
+  getTutorialProgress(): Promise<TutorialProgressDto>;
+  saveTutorialProgress(input: SaveTutorialProgressInput): Promise<TutorialProgressDto>;
   isInitialAdminPinSetupRequired(): Promise<boolean>;
   setInitialAdminPin(input: { currentPin: string; newPin: string }): Promise<{ configured: true }>;
   askPosAssistantAi(input: PosAssistantAiInput): Promise<PosAssistantAiResult>;
@@ -1401,8 +1465,12 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   }): Promise<LicenseStatusDto>;
   activateLicense(input: { code: string }): Promise<LicenseStatusDto>;
   refreshLicense(): Promise<LicenseStatusDto>;
-  bootstrap(): Promise<BootstrapDto>;
+  bootstrap(options?: { deliveryScope?: "OPERATIONAL" }): Promise<BootstrapDto>;
+  getDeliveryHistory(input: DeliveryHistoryInput): Promise<DeliveryHistoryDto>;
+  getProductImage(input: { productId: Id }): Promise<string | null>;
   getOrder(input: { orderId: Id }): Promise<OrderDto>;
+  getDeliveryProjection(input: { orderId: Id; previousDriverId?: Id | null; includeFinancials?: boolean }): Promise<DeliveryProjectionDto>;
+  getOrderPrintState(input: { orderId: Id; includeConfirmation?: boolean }): Promise<OrderPrintStateDto>;
   ensureTable(input: { number: number }): Promise<RestaurantTableDto>;
   openCashSession(input: OpenCashSessionInput): Promise<CashSessionDto>;
   registerCashMovement(input: CashMovementInput): Promise<CashSessionDto>;
@@ -1414,6 +1482,7 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
 
   closeCashSession(input: CloseCashSessionInput): Promise<CashSessionDto>;
   listCashSessionHistory(): Promise<CashSessionHistoryItemDto[]>;
+  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number }): Promise<CashSessionHistoryPageDto>;
   getCashSessionReport(
     filters: CashSessionReportFilters,
   ): Promise<CashSessionReportDto>;
@@ -1533,6 +1602,7 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   getPriceBooks(): Promise<PriceBooksDto>;
   savePriceBook(input: SavePriceBookInput): Promise<PriceBooksDto>;
   assignPriceBooks(input: AssignPriceBooksInput): Promise<PriceBooksDto>;
+  importProducts(input: ImportProductsInput): Promise<ProductDto[]>;
   createProduct(input: {
     priceBook?: ProductPriceBookDto;
     categoryId: Id;
@@ -1747,3 +1817,4 @@ declare global {
     gastronomy: DesktopApi;
   }
 }
+export * from "./catalog-import";

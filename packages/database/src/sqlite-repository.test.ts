@@ -1424,6 +1424,20 @@ test("persiste inventario avanzado y foto WebP al crear y editar productos", () 
     assert.equal(product.stockMinMinor, 10_000);
     assert.equal(product.stockCriticalMinor, 5_000);
     assert.equal(product.imageDataUrl, imageDataUrl);
+    const boot = repository.bootstrap();
+    const summary = boot.products.find(p => p.id === product.id)!;
+    assert.equal(summary.hasImage, true);
+    assert.equal(summary.imageDataUrl, null);
+    assert.ok(!JSON.stringify(boot).includes(imageDataUrl));
+    assert.equal(repository.getProductImage({ productId: product.id }), imageDataUrl);
+    assert.throws(() => repository.getProductImage({ productId: "missing-image-product" }), /no existe/);
+
+    const keep = repository.updateProduct({
+      productId: product.id, name: product.name, categoryId: category.id, active: true,
+      prices: product.prices.map(({priceListCode, amountMinor}) => ({priceListCode: priceListCode as "SALON" | "TAKEAWAY" | "DELIVERY", amountMinor})),
+      reason: "Conservar foto sin reenviar bytes", authorizerPin: "2468",
+    });
+    assert.equal(keep.imageDataUrl, imageDataUrl);
 
     const updated = repository.updateProduct({
       productId: product.id,
@@ -1448,6 +1462,8 @@ test("persiste inventario avanzado y foto WebP al crear y editar productos", () 
     assert.equal(updated.stockMinMinor, 11_000);
     assert.equal(updated.stockCriticalMinor, 4_000);
     assert.equal(updated.imageDataUrl, null);
+    assert.equal(repository.getProductImage({ productId: product.id }), null);
+    assert.ok(!repository.bootstrap().products.find(p => p.id === product.id)!.hasImage);
   });
 });
 
@@ -3757,6 +3773,12 @@ test("carga rápida crea mesa idempotente, resuelve número de mozo y agrega can
       tableId: createdTable.id,
       waiterUserId: waiter.id,
     });
+    assert.throws(() => repository.createOrder({ type: "DINE_IN", tableId: createdTable.id, waiterUserId: waiter.id }), /mesa ya tiene un pedido abierto/);
+    const projected = repository.getOrderPrintState({ orderId: order.id, includeConfirmation: true });
+    const bootstrap = repository.bootstrap();
+    assert.deepEqual(projected.confirmation?.dashboard, bootstrap.dashboard);
+    assert.equal(projected.confirmation?.table?.currentOrderId, order.id);
+    assert.equal(bootstrap.orders.find((item) => item.id === order.id)?.id, order.id);
     const updated = repository.addOrderItem({
       orderId: order.id,
       productId: "starter-muzza-grande",
@@ -5582,6 +5604,39 @@ test("historial lista cajas cerradas y sesión antigua queda sólo en resumen", 
     cutoff.setDate(1);
     cutoff.setMonth(cutoff.getMonth() - 2);
     assert.equal(report.retentionCutoff, cutoff.toISOString().slice(0, 10));
+  });
+});
+
+test("historial paginado mantiene orden estable, límites y resumen liviano", () => {
+  withRepository((repository) => {
+    const user = repository.bootstrap().currentUser;
+    const insert = repository.db.prepare(`
+      INSERT INTO cash_sessions
+        (id, number, business_date, opened_at, closed_at, opened_by_user_id,
+         opening_amount_minor, expected_amount_minor, counted_amount_minor,
+         difference_minor, status)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 'CLOSED')
+    `);
+    for (let i = 0; i < 25; i++) {
+      const stamp = `2026-01-${String(i + 1).padStart(2, "0")}T12:00:00.000Z`;
+      insert.run(`history-page-${i}`, 10_000 + i, stamp.slice(0, 10), stamp, stamp, user.id);
+    }
+    const first = repository.listCashSessionHistoryPage({ page: 1, pageSize: 10 });
+    const second = repository.listCashSessionHistoryPage({ page: 2, pageSize: 10 });
+    const third = repository.listCashSessionHistoryPage({ page: 3, pageSize: 10 });
+    assert.equal(first.totalCount, 25);
+    assert.equal(first.items.length, 10);
+    assert.equal(second.items.length, 10);
+    assert.equal(third.items.length, 5);
+    assert.equal(first.hasNextPage, true);
+    assert.equal(third.hasNextPage, false);
+    assert.equal(new Set([...first.items, ...second.items, ...third.items].map((item) => item.id)).size, 25);
+    assert.equal(first.items[0]?.id, "history-page-24");
+    assert.equal(third.items[4]?.id, "history-page-0");
+    assert.equal(first.items.every((item) => item.salesTotalMinor === 0), true);
+    assert.equal(repository.listCashSessionHistoryPage({ page: 0, pageSize: Number.POSITIVE_INFINITY }).page, 1);
+    assert.equal(repository.listCashSessionHistoryPage({ page: Number.POSITIVE_INFINITY, pageSize: 1 }).page, 1);
+    assert.equal(repository.listCashSessionHistoryPage({ page: 100, pageSize: 10 }).page, 3);
   });
 });
 

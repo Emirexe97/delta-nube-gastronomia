@@ -85,6 +85,14 @@ test("demo API loads lazily and visible reset restores initial data after reload
   await expect(page.getByRole("heading", { level: 1, name: "Resumen" })).toBeVisible();
   expect(requests.some(path => /demo-api-.*\.js$/.test(path))).toBe(true);
 
+  // First-run tutorial is a legitimate onboarding modal that blocks the header.
+  // Persisting its documented skip keeps this reset test focused on demo data.
+  const tutorial = page.getByRole("dialog", { name: "Primeros pasos en Delta Nube" });
+  if (await tutorial.isVisible()) {
+    await tutorial.getByRole("button", { name: "Omitir por ahora", exact: true }).click();
+    await expect(tutorial).toHaveCount(0);
+  }
+
   await page.evaluate(async () => {
     await window.gastronomy.createCustomer({ name: "Temporal reset demo", phone: "+5491100001234" });
   });

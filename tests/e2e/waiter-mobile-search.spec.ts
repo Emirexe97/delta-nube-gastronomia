@@ -74,6 +74,10 @@ test("buscador móvil de mozos busca sin tildes en todas las categorías y permi
     await expect(toast).toBeVisible();
     await page.clock.runFor(500);
     await expect(toast).toBeHidden();
+    await page.locator("#reconnect").click();
+    await expect(search).toHaveValue("cafe");
+    await expect(page.locator("#products .product")).toHaveCount(2);
+    await expect(page.locator("#draft strong")).toContainText("Café frío × 2");
     await search.fill("inexistente");
     await expect(page.getByText("No se encontraron productos.")).toBeVisible();
     await page.getByRole("button", { name: "Limpiar", exact: true }).click();

@@ -33,7 +33,7 @@ function send(res: ServerResponse, status: number, value: unknown) {
 test("mobile waiter request crosses desktop worker + relay HTTP + temporary SQLite and survives a lost ACK", async (t) => {
   const dbPath = join(tmpdir(), `waiter-circuit-${randomUUID()}.sqlite`);
   const repo = new SqliteGastronomyRepository(dbPath, {
-    adminPin: "2468",
+    adminPin: "1234",
     seedStarterCatalog: true,
   });
   t.after(() => {
@@ -41,7 +41,8 @@ test("mobile waiter request crosses desktop worker + relay HTTP + temporary SQLi
     for (const suffix of ["", "-wal", "-shm"])
       rmSync(`${dbPath}${suffix}`, { force: true });
   });
-  repo.openCashSession({ openingAmountMinor: 0 });
+  repo.setInitialAdminPin({currentPin: "1234", newPin: "2468"});
+  const cash = repo.openCashSession({ openingAmountMinor: 0 });
   const waiter = repo.createUser({
     fullName: "Moza Integración",
     roleCode: "WAITER",
@@ -119,6 +120,7 @@ test("mobile waiter request crosses desktop worker + relay HTTP + temporary SQLi
     [];
   const worker = createWaiterRelay({
     config: () => config,
+    cashSessionId: () => cash.id,
     now: () => clock,
     fetch: async (input, init) => {
       if (offline) throw new Error("simulated network offline");
@@ -219,9 +221,41 @@ test("mobile waiter request crosses desktop worker + relay HTTP + temporary SQLi
     menu: { products: Array<{ id: string }> };
     tables: Array<{ id: string }>;
   };
-  const product = state.menu.products[0];
-  assert.ok(product);
+  assert.ok(state.menu.products.length);
   assert.ok(state.tables.some((row) => row.id === table.id));
+
+  // The legacy envelope above still works. A phone negotiating v2 can sell
+  // the last product even if sending all 3,000 photos-free menu entries would fail.
+  const category = repo.createCategory({name: "Carta de prueba", stockControlEnabled: false});
+  for (let i = 0; i < 3000; i += 500) {
+    repo.importProducts({idempotencyKey: randomUUID(), rows: Array.from({length: 500}, (_, j) => ({
+      name: "Plato especial de la casa " + String(i+j).padStart(4, "0"), categoryId: category.id,
+      code: "E2E-" + (i+j), basePriceMinor: 13500,
+    }))});
+  }
+  async function catalogRpc(method: string, params: object) {
+    const queued = await mobile("/v1/waiter/rpc", {requestId: randomUUID(), method, params}, sessionToken);
+    assert.equal(queued.status, 202);
+    await worker.tick();
+    const reply = await mobile("/v1/waiter/requests/" + queued.value.requestId, undefined, sessionToken);
+    assert.equal(reply.value.status, "completed");
+    assert.ok(!reply.value.error, JSON.stringify(reply.value.error));
+    return reply.value.result;
+  }
+  const descriptor = await catalogRpc("waiter.getState", {menuProtocol: 2}) as {menu: {version: string; productCount: number; products: unknown[]}};
+  assert.equal(descriptor.menu.products.length, 0);
+  const menuIds: string[] = [];
+  do {
+    const page = await catalogRpc("waiter.getMenuPage", {version: descriptor.menu.version, offset: menuIds.length}) as
+      {version: string; products: Array<{id: string}>; nextOffset: number | null};
+    assert.equal(page.version, descriptor.menu.version);
+    assert.ok(page.products.length);
+    menuIds.push(...page.products.map(p => p.id));
+    if (page.nextOffset === null) break;
+    assert.equal(page.nextOffset, menuIds.length);
+  } while (menuIds.length < descriptor.menu.productCount);
+  assert.equal(new Set(menuIds).size, descriptor.menu.productCount);
+  const product = {id: menuIds.at(-1)!};
 
   const batchId = `batch-${randomUUID()}`;
   const lineId = `line-${randomUUID()}`;

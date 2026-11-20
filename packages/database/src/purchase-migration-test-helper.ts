@@ -10,6 +10,14 @@ export function rewindPurchaseTestSchema(
   db: InstanceType<typeof Database>,
   targetVersion: number,
 ) {
+  if (targetVersion < 53) db.exec("DROP INDEX IF EXISTS cash_movements_reference_idx; DROP INDEX IF EXISTS cash_sessions_closed_history_idx");
+  if (targetVersion < 52) {
+    for (const group of ["products", "categories", "prices", "price_lists", "settings"])
+      for (const op of ["insert", "update", "delete"])
+        db.exec(`DROP TRIGGER IF EXISTS web_catalog_revision_${group}_${op}`);
+    db.exec("DROP TABLE IF EXISTS web_catalog_revision");
+  }
+  if (targetVersion < 51) db.exec("DROP TABLE IF EXISTS tutorial_progress");
   if (targetVersion < 50) {
     db.exec("DROP TABLE IF EXISTS waiter_reprints");
     for (const [table, name] of [

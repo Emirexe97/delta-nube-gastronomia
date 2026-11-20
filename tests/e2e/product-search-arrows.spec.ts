@@ -96,13 +96,7 @@ test("las flechas conservan selección visible bajo el puntero y Enter agrega el
   const editor = await openSalonOrder(51);
   const search = editor.getByPlaceholder(/Código, nombre, categoría/);
 
-  await editor.getByRole("button", { name: /Producto testigo ajeno/ }).click();
-  const witnessDialog = page.getByRole("dialog", {
-    name: "Agregar · Producto testigo ajeno",
-  });
-  await witnessDialog
-    .getByRole("button", { name: "Agregar a la mesa" })
-    .click();
+  await editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Producto testigo ajeno" }).click();
   await expect(
     editor.getByRole("article").filter({ hasText: "Producto testigo ajeno" }),
   ).toBeVisible();
@@ -130,7 +124,7 @@ test("las flechas conservan selección visible bajo el puntero y Enter agrega el
       : await editor
           .locator(`#order-editor-product-${selectedIndex}`)
           .evaluate((card) => {
-            const grid = card.parentElement!.getBoundingClientRect();
+            const grid = card.parentElement!.parentElement!.getBoundingClientRect();
             const box = card.getBoundingClientRect();
             return {
               top: box.top >= grid.top - 1,
@@ -158,11 +152,7 @@ test("las flechas conservan selección visible bajo el puntero y Enter agrega el
   expect(await selectedProductIndex(editor)).toBe(9);
 
   await search.press("Enter");
-  const targetDialog = page.getByRole("dialog", {
-    name: "Agregar · Prueba flechas 09",
-  });
-  await expect(targetDialog).toBeVisible();
-  await targetDialog.getByRole("button", { name: "Agregar a la mesa" }).click();
+  await expect(page.getByRole("dialog", { name: "Agregar · Prueba flechas 09" })).toHaveCount(0);
   await expect(
     editor.getByRole("article").filter({ hasText: "Producto testigo ajeno" }),
   ).toBeVisible();
@@ -245,11 +235,7 @@ test("las cuatro flechas navegan productos sin perder el foco ni secuestrar modi
   await search.press("ArrowRight");
   expect(await selectedProductIndex(editor)).toBe(1);
   await search.press("Enter");
-  const targetDialog = page.getByRole("dialog", {
-    name: "Agregar · Prueba flechas 01",
-  });
-  await expect(targetDialog).toBeVisible();
-  await targetDialog.getByRole("button", { name: "Agregar a la mesa" }).click();
+  await expect(page.getByRole("dialog", { name: "Agregar · Prueba flechas 01" })).toHaveCount(0);
   await expect(
     editor.getByRole("article").filter({ hasText: "Prueba flechas 01" }),
   ).toBeVisible();

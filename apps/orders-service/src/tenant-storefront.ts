@@ -1,6 +1,7 @@
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import { isAbsolute } from "node:path";
 import { OrdersStore } from "./store.js";
+import { mobilePreviewCache, serveMobilePreview } from "./mobile-preview.js";
 import {
   renderTenantStorefront,
   storefrontScriptCspHash,
@@ -20,6 +21,8 @@ export type TenantSite = {
   design_mode: "STANDARD" | "CUSTOM";
   template_key: string | null;
   access_until?: string | null;
+  has_banner?: number;
+  has_logo?: number;
 };
 export type TenantStorefrontOptions = {
   dbPath: string;
@@ -27,7 +30,9 @@ export type TenantStorefrontOptions = {
   hostSuffix: string;
   reservedHosts?: string[];
   rateLimit?: number;
+  mediaRateLimit?: number;
   protocol?: "http" | "https";
+  mobilePreviews?: ReturnType<typeof mobilePreviewCache>;
 };
 export function resolveTenantHost(
   hostHeader: string | undefined,
@@ -73,6 +78,17 @@ function json(res: ServerResponse, status: number, data: unknown) {
   });
   res.end(body);
 }
+function jpegHeaders(bytes: number) {
+  return {
+    "content-type": "image/jpeg",
+    "content-length": bytes,
+    "cache-control": "private, no-store",
+    vary: "Host",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    "content-security-policy": `default-src 'self'; script-src 'sha256-${storefrontScriptCspHash}'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
+  };
+}
 async function readBody(req: IncomingMessage): Promise<unknown> {
   let size = 0;
   const chunks: Buffer[] = [];
@@ -95,6 +111,8 @@ export function createTenantStorefront(options: TenantStorefrontOptions) {
   const max = options.rateLimit ?? 600;
   if (!Number.isSafeInteger(max) || max < 1 || max > 10000)
     throw new Error("Invalid storefront rate limit");
+  const mediaMax=options.mediaRateLimit ?? Math.min(10000,max*4);
+  if (!Number.isSafeInteger(mediaMax) || mediaMax < 1 || mediaMax > 10000) throw new Error("Invalid storefront media rate limit");
   // Local DB access is intentional: public requests never select a store/site themselves.
   const db = options.store ?? new OrdersStore(options.dbPath, []);
   const rates = new Map<string, { count: number; reset: number }>();
@@ -124,10 +142,11 @@ export function createTenantStorefront(options: TenantStorefrontOptions) {
         ? new URL(`http://${trustedHost}`).origin
         : `https://${slug}.${options.hostSuffix.toLowerCase()}`;
     const url = new URL(req.url ?? "/", origin);
+    const isMediaRead=req.method === "GET" && (url.pathname === "/media/banner.jpg" || url.pathname === "/media/logo.jpg" || /^\/media\/products\/[^/]+\.jpg$/.test(url.pathname));
     const ip = req.socket.remoteAddress ?? "unknown",
       now = Date.now();
     // A per-tenant bucket avoids unrelated tenants sharing one proxy/NAT bucket.
-    const rateKey = `${site.slug}\0${ip}`;
+    const rateKey = `${isMediaRead ? "media" : "request"}\0${site.slug}\0${ip}`;
     let rate = rates.get(rateKey);
     if (!rate && rates.size >= 10000) {
       json(res, 429, { error: "rate_limited" });
@@ -137,7 +156,7 @@ export function createTenantStorefront(options: TenantStorefrontOptions) {
       rate = { count: 0, reset: now + 60_000 };
       rates.set(rateKey, rate);
     }
-    if (++rate.count > max) {
+    if (++rate.count > (isMediaRead ? mediaMax : max)) {
       json(res, 429, { error: "rate_limited" });
       return true;
     }
@@ -149,6 +168,29 @@ export function createTenantStorefront(options: TenantStorefrontOptions) {
       "content-security-policy": `default-src 'self'; script-src 'sha256-${storefrontScriptCspHash}'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'`,
     };
     const expired = site.access_until !== null && site.access_until !== undefined && Date.now() >= Date.parse(site.access_until);
+    if (options.mobilePreviews && url.pathname === "/vista-previa") return await serveMobilePreview(options.mobilePreviews,site.store_id,expired || site.design_mode !== "STANDARD",req,res,origin);
+    if (req.method === "GET" && url.pathname === "/media/logo.jpg") {
+      if (expired || !site.has_logo) { json(res,404,{error:"not_found"}); return true; }
+      const bytes=db.getTenantLogo(site.store_id);
+      if (!bytes) { json(res,404,{error:"not_found"}); return true; }
+      res.writeHead(200,jpegHeaders(bytes.length)); res.end(bytes); return true;
+    }
+    const publicPhotoMatch=req.method === "GET" ? url.pathname.match(/^\/media\/products\/([^/]+)\.jpg$/) : null;
+    if (publicPhotoMatch) {
+      if (expired) { json(res,404,{error:"not_found"}); return true; }
+      let productRef: string; try { productRef=decodeURIComponent(publicPhotoMatch[1]!); } catch { json(res,404,{error:"not_found"}); return true; }
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(productRef)) { json(res,404,{error:"not_found"}); return true; }
+      const photo=db.getTenantProductPhoto(site.store_id,productRef,true);
+      if (!photo) { json(res,404,{error:"not_found"}); return true; }
+      res.writeHead(200,jpegHeaders(photo.data.length)); res.end(photo.data); return true;
+    }
+    if (req.method === "GET" && url.pathname === "/media/banner.jpg") {
+      if (expired || !site.has_banner) { json(res, 404, { error: "not_found" }); return true; }
+      const bytes = db.getTenantBanner(site.store_id);
+      if (!bytes) { json(res, 404, { error: "not_found" }); return true; }
+      res.writeHead(200, jpegHeaders(bytes.length));
+      res.end(bytes); return true;
+    }
     if (expired && req.method === "GET" && url.pathname === "/") {
       res.writeHead(200, headers); res.end("<!doctype html><html lang=\"es\"><meta charset=\"utf-8\"><title>Sitio pausado</title><h1>Sitio pausado</h1><p>La publicación está temporalmente pausada.</p></html>"); return true;
     }
@@ -171,10 +213,11 @@ export function createTenantStorefront(options: TenantStorefrontOptions) {
           published: false,
           snapshot: { products: [] },
           revision: 0,
+          productPhotos: [],
         });
         return true;
       }
-      json(res, 200, { published: true, ...catalog });
+      json(res, 200, { published: true, ...catalog, productPhotos: db.getVisibleTenantProductPhotos(site.store_id) });
       return true;
     }
     if (req.method === "POST" && url.pathname === "/api/checkout") {

@@ -524,7 +524,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
           <h2 className="text-xl font-extrabold tracking-tight text-slate-900">
             Compras e ingresos
           </h2>
-          <p className="text-xs text-slate-500 sm:text-sm">
+          <p className="text-xs text-slate-600 sm:text-sm">
             Registrá mercadería y actualizá existencias en stock.
           </p>
         </div>

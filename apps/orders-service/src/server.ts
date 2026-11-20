@@ -14,6 +14,8 @@ import { verifyWebSiteTicket, verifyWaiterTicket } from "@gastronomy/web-orders/
 import { createTenantStorefront } from "./tenant-storefront.js";
 import { WaiterRelay } from "./waiter-relay.js";
 import { waiterHtml } from "./waiter-page.js";
+import { LOGO_JPEG_LIMITS, PRODUCT_PHOTO_JPEG_LIMITS, parseBannerDataUrl } from "./banner-image.js";
+import { acceptMobilePreview, mobilePreviewCache } from "./mobile-preview.js";
 
 const MAX_BODY = 64 * 1024;
 const MAX_CATALOG_BODY = 2 * 1024 * 1024;
@@ -173,12 +175,14 @@ export function createOrdersServer(options: OrdersServerOptions): {
       ].map((s) => s.toLowerCase()),
     ),
   ];
+  const mobilePreviews = mobilePreviewCache();
   const tenantStorefront = options.provisioning
     ? createTenantStorefront({
         store,
         dbPath: options.dbPath,
         hostSuffix: options.provisioning.baseDomain,
         reservedHosts: reservedSlugs,
+        mobilePreviews,
       })
     : undefined;
   const waiterPublicBaseUrl = options.waiterPublicBaseUrl ?? (options.provisioning ? `https://pedidos.${options.provisioning.baseDomain}/` : undefined);
@@ -336,6 +340,26 @@ export function createOrdersServer(options: OrdersServerOptions): {
         if (!connection) error(409, "idempotency_conflict");
         return json(res, 201, { storeId: connection.storeId, waiterToken });
       }
+      if (req.method === "POST" && url.pathname === "/v1/web-sites/mobile-preview") {
+        if (!scope || scope.role !== "receive" || !scope.receiveInstallationId || req.headers["x-pos-installation"] !== scope.receiveInstallationId) error(401, "unauthorized");
+        if (!isJson(req)) error(415, "unsupported_media_type");
+        const branding=store.getTenantBranding(scope.storeId);
+        if (!branding || branding.designMode !== "STANDARD") error(403,"forbidden");
+        if (store.tenantAccessExpired(scope.storeId)) error(403,"site_expired");
+        const storeId = scope.storeId;
+        const draft = await readJson(req, 900 * 1024);
+        return json(res, 201, acceptMobilePreview(mobilePreviews, storeId, draft,
+          selectedRef => store.getPreviewMenuContext(storeId, selectedRef)));
+      }
+      const privatePhotoMatch = req.method === "GET" ? url.pathname.match(/^\/v1\/web-sites\/product-photo\/([^/]+)$/) : null;
+      if (privatePhotoMatch) {
+        if (!scope || scope.role !== "receive" || !scope.receiveInstallationId || req.headers["x-pos-installation"] !== scope.receiveInstallationId) error(401,"unauthorized");
+        let productRef: string;
+        try { productRef=decodeURIComponent(privatePhotoMatch[1]!); } catch { error(400,"bad_request"); }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(productRef)) error(400,"bad_request");
+        const photo=store.getTenantProductPhoto(scope.storeId,productRef);
+        return json(res,200,{productRef,dataUrl:photo ? `data:image/jpeg;base64,${photo.data.toString("base64")}` : null});
+      }
       if (
         (req.method === "GET" || req.method === "PATCH") &&
         url.pathname === "/v1/web-sites/branding"
@@ -348,16 +372,17 @@ export function createOrdersServer(options: OrdersServerOptions): {
         )
           error(401, "unauthorized");
         if (req.method === "GET") {
-          const branding = store.getTenantBranding(scope.storeId);
+          const branding = store.getTenantBranding(scope.storeId, req.headers["x-web-site-banner"] === "1", req.headers["x-web-site-media"] === "1");
           if (!branding) error(404, "not_found");
           return json(res, 200, branding);
         }
         if (!isJson(req)) error(415, "unsupported_media_type");
-        const body = (await readJson(req)) as Record<string, unknown>;
+        if (store.tenantAccessExpired(scope.storeId)) error(403, "site_expired");
+        const body = (await readJson(req, 800 * 1024)) as Record<string, unknown>;
         if (
           !body ||
           Object.keys(body).some(
-            (k) => !["displayName", "tagline", "accent"].includes(k),
+            (k) => !["displayName", "tagline", "accent", "bannerDataUrl", "logoDataUrl", "productPhoto"].includes(k),
           ) ||
           typeof body.displayName !== "string" ||
           !body.displayName.trim() ||
@@ -368,15 +393,36 @@ export function createOrdersServer(options: OrdersServerOptions): {
           !/^#[0-9a-f]{6}$/i.test(body.accent)
         )
           error(400, "bad_request");
+        let banner: Buffer | null | undefined;
+        if (Object.prototype.hasOwnProperty.call(body, "bannerDataUrl")) {
+          if (body.bannerDataUrl === null) banner = null;
+          else { try { banner = parseBannerDataUrl(body.bannerDataUrl); } catch { error(400, "bad_request"); } }
+        }
+        let logo: Buffer | null | undefined;
+        if (Object.prototype.hasOwnProperty.call(body,"logoDataUrl")) {
+          if (body.logoDataUrl === null) logo=null;
+          else { try { logo=parseBannerDataUrl(body.logoDataUrl,LOGO_JPEG_LIMITS); } catch { error(400,"bad_request"); } }
+        }
+        let productPhoto: { productRef: string; image: Buffer | null } | undefined;
+        if (Object.prototype.hasOwnProperty.call(body,"productPhoto")) {
+          const photo=body.productPhoto as Record<string,unknown>;
+          if (!photo || typeof photo !== "object" || Array.isArray(photo) || Object.keys(photo).some(k=>! ["productRef","dataUrl"].includes(k)) || typeof photo.productRef !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(photo.productRef) || !(photo.dataUrl === null || typeof photo.dataUrl === "string")) error(400,"bad_request");
+          let image: Buffer | null = null;
+          if (photo.dataUrl !== null) { try { image=parseBannerDataUrl(photo.dataUrl,PRODUCT_PHOTO_JPEG_LIMITS); } catch { error(400,"bad_request"); } }
+          productPhoto={productRef:photo.productRef as string,image};
+        }
         if (
           !store.updateTenantBranding(scope.storeId, {
             displayName: body.displayName.trim(),
             tagline: body.tagline,
             accent: body.accent,
+            ...(banner === undefined ? {} : { banner }),
+            ...(logo === undefined ? {} : { logo }),
+            ...(productPhoto === undefined ? {} : { productPhoto }),
           })
         )
           error(403, "forbidden");
-        return json(res, 200, store.getTenantBranding(scope.storeId));
+        return json(res, 200, store.getTenantBranding(scope.storeId, req.headers["x-web-site-banner"] === "1", req.headers["x-web-site-media"] === "1"));
       }
       if (req.method === "GET" && url.pathname === "/health")
         return json(res, 200, { ok: true });
@@ -476,7 +522,7 @@ export function createOrdersServer(options: OrdersServerOptions): {
       return json(res, status, {
         error:
           typeof candidate.code === "string" &&
-          ["pairing_expired", "queue_full", "site_expired"].includes(candidate.code)
+          ["pairing_expired", "queue_full", "site_expired", "product_photo_limit"].includes(candidate.code)
             ? candidate.code
             :
           status === 409 &&
@@ -510,6 +556,7 @@ export function createOrdersServer(options: OrdersServerOptions): {
       server.close(() => {
         clearTimeout(deadline);
         try {
+          mobilePreviews.clear();
           tenantStorefront?.close();
           waiterRelay?.close();
           store.close();

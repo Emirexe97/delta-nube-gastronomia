@@ -164,7 +164,7 @@ test("QA02 conserva selector y dirección guardada tras alternar retiro y envío
   ).toBeVisible();
   const address = delivery.getByLabel("Dirección *", { exact: true });
   await expect(address).toHaveValue(customer.addresses[0]!.address);
-  const savedAddress = delivery.getByLabel("Dirección guardada");
+  const savedAddress = delivery.getByRole("combobox", { name: /^Dirección guardada/ });
   await expect(savedAddress).toBeVisible();
   await savedAddress.selectOption(customer.addresses[1]!.id);
   await expect(address).toHaveValue(customer.addresses[1]!.address);
@@ -185,7 +185,7 @@ test("QA02 conserva selector y dirección guardada tras alternar retiro y envío
   await expect(
     reopenedDelivery.getByLabel("Dirección *", { exact: true }),
   ).toHaveValue(customer.addresses[1]!.address);
-  const reopenedSelector = reopenedDelivery.getByLabel("Dirección guardada");
+  const reopenedSelector = reopenedDelivery.getByRole("combobox", { name: /^Dirección guardada/ });
   await expect(reopenedSelector).toBeVisible();
   await expect(reopenedSelector.locator("option")).toHaveCount(
     customer.addresses.length + 1,
@@ -284,7 +284,7 @@ test("hydration failure preserves linked customer and shows recovery instead of 
   await delivery
     .getByRole("option", { name: new RegExp(customer.name) })
     .click();
-  await expect(delivery.getByLabel("Dirección guardada")).toBeVisible();
+  await expect(delivery.getByRole("combobox", { name: /^Dirección guardada/ })).toBeVisible();
   await app.evaluate(({ ipcMain }) => {
     const original = (ipcMain as any)._invokeHandlers.get(
       "gastronomy:getCustomerProfile",
@@ -318,7 +318,7 @@ test("hydration failure preserves linked customer and shows recovery instead of 
   ).toHaveCount(0);
   await takeaway.getByLabel("Modalidad del pedido").selectOption("DELIVERY");
   const restored = page.getByRole("dialog", { name: "Nuevo Envío" });
-  await expect(restored.getByLabel("Dirección guardada")).toBeVisible();
+  await expect(restored.getByRole("combobox", { name: /^Dirección guardada/ })).toBeVisible();
   await expect(restored.getByLabel("Dirección *", { exact: true })).toHaveValue(
     customer.addresses[0]!.address,
   );

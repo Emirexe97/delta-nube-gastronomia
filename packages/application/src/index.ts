@@ -11,7 +11,10 @@ import type {
   AppSettingsDto,
   AuditEntryDto,
   BootstrapDto,
+  DeliveryHistoryInput,
+  DeliveryHistoryDto,
   BulkUpdateProductsInput,
+  ImportProductsInput,
   BusinessDate,
   CancelOrderInput,
   ChangeOrderTableInput,
@@ -26,6 +29,7 @@ import type {
   CustomerProfileDto,
   DashboardSummaryDto,
   DeliveryLedgerDto,
+  DeliveryProjectionDto,
   DetailedReportDto,
   FloorPlanShapeDto,
   Id,
@@ -39,6 +43,7 @@ import type {
   RefundPaymentInput,
   ReportFilters,
   CashSessionHistoryItemDto,
+  CashSessionHistoryPageDto,
   CashSessionReportDto,
   CashSessionReportFilters,
   SearchCustomersPageInput,
@@ -71,7 +76,7 @@ import type {
   SettleCustomerAccountInput,
   TableSectorDto,
 } from "@gastronomy/contracts";
-import { isPriceBookRoundingIncrementMinor } from "@gastronomy/contracts";
+import { isPriceBookRoundingIncrementMinor, normalizeImportProductsInput } from "@gastronomy/contracts";
 import {
   assertMoneyMinor,
   assertAppSettings,
@@ -180,8 +185,12 @@ export interface GastronomyRepository {
   correctPurchaseItemProduct(
     input: CorrectPurchaseItemProductInput,
   ): PurchaseDto;
-  bootstrap(): BootstrapDto;
+  bootstrap(options?: { deliveryScope?: "OPERATIONAL" }): BootstrapDto;
+  getDeliveryHistory(input: DeliveryHistoryInput): DeliveryHistoryDto;
+  getProductImage(input: { productId: Id }): string | null;
   getOrder(orderId: Id): OrderDto;
+  getDeliveryProjection(input: { orderId: Id; previousDriverId?: Id | null; includeFinancials?: boolean }): DeliveryProjectionDto;
+  getOrderPrintState(input: { orderId: Id; includeConfirmation?: boolean }): import("@gastronomy/contracts").OrderPrintStateDto;
   ensureTable(
     number: number,
   ): import("@gastronomy/contracts").RestaurantTableDto;
@@ -189,6 +198,7 @@ export interface GastronomyRepository {
   registerCashMovement(input: CashMovementInput): CashSessionDto;
   closeCashSession(input: CloseCashSessionInput): CashSessionDto;
   listCashSessionHistory(): CashSessionHistoryItemDto[];
+  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number }): CashSessionHistoryPageDto;
   getCashSessionReport(filters: CashSessionReportFilters): CashSessionReportDto;
   markOrderServed(input: MarkOrderServedInput): OrderDto;
   createOrder(input: CreateOrderInput): OrderDto;
@@ -309,6 +319,7 @@ export interface GastronomyRepository {
       amountMinor: number;
     }>;
   }): ProductDto;
+  importProducts(input: ImportProductsInput): ProductDto[];
   updateProduct(input: UpdateProductInput): ProductDto;
   deleteProduct(input: {
     productId: Id;
@@ -499,12 +510,29 @@ export class GastronomyApplication {
     this.normalizeCustomerTags(input.tags);
   }
 
-  bootstrap() {
-    return this.repository.bootstrap();
+  bootstrap(options?: { deliveryScope?: "OPERATIONAL" }) {
+    return this.repository.bootstrap(options);
+  }
+
+  getDeliveryHistory(input: DeliveryHistoryInput) {
+    return this.repository.getDeliveryHistory(input);
+  }
+
+  getProductImage(input: { productId: Id }) {
+    if (!input || typeof input.productId !== "string" || !input.productId.trim()) throw new Error("Elegí un producto.");
+    return this.repository.getProductImage(input);
   }
 
   getOrder(input: { orderId: Id }) {
     return this.repository.getOrder(input.orderId);
+  }
+
+  getDeliveryProjection(input: { orderId: Id; previousDriverId?: Id | null; includeFinancials?: boolean }) {
+    return this.repository.getDeliveryProjection(input);
+  }
+
+  getOrderPrintState(input: { orderId: Id; includeConfirmation?: boolean }) {
+    return this.repository.getOrderPrintState(input);
   }
 
   ensureTable(input: { number: number }) {
@@ -1005,6 +1033,10 @@ export class GastronomyApplication {
     return this.repository.createProduct({ ...input, prices });
   }
 
+  async importProducts(input: ImportProductsInput): Promise<ProductDto[]> {
+    return this.repository.importProducts(normalizeImportProductsInput(input));
+  }
+
   createCombo(input: CreateComboInput) {
     if (!input.name.trim()) throw new Error("Ingresá el nombre del producto.");
     if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
@@ -1376,6 +1408,10 @@ export class GastronomyApplication {
 
   listCashSessionHistory() {
     return this.repository.listCashSessionHistory();
+  }
+
+  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number }) {
+    return this.repository.listCashSessionHistoryPage(input);
   }
 
   getCashSessionReport(filters: CashSessionReportFilters) {

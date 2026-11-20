@@ -53,6 +53,7 @@ import { HeaderClock } from "./components/header-clock";
 import { PosAssistantMenu } from "./components/pos-assistant-menu";
 import { RouteErrorBoundary } from "./components/route-error-boundary";
 import { resetDemoAndReload } from "./demo/startup";
+import { TutorialProvider } from "./components/user-tutorial";
 
 const navigation = [
   { to: "/resumen", label: "Resumen", icon: ChartPieSlice, group: "General" },
@@ -432,6 +433,11 @@ export function App() {
   }
 
   return (
+    <TutorialProvider
+      data={bootstrap.data}
+      accountKey={license.data?.account?.email?.trim().toLowerCase() ?? "local"}
+      ready={!license.isLoading}
+    >
     <div
       className={cn(
         "dn-app flex h-full min-h-0 text-slate-950 max-sm:[--app-navigation-width:56px]",
@@ -534,8 +540,8 @@ export function App() {
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="dn-app-header flex h-16 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 max-sm:px-3">
-          <div className="min-w-0">
+        <header className="dn-app-header flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-slate-200 bg-white px-5 py-2 max-sm:px-3">
+          <div className="min-w-0 max-w-full shrink-0">
             <h1
               ref={routeHeadingRef}
               tabIndex={-1}
@@ -544,7 +550,7 @@ export function App() {
               {current?.label ?? "Gastronomía"}
             </h1>
           </div>
-          <div className="flex shrink-0 items-center gap-3 max-sm:gap-1.5">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-3 max-sm:gap-1.5">
             {isDemoMode ? (
               <button
                 type="button"
@@ -739,5 +745,6 @@ export function App() {
         </div>
       </main>
     </div>
+    </TutorialProvider>
   );
 }

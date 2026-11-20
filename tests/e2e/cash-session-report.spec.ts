@@ -64,6 +64,32 @@ async function capturedPrintHtml() {
   );
 }
 
+test("pagina los cierres sin perder el informe del turno seleccionado", async () => {
+  await launch();
+  const numbers = await page.evaluate(async () => {
+    const api = window.gastronomy;
+    const result: number[] = [];
+    for (let i = 0; i < 22; i++) {
+      const session = await api.openCashSession({ openingAmountMinor: 1000 + i });
+      await api.closeCashSession({ countedAmountMinor: 1000 + i, closingFloatAmountMinor: 0 });
+      result.push(session.number);
+    }
+    return result;
+  });
+  await page.reload();
+  await page.getByRole("link", { name: "Caja", exact: true }).click();
+  const first = page.getByRole("row").filter({ has: page.getByRole("cell", { name: `#${numbers[0]}`, exact: true }) });
+  await expect(page.getByText("Página 1 · 22 cierres")).toBeVisible();
+  await expect(first).toHaveCount(0);
+  await page.getByRole("button", { name: "Siguiente", exact: true }).click();
+  await expect(page.getByText("Página 2 · 22 cierres")).toBeVisible();
+  await first.getByRole("button", { name: "Ver informe" }).click();
+  await expect(page.getByRole("dialog", { name: "Informe de caja" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Anterior", exact: true }).click();
+  await expect(page.getByText("Página 1 · 22 cierres")).toBeVisible();
+});
+
 test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ticket", async () => {
   await launch();
   const setup = await page.evaluate(async () => {

@@ -103,7 +103,10 @@ test("Modo Mozo móvil: tema, ayudas accesibles, etiqueta PIN y controles tácti
   try {
     for (const width of [320, 390]) {
       await page.setViewportSize({ width, height: 844 });
-      await page.goto(`http://127.0.0.1:${address.port}/waiter`);
+      // The PIN challenge is present only when the waiter opens an invitation QR.
+      await page.goto(
+        `http://127.0.0.1:${address.port}/waiter#tenant=visual-test&terminal=visual-test&challenge=visual-style-challenge`,
+      );
       await expect(page.getByRole("heading", { name: "Ingresar como mozo" })).toBeVisible();
       expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--dn-color-primary").trim())).toBe(primary);
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);

@@ -43,6 +43,26 @@ async function configure(api: ReturnType<typeof createDemoApi>) {
 }
 
 describe("repartidor y responsable explícitos en demo", () => {
+  it("dos clics simultáneos y un reintento después de reiniciar cobran una sola vez", async () => {
+    const storage = new MemoryStorage();
+    const api = createDemoApi(storage);
+    await configure(api);
+    const driver = await api.createDriver({fullName: "Reintentos", authorizerPin: "1234"});
+    const { order, populated } = await draft(api);
+    const input = {
+      orderId: order.id, driverUserId: driver.id, finalStatus: "DELIVERED" as const,
+      idempotencyKey: "reintento", payments: [{ methodCode: "CASH", amountMinor: populated.totalMinor }],
+    };
+    const before = await api.bootstrap();
+    const [a, b] = await Promise.all([api.completeOrder(input), api.completeOrder(input)]);
+    expect(a.id).toBe(b.id);
+    const reopened = createDemoApi(storage);
+    expect((await reopened.completeOrder(input)).payments).toHaveLength(1);
+    await expect(reopened.completeOrder({ ...input, collectedByDriver: true })).rejects.toThrow(/idempotencia/);
+    const after = await reopened.bootstrap();
+    expect(after.cashSession!.expectedAmountMinor).toBe(before.cashSession!.expectedAmountMinor + populated.totalMinor);
+    expect(after.deliveryLedger.filter(row => row.orderId === order.id)).toHaveLength(1);
+  });
   it.each([undefined, false] as const)(
     "cobra desde el negocio por defecto/false (%s)",
     async (collectedByDriver) => {

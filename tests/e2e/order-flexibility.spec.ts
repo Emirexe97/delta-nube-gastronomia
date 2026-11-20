@@ -96,11 +96,7 @@ test("permite cargar productos primero, bloquea confirmar sin cliente y conserva
   const editor = page.getByRole("dialog", {
     name: /Pedido #\d+ · Para retirar/,
   });
-  await editor.getByRole("button", { name: /Muzzarella grande/ }).click();
-  await page
-    .getByRole("dialog", { name: /Agregar · Muzzarella grande/ })
-    .getByRole("button", { name: "Agregar al pedido" })
-    .click();
+  await editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Muzzarella grande" }).click();
   const addedItem = editor.getByRole("article");
   await expect(addedItem.getByText("Muzzarella grande")).toBeVisible();
   await expect(
@@ -129,15 +125,15 @@ test("permite cargar productos primero, bloquea confirmar sin cliente y conserva
   await editor
     .getByRole("button", { name: "Volver a datos del cliente y envío" })
     .click();
-  const metadata = page.getByRole("dialog", {
-    name: "Editar datos · Para retirar",
+  const metadata = page.getByRole("region", {
+    name: "Datos del cliente y envío",
   });
   await metadata
     .getByLabel("Nombre del cliente *", { exact: true })
     .fill("Cliente agregado luego");
   await metadata.getByLabel("Teléfono *", { exact: true }).fill("11 5555-0101");
   await metadata
-    .getByRole("button", { name: "Guardar y volver al pedido" })
+    .getByRole("button", { name: "Guardar datos" })
     .click();
   await expect(editor).toBeVisible();
   await expect(
@@ -176,12 +172,12 @@ test("la modalidad se elige en modal y el pedido sin cobrar conserva identidad, 
   await editor
     .getByRole("button", { name: "Volver a datos del cliente y envío" })
     .click();
-  const modeDialog = page.getByRole("dialog", { name: /Editar datos ·/ });
+  const modeDialog = page.getByRole("region", { name: "Datos del cliente y envío" });
   await modeDialog.getByLabel("Modalidad del pedido").selectOption("DELIVERY");
   await modeDialog.getByLabel("Dirección").fill("Calle Flex 123");
-  await modeDialog.getByLabel("Costo de envío").fill("2500");
+  await modeDialog.getByLabel("Costo de envío", { exact: true }).fill("2500");
   await modeDialog
-    .getByRole("button", { name: "Guardar y volver al pedido" })
+    .getByRole("button", { name: "Guardar datos" })
     .click();
 
   const switched = await page.evaluate(async ({ id, productId }) => {
@@ -337,7 +333,7 @@ test("el editor cobrado exige PIN y motivo para pasar a envío, cobrar saldo y d
   let editModal = page.getByRole("dialog", { name: /Editar datos ·/ });
   await editModal.getByLabel("Modalidad del pedido").selectOption("DELIVERY");
   await editModal.getByLabel("Dirección").fill("Calle Flex 123");
-  await editModal.getByLabel("Costo de envío").fill("2500");
+  await editModal.getByLabel("Costo de envío", { exact: true }).fill("2500");
   await editModal
     .getByLabel("Motivo del cambio (obligatorio)")
     .fill("Cliente cambia a envío");

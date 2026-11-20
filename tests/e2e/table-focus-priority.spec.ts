@@ -122,10 +122,7 @@ async function openFromQuickEntry(number: number) {
 async function addAndPay(editor: Locator) {
   const search = editor.getByPlaceholder(/Código, nombre, categoría/);
   await search.fill("MUZG");
-  await editor.getByRole("button", { name: /Muzzarella grande/ }).click();
-  const add = page.getByRole("dialog", { name: "Agregar · Muzzarella grande" });
-  await add.getByRole("button", { name: "Agregar a la mesa" }).click();
-  await expect(add).toBeHidden();
+  await editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Muzzarella grande" }).click();
   await editor.getByRole("button", { name: "Confirmar pedido" }).click();
   await expect(editor.getByRole("button", { name: "Cobrar" })).toBeEnabled();
   await editor.getByRole("button", { name: "Cobrar" }).click();

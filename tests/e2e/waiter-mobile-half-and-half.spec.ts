@@ -55,22 +55,32 @@ test("QR móvil agrega pizzas enteras o mitad y mitad con notas independientes",
     await page.goto(`http://127.0.0.1:${address.port}/waiter`);
     await page.getByRole("button", { name: "Agregar Pizza Muzzarella", exact: true }).click();
     const dialog = page.locator("#itemDialog");
+    await expect(dialog).toBeHidden();
+    await expect(page.locator("#draft strong")).toHaveText(["Pizza Muzzarella × 1"]);
+    await page.getByRole("button", { name: "Observaciones: Pizza Muzzarella", exact: true }).click();
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel("Tipo de pizza").locator("option")).toHaveText(["Entera", "Mitad y mitad"]);
-    await expect(dialog.getByLabel("Tipo de pizza")).toHaveValue("whole");
+    await expect(dialog.getByLabel("Tipo de pizza")).toBeHidden();
     await dialog.getByLabel("Observaciones").fill("Extra crocante");
-    await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
+    await dialog.getByRole("button", { name: "Guardar nota", exact: true }).click();
+    await expect(page.locator("#draft strong")).toHaveText(["Pizza Muzzarella × 1"]);
+    await page.setViewportSize({ width: 320, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+    await page.screenshot({ path: test.info().outputPath("waiter-pizza-actions-320.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
 
-    await page.getByRole("button", { name: "Agregar Pizza Muzzarella", exact: true }).click();
-    await dialog.getByLabel("Tipo de pizza").selectOption("half");
+    const halves = page.getByRole("button", { name: "Mitad y mitad: Pizza Muzzarella", exact: true });
+    await halves.click();
+    await expect(dialog.getByLabel("Tipo de pizza")).toHaveValue("half");
+    await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+    await expect(page.locator("#draft strong")).toHaveText(["Pizza Muzzarella × 1"]);
+    await halves.click();
     await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel("Otra mitad", { exact: true }).locator("option", { hasText: "Empanada" })).toHaveCount(0);
     await dialog.getByLabel("Otra mitad", { exact: true }).selectOption("napo");
     await dialog.getByLabel("Observaciones").fill("Sin aceitunas");
     await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
-    await page.getByRole("button", { name: "Agregar Pizza Muzzarella", exact: true }).click();
-    await dialog.getByLabel("Tipo de pizza").selectOption("half");
+    await halves.click();
     await dialog.getByLabel("Otra mitad", { exact: true }).selectOption("fugazza");
     await dialog.getByLabel("Observaciones").fill("Bien cocida");
     await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
@@ -97,7 +107,11 @@ test("QR móvil agrega pizzas enteras o mitad y mitad con notas independientes",
       expect.objectContaining({ productId: "empanada", note: "Sin sal" }),
       expect.objectContaining({ productId: "empanada", note: "Sin cebolla" }),
     ]));
-    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    expect(submitted.every(line => line.quantity === 1)).toBe(true);
+    for (const width of [320, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    }
   } finally {
     await context.close(); server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

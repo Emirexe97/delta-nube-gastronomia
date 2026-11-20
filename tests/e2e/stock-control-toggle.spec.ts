@@ -7,7 +7,7 @@ import {
 } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 let app: ElectronApplication;
 let page: Page;
@@ -24,7 +24,15 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  // A failed form assertion may leave a dirty modal; teardown is not a user
+  // close action and must not wait on its confirmation in an isolated profile.
+  await app?.evaluate(({ BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) window.destroy();
+  });
   await app?.close();
+  if (dirname(resolve(userData)) !== resolve(tmpdir()) || !basename(userData).startsWith("gastronomy-stock-toggle-")) {
+    throw new Error("Unsafe stock test profile cleanup");
+  }
   await rm(userData, { recursive: true, force: true });
 });
 
@@ -41,7 +49,6 @@ test("crea producto con control de stock deshabilitado y verifica que queda Sin 
   await expect(productDialog).toBeVisible();
 
   await productDialog.getByLabel("Nombre").fill("Agua Mineral Sin Gas");
-  await productDialog.getByRole("tab", { name: "Precios", exact: true }).click();
   await productDialog.getByLabel("Precio Principal").fill("1500");
 
   // Desmarcar checkbox de stock
@@ -184,7 +191,6 @@ test("permite desactivar el control de stock desde la categoría y vacía el sto
   const prodDialog = page.getByRole("dialog", { name: "Nuevo producto" });
   await expect(prodDialog).toBeVisible();
   await prodDialog.getByLabel("Nombre").fill("Kombucha");
-  await prodDialog.getByRole("tab", { name: "Precios", exact: true }).click();
   await prodDialog.getByLabel("Precio Principal").fill("2000");
   await prodDialog.getByLabel("Stock actual").fill("15");
   await prodDialog.getByRole("button", { name: "Guardar producto" }).click();

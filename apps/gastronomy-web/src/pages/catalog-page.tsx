@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
@@ -36,10 +36,12 @@ import {
   cn,
 } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
+import { catalogOffsets, catalogWindow } from "./catalog-window";
 import { ComboConfigModal } from "../components/combo-config-modal";
 import { CombosTable } from "../components/combos-table";
 import { IngredientsPanel } from "../components/ingredients-panel";
 import { ProductCostEditor } from "../components/product-cost-editor";
+import { CatalogImportModal } from "../components/catalog-import-modal";
 import { PriceBooksPanel } from "../components/price-books-panel";
 import {
   hasInvalidCalculatedBookPrice,
@@ -67,6 +69,10 @@ function moneyInput(amountMinor: number) {
   const [pesos, cents] = moneyInputValue(amountMinor).split(",");
   const grouped = pesos!.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   return cents ? `${grouped},${cents.replace(/0$/, "")}` : grouped;
+}
+
+function productDraftSnapshot(values: unknown[]) {
+  return JSON.stringify(values);
 }
 
 export interface CatalogProductGroup {
@@ -147,26 +153,6 @@ function EditProductButton({ product, onEdit }: { product: ProductDto; onEdit(pr
 
 export function CatalogPage({ data }: { data: BootstrapDto }) {
   const [query, setQuery] = useState("");
-  // Prices and stock do not change when typing a search. Formatting every
-  // visible cell again would construct hundreds of locale formatters per key.
-  const productDisplay = useMemo(
-    () =>
-      new Map(
-        data.products.map((product) => [
-          product.id,
-          {
-            principal: formatMoney(
-                product.priceBook?.baseMinor ?? product.prices.find((price) => price.priceListCode === "SALON")?.amountMinor ?? 0,
-              ),
-            stock:
-              product.stockMinor == null
-                ? "Sin control"
-                : `${(product.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`,
-          },
-        ]),
-      ),
-    [data.products],
-  );
   const [searchParams, setSearchParams] = useSearchParams();
   const [categoryFilter, setCategoryFilter] = useState("");
   const [statusFilter, setStatusFilter] =
@@ -227,6 +213,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     if (costParam === "sin" || costParam === "con") setTab("PRODUCTS");
   }, [costParam]);
   const [productOpen, setProductOpen] = useState(false);
+  const [catalogImportOpen, setCatalogImportOpen] = useState(false);
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<CategoryDto | null>(
     null,
@@ -235,6 +222,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     null,
   );
   const [editingProduct, setEditingProduct] = useState<ProductDto | null>(null);
+  const [duplicateSource, setDuplicateSource] = useState<ProductDto | null>(null);
   const [deletingProduct, setDeletingProduct] = useState<ProductDto | null>(
     null,
   );
@@ -398,6 +386,88 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     return list;
   }, [productGroups, expansionOverrides]);
 
+  // Keep the DOM bounded for large catalogs while retaining a normal table for accessibility.
+  const catalogScrollRef = useRef<HTMLDivElement>(null);
+  const [catalogScrollTop, setCatalogScrollTop] = useState(0);
+  const [virtualViewportHeight, setVirtualViewportHeight] = useState(620);
+  const heights = useMemo(() => new Map<string, number>(), [data.products]);
+  const [measurement, setMeasurement] = useState(0);
+  const atBottom = useRef(false);
+  const virtualRows = useMemo(() => {
+    const rows: Array<{ product: ProductDto; group: CatalogProductGroup; isVariant: boolean }> = [];
+    for (const group of productGroups) {
+      rows.push({ product: group.parent, group, isVariant: false });
+      if (isGroupExpanded(group)) {
+        for (const variant of group.variants) rows.push({ product: variant, group, isVariant: true });
+      }
+    }
+    return rows;
+  }, [productGroups, expansionOverrides]);
+  // Only measured rows depart from the default estimate. Changing the height of one
+  // wrapped row must not rescale thousands of unseen rows (or move the scrollbar).
+  const offsets = useMemo(() => catalogOffsets(virtualRows, heights), [virtualRows, heights, measurement]);
+  const { start: virtualStart, end: virtualEnd, top: virtualTop, bottom: virtualBottom } =
+    catalogWindow(offsets, catalogScrollTop, virtualViewportHeight);
+  useLayoutEffect(() => {
+    const el = catalogScrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(entries => {
+      let changed = false;
+      for (const entry of entries) {
+        if (entry.target === el) {
+          setVirtualViewportHeight(Math.max(1, el.clientHeight));
+        } else {
+          const row = entry.target as HTMLTableRowElement;
+          const id = row.dataset.productId;
+          const height = row.getBoundingClientRect().height;
+          if (id && height > 0 && heights.get(id) !== height) {
+            heights.set(id, height);
+            changed = true;
+          }
+        }
+      }
+      if (changed) setMeasurement(n => n + 1);
+    });
+    observer.observe(el);
+    el.querySelectorAll("tr[data-virtual-row]").forEach(row => observer.observe(row));
+    return () => observer.disconnect();
+  }, [tab, heights, virtualRows, virtualStart, virtualEnd]);
+  useLayoutEffect(() => {
+    const el = catalogScrollRef.current;
+    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+  }, [offsets]);
+  const controls = "button:not(:disabled), input:not(:disabled), [tabindex='0']";
+  const pendingVirtualFocus = useRef<{id: string; backwards: boolean} | null>(null);
+  useLayoutEffect(() => {
+    const pending = pendingVirtualFocus.current;
+    if (!pending) return;
+    const row = catalogScrollRef.current?.querySelector<HTMLElement>(`[data-product-id="${CSS.escape(pending.id)}"]`);
+    const choices = row?.querySelectorAll<HTMLElement>(controls);
+    if (choices?.length) {
+      pendingVirtualFocus.current = null;
+      choices[pending.backwards ? choices.length - 1 : 0]?.focus();
+    }
+  }, [virtualStart, virtualEnd]);
+  const handleVirtualKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Tab" || !catalogScrollRef.current) return;
+    const row = (event.target as HTMLElement).closest<HTMLElement>("[data-virtual-row]");
+    if (!row) return;
+    const rowIndex = Number(row.getAttribute("aria-rowindex")) - 2;
+    const nextIndex = rowIndex + (event.shiftKey ? -1 : 1);
+    if (nextIndex < 0 || nextIndex >= virtualRows.length) return;
+    if (nextIndex >= virtualStart && nextIndex < virtualEnd) return;
+    const choices = row.querySelectorAll(controls);
+    if (event.target !== choices[event.shiftKey ? 0 : choices.length - 1]) return;
+    event.preventDefault();
+    pendingVirtualFocus.current = {id: virtualRows[nextIndex]!.product.id, backwards: event.shiftKey};
+    catalogScrollRef.current.scrollTop = Math.max(0, offsets[Math.max(0, nextIndex - 3)]!);
+    setCatalogScrollTop(catalogScrollRef.current.scrollTop);
+  };
+  useLayoutEffect(() => {
+    atBottom.current = false;
+    setCatalogScrollTop(0);
+    if (catalogScrollRef.current) catalogScrollRef.current.scrollTop = 0;
+  }, [query, categoryFilter, statusFilter, stockFilter, costFilterExtended]);
   const selectedProducts = useMemo(
     () => data.products.filter((product) => selectedProductIds.has(product.id)),
     [data.products, selectedProductIds],
@@ -405,6 +475,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const closeProduct = () => {
     setProductOpen(false);
     setEditingProduct(null);
+    setDuplicateSource(null);
     setNewProductCategoryId(null);
   };
   const openNewProduct = (categoryId?: string) => {
@@ -418,18 +489,19 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       (current) => new Set([...current].filter((id) => available.has(id))),
     );
   }, [data.products]);
-  const selectableVisibleIds = visibleProducts
-    .filter((product) => matchedIds.has(product.id))
-    .map((product) => product.id);
-  const allVisibleSelected =
-    selectableVisibleIds.length > 0 &&
-    selectableVisibleIds.every((id) => selectedProductIds.has(id));
-  const visibleProductIds = new Set(
-    visibleProducts.map((product) => product.id),
+  const selectableVisibleIds = useMemo(
+    () => visibleProducts.filter((product) => matchedIds.has(product.id)).map((product) => product.id),
+    [visibleProducts, matchedIds],
   );
-  const hiddenSelectedCount = selectedProducts.filter(
-    (product) => !visibleProductIds.has(product.id),
-  ).length;
+  const allVisibleSelected = useMemo(
+    () => selectableVisibleIds.length > 0 && selectableVisibleIds.every((id) => selectedProductIds.has(id)),
+    [selectableVisibleIds, selectedProductIds],
+  );
+  const visibleProductIds = useMemo(() => new Set(visibleProducts.map((product) => product.id)), [visibleProducts]);
+  const hiddenSelectedCount = useMemo(
+    () => selectedProducts.filter((product) => !visibleProductIds.has(product.id)).length,
+    [selectedProducts, visibleProductIds],
+  );
   const setCostFilter = (value: "all" | "with" | "without") => {
     setSearchParams(
       (current) => {
@@ -484,6 +556,9 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
               <Plus size={17} />{" "}
               {tab === "PRODUCTS" ? "Nuevo producto" : "Nuevo modificador"}
             </Button>
+          ) : null}
+          {tab === "PRODUCTS" && (data.currentUser.permissions.includes("*") || data.currentUser.permissions.includes("prices.bulk_update")) ? (
+            <Button variant="secondary" onClick={() => setCatalogImportOpen(true)}>Importar CSV</Button>
           ) : null}
         </div>
       </div>
@@ -808,10 +883,22 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
             </section>
           ) : null}
           {productGroups.length ? (
-            <div className="max-h-[calc(100vh-260px)] overflow-auto">
-              <table className="dn-table min-w-[800px]">
+            <div
+              ref={catalogScrollRef}
+              onKeyDown={handleVirtualKeyDown}
+              onScroll={(event) => {
+                const el = event.currentTarget;
+                atBottom.current = el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+                setCatalogScrollTop(Math.floor(el.scrollTop / 4) * 4);
+              }}
+              className="max-h-[calc(100vh-260px)] overflow-auto"
+            >
+              <table
+                className="dn-table min-w-[800px]"
+                aria-rowcount={virtualRows.length + 1}
+              >
                 <thead>
-                  <tr>
+                  <tr aria-rowindex={1}>
                     <th className="w-10">
                       <input
                         type="checkbox"
@@ -841,190 +928,220 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {productGroups.map((group) => {
-                    const { parent, variants } = group;
-                    const expanded = isGroupExpanded(group);
-                    const hasVariants = variants.length > 0;
-                    return (
-                      <Fragment key={parent.id}>
-                        <tr
-                          className={cn(
-                            hasVariants &&
-                              expanded &&
-                              "border-b-0 bg-slate-50/40",
-                          )}
-                        >
-                          <td>
-                            <input
-                              type="checkbox"
-                              aria-label={`Seleccionar ${parent.name}`}
-                              disabled={!matchedIds.has(parent.id)}
-                              title={
-                                !matchedIds.has(parent.id)
-                                  ? "Producto principal mostrado para agrupar las variantes"
-                                  : undefined
-                              }
-                              checked={selectedProductIds.has(parent.id)}
-                              onChange={(event) => {
-                                setSelectedProductIds((current) => {
-                                  const next = new Set(current);
-                                  if (event.target.checked) next.add(parent.id);
-                                  else next.delete(parent.id);
-                                  return next;
-                                });
-                              }}
-                              className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
-                            />
-                          </td>
-                          <td className="font-bold text-slate-900">
-                            <div className="flex items-center gap-2">
-                              {hasVariants ? (
+                  {virtualRows.length ? (
+                    <>
+                      {virtualTop > 0 ? (
+                        <tr aria-hidden="true">
+                          <td
+                            colSpan={9}
+                            style={{ height: virtualTop, border: 0, padding: 0 }}
+                          />
+                        </tr>
+                      ) : null}
+                      {virtualRows
+                        .slice(virtualStart, virtualEnd)
+                        .map((row, renderedIndex) => {
+                          const { product, group, isVariant } = row;
+                          const principal = formatMoney(
+                            product.priceBook?.baseMinor ??
+                              product.prices.find(
+                                (price) => price.priceListCode === "SALON",
+                              )?.amountMinor ??
+                              0,
+                          );
+                          const stock =
+                            product.stockMinor == null
+                              ? "Sin control"
+                              : `${(product.stockMinor / 1000).toLocaleString("es-AR", { maximumFractionDigits: 3 })} u.`;
+                          const expanded = isGroupExpanded(group);
+                          const hasVariants = group.variants.length > 0;
+                          return (
+                            <tr
+                              key={product.id}
+                              data-virtual-row
+                              data-product-id={product.id}
+                              aria-rowindex={virtualStart + renderedIndex + 2}
+                              className={cn(
+                                isVariant
+                                  ? "bg-slate-50/70 hover:bg-slate-100/80 transition-colors border-l-2 border-l-indigo-400"
+                                  : hasVariants &&
+                                      expanded &&
+                                      "border-b-0 bg-slate-50/40",
+                              )}
+                            >
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  aria-label={`Seleccionar ${product.name}`}
+                                  disabled={!isVariant && !matchedIds.has(product.id)}
+                                  title={
+                                    !isVariant && !matchedIds.has(product.id)
+                                      ? "Producto principal mostrado para agrupar las variantes"
+                                      : undefined
+                                  }
+                                  checked={selectedProductIds.has(product.id)}
+                                  onChange={(event) =>
+                                    setSelectedProductIds((current) => {
+                                      const next = new Set(current);
+                                      if (event.target.checked) next.add(product.id);
+                                      else next.delete(product.id);
+                                      return next;
+                                    })
+                                  }
+                                  className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
+                                />
+                              </td>
+                              <td
+                                className={
+                                  isVariant
+                                    ? "font-medium text-slate-800"
+                                    : "font-bold text-slate-900"
+                                }
+                              >
+                                <div
+                                  className={cn(
+                                    "flex items-center gap-2",
+                                    isVariant && "pl-3 sm:pl-5",
+                                  )}
+                                >
+                                  {isVariant ? (
+                                    <>
+                                      <span className="text-slate-400 font-mono text-xs select-none">
+                                        ↳
+                                      </span>
+                                      <span className="font-bold text-slate-800 text-xs">
+                                        {product.name}
+                                      </span>
+                                      <span className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-xs font-semibold text-amber-700">
+                                        Variante
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      {hasVariants ? (
+                                        <button
+                                          type="button"
+                                          aria-label={
+                                            expanded
+                                              ? `Ocultar variantes de ${product.name}`
+                                              : `Mostrar ${group.variants.length} variantes de ${product.name}`
+                                          }
+                                          title={
+                                            expanded
+                                              ? "Ocultar variantes"
+                                              : "Desplegar variantes"
+                                          }
+                                          aria-expanded={expanded}
+                                          onClick={() => toggleExpand(group)}
+                                          className="focus-ring flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 shadow-2xs transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+                                        >
+                                          <CaretDown
+                                            size={13}
+                                            className={cn(
+                                              "transition-transform duration-200",
+                                              !expanded && "-rotate-90",
+                                            )}
+                                          />
+                                        </button>
+                                      ) : (
+                                        <span
+                                          className="w-6 shrink-0"
+                                          aria-hidden="true"
+                                        />
+                                      )}
+                                      <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                        <span>{product.name}</span>
+                                        {hasVariants ? (
+                                          <button
+                                            type="button"
+                                            aria-expanded={expanded}
+                                            onClick={() => toggleExpand(group)}
+                                            title={
+                                              expanded
+                                                ? "Ocultar variantes"
+                                                : "Ver variantes"
+                                            }
+                                            className="inline-flex items-center gap-1 rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition cursor-pointer"
+                                          >
+                                            {group.variants.length} variante
+                                            {group.variants.length > 1 ? "s" : ""}
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                              <td
+                                className={
+                                  isVariant ? "text-xs text-slate-600" : undefined
+                                }
+                              >
+                                {product.categoryName}
+                              </td>
+                              <td
+                                className={cn(
+                                  "font-mono text-xs",
+                                  isVariant && "text-slate-600",
+                                )}
+                              >
+                                {product.code || "—"}
+                              </td>
+                              <td
+                                className={cn(
+                                  "text-right font-semibold tabular-nums",
+                                  isVariant && "text-xs text-slate-700",
+                                )}
+                              >
+                                {principal}
+                                {Object.keys(product.priceBook?.overrides ?? {}).length >
+                                0 ? (
+                                  <span
+                                    className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800"
+                                    title="Tiene precios propios fijos en listas derivadas"
+                                  >
+                                    Fijos
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td>
                                 <button
                                   type="button"
-                                  aria-label={
-                                    expanded
-                                      ? `Ocultar variantes de ${parent.name}`
-                                      : `Mostrar ${variants.length} variantes de ${parent.name}`
-                                  }
-                                  title={
-                                    expanded
-                                      ? "Ocultar variantes"
-                                      : "Desplegar variantes"
-                                  }
-                                  aria-expanded={expanded}
-                                  onClick={() => toggleExpand(group)}
-                                  className="focus-ring flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 shadow-2xs transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+                                  aria-label={`Stock actual de ${product.name}; seleccionar para ajustar`}
+                                  onClick={() => setStockProduct(product)}
+                                  className={cn(
+                                    "focus-ring whitespace-nowrap rounded font-bold tabular-nums text-brand-700 hover:underline",
+                                    isVariant && "text-xs",
+                                  )}
                                 >
-                                  <CaretDown
-                                    size={13}
-                                    className={cn(
-                                      "transition-transform duration-200",
-                                      !expanded && "-rotate-90",
-                                    )}
-                                  />
+                                  {stock}
                                 </button>
-                              ) : (
-                                <span
-                                  className="w-6 shrink-0"
-                                  aria-hidden="true"
+                              </td>
+                              <td>
+                                <Badge tone={product.active ? "green" : "slate"}>
+                                  {product.active ? "Activo" : "Inactivo"}
+                                </Badge>
+                              </td>
+                              <td>{webPublicationControl(product)}</td>
+                              <td className="text-right">
+                                <EditProductButton
+                                  product={product}
+                                  onEdit={setEditingProduct}
                                 />
-                              )}
-                              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                                <span>{parent.name}</span>
-                                {hasVariants ? (
-                                  <button
-                                    type="button"
-                                    aria-expanded={expanded}
-                                    onClick={() => toggleExpand(group)}
-                                    title={
-                                      expanded
-                                        ? "Ocultar variantes"
-                                        : "Ver variantes"
-                                    }
-                                    className="inline-flex items-center gap-1 rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition cursor-pointer"
-                                  >
-                                    {variants.length} variante
-                                    {variants.length > 1 ? "s" : ""}
-                                  </button>
-                                ) : null}
-                              </div>
-                            </div>
-                          </td>
-                          <td>{parent.categoryName}</td>
-                          <td className="font-mono text-xs">
-                            {parent.code || "—"}
-                          </td>
-                          <td className="text-right font-semibold tabular-nums">{productDisplay.get(parent.id)!.principal}{Object.keys(parent.priceBook?.overrides ?? {}).length > 0 ? <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800" title="Tiene precios propios fijos en listas derivadas">Fijos</span> : null}</td>
-                          <td>
-                            <button
-                              type="button"
-                              aria-label={`Stock actual de ${parent.name}; seleccionar para ajustar`}
-                              onClick={() => setStockProduct(parent)}
-                              className="focus-ring whitespace-nowrap rounded font-bold tabular-nums text-brand-700 hover:underline"
-                            >
-                              {productDisplay.get(parent.id)!.stock}
-                            </button>
-                          </td>
-                          <td>
-                            <Badge tone={parent.active ? "green" : "slate"}>
-                              {parent.active ? "Activo" : "Inactivo"}
-                            </Badge>
-                          </td>
-                          <td>{webPublicationControl(parent)}</td>
-                          <td className="text-right">
-                            <EditProductButton product={parent} onEdit={setEditingProduct} />
-                          </td>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      {virtualBottom > 0 ? (
+                        <tr aria-hidden="true">
+                          <td
+                            colSpan={9}
+                            style={{ height: virtualBottom, border: 0, padding: 0 }}
+                          />
                         </tr>
-                        {hasVariants && expanded
-                          ? variants.map((variant) => (
-                              <tr
-                                key={variant.id}
-                                className="bg-slate-50/70 hover:bg-slate-100/80 transition-colors border-l-2 border-l-indigo-400"
-                              >
-                                <td>
-                                  <input
-                                    type="checkbox"
-                                    aria-label={`Seleccionar ${variant.name}`}
-                                    checked={selectedProductIds.has(variant.id)}
-                                    onChange={(event) => {
-                                      setSelectedProductIds((current) => {
-                                        const next = new Set(current);
-                                        if (event.target.checked)
-                                          next.add(variant.id);
-                                        else next.delete(variant.id);
-                                        return next;
-                                      });
-                                    }}
-                                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-300"
-                                  />
-                                </td>
-                                <td className="font-medium text-slate-800">
-                                  <div className="flex items-center gap-2 pl-3 sm:pl-5">
-                                    <span className="text-slate-400 font-mono text-xs select-none">
-                                      ↳
-                                    </span>
-                                    <span className="font-bold text-slate-800 text-xs">
-                                      {variant.name}
-                                    </span>
-                                    <span className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-xs font-semibold text-amber-700">
-                                      Variante
-                                    </span>
-                                  </div>
-                                </td>
-                                <td className="text-xs text-slate-600">
-                                  {variant.categoryName}
-                                </td>
-                                <td className="font-mono text-xs text-slate-600">
-                                  {variant.code || "—"}
-                                </td>
-                                <td className="text-right text-xs font-semibold tabular-nums text-slate-700">{productDisplay.get(variant.id)!.principal}{Object.keys(variant.priceBook?.overrides ?? {}).length > 0 ? <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800" title="Tiene precios propios fijos en listas derivadas">Fijos</span> : null}</td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    aria-label={`Stock actual de ${variant.name}; seleccionar para ajustar`}
-                                    onClick={() => setStockProduct(variant)}
-                                    className="focus-ring whitespace-nowrap rounded text-xs font-bold tabular-nums text-brand-700 hover:underline"
-                                  >
-                                    {productDisplay.get(variant.id)!.stock}
-                                  </button>
-                                </td>
-                                <td>
-                                  <Badge
-                                    tone={variant.active ? "green" : "slate"}
-                                  >
-                                    {variant.active ? "Activo" : "Inactivo"}
-                                  </Badge>
-                                </td>
-                                <td>{webPublicationControl(variant)}</td>
-                                <td className="text-right">
-                                  <EditProductButton product={variant} onEdit={setEditingProduct} />
-                                </td>
-                              </tr>
-                            ))
-                          : null}
-                      </Fragment>
-                    );
-                  })}
+                      ) : null}
+                    </>
+                  ) : null}
                 </tbody>
               </table>
             </div>
@@ -1136,9 +1253,10 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
       ) : null}
 
       <ProductModal
-        key={editingProduct?.id ?? "new-product"}
+        key={editingProduct?.id ?? duplicateSource?.id ?? "new-product"}
         open={productOpen || Boolean(editingProduct)}
         product={editingProduct}
+        duplicateSource={duplicateSource}
         categories={data.categories}
         allProducts={data.products}
         priceBooks={priceBooks?.books ?? []}
@@ -1146,6 +1264,12 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
         priceBooksError={priceBooksError}
         initialCategoryId={newProductCategoryId}
         onClose={closeProduct}
+        onDuplicate={(source) => {
+          setEditingProduct(null);
+          setDuplicateSource(source);
+          setNewProductCategoryId(source.categoryId);
+          setProductOpen(true);
+        }}
         onManageCost={canManageCosts && editingProduct && !editingProduct.comboDefinition
           ? (product) => { closeProduct(); setCostProduct(product); }
           : undefined}
@@ -1165,6 +1289,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           setEditingProduct(parentProduct);
         }}
       />
+      <CatalogImportModal open={catalogImportOpen} onClose={() => setCatalogImportOpen(false)} categories={data.categories} products={data.products} />
       <CreateVariantModal
         baseProduct={variantBaseProduct}
         categories={data.categories}
@@ -1225,7 +1350,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           />
         )}
       </Modal>
-      <BulkProductsModal
+      {bulkOpen ? <BulkProductsModal
         priceBooks={priceBooks}
         open={bulkOpen}
         products={selectedProducts}
@@ -1242,7 +1367,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
           setBulkOpen(false);
           setSelectedProductIds(new Set());
         }}
-      />
+      /> : null}
     </div>
   );
 }
@@ -1458,6 +1583,11 @@ function BulkProductsModal({
   const [categoryId, setCategoryId] = useState("");
   const [active, setActive] = useState<"" | "ACTIVE" | "INACTIVE">("");
   const [adjustPrices, setAdjustPrices] = useState(false);
+  // Preview one block; validation and writes always use the entire selection.
+  const [previewPage, setPreviewPage] = useState(0);
+  const pageSize = 50;
+  const pageCount = Math.max(1, Math.ceil(products.length / pageSize));
+  const effectivePage = Math.min(previewPage, pageCount - 1);
   const [mode, setMode] = useState<"PERCENTAGE" | "FIXED">("PERCENTAGE");
   const [value, setValue] = useState("");
   const [lists, setLists] = useState<Set<string>>(new Set());
@@ -1478,7 +1608,7 @@ function BulkProductsModal({
     setPin("");
     setError(null);
   }, [open, baseId]);
-  const productIds = products.map((product) => product.id);
+  const productIds = useMemo(() => products.map((product) => product.id), [products]);
   const parsedValue = (() => {
     const raw = value.trim();
     if (mode === "PERCENTAGE")
@@ -1486,17 +1616,21 @@ function BulkProductsModal({
     const cents = parsePriceInput(raw.replace(/^[+-]/, ""));
     return cents === null ? null : raw.startsWith("-") ? -cents : cents;
   })();
-  const nextBooks = new Map<string, NonNullable<ProductDto["priceBook"]>>();
-  let adjustmentError = "";
-  if (open && adjustPrices) {
-    try {
-      if (parsedValue == null) throw new Error("Ingresá una variación válida.");
-      for (const product of products) {
-        if (!product.priceBook) throw new Error("No se pudieron cargar todos los precios.");
-        nextBooks.set(product.id, applyBookAdjustment(product.priceBook, books, [...lists], mode, parsedValue));
-      }
-    } catch (err) { adjustmentError = humanError(err); }
-  }
+  const {nextBooks, adjustmentError} = useMemo(() => {
+    const nextBooks = new Map<string, NonNullable<ProductDto["priceBook"]>>();
+    let adjustmentError = "";
+    if (open && adjustPrices) {
+      try {
+        if (parsedValue == null) throw new Error("Ingresá una variación válida.");
+        const selectedLists = [...lists];
+        for (const product of products) {
+          if (!product.priceBook) throw new Error("No se pudieron cargar todos los precios.");
+          nextBooks.set(product.id, applyBookAdjustment(product.priceBook, books, selectedLists, mode, parsedValue));
+        }
+      } catch (err) { adjustmentError = humanError(err); }
+    }
+    return { nextBooks, adjustmentError };
+  }, [open, adjustPrices, products, books, lists, mode, parsedValue]);
   const invalidPriceAdjustment = adjustPrices && (!books.length || !!adjustmentError);
   const hasChange = Boolean(categoryId || active || adjustPrices);
   const mutation = useApiMutation(
@@ -1659,6 +1793,11 @@ function BulkProductsModal({
               </p>
             </div>
             <Badge tone="orange">{products.length} seleccionados</Badge>
+            {pageCount > 1 && <nav aria-label="Páginas de la vista previa" className="flex items-center gap-2 text-xs">
+              <Button variant="secondary" type="button" disabled={!effectivePage} onClick={() => setPreviewPage(effectivePage - 1)}>Anterior</Button>
+              <span aria-live="polite">{effectivePage + 1} de {pageCount}</span>
+              <Button variant="secondary" type="button" disabled={effectivePage + 1 >= pageCount} onClick={() => setPreviewPage(effectivePage + 1)}>Siguiente</Button>
+            </nav>}
           </div>
           {products.length ? (
             <div className="max-h-64 overflow-auto">
@@ -1673,7 +1812,7 @@ function BulkProductsModal({
                   </tr>
                 </thead>
                 <tbody>
-                  {products.map((product) => {
+                  {products.slice(effectivePage * pageSize, (effectivePage + 1) * pageSize).map((product) => {
                     const nextCategory = categoryId
                       ? (categories.find(
                           (category) => category.id === categoryId,
@@ -2148,13 +2287,84 @@ const productSections = [
 ] as const;
 type ProductTab = (typeof productSections)[number][0];
 
-function ProductModal({
+// Hydrate only the open record. Do not initialize an editable/duplicable form
+// with a placeholder photo or overwrite a newer form with an old IPC result.
+function ProductModal(props: Parameters<typeof ProductFormModal>[0]) {
+  const source = props.product ?? props.duplicateSource;
+  const id =
+    props.open && source?.hasImage && !source.imageDataUrl ? source.id : null;
+  const [photo, setPhoto] = useState<{ id: string; url: string | null } | null>(
+    null,
+  );
+  const [failure, setFailure] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    window.gastronomy
+      .getProductImage({ productId: id })
+      .then((url) => {
+        if (live) setPhoto({ id, url });
+      })
+      .catch((error) => {
+        if (live) setFailure({ id, message: humanError(error) });
+      });
+    return () => {
+      live = false;
+    };
+  }, [id, attempt]);
+  const hydrated = useMemo(
+    () =>
+      id && photo?.id === id && source
+        ? { ...source, hasImage: Boolean(photo.url), imageDataUrl: photo.url }
+        : source,
+    [id, photo, source],
+  );
+  if (id && photo?.id !== id)
+    return (
+      <Modal
+        open
+        onClose={props.onClose}
+        title={`Abrir ficha · ${source?.name ?? ""}`}
+      >
+        {failure?.id === id ? (
+          <div role="alert">
+            <p>No se pudo cargar la foto. {failure.message}</p>
+            <Button
+              onClick={() => {
+                setFailure(null);
+                setAttempt((a) => a + 1);
+              }}
+            >
+              Reintentar
+            </Button>
+          </div>
+        ) : (
+          <p role="status">Cargando la ficha…</p>
+        )}
+      </Modal>
+    );
+  return (
+    <ProductFormModal
+      {...props}
+      product={props.product ? hydrated : null}
+      duplicateSource={props.duplicateSource ? hydrated : null}
+    />
+  );
+}
+
+function ProductFormModal({
   open,
   product,
+  duplicateSource,
   categories,
   allProducts,
   initialCategoryId,
   onClose,
+  onDuplicate,
   onRequestVariant,
   onEditVariant,
   onAdjustStock,
@@ -2167,6 +2377,7 @@ function ProductModal({
 }: {
   open: boolean;
   product: ProductDto | null;
+  duplicateSource: ProductDto | null;
   priceBooks: PriceBookDto[];
   priceBooksLoaded: boolean;
   priceBooksError: string | null;
@@ -2174,6 +2385,7 @@ function ProductModal({
   allProducts?: ProductDto[];
   initialCategoryId: string | null;
   onClose(): void;
+  onDuplicate?(product: ProductDto): void;
   onRequestVariant?: (product: ProductDto) => void;
   onEditVariant?: (variant: ProductDto) => void;
   onAdjustStock?: (product: ProductDto) => void;
@@ -2213,7 +2425,13 @@ function ProductModal({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ProductTab>("general");
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const initializedFormKeyRef = useRef("");
+  const cleanDraftRef = useRef("");
+  const submitLockRef = useRef(false);
+  const [showDuplicateNotice, setShowDuplicateNotice] = useState(false);
 
   // Populate an opened record before its focused fields and dirty guard become interactive.
   useLayoutEffect(() => {
@@ -2223,10 +2441,11 @@ function ProductModal({
     }
     const formKey = product
       ? `edit:${product.id}`
-      : `new:${initialCategoryId ?? "default"}`;
+      : duplicateSource ? `duplicate:${duplicateSource.id}` : `new:${initialCategoryId ?? "default"}`;
     if (initializedFormKeyRef.current === formKey) return;
     initializedFormKeyRef.current = formKey;
     const initialCatId =
+      duplicateSource?.categoryId ??
       product?.categoryId ??
       initialCategoryId ??
       categories.find((item) => item.active)?.id ??
@@ -2235,39 +2454,40 @@ function ProductModal({
     const selectedCategory = categories.find(
       (item) => item.id === initialCatId,
     );
-    const initialTrackStock = product
+    const initialTrackStock = duplicateSource
+      ? duplicateSource.stockMinor != null
+      : product
       ? product.stockMinor != null
       : (selectedCategory?.stockControlEnabled ?? true);
+    const initialName = duplicateSource ? `${duplicateSource.name} (copia)` : product?.name ?? "";
+    const initialCode = duplicateSource ? "" : product?.code ?? "";
+    const initialStock = duplicateSource ? (duplicateSource.stockMinor == null ? "" : "0") : product?.stockMinor == null ? "" : String(product.stockMinor / 1000);
+    const stockSource = duplicateSource ?? product;
+    const initialTarget = stockSource?.stockTargetMinor == null ? "" : String(stockSource.stockTargetMinor / 1000);
+    const initialMin = stockSource?.stockMinMinor == null ? "" : String(stockSource.stockMinMinor / 1000);
+    const initialCritical = stockSource?.stockCriticalMinor == null ? "" : String(stockSource.stockCriticalMinor / 1000);
+    const initialImage = stockSource?.imageDataUrl ?? null;
+    const priceSource = duplicateSource ?? product;
+    const initialPrice = priceSource ? moneyInput(priceSource.priceBook?.baseMinor ?? priceSource.prices.find((p) => p.priceListCode === "SALON")?.amountMinor ?? 0) : "";
+    const initialOverrides = Object.fromEntries(Object.entries(priceSource?.priceBook?.overrides ?? {}).map(([id, amount]) => [id, moneyInput(amount)]));
     setTrackStock(initialTrackStock);
-    setName(product?.name ?? "");
-    setCode(product?.code ?? "");
-    setStock(
-      product?.stockMinor == null ? "" : String(product.stockMinor / 1000),
-    );
-    setActive(product?.active ?? true);
-    setStockTarget(
-      product?.stockTargetMinor == null
-        ? ""
-        : String(product.stockTargetMinor / 1000),
-    );
-    setStockMin(
-      product?.stockMinMinor == null
-        ? ""
-        : String(product.stockMinMinor / 1000),
-    );
-    setStockCritical(
-      product?.stockCriticalMinor == null
-        ? ""
-        : String(product.stockCriticalMinor / 1000),
-    );
-    setImageDataUrl(product?.imageDataUrl ?? null);
+    setName(initialName);
+    setCode(initialCode);
+    setStock(initialStock);
+    setActive(duplicateSource ? true : product?.active ?? true);
+    setStockTarget(initialTarget);
+    setStockMin(initialMin);
+    setStockCritical(initialCritical);
+    setImageDataUrl(initialImage);
     setImageProcessing(false);
-    setBasePrice(product ? moneyInput(product.priceBook?.baseMinor ?? product.prices.find((p) => p.priceListCode === "SALON")?.amountMinor ?? 0) : "");
-    setBookOverrides(Object.fromEntries(Object.entries(product?.priceBook?.overrides ?? {}).map(([id, amount]) => [id, moneyInput(amount)])));
+    setBasePrice(initialPrice);
+    setBookOverrides(initialOverrides);
     setReason("");
     setPin("");
     setError(null);
-  }, [categories, initialCategoryId, open, product]);
+    cleanDraftRef.current = productDraftSnapshot([initialCatId, initialName, initialCode, initialTrackStock, initialStock, initialTarget, initialMin, initialCritical, initialImage, duplicateSource ? true : product?.active ?? true, initialPrice, initialOverrides]);
+    setShowDuplicateNotice(Boolean(duplicateSource));
+  }, [categories, initialCategoryId, open, product, duplicateSource]);
 
   const handleCategoryChange = (newCategoryId: string) => {
     setCategoryId(newCategoryId);
@@ -2340,6 +2560,7 @@ function ProductModal({
   }, [open, product, activeTab]);
 
   const hasDraftChanges = Boolean(
+    (!product && cleanDraftRef.current && cleanDraftRef.current !== productDraftSnapshot([categoryId,name,code,trackStock,stock,stockTarget,stockMin,stockCritical,imageDataUrl,active,basePrice,bookOverrides])) ||
     product &&
     (categoryId !== product.categoryId ||
       name !== product.name ||
@@ -2365,7 +2586,7 @@ function ProductModal({
           : String(product.stockCriticalMinor / 1000))),
   );
   const runExternalAction = (action: () => void) => {
-    if (imageProcessing || mutation.isPending) return;
+    if (imageProcessing || mutation.isPending || submitLockRef.current) return;
     if (
       hasDraftChanges &&
       !window.confirm(
@@ -2418,50 +2639,25 @@ function ProductModal({
         parsedCritical > parsedTarget));
 
   const mutation = useApiMutation(
-    async (_unused: void) => {
-      const baseMinor = parsePriceInput(basePrice);
-      if (baseMinor == null) throw new Error("Completá un precio Principal válido.");
-      const overrides = Object.fromEntries(Object.entries(bookOverrides).flatMap(([id, value]) => {
-        const amount = parsePriceInput(value);
-        return value.trim() && amount != null ? [[id, amount]] : [];
-      }));
-      const normalizedPrices: Array<{ priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY"; amountMinor: number }> = [];
-      if (product) {
-        return window.gastronomy.updateProduct({
-          productId: product.id,
-          categoryId,
-          name,
-          code: code || null,
-          parentProductId: product.parentProductId ?? null,
-          active,
-          stockMinor: parsedStockMinor,
-          stockTargetMinor: parsedTarget,
-          stockMinMinor: parsedMin,
-          stockCriticalMinor: parsedCritical,
-          imageDataUrl,
-          prices: normalizedPrices,
-          priceBook: { baseMinor, overrides },
-          reason,
-          authorizerPin: pin,
-        });
-      }
-      return window.gastronomy.createProduct({
-        categoryId,
-        name,
-        code: code || null,
-        stockMinor: parsedStockMinor,
-        stockTargetMinor: parsedTarget,
-        stockMinMinor: parsedMin,
-        stockCriticalMinor: parsedCritical,
-        imageDataUrl,
-        prices: normalizedPrices,
-        priceBook: { baseMinor, overrides },
-      });
-    },
-    { onSuccess: onClose, onError: (value) => setError(humanError(value)) },
+    async (variables: { intent: "close" | "another"; isEditing: boolean; categoryId: string; run: () => Promise<unknown> }) => variables.run(),
+    { onSuccess: (_result, variables) => {
+      if (variables.intent === "another" && !variables.isEditing) {
+        const stockEnabled = categories.find((item) => item.id === variables.categoryId)?.stockControlEnabled ?? true;
+        const empty = productDraftSnapshot([variables.categoryId, "", "", stockEnabled, "", "", "", "", null, true, "", {}]);
+        setTrackStock(stockEnabled); setName(""); setCode(""); setStock("");
+        setStockTarget(""); setStockMin(""); setStockCritical(""); setImageDataUrl(null);
+        setActive(true); setBasePrice(""); setBookOverrides({}); setError(null); setReason(""); setPin("");
+        cleanDraftRef.current = empty; setShowDuplicateNotice(false);
+        requestAnimationFrame(() => nameInputRef.current?.focus());
+      } else onCloseRef.current();
+    }, onError: (value) => setError(humanError(value)), onSettled: () => { submitLockRef.current = false; } },
   );
 
-  const submit = () => {
+  const submit = (intent: "close" | "another") => {
+    if (submitLockRef.current || mutation.isPending || imageProcessing) return;
+    if (!name.trim()) { setError("Completá el nombre del producto."); return; }
+    if (!categoryId) { setError("Seleccioná una categoría."); return; }
+    if (!priceBooksLoaded) { setError("Esperá a que se carguen las listas de precios."); return; }
     if (parsePriceInput(basePrice) == null || hasInvalidCalculatedBookPrice(basePrice, priceBooks, bookOverrides) || priceBooks.some((book) => !book.isBase && bookOverrides[book.id] !== undefined && parsePriceInput(bookOverrides[book.id] ?? "") == null)) {
       setError("Completá precios válidos.");
       return;
@@ -2476,8 +2672,27 @@ function ProductModal({
       setError("Indicá el motivo del cambio.");
       return;
     }
+    submitLockRef.current = true;
     const baseMinor = parsePriceInput(basePrice)!;
-    mutation.mutate(undefined);
+    const overrides = Object.fromEntries(Object.entries(bookOverrides).flatMap(([id, value]) => {
+      const amount = parsePriceInput(value);
+      return value.trim() && amount != null ? [[id, amount]] : [];
+    }));
+    const normalizedPrices: Array<{ priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY"; amountMinor: number }> = [];
+    const isEditing = Boolean(product);
+    const run = () => product ? window.gastronomy.updateProduct({
+      productId: product.id, categoryId, name, code: code || null,
+      parentProductId: product.parentProductId ?? null, active,
+      stockMinor: parsedStockMinor, stockTargetMinor: parsedTarget, stockMinMinor: parsedMin,
+      stockCriticalMinor: parsedCritical, ...(imageDataUrl !== product.imageDataUrl ? { imageDataUrl } : {}), prices: normalizedPrices,
+      priceBook: { baseMinor, overrides }, reason, authorizerPin: pin,
+    }) : window.gastronomy.createProduct({
+      categoryId, name, code: code || null, stockMinor: parsedStockMinor,
+      stockTargetMinor: parsedTarget, stockMinMinor: parsedMin,
+      stockCriticalMinor: parsedCritical, imageDataUrl, prices: normalizedPrices,
+      priceBook: { baseMinor, overrides },
+    });
+    mutation.mutate({ intent, isEditing, categoryId, run });
   };
 
   return (
@@ -2497,10 +2712,11 @@ function ProductModal({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          submit();
+          submit("close");
         }}
         className="grid gap-4"
       >
+        <fieldset className="contents" disabled={mutation.isPending}>
         {editing ? (
           <div
             role="tablist"
@@ -2583,6 +2799,7 @@ function ProductModal({
             ) : null}
           </div>
         ) : null}
+        {showDuplicateNotice ? <div role="note" className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">Plantilla para revisar: se copian categoría, precios, imagen y niveles de stock. La existencia queda en cero (o sin control); no se copian código, identificadores, combos, recetas, costos ni historial. No se guardará hasta que confirmes.</div> : null}
         <div
           {...panelProps("general")}
           className="grid gap-4 [&[hidden]]:hidden"
@@ -2605,6 +2822,8 @@ function ProductModal({
           <div className="grid gap-3 sm:grid-cols-[1fr_150px]">
             <Field label="Nombre">
               <Input
+                aria-label="Nombre"
+                ref={nameInputRef}
                 autoFocus
                 value={name}
                 onChange={(event) => setName(event.target.value)}
@@ -3030,6 +3249,7 @@ function ProductModal({
               {isVariant ? "Eliminar variante" : "Eliminar producto"}
             </button>
           ) : null}
+          {editing && activeTab === "general" && product && !isVariant && !product.comboDefinition && variants.length === 0 && onDuplicate ? <Button type="button" variant="secondary" disabled={mutation.isPending || imageProcessing} onClick={() => runExternalAction(() => onDuplicate(product))}>Duplicar producto</Button> : null}
           <div className="ml-auto flex justify-end gap-2">
             <Button
               type="button"
@@ -3039,6 +3259,7 @@ function ProductModal({
             >
               Cancelar
             </Button>
+            {!editing ? <Button type="button" variant="secondary" disabled={!name.trim() || !categoryId || invalidPrices || !priceBooksLoaded || invalidInventory || imageProcessing || mutation.isPending} onClick={() => submit("another")}>Guardar y crear otro</Button> : null}
             <Button
               type="submit"
               disabled={
@@ -3061,6 +3282,7 @@ function ProductModal({
             </Button>
           </div>
         </div>
+        </fieldset>
       </form>
     </Modal>
   );

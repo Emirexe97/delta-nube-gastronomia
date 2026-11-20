@@ -174,21 +174,34 @@ for (const width of [1280, 1100, 1366]) {
       ]).toEqual(expected);
       await page.reload();
       const dashboardCard = page
-        .getByText("Pagos registrados", { exact: true })
-        .locator("../..");
+        .locator('section[aria-label="Estado de la operación"] > *')
+        .filter({
+          has: page.getByText("Pagos registrados", { exact: true }),
+        });
+      await expect(dashboardCard).toHaveCount(1);
       await expect(dashboardCard).toBeVisible();
       await expect(dashboardCard).toContainText(formatMoney(expected[0]!));
       await expect(dashboardCard).toContainText("día comercial");
       await expect(dashboardCard).toContainText(
         `${snapshot.dashboard.orderCount} pedido${snapshot.dashboard.orderCount === 1 ? "" : "s"} con pago`,
       );
-      await expect(dashboardCard).toContainText(
-        "Incluye pagos parciales y cuenta corriente",
+      const salesHelp = dashboardCard.getByRole("button", {
+        name: "Pagos registrados",
+        exact: true,
+      });
+      await salesHelp.click();
+      const salesTooltip = page.getByRole("tooltip").filter({
+        hasText: /^Incluye pagos parciales y ventas a cuenta corriente\.$/,
+      });
+      await expect(salesTooltip).toHaveCount(1);
+      await expect(salesTooltip).toHaveText(
+        "Incluye pagos parciales y ventas a cuenta corriente.",
       );
+      await salesHelp.press("Escape");
+      await expect(salesTooltip).toHaveCount(0);
       await expect(
         page.getByRole("heading", {
-          name: "Pedidos con pagos registrados",
-          exact: true,
+          name: /^Pedidos con pagos registrados/,
         }),
       ).toBeVisible();
       if (expected[0])

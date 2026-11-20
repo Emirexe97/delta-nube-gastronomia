@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3-multiple-ciphers";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
+import { businessDateFromOpening } from "@gastronomy/domain";
 import { migrations } from "./migrations";
 import { latestSchemaVersion, removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
 
@@ -124,7 +125,7 @@ test("quantity correction retains persisted rounding on untouched lines and repo
   const { purchase, input } = setup(repo);
   db.prepare("UPDATE purchase_items SET line_total_minor=23456 WHERE id=?").run(purchase.items[1]!.id);
   db.prepare("UPDATE purchases SET total_minor=? WHERE id=?").run(15002 + 23456, purchase.id);
-  const day = purchase.createdAt.slice(0, 10);
+  const day = businessDateFromOpening(purchase.createdAt);
   const before = repo.getFinanceReport({ from: day, to: day });
   correctQuantity(repo, input);
   const after = repo.getFinanceReport({ from: day, to: day });

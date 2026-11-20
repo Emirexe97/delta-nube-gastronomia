@@ -160,12 +160,22 @@ button {
   }
 }
 
-@media (max-width: 440px) {
+/* Match the editor's two-column breakpoint. In a stacked layout (including
+   desktop zoom), a fixed overall height can collapse a nested scrollport. */
+@media (max-width: 899px) {
   .order-editor-layout {
     height: auto;
     min-width: 0;
   }
+  .order-editor-products,
+  .order-editor-items {
+    flex: none;
+    min-height: 160px;
+    max-height: 320px;
+  }
+}
 
+@media (max-width: 440px) {
   .order-action-grid {
     grid-template-columns: minmax(0, 1fr);
   }

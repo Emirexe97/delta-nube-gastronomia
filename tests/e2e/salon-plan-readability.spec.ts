@@ -13,7 +13,7 @@ import { formatMoney } from "../../packages/domain/src/money";
 
 const evidence = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-salon-plan-fix-2026-10-07",
+  "docs/qa/evidence/release-readiness-20261115/salon-plan-readability-rerun",
 );
 let app: ElectronApplication;
 let page: Page;
@@ -193,6 +193,25 @@ async function evidenceReadability(
   }
 }
 
+async function expectFullyInViewport(locator: Locator) {
+  // Chromium can report a ~2.4e-7 viewport-ratio deficit for fully visible
+  // elements due to subpixel rounding. Keep the ratio effectively 1 and also
+  // verify the actual rectangle is within 0.01 CSS px of viewport bounds.
+  await expect(locator).toBeInViewport({ ratio: 0.999999 });
+  const bounds = await locator.boundingBox();
+  expect(bounds).not.toBeNull();
+  const viewport = await page.evaluate(() => ({
+    width: document.documentElement.clientWidth,
+    height: document.documentElement.clientHeight,
+  }));
+  if (!bounds) return;
+  const tolerance = 0.01;
+  expect(bounds.x).toBeGreaterThanOrEqual(-tolerance);
+  expect(bounds.y).toBeGreaterThanOrEqual(-tolerance);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width + tolerance);
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height + tolerance);
+}
+
 async function baseline() {
   return page.evaluate(async () => {
     const s = await window.gastronomy.bootstrap();
@@ -263,7 +282,7 @@ test("Salón clásico y carga rápida: estados de mesa y ayudas siguen legibles 
   await expect(table).toBeVisible();
   const readings = [
     await metrics(
-      page.getByText("Abrí una mesa y asigná quién la atiende", {
+      page.getByText("Listado rápido de todas las mesas", {
         exact: true,
       }),
       "salon subtitle",
@@ -349,11 +368,12 @@ test("Plano por sectores: mesa libre/ocupada y controles alcanzables a 1100/1366
       name: new RegExp(`Abrir pedido de mesa ${fixture.table.number}\\b`),
     });
     await expect(occupied).toBeVisible();
-    items.push(
-      await metrics(
-        occupied.getByText(fixture.table.name!, { exact: true }),
-        `occupied plan alias at ${width}px`,
-      ),
+    // Compact floor-plan cards intentionally show only the table number;
+    // the full persisted alias remains available in the button title. The
+    // classic-card alias above is the visible long-text readability sample.
+    await expect(occupied).toHaveAttribute(
+      "title",
+      expect.stringContaining(fixture.table.name!),
     );
     items.push(
       await metrics(
@@ -421,9 +441,11 @@ test("Plano por sectores: mesa libre/ocupada y controles alcanzables a 1100/1366
       join(evidence, `salon-plan-amount-layout-${width}.json`),
       JSON.stringify(layout, null, 2),
     );
+    // Normalize subpixel scroll positioning before requiring exact full visibility.
+    await occupied.scrollIntoViewIfNeeded();
     const bounds = await occupied.boundingBox();
     expect(bounds).not.toBeNull();
-    if (bounds) await expect(occupied).toBeInViewport({ ratio: 1 });
+    if (bounds) await expectFullyInViewport(occupied);
     await page.evaluate(() => window.scrollTo(0, 0));
     await nativeCapture(`salon-plan-${width}.png`);
     await app.evaluate(({ BrowserWindow }) =>
@@ -431,8 +453,8 @@ test("Plano por sectores: mesa libre/ocupada y controles alcanzables a 1100/1366
     );
     await settle();
     await occupied.scrollIntoViewIfNeeded();
-    await expect(occupied).toBeInViewport({ ratio: 1 });
-    await expect(amount).toBeInViewport({ ratio: 1 });
+    await expectFullyInViewport(occupied);
+    await expectFullyInViewport(amount);
     const zoomAmount = await amount.evaluate((el) => {
       const r = el.getBoundingClientRect(),
         b = el.closest("button")!.getBoundingClientRect();

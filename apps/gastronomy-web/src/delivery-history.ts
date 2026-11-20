@@ -6,6 +6,22 @@ import type {
 
 export type DeliveryHistoryScope = "CURRENT_SHIFT" | "DATE" | "ALL";
 
+/** Fixed-height window bounds for large ledger tables; includes a small overscan. */
+export function visibleDeliveryRange(
+  itemCount: number,
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight = 56,
+  overscan = 5,
+) {
+  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+  const end = Math.min(
+    itemCount,
+    Math.ceil((scrollTop + viewportHeight) / rowHeight) + overscan,
+  );
+  return { start, end, top: start * rowHeight, bottom: (itemCount - end) * rowHeight };
+}
+
 export function localDateKey(value: string | Date) {
   const date = value instanceof Date ? value : new Date(value);
   const year = date.getFullYear();

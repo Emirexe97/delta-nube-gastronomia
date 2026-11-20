@@ -38,6 +38,19 @@ const bootstrap = {
 } as unknown as BootstrapDto;
 
 describe("settings section navigation", () => {
+  it("makes the usage tutorial available from its own settings section", () => {
+    const markup = renderToStaticMarkup(
+      <StaticRouter location="/configuracion#settings-tutorial">
+        <QueryClientProvider client={new QueryClient()}>
+          <SettingsPage data={bootstrap} />
+        </QueryClientProvider>
+      </StaticRouter>,
+    );
+    expect(markup).toContain('id="panel-settings-tutorial"');
+    expect(markup).toContain("Tutorial de uso");
+    expect(markup).toContain("Iniciar tutorial");
+    expect(markup).toContain("no modifican tus datos");
+  });
   it("exposes accessible tabs and keeps unopened panels lazy", () => {
     const client = new QueryClient();
     const markup = renderToStaticMarkup(

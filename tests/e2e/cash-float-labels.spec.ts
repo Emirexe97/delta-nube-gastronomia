@@ -105,8 +105,11 @@ for (const width of [1280, 1100, 1366]) {
       await page.reload();
       await page.getByRole("link", { name: "Resumen", exact: true }).click();
       const summary = page
-        .getByText("Efectivo esperado", { exact: true })
-        .locator("..");
+        .locator('section[aria-label="Estado de la operación"] > *')
+        .filter({
+          has: page.getByText("Efectivo esperado", { exact: true }),
+        });
+      await expect(summary).toHaveCount(1);
       await expect(summary).toContainText(formatMoney(gross));
       await expect(summary).toContainText("Incluye el cambio inicial");
       await summary.screenshot({
@@ -183,8 +186,9 @@ async function openTicketInspector(html: string): Promise<Page> {
 test("sin caja abierta no muestra aclaración de fondo ni inventa importes", async () => {
   await page.getByRole("link", { name: "Resumen", exact: true }).click();
   const summary = page
-    .getByText("Efectivo esperado", { exact: true })
-    .locator("..");
+    .locator('section[aria-label="Estado de la operación"] > *')
+    .filter({ has: page.getByText("Efectivo esperado", { exact: true }) });
+  await expect(summary).toHaveCount(1);
   await expect(summary).toContainText("—");
   await expect(summary).not.toContainText("Incluye el cambio inicial");
 });

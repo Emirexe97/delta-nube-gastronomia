@@ -79,7 +79,11 @@ export function createOrderPrintCoordinator(
   return {
     store,
     dismiss,
-    run(input: OrderPrintRequest, afterConfirmation?: () => void) {
+    run(
+      input: OrderPrintRequest,
+      afterConfirmation?: () => void | Promise<void>,
+      afterAttempt?: () => Promise<void>,
+    ) {
       const existing = active.get(input.orderId);
       if (existing) return existing;
       setJob({
@@ -89,20 +93,36 @@ export function createOrderPrintCoordinator(
       // Defer execution until the single-flight guard is registered, even for synchronous errors.
       const result = Promise.resolve()
         .then(async () => {
-          if (input.confirmFirst) {
-            await api.confirmOrder({ orderId: input.orderId });
-            afterConfirmation?.();
-            setJob({ ...input, status: "PRINTING" });
+          let confirmationRead: Promise<void> | undefined;
+          try {
+            if (input.confirmFirst) {
+              await api.confirmOrder({ orderId: input.orderId });
+              // Start the view refresh without holding up the printer.
+              if (afterConfirmation)
+                confirmationRead = Promise.resolve()
+                  .then(afterConfirmation)
+                  .catch(() => {});
+              setJob({ ...input, status: "PRINTING" });
+            }
+            return input.retryJobId
+              ? await api.retryPrint({ jobId: input.retryJobId })
+              : await api.printOrder({
+                  orderId: input.orderId,
+                  kind: input.kind,
+                  ...(input.kitchenScope
+                    ? { kitchenScope: input.kitchenScope }
+                    : {}),
+                });
+          } finally {
+            if (afterAttempt) {
+              // Do not unlock F7 until the durable job (including FAILED) is
+              // visible. Cache errors must never convert success into a retry.
+              await confirmationRead;
+              await afterAttempt().catch(() => {});
+            }
           }
-          const result = input.retryJobId
-            ? await api.retryPrint({ jobId: input.retryJobId })
-            : await api.printOrder({
-                orderId: input.orderId,
-                kind: input.kind,
-                ...(input.kitchenScope
-                  ? { kitchenScope: input.kitchenScope }
-                  : {}),
-              });
+        })
+        .then((result) => {
           setJob({
             ...input,
             resultJobId: result.jobId,

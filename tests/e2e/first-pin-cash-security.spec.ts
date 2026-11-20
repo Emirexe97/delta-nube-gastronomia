@@ -16,6 +16,7 @@ test("first-run PIN gates the POS and cash audit identifies the actual authorize
     await page.getByLabel("PIN nuevo", {exact:true}).fill("748259");
     await page.getByLabel("Repetí el PIN nuevo").fill("748259");
     await page.getByRole("button", {name:"Guardar PIN y continuar"}).click();
+    await page.getByRole("button", {name:"Omitir por ahora"}).click();
     await expect(page.getByRole("link", {name:"Caja",exact:true})).toBeVisible();
     await app.close();
     app = await launch(); page = await app.firstWindow();

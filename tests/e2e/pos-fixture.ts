@@ -19,8 +19,10 @@ export async function launchConfiguredPos(options: Parameters<typeof _electron.l
     }
     if (await page.evaluate(() => window.gastronomy.isInitialAdminPinSetupRequired())) {
       await page.evaluate(() => window.gastronomy.setInitialAdminPin({currentPin: "1234", newPin: "748259"}));
-      await page.reload();
     }
+    // Operational tests start after onboarding; tutorial journeys launch directly.
+    await page.evaluate(() => window.gastronomy.saveTutorialProgress({ version: 1, status: "SKIPPED", stepId: "welcome" }));
+    await page.reload();
     return app;
   } catch (error) {
     await app.close();

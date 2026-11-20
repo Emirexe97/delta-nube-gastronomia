@@ -184,9 +184,10 @@ test("Pedidos: filtros y filas conservan legibilidad, límites y datos inalterad
   await expect(
     root.getByRole("heading", { name: "Para retirar y envíos" }),
   ).toBeVisible();
-  const subtitle = root.getByText(
-    "Consultá los pedidos para retirar y los envíos.",
-  );
+  const heading = root.getByRole("heading", {
+    name: "Para retirar y envíos",
+    exact: true,
+  });
   const filters = ["Todos", "Pendientes", "Pagados"];
   await expect(root.locator("button.h-9")).toHaveText([
     "Todos",
@@ -199,7 +200,7 @@ test("Pedidos: filtros y filas conservan legibilidad, límites y datos inalterad
   ]);
   await settle();
   const observations: Array<{ font: number; ratio: number; label: string }> = [
-    await contrast(subtitle, "subtitle"),
+    await contrast(heading, "orders heading"),
   ];
   for (const label of filters) {
     const button = root.getByRole("button", { name: label, exact: true });
@@ -414,8 +415,11 @@ test("Pedidos: zoom nativo y Escape de búsqueda no mutan estado", async () => {
   expect(zoomLayout.totalReachable).toBe(true);
   const zoomText = [
     await contrast(
-      root.getByText("Consultá los pedidos para retirar y los envíos."),
-      "zoom subtitle",
+      root.getByRole("heading", {
+        name: "Para retirar y envíos",
+        exact: true,
+      }),
+      "zoom orders heading",
     ),
     await contrast(
       table.locator("tbody tr").first().locator("td").first().locator("p"),

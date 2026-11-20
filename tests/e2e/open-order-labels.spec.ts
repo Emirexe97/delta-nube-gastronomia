@@ -52,6 +52,11 @@ const states = [
   "paid-ready",
   "mixed-terminal",
 ] as const;
+function statCard(label: string) {
+  return page
+    .locator('section[aria-label="Estado de la operación"] > *')
+    .filter({ has: page.getByText(label, { exact: true }) });
+}
 for (const width of [1280, 1100, 1366])
   for (const state of states) {
     test(`open order scope ${state} at ${width}px`, async () => {
@@ -151,9 +156,8 @@ for (const width of [1280, 1100, 1366])
       await page.reload();
       await page.getByRole("link", { name: "Resumen", exact: true }).click();
       await expect(page.locator(".panel-enter")).toHaveCSS("opacity", "1");
-      const stat = page
-        .getByText("Retiros y envíos abiertos", { exact: true })
-        .locator("..");
+      const stat = statCard("Retiros y envíos abiertos");
+      await expect(stat).toHaveCount(1);
       await expect(stat.locator("p").nth(1)).toHaveText(
         String(fixture.expectedNumbers.length),
       );
@@ -177,9 +181,9 @@ for (const width of [1280, 1100, 1366])
           }),
         ),
       ).toBe(true);
-      await expect(
-        page.getByText("Mesas por cobrar", { exact: true }).locator(".."),
-      ).toContainText(formatMoney(fixture.tableTotal));
+      const tableStat = statCard("Mesas por cobrar");
+      await expect(tableStat).toHaveCount(1);
+      await expect(tableStat).toContainText(formatMoney(fixture.tableTotal));
       const heading = page.getByRole("heading", {
         name: "Retiros y envíos en curso",
         exact: true,

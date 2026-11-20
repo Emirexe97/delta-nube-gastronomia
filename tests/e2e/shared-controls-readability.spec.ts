@@ -14,7 +14,7 @@ import { readdir } from "node:fs/promises";
 
 const evidence = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-us07b4-fix-2026-10-07",
+  "docs/qa/evidence/release-readiness-20261115/shared-controls-rerun",
 );
 let app: ElectronApplication;
 let page: Page;
@@ -311,7 +311,7 @@ for (const w of [1100, 1366]) {
     await expect(
       root.getByRole("heading", { name: "Usuarios y permisos" }),
     ).toBeVisible();
-    const badges = root.locator("span.inline-flex.rounded-md");
+    const badges = root.locator("span.dn-badge");
     await expect(badges.first()).toBeVisible();
     await measure(badges, "real Users role/status badges");
     const table = root.locator("table");
@@ -361,7 +361,7 @@ for (const w of [1100, 1366]) {
     await page.getByRole("link", { name: "Clientes", exact: true }).click();
     const root = page.locator("main .panel-enter");
     await expect(root.getByText(customer.name, { exact: true })).toBeVisible();
-    const badges = root.locator("span.inline-flex.rounded-md");
+    const badges = root.locator("span.dn-badge");
     expect(
       await badges.count(),
       "real customer status badges from paid customer fixture",
@@ -426,12 +426,12 @@ test("Modal Nuevo cliente: icono cerrar legible, 40x40, foco/tab/Escape y cancel
   await close.hover();
   metrics.hover = await measure(close, "modal close hover", 3);
   await page.mouse.move(1, 1);
-  await dialog.getByLabel("Teléfono").focus();
+  await dialog.getByLabel("Teléfono", { exact: true }).focus();
   await page.keyboard.press("Shift+Tab");
   await expect(close).toBeFocused();
   await expect(close).toHaveAttribute("aria-label", "Cerrar");
   metrics.keyboardFocus = await measure(close, "modal close keyboard focus", 3);
-  await dialog.getByLabel("Nombre").fill("Borrador US07B4");
+  await dialog.getByLabel("Nombre", { exact: true }).fill("Borrador US07B4");
   await page.screenshot({
     path: join(evidence, "modal-close-customer-1366.png"),
     fullPage: true,

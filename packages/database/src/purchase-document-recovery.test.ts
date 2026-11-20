@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3-multiple-ciphers";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
+import { businessDateFromOpening } from "@gastronomy/domain";
 import { migrations } from "./migrations";
 import {
   removeNewNullablePurchaseColumns,
@@ -85,7 +86,7 @@ const purchaseSnapshot = (
 test("purchase cancellation is documentary-only, preserves original data and excludes future reference/finance", () =>
   fixture((repo, db) => {
     const { products, purchase } = setup(repo);
-    const day = purchase.createdAt.slice(0, 10);
+    const day = businessDateFromOpening(purchase.createdAt);
     repo.openCashSession({ openingAmountMinor: 50000 });
     repo.setFinanceProductCost({
       productId: products[0]!.id,

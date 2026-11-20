@@ -273,11 +273,7 @@ for (const type of ["TAKEAWAY", "DELIVERY"] as const) {
     const product = (
       await page.evaluate(() => window.gastronomy.bootstrap())
     ).products.find((item) => item.code === "MUZG")!;
-    await page
-      .getByRole("button")
-      .filter({ has: page.getByText(product.name, { exact: true }) })
-      .first()
-      .click();
+    await page.getByRole("button", { name: `Cantidad y precio de ${product.name}` }).click();
     const dialog = page.getByRole("dialog", {
       name: `Agregar · ${product.name}`,
     });
@@ -444,11 +440,7 @@ test("el pedido de salón usa la misma instrucción de agregado sin alterar el p
   const product = (
     await page.evaluate(() => window.gastronomy.bootstrap())
   ).products.find((item) => item.code === "MUZG")!;
-  await editor
-    .getByRole("button")
-    .filter({ has: page.getByText(product.name, { exact: true }) })
-    .first()
-    .click();
+  await editor.getByRole("button", { name: `Cantidad y precio de ${product.name}` }).click();
   const dialog = page.getByRole("dialog", {
     name: `Agregar · ${product.name}`,
   });

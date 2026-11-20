@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { BootstrapDto, DeliveryLedgerDto } from "@gastronomy/contracts";
 import {
   ArrowLeft,
@@ -24,19 +25,19 @@ import {
   filterDeliveryLedger,
   filterDriverDeliveryActivity,
   localDateKey,
+  visibleDeliveryRange,
   type DeliveryHistoryScope,
 } from "../delivery-history";
 import { formatMoney, humanError } from "../lib";
 
 const formatDateTime = (value: string | null) =>
   value
-    ? new Date(value).toLocaleString("es-AR", {
-        day: "2-digit",
-        month: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
+    ? movementDateFormatter.format(new Date(value))
     : "—";
+
+const movementDateFormatter = new Intl.DateTimeFormat("es-AR", {
+  day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+});
 
 export function DeliveriesPage({ data }: { data: BootstrapDto }) {
   const [driverOpen, setDriverOpen] = useState(false);
@@ -51,46 +52,65 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
     localDateKey(new Date()),
   );
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const drivers = data.users.filter(
-    (user) => user.roleCode === "DELIVERY_DRIVER" && user.active,
+  const historyQuery = useQuery({
+    queryKey: ["bootstrap", "delivery-history", historyScope, ...(historyScope === "DATE" ? [selectedDate] : [])],
+    queryFn: () => window.gastronomy.getDeliveryHistory({
+      scope: historyScope as "ALL" | "DATE",
+      ...(historyScope === "DATE" ? { date: selectedDate } : {}),
+    }),
+    enabled: historyScope !== "CURRENT_SHIFT",
+    networkMode: "always",
+  });
+  const sourceLedger = historyScope === "CURRENT_SHIFT"
+    ? data.deliveryLedger
+    : historyQuery.data?.deliveryLedger ?? [];
+  const sourceActivity = historyScope === "CURRENT_SHIFT"
+    ? data.driverDeliveryActivity
+    : historyQuery.data?.driverDeliveryActivity ?? [];
+  const drivers = useMemo(
+    () => data.users.filter(
+      (user) => user.roleCode === "DELIVERY_DRIVER" && user.active,
+    ),
+    [data.users],
   );
   const scopedLedger = useMemo(
     () =>
       filterDeliveryLedger(
-        data.deliveryLedger,
+        sourceLedger,
         data.cashSession,
         historyScope,
         selectedDate,
       ),
-    [data.deliveryLedger, data.cashSession, historyScope, selectedDate],
+    [sourceLedger, data.cashSession, historyScope, selectedDate],
   );
   const scopedActivity = useMemo(
     () =>
       filterDriverDeliveryActivity(
-        data.driverDeliveryActivity,
+        sourceActivity,
         data.cashSession,
         historyScope,
         selectedDate,
       ),
-    [data.driverDeliveryActivity, data.cashSession, historyScope, selectedDate],
+    [sourceActivity, data.cashSession, historyScope, selectedDate],
   );
-  const ledger =
+  const ledger = useMemo(() =>
     driverFilter === "ALL"
       ? scopedLedger
-      : scopedLedger.filter((row) => row.driverUserId === driverFilter);
-  const activity =
+      : scopedLedger.filter((row) => row.driverUserId === driverFilter), [driverFilter, scopedLedger]);
+  const activity = useMemo(() =>
     driverFilter === "ALL"
       ? scopedActivity
-      : scopedActivity.filter((row) => row.driverUserId === driverFilter);
-  const pending = ledger.filter((row) => row.status === "PENDING");
-  const settled = ledger.filter((row) => row.status === "SETTLED");
-  const selectedRows = ledger.filter(
-    (row) => row.status === "PENDING" && selectedIds.includes(row.id),
-  );
+      : scopedActivity.filter((row) => row.driverUserId === driverFilter), [driverFilter, scopedActivity]);
+  const pending = useMemo(() => ledger.filter((row) => row.status === "PENDING"), [ledger]);
+  const settled = useMemo(() => ledger.filter((row) => row.status === "SETTLED"), [ledger]);
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedRows = useMemo(() => pending.filter(row => selectedIdSet.has(row.id)), [pending, selectedIdSet]);
 
   useEffect(() => {
     setSelectedIds([]);
     setSettleOpen(false);
+    if (ledgerScroll.current) ledgerScroll.current.scrollTop = 0;
+    setLedgerScrollTop(0);
   }, [driverFilter, historyScope, selectedDate]);
 
   useEffect(() => {
@@ -130,51 +150,41 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
       },
     );
   }, [activity, pending]);
-  const driverRows = useMemo(
-    () =>
-      drivers.map((driver) => {
-        const rows = scopedLedger.filter(
-          (row) => row.driverUserId === driver.id,
-        );
-        const activityRows = scopedActivity.filter(
-          (row) => row.driverUserId === driver.id,
-        );
-        const lastSettlement = rows
-          .filter((row) => row.settledAt)
-          .sort((left, right) =>
-            right.settledAt!.localeCompare(left.settledAt!),
-          )[0]?.settledAt;
-        return {
-          driver,
-          deliveries: activityRows.reduce(
-            (sum, row) => sum + row.deliveryCount,
-            0,
-          ),
-          earnings: activityRows.reduce(
-            (sum, row) => sum + row.earningsMinor,
-            0,
-          ),
-          pendingCount: rows.filter((row) => row.status === "PENDING").length,
-          pendingAmount: rows
-            .filter((row) => row.status === "PENDING")
-            .reduce((sum, row) => sum + row.amountDueMinor, 0),
-          lastDelivery:
-            activityRows
-              .slice()
-              .sort((left, right) =>
-                right.lastDeliveryAt.localeCompare(left.lastDeliveryAt),
-              )[0]?.lastDeliveryAt ?? null,
-          lastSettlement: lastSettlement ?? null,
-        };
-      }),
-    [scopedActivity, scopedLedger, drivers],
-  );
+  const driverRows = useMemo(() => {
+    const byDriver = new Map<string, {
+      deliveries: number; earnings: number; pendingCount: number;
+      pendingAmount: number; lastDelivery: string | null; lastSettlement: string | null;
+    }>();
+    for (const driver of drivers) byDriver.set(driver.id, {
+      deliveries: 0, earnings: 0, pendingCount: 0, pendingAmount: 0,
+      lastDelivery: null, lastSettlement: null,
+    });
+    for (const row of scopedActivity) {
+      const summary = byDriver.get(row.driverUserId);
+      if (!summary) continue;
+      summary.deliveries += row.deliveryCount;
+      summary.earnings += row.earningsMinor;
+      if (!summary.lastDelivery || row.lastDeliveryAt > summary.lastDelivery)
+        summary.lastDelivery = row.lastDeliveryAt;
+    }
+    for (const row of scopedLedger) {
+      const summary = byDriver.get(row.driverUserId);
+      if (!summary) continue;
+      if (row.status === "PENDING") {
+        summary.pendingCount += 1;
+        summary.pendingAmount += row.amountDueMinor;
+      }
+      if (row.settledAt && (!summary.lastSettlement || row.settledAt > summary.lastSettlement))
+        summary.lastSettlement = row.settledAt;
+    }
+    return drivers.map((driver) => ({ driver, ...byDriver.get(driver.id)! }));
+  }, [scopedActivity, scopedLedger, drivers]);
 
   const allVisibleSelected =
-    pending.length > 0 && pending.every((row) => selectedIds.includes(row.id));
+    pending.length > 0 && selectedRows.length === pending.length;
   const toggleAllVisible = () =>
     setSelectedIds(allVisibleSelected ? [] : pending.map((row) => row.id));
-  const selectedDirections = new Set(selectedRows.map((row) => row.direction));
+  const selectedDirections = useMemo(() => new Set(selectedRows.map((row) => row.direction)), [selectedRows]);
   const settlementActionLabel =
     selectedDirections.size === 1 &&
     selectedDirections.has("BUSINESS_OWES_DRIVER")
@@ -183,10 +193,15 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
           selectedDirections.has("DRIVER_OWES_BUSINESS")
         ? "Registrar rendición del repartidor"
         : "Liquidar movimientos seleccionados";
-  const alreadySettled = settled.reduce(
+  const alreadySettled = useMemo(() => settled.reduce(
     (sum, row) => sum + row.amountDueMinor,
     0,
-  );
+  ), [settled]);
+  const ledgerScroll = useRef<HTMLDivElement>(null);
+  const [ledgerScrollTop, setLedgerScrollTop] = useState(0);
+  const ledgerRange = visibleDeliveryRange(ledger.length, ledgerScrollTop, 460);
+  const visibleLedger = ledger.slice(ledgerRange.start, ledgerRange.end);
+  const orderById = useMemo(() => new Map(data.orders.map((order) => [order.id, order])), [data.orders]);
 
   return (
     <div className="panel-enter mx-auto max-w-[1450px] space-y-4">
@@ -221,6 +236,16 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
           Abrí caja antes de liquidar. Podés consultar todo el historial sin
           modificarlo.
+        </div>
+      ) : null}
+
+      {historyScope !== "CURRENT_SHIFT" && historyQuery.isPending ? (
+        <div role="status" className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600">Cargando historial de repartidores…</div>
+      ) : null}
+      {historyScope !== "CURRENT_SHIFT" && historyQuery.isError ? (
+        <div role="alert" className="flex items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          No se pudo cargar el historial.
+          <Button variant="secondary" onClick={() => void historyQuery.refetch()}>Reintentar</Button>
         </div>
       ) : null}
 
@@ -266,6 +291,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         </Field>
       </Card>
 
+      {historyScope === "CURRENT_SHIFT" || historyQuery.data ? <>
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           icon={<Motorcycle size={24} />}
@@ -388,8 +414,8 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
           ) : null}
         </div>
         {ledger.length ? (
-          <div className="max-h-[460px] overflow-auto">
-            <table className="dn-table min-w-[760px]">
+          <div ref={ledgerScroll} className="max-h-[460px] overflow-auto" onScroll={(event) => setLedgerScrollTop(event.currentTarget.scrollTop)}>
+            <table className="dn-table min-w-[760px]" aria-rowcount={ledger.length + 1}>
               <thead>
                 <tr>
                   <th>Elegir</th>
@@ -403,15 +429,32 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
                 </tr>
               </thead>
               <tbody>
-                {ledger.map((row) => (
-                  <tr key={row.id}>
+                {ledgerRange.top > 0 ? <tr aria-hidden="true"><td colSpan={8} style={{ height: ledgerRange.top, padding: 0, border: 0 }} /></tr> : null}
+                {visibleLedger.map((row, visibleIndex) => (
+                  <tr
+                    key={row.id}
+                    data-ledger-id={row.id}
+                    style={{ height: 56 }}
+                    aria-rowindex={ledgerRange.start + visibleIndex + 2}
+                    tabIndex={0}
+                    onKeyDown={(event) => {
+                      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                      event.preventDefault();
+                      const index = ledgerRange.start + visibleIndex + (event.key === "ArrowDown" ? 1 : -1);
+                      if (index < 0 || index >= ledger.length) return;
+                      const target = ledger[index];
+                      if (!target) return;
+                      if (ledgerScroll.current) ledgerScroll.current.scrollTop = Math.max(0, index * 56 - 140);
+                      requestAnimationFrame(() => ledgerScroll.current?.querySelector<HTMLElement>(`[data-ledger-id="${CSS.escape(target.id)}"]`)?.focus());
+                    }}
+                  >
                     <td>
                       {row.status === "PENDING" ? (
                         <input
                           type="checkbox"
                           className="h-4 w-4 accent-brand-600"
                           aria-label={`Seleccionar movimiento del pedido ${row.orderNumber}`}
-                          checked={selectedIds.includes(row.id)}
+                          checked={selectedIdSet.has(row.id)}
                           onChange={() =>
                             setSelectedIds((current) =>
                               current.includes(row.id)
@@ -433,8 +476,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
                     </td>
                     <td className="text-right font-extrabold text-brand-700">
                       {formatMoney(
-                        data.orders.find((order) => order.id === row.orderId)
-                          ?.deliveryFeeBelongsToDriver === false
+                        (row.deliveryFeeBelongsToDriver ?? orderById.get(row.orderId)?.deliveryFeeBelongsToDriver) === false
                           ? 0
                           : row.deliveryFeeMinor,
                       )}
@@ -471,10 +513,11 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
                     </td>
                   </tr>
                 ))}
+                {ledgerRange.bottom > 0 ? <tr aria-hidden="true"><td colSpan={8} style={{ height: ledgerRange.bottom, padding: 0, border: 0 }} /></tr> : null}
               </tbody>
             </table>
           </div>
-        ) : (
+        ) : historyScope !== "CURRENT_SHIFT" && (historyQuery.isPending || historyQuery.isError) ? null : (
           <div className="grid h-56 place-items-center text-center">
             <div>
               <CheckCircle className="mx-auto text-emerald-400" size={36} />
@@ -486,6 +529,7 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
         )}
       </Card>
 
+      </> : null}
       <DriverModal open={driverOpen} onClose={() => setDriverOpen(false)} />
       <ReverseSettlementModal
         row={reversingRow}

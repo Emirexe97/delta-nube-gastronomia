@@ -1,10 +1,12 @@
 import type {
   AuditEntryDto,
+  TutorialProgressDto,
   BootstrapDto,
   CategoryDto,
   CustomerDto,
   DeliveryLedgerDto,
   DriverDeliveryActivityDto,
+  DeliveryProjectionDto,
   DesktopApi,
   DetailedReportDto,
   FloorPlanShapeDto,
@@ -12,8 +14,10 @@ import type {
   CashSessionReportDto,
   CashSessionReportFilters,
   CashSessionHistoryItemDto,
+  CashSessionHistoryPageDto,
   CashMovementType,
   OrderDto,
+  OrderPrintStateDto,
   MarkOrderServedInput,
   OrderItemDto,
   ProductDto,
@@ -42,7 +46,7 @@ import type {
   RepeatOrderInput,
   IngredientDto, SaveIngredientInput, ProductCostConfigurationDto, SetProductCostConfigurationInput,
 } from "@gastronomy/contracts";
-import { isPriceBookRoundingIncrementMinor } from "@gastronomy/contracts";
+import { assertTutorialProgressInput, isPriceBookRoundingIncrementMinor, normalizeImportProductsInput } from "@gastronomy/contracts";
 import { createDemoBootstrap, emptyDashboard } from "./demo-data";
 import { populateRepeatedDemoOrder } from "./repeat-order";
 import {
@@ -123,7 +127,9 @@ export interface DemoStorage {
 }
 
 interface DemoState {
+  completedOrderReceipts?: Record<string, { fingerprint: string; orderId: string }>;
   version: 13;
+  tutorialProgress?: Record<string, TutorialProgressDto>;
   priceBooks?: PriceBookDto[];
   priceBookAssignments?: Record<PriceChannel, string>;
   orderNumbersByCashSession?: Record<string, number>;
@@ -194,7 +200,9 @@ interface DemoState {
   orderRepeatReceipts?: Record<string, { fingerprint: string; result: OrderDto }>;
   comboConfigReceipts?: Record<string, { fingerprint: string; result: ProductDto }>;
   comboCreateReceipts?: Record<string, { fingerprint: string; result: ProductDto }>;
+  catalogImportReceipts?: Record<string, { fingerprint: string; result: ProductDto[] }>;
   comboAddReceipts?: Record<string, { fingerprint: string; result: OrderDto }>;
+  lineAddReceipts?: Record<string, string>;
   financeExpenseMovements?: Record<string, string>;
   financeExpenseRecoveryReceipts?: Record<string, { fingerprint: string; result: FinanceExpenseDto }>;
   financeExpensePaymentReceipts?: Record<string, { fingerprint: string; result: FinanceExpenseDto }>;
@@ -1325,6 +1333,8 @@ export function createDemoApi(
   storage: DemoStorage = window.localStorage,
 ): DesktopApi {
   let state = loadState(storage);
+  // Mirror SQLite serialization when two completion requests arrive together.
+  let completionQueue = Promise.resolve();
   // Existing confirmed demo orders predate cost tracking. Keep their cost unknown
   // rather than applying a newly entered unit cost retroactively.
   const initialCosts = (state.financeItemCosts ??= {});
@@ -1778,15 +1788,63 @@ export function createDemoApi(
       return output(result);
     },
 
-    async bootstrap() {
+    async bootstrap(options?: { deliveryScope?: "OPERATIONAL" }) {
       save();
-      const data = output(state.data);
+      const data = output({ ...state.data, products: state.data.products.map(product =>
+        product.imageDataUrl ? { ...product, imageDataUrl: null, hasImage: true } : product) });
       data.orders = data.cashSession
         ? data.orders.filter(
             (order) => order.cashSessionCreatedId === data.cashSession?.id || order.cashSessionPaidId === data.cashSession?.id,
           )
         : [];
+      if (options?.deliveryScope === "OPERATIONAL") {
+        data.deliveryLedger = data.deliveryLedger.filter((row) =>
+          (row.status === "SETTLED" && row.cashSessionId === data.cashSession?.id) ||
+          (row.status === "PENDING" && row.amountDueMinor > row.settledAmountMinor),
+        );
+        data.driverDeliveryActivity = data.driverDeliveryActivity.filter(
+          (row) => row.cashSessionId === data.cashSession?.id,
+        );
+      }
       return data;
+    },
+
+    async getDeliveryHistory(input) {
+      if (!input || (input.scope !== "ALL" && input.scope !== "DATE"))
+        throw new Error("El alcance del historial no es válido.");
+      if (input.scope === "DATE" && !/^\d{4}-\d{2}-\d{2}$/.test(input.date ?? ""))
+        throw new Error("Elegí una fecha válida.");
+      const data = state.data;
+      const ordersById = new Map(data.orders.map(order => [order.id, order]));
+      const includes = (businessDate: string) =>
+        input.scope === "ALL" || businessDate === input.date;
+      return output({
+        deliveryLedger: data.deliveryLedger.filter((row) => includes(row.businessDate) &&
+          (row.status !== "PENDING" || row.amountDueMinor > row.settledAmountMinor)).map((row) => ({
+          ...row,
+          deliveryFeeBelongsToDriver: ordersById.get(row.orderId)?.deliveryFeeBelongsToDriver ?? true,
+        })),
+        driverDeliveryActivity: data.driverDeliveryActivity.filter((row) => includes(row.businessDate)),
+      });
+    },
+
+    async getProductImage({ productId }) {
+      const product = state.data.products.find(p => p.id === productId);
+      if (!product) throw new Error("El producto no existe.");
+      return product.imageDataUrl;
+    },
+
+    async getTutorialProgress() {
+      return output(state.tutorialProgress?.[state.data.currentUser.id] ?? { version: 1, status: "NOT_STARTED", stepId: "welcome" });
+    },
+    async saveTutorialProgress(input) {
+      assertTutorialProgressInput(input);
+      const progress: TutorialProgressDto = { version: 1, status: input.status, stepId: input.stepId };
+      const tutorialProgress = { ...state.tutorialProgress, [state.data.currentUser.id]: progress };
+      // Persist before committing in-memory state. Do not normalize operational data.
+      storage.setItem(DEMO_STORAGE_KEY, JSON.stringify({ ...state, tutorialProgress }));
+      state.tutorialProgress = tutorialProgress;
+      return output(progress);
     },
 
     async getPriceBooks() {
@@ -1927,6 +1985,47 @@ export function createDemoApi(
 
     async getOrder({ orderId }) {
       return output(orderById(orderId));
+    },
+
+    async getDeliveryProjection(input) {
+      const order = orderById(input.orderId);
+      const cashSessionId = order.cashSessionPaidId ?? order.cashSessionCreatedId;
+      const driverIds = new Set([input.previousDriverId, order.driverUserId].filter((id): id is string => Boolean(id)));
+      const projection: DeliveryProjectionDto = {
+        order,
+        cashSessionId,
+        openCashSessionId: state.data.cashSession?.id ?? null,
+        deliveryLedger: order.type !== "DELIVERY" ? [] : state.data.deliveryLedger.filter((row) => row.orderId === order.id).map((row) => ({
+          ...row,
+          deliveryFeeBelongsToDriver: order.deliveryFeeBelongsToDriver ?? true,
+        })),
+        driverDeliveryActivity: order.type !== "DELIVERY" ? [] : state.data.driverDeliveryActivity.filter((row) => row.cashSessionId === cashSessionId && driverIds.has(row.driverUserId)),
+      };
+      const session = state.data.cashSession;
+      if (input.includeFinancials && session?.status === "OPEN")
+        projection.financials = { cashSession: clone(session), dashboard: clone(state.data.dashboard) };
+      return output(projection);
+    },
+
+    async getOrderPrintState({ orderId, includeConfirmation = false }): Promise<OrderPrintStateDto> {
+      const order = orderById(orderId);
+      const recentPrinted = new Set(state.data.printJobs.filter((job) => job.status === "PRINTED").sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, 100).map((job) => job.id));
+      const printJobs = state.data.printJobs.filter((job) => job.orderId === orderId && (job.status !== "PRINTED" || recentPrinted.has(job.id)));
+      const result: OrderPrintStateDto = { order, cashSessionId: state.data.cashSession?.id ?? null, printJobs: clone(printJobs) };
+      if (includeConfirmation) {
+        const ids = new Set<string>();
+        for (const item of order.items) {
+          if (item.comboComponents?.length) item.comboComponents.forEach((component) => ids.add(component.productId));
+          else if (item.halves.length) item.halves.forEach((half) => ids.add(half.productId));
+          else if (item.productId) ids.add(item.productId);
+        }
+        result.confirmation = {
+          stocks: [...ids].map((productId) => ({ productId, stockMinor: state.data.products.find((product) => product.id === productId)?.stockMinor ?? null })),
+          table: clone(state.data.tables.find((table) => table.id === order.tableId) ?? null),
+          dashboard: clone(state.data.dashboard),
+        };
+      }
+      return output(result);
     },
 
     async ensureTable({ number }) {
@@ -2755,6 +2854,15 @@ export function createDemoApi(
 
     async addOrderItem(input) {
       const order = orderById(input.orderId);
+      const key = input.idempotencyKey && "line:" + input.idempotencyKey;
+      // Don't put authorization PINs or a copy of the ticket in localStorage.
+      const signature = JSON.stringify([input.orderId, input.productId, input.quantity ?? 1,
+        input.notes ?? null, input.unitPriceMinorOverride ?? null]);
+      if (key && state.lineAddReceipts?.[key]) {
+        if (state.lineAddReceipts[key] !== signature)
+          throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(order);
+      }
       assertOrderAction(order, "EDIT");
       const product = productById(input.productId);
       if (product.comboDefinition) throw new Error("Los combos deben agregarse con addComboItem.");
@@ -2824,6 +2932,7 @@ export function createDemoApi(
         order.id,
         existingItem ? "PRODUCTO_CANTIDAD_INCREMENTADA" : "PRODUCTO_AGREGADO",
       );
+      if (key) (state.lineAddReceipts ??= {})[key] = signature;
       save();
       return output(order);
     },
@@ -3732,29 +3841,47 @@ export function createDemoApi(
     },
 
     async completeOrder(input) {
-      const before = clone(state);
-      try {
-        let order = orderById(input.orderId);
-        let paymentInput = input;
-        if (input.driverUserId && (order.type !== "DELIVERY" || !state.data.users.some((user) => user.id === input.driverUserId && user.active && user.roleCode === "DELIVERY_DRIVER")))
-          throw new Error("El repartidor no existe o está inactivo.");
-        if (input.driverUserId && input.driverUserId !== order.driverUserId)
-          order = await this.assignDeliveryDriver({ orderId: order.id, driverUserId: input.driverUserId });
-        if (order.type === "DELIVERY" && order.paymentStatus !== "PAID")
-          paymentInput = { ...input, collectedByDriver: input.collectedByDriver === true };
-        if (order.lifecycleStatus === "DRAFT")
-          order = await this.confirmOrder({ orderId: order.id });
-        if (order.paymentStatus !== "PAID")
-          order = await this.payOrder(paymentInput);
-        assertOrderAction(order, "DELIVER");
-        return this.updateOrderStatus({
-          orderId: order.id,
-          status: input.finalStatus,
-        });
-      } catch (error) {
-        restore(before);
-        throw error;
-      }
+      const run = async () => {
+        const key = input.idempotencyKey;
+        const fingerprint = key ? JSON.stringify(input) : "";
+        const receipt = key ? state.completedOrderReceipts?.[key] : undefined;
+        if (receipt) {
+          if (receipt.fingerprint !== fingerprint)
+            throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+          return output(orderById(receipt.orderId));
+        }
+        const before = clone(state);
+        try {
+          let order = orderById(input.orderId);
+          let paymentInput = input;
+          if (input.driverUserId && (order.type !== "DELIVERY" || !state.data.users.some((user) => user.id === input.driverUserId && user.active && user.roleCode === "DELIVERY_DRIVER")))
+            throw new Error("El repartidor no existe o está inactivo.");
+          if (input.driverUserId && input.driverUserId !== order.driverUserId)
+            order = await this.assignDeliveryDriver({ orderId: order.id, driverUserId: input.driverUserId });
+          if (order.type === "DELIVERY" && order.paymentStatus !== "PAID")
+            paymentInput = { ...input, collectedByDriver: input.collectedByDriver === true };
+          if (order.lifecycleStatus === "DRAFT")
+            order = await this.confirmOrder({ orderId: order.id });
+          if (order.paymentStatus !== "PAID")
+            order = await this.payOrder(paymentInput);
+          assertOrderAction(order, "DELIVER");
+          const delivered = await this.updateOrderStatus({
+            orderId: order.id,
+            status: input.finalStatus,
+          });
+          if (key) {
+            (state.completedOrderReceipts ??= {})[key] = { fingerprint, orderId: delivered.id };
+            save();
+          }
+          return delivered;
+        } catch (error) {
+          restore(before);
+          throw error;
+        }
+      };
+      const result = completionQueue.then(run);
+      completionQueue = result.then(() => {}, () => {});
+      return result;
     },
 
     async cancelOrder(input) {
@@ -4665,6 +4792,50 @@ export function createDemoApi(
       if (receiptKey) (state.comboCreateReceipts ??= {})[receiptKey] = { fingerprint, result: output(product) };
       save();
       return output(product);
+    },
+
+    async importProducts(input) {
+      if (!state.data.currentUser.permissions.some(permission => permission === "prices.bulk_update" || permission === "*")) {
+        throw new Error("No tenés permiso para importar productos.");
+      }
+      const normalized = normalizeImportProductsInput(input);
+      const fingerprint = JSON.stringify({ operation: "importProducts", rows: normalized.rows });
+      const previous = state.catalogImportReceipts?.[normalized.idempotencyKey];
+      if (previous) {
+        if (previous.fingerprint !== fingerprint) throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return output(previous.result);
+      }
+      const codeKey = (code: string) => code.trim().normalize("NFC").toLocaleLowerCase("en-US");
+      const codes = new Set(state.data.products.flatMap(product => product.code ? [codeKey(product.code)] : []));
+      for (const [index, row] of normalized.rows.entries()) {
+        if (!state.data.categories.some(category => category.id === row.categoryId && category.active)) {
+          throw new Error(`Fila ${index + 1}: la categoría no existe o está inactiva.`);
+        }
+        if (codes.has(codeKey(row.code))) throw new Error(`Fila ${index + 1}: el código ${row.code} ya existe.`);
+        codes.add(codeKey(row.code));
+      }
+      // Stage the complete batch and receipt; storage failure leaves memory
+      // untouched, just as SQLite rolls back its outer transaction.
+      const next = clone(state);
+      const created = normalized.rows.map(row => {
+        const category = next.data.categories.find(item => item.id === row.categoryId)!;
+        const product: ProductDto = {
+          id: uid("product", next), categoryId: category.id, categoryName: category.name,
+          name: row.name, code: row.code, parentProductId: null, active: true,
+          sortOrder: Math.max(0, ...next.data.products.filter(item => item.categoryId === category.id).map(item => item.sortOrder)) + 1,
+          stockMinor: category.stockControlEnabled ? 0 : null,
+          stockTargetMinor: null, stockMinMinor: null, stockCriticalMinor: null,
+          imageDataUrl: null, priceBook: { baseMinor: row.basePriceMinor, overrides: {} }, prices: [],
+        };
+        refreshProductPrices(product, next);
+        next.data.products.push(product);
+        audit(next, "PRODUCT", product.id, "PRODUCTO_CREADO");
+        return product;
+      });
+      (next.catalogImportReceipts ??= {})[normalized.idempotencyKey] = { fingerprint, result: clone(created) };
+      storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(next));
+      state = next;
+      return output(created);
     },
 
     async createProduct(input) {
@@ -6681,6 +6852,27 @@ export function createDemoApi(
       );
     },
 
+    async listCashSessionHistoryPage(input?: { page?: number; pageSize?: number }): Promise<CashSessionHistoryPageDto> {
+      const size = input?.pageSize ?? 20;
+      const wanted = input?.page ?? 1;
+      const pageSize = Number.isFinite(size) ? Math.min(100, Math.max(1, Math.floor(size))) : 20;
+      const totalCount = state.historicalSessions.length;
+      const page = Number.isFinite(wanted) ? Math.min(Math.max(1, Math.ceil(totalCount / pageSize)), Math.max(1, Math.floor(wanted))) : 1;
+      const start = (page - 1) * pageSize;
+      const items = state.historicalSessions.slice(start, start + pageSize).map((session) => ({
+        id: session.id,
+        number: session.number,
+        businessDate: session.businessDate,
+        openedAt: session.openedAt,
+        closedAt: session.closedAt,
+        openedByName: session.openedByName,
+        salesTotalMinor: session.salesTotalMinor ?? 0,
+        detailAvailable: session.status === "OPEN" || (session.closedAt ?? session.openedAt).slice(0, 10) >= retentionCutoff(),
+        status: session.status,
+      }));
+      return output({ items, page, pageSize, totalCount, hasNextPage: start + items.length < totalCount });
+    },
+
     async getCashSessionReport(
       filters: CashSessionReportFilters,
     ): Promise<CashSessionReportDto> {
@@ -7098,6 +7290,8 @@ export function createDemoApi(
     async updateWebSiteBranding() {
       return this.getWebSiteStatus();
     },
+    async getWebProductPhoto({productRef}) { return { productRef, dataUrl: null }; },
+    async createWebSitePreview() { throw new Error("La vista privada en un celular requiere una tienda web activa."); },
     async listDelayedWaiterBatches() { return []; },
     async confirmDelayedWaiterBatch() { throw new Error("Disponible en la caja de escritorio."); },
     async rejectDelayedWaiterBatch() { throw new Error("Disponible en la caja de escritorio."); },

@@ -7,7 +7,7 @@ import {
 } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 let app: ElectronApplication;
 let page: Page;
 let userData: string;
@@ -22,7 +22,12 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => {
   await app?.close();
-  await rm(userData, { recursive: true, force: true });
+  const absolute = resolve(userData);
+  const underTemp = relative(resolve(tmpdir()), absolute);
+  if (!underTemp || underTemp === ".." || underTemp.startsWith(`..${sep}`) || isAbsolute(underTemp) || dirname(absolute) !== resolve(tmpdir()) || !basename(absolute).startsWith("gastronomy-purchases-")) {
+    throw new Error("Unsafe disposable purchase profile cleanup");
+  }
+  await rm(absolute, { recursive: true, force: true });
 });
 test.beforeEach(async () => {
   await page.reload();
@@ -63,7 +68,7 @@ test("registra una compra e incrementa el stock", async () => {
   await dialog.getByLabel("Producto").selectOption(before.productId);
   await dialog.getByLabel("Cantidad").fill("2,5");
   await dialog.getByLabel("Costo unit.").fill("100");
-  await dialog.getByLabel("PIN autorizador").fill("748259");
+  await dialog.getByLabel("PIN autorizador", { exact: true }).fill("748259");
   await dialog.getByRole("button", { name: "Confirmar ingreso" }).click();
 
   await expect(page.getByText("Proveedor E2E", { exact: true })).toBeVisible();

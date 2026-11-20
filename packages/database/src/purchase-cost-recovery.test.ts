@@ -7,6 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import Database from "better-sqlite3-multiple-ciphers";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
 import { migrations } from "./migrations";
+import { businessDateFromOpening } from "@gastronomy/domain";
 import { latestSchemaVersion, removeNewNullablePurchaseColumns, rewindPurchaseTestSchema } from "./purchase-migration-test-helper";
 
 function fixture(run: (repo: SqliteGastronomyRepository, db: InstanceType<typeof Database>) => void) {
@@ -146,7 +147,7 @@ test("zero cost and rounded fractional quantity use integer half-up arithmetic; 
 
 test("historical finance report adjusts purchase amount only; it does not rewrite order COGS", () => fixture((repo) => {
   const { products, purchase, input } = setup(repo);
-  const day = purchase.createdAt.slice(0, 10);
+  const day = businessDateFromOpening(purchase.createdAt);
   const before = repo.getFinanceReport({ from: day, to: day });
   correct(repo, input);
   const after = repo.getFinanceReport({ from: day, to: day });

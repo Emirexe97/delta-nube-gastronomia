@@ -33,8 +33,43 @@ export interface WebSiteStatus {
   displayName: string;
   tagline: string;
   accent: string;
+  /** Published, normalized JPEG. Older servers may not report a cover. */
+  bannerDataUrl?: string | null;
+  logoDataUrl?: string | null;
   designMode: "STANDARD" | "CUSTOM";
   message: string;
+}
+export interface WebProductPhoto {
+  productRef: string;
+  dataUrl: string | null;
+}
+export interface WebSiteBrandingEdit {
+  displayName: string;
+  tagline: string;
+  accent: string;
+  /** Omitting an asset keeps the published copy; null explicitly removes it. */
+  bannerDataUrl?: string | null;
+  logoDataUrl?: string | null;
+  productPhoto?: WebProductPhoto;
+}
+export interface WebSitePreviewDraft {
+  displayName: string;
+  tagline: string;
+  accent: string;
+  bannerDataUrl: string | null;
+  logoDataUrl: string | null;
+  product: {
+    productRef: string;
+    name: string;
+    category: string;
+    priceMinor: number;
+    photoDataUrl: string | null;
+  } | null;
+}
+export interface WebSitePreviewLink {
+  url: string;
+  expiresAt: string;
+  qrDataUrl: string;
 }
 export interface WebCommerceApi {
   getWebSiteStatus(): Promise<WebSiteStatus>;
@@ -44,11 +79,9 @@ export interface WebCommerceApi {
     slug: string;
     whatsappNumber: string;
   }): Promise<WebSiteStatus>;
-  updateWebSiteBranding(input: {
-    displayName: string;
-    tagline: string;
-    accent: string;
-  }): Promise<WebSiteStatus>;
+  updateWebSiteBranding(input: WebSiteBrandingEdit): Promise<WebSiteStatus>;
+  getWebProductPhoto(input: { productRef: string }): Promise<WebProductPhoto>;
+  createWebSitePreview(input: WebSitePreviewDraft): Promise<WebSitePreviewLink>;
   setWebPublication(input: {
     productId: string;
     enabled: boolean;

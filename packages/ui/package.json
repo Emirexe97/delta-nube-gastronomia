@@ -11,6 +11,10 @@
     "./theme": {
       "types": "./src/theme-types.d.ts",
       "import": "./dist/theme.js"
+    },
+    "./storefront-cover": {
+      "types": "./src/storefront-cover-types.d.ts",
+      "import": "./dist/storefront-cover.js"
     }
   },
   "dependencies": {

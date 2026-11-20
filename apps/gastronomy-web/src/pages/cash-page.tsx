@@ -1064,7 +1064,7 @@ function CashBreakdown({ session, closingFloatMinor = session.closingFloatAmount
       <div className="divide-y divide-slate-100 px-4">
         {rows.map(([label, value]) => (
           <div key={label} className="flex justify-between py-2 text-xs">
-            <span className="text-slate-500">{label}</span>
+            <span className="text-slate-600">{label}</span>
             <strong>{formatMoney(value)}</strong>
           </div>
         ))}

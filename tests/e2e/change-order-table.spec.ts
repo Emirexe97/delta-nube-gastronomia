@@ -60,8 +60,7 @@ test("traslada pedido de mesa 61 a mesa 62 con PIN y actualiza la ocupación", a
   await expect(orderDialog.getByText("Mesa 61", { exact: true })).toBeVisible();
 
   // Agregar un producto
-  await page.getByRole("button", { name: /Muzzarella grande/i }).first().click();
-  await page.getByRole("button", { name: "Agregar a la mesa" }).click();
+  await page.locator('[id^="order-editor-product-"]').filter({ hasText: "Muzzarella grande" }).click();
 
   // Debe aparecer el botón "Cambiar de mesa"
   const changeTableBtn = page.getByRole("button", { name: /Cambiar de mesa/i });

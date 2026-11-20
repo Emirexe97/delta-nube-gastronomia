@@ -12,7 +12,7 @@ import type {
   OrderDto,
   WebCommerceApi,
 } from "@gastronomy/contracts";
-import type { WaiterDeskApi } from "@gastronomy/contracts";
+import type { WaiterDeskApi, WebSiteBrandingEdit, WebSitePreviewDraft } from "@gastronomy/contracts";
 import { createWaiterRelay, waiterRelayConfig, WaiterRequestError } from "./waiter-relay";
 import { handleWaiterRequest } from "./waiter-rpc";
 import { createWebCommerceSync } from "./web-commerce-sync";
@@ -114,10 +114,6 @@ async function pollWebCommerce() {
       await webCommerce.run();
   } catch { /* restore/install/quit may temporarily close the gate */ }
   finally { release?.(); }
-}
-function catalogChanged() {
-  webCommerce.invalidate();
-  void pollWebCommerce();
 }
 let updater: DesktopUpdater | null = null;
 let updateTimer: ReturnType<typeof setInterval> | null = null;
@@ -438,6 +434,16 @@ function registerIpcHandlers() {
   handleOperation("gastronomy:setInitialAdminPin", (_event, input: { currentPin: string; newPin: string }) =>
     services().localRepository.withPreparedUserPins(input, () =>
       services().localRepository.setInitialAdminPin(input)));
+  const tutorialAccountKey = async () => {
+    const email = (await licensing!.getStatus()).account?.email;
+    return typeof email === "string" && email.trim()
+      ? `account:${email.trim().toLocaleLowerCase("en-US")}`
+      : "local";
+  };
+  handleOperation("gastronomy:getTutorialProgress", async () =>
+    services().localRepository.getTutorialProgress(await tutorialAccountKey()));
+  handleOperation("gastronomy:saveTutorialProgress", async (_event, input: unknown) =>
+    services().localRepository.saveTutorialProgress(input as Parameters<SqliteGastronomyRepository["saveTutorialProgress"]>[0], await tutorialAccountKey()));
   type ForwardedDesktopMethod = Exclude<
     keyof DesktopApi,
     | keyof WaiterDeskApi
@@ -461,6 +467,8 @@ function registerIpcHandlers() {
     | "askPosAssistantAi"
     | "isInitialAdminPinSetupRequired"
     | "setInitialAdminPin"
+    | "getTutorialProgress"
+    | "saveTutorialProgress"
   >;
   const completeMethodList = <T extends readonly ForwardedDesktopMethod[]>(
     methods: T &
@@ -476,12 +484,17 @@ function registerIpcHandlers() {
     "cancelPurchase",
     "correctPurchaseItemProduct",
     "bootstrap",
+    "getDeliveryHistory",
     "getOrder",
+    "getDeliveryProjection",
+    "getOrderPrintState",
+    "getProductImage",
     "ensureTable",
     "openCashSession",
     "registerCashMovement",
     "closeCashSession",
     "listCashSessionHistory",
+    "listCashSessionHistoryPage",
     "getCashSessionReport",
     "markOrderServed",
     "createOrder",
@@ -517,6 +530,7 @@ function registerIpcHandlers() {
     "deleteCategory",
     "getPriceBooks", "savePriceBook", "assignPriceBooks",
     "createProduct",
+    "importProducts",
     "updateProduct",
     "deleteProduct",
     "bulkUpdateProducts",
@@ -750,13 +764,31 @@ function registerIpcHandlers() {
     if (typeof input?.slug !== "string" || typeof input?.whatsappNumber !== "string") throw new Error("Completá el enlace y WhatsApp de la tienda.");
     return licensing!.registerWebSite({ slug: input.slug, whatsappNumber: input.whatsappNumber });
   });
-  handleOperation("gastronomy:updateWebSiteBranding", async (_event, input: { displayName?: unknown; tagline?: unknown; accent?: unknown }) => {
+  const requireWebMediaEditor = async (productRef?: string) => {
     const status = await licensing!.getStatus();
     if (!status.canOperate) throw new Error(status.message);
-    const state = services().appService.bootstrap();
-    if (!state.currentUser.permissions.includes("settings.manage")) throw new Error("No tenés permiso para editar la tienda web.");
+    services().localRepository.assertCanManageWebMedia(productRef);
+  };
+  handleOperation("gastronomy:updateWebSiteBranding", async (_event, input: WebSiteBrandingEdit) => {
+    await requireWebMediaEditor(input?.productPhoto?.productRef);
     if (typeof input?.displayName !== "string" || typeof input?.tagline !== "string" || typeof input?.accent !== "string") throw new Error("Completá los datos de identidad de la tienda.");
-    return webSite!.updateBranding({ displayName: input.displayName, tagline: input.tagline, accent: input.accent });
+    const { displayName, tagline, accent, bannerDataUrl, logoDataUrl, productPhoto } = input;
+    return webSite!.updateBranding({
+      displayName, tagline, accent, bannerDataUrl, logoDataUrl,
+      productPhoto: productPhoto === undefined ? undefined : {
+        productRef: productPhoto?.productRef, dataUrl: productPhoto?.dataUrl,
+      },
+    });
+  });
+  handleOperation("gastronomy:getWebProductPhoto", async (_event, input: { productRef: string }) => {
+    await requireWebMediaEditor(input?.productRef);
+    return webSite!.getProductPhoto(input?.productRef);
+  });
+  handleOperation("gastronomy:createWebSitePreview", async (_event, draft: WebSitePreviewDraft) => {
+    await requireWebMediaEditor();
+    const preview = await webSite!.createMobilePreview(draft);
+    const qrDataUrl = await QRCode.toDataURL(preview.url, { margin: 4, width: 240, errorCorrectionLevel: "M" });
+    return { ...preview, qrDataUrl };
   });
   const requireWebStore = () => {
     const storeId = webCommerce.getStoreId();
@@ -767,7 +799,7 @@ function registerIpcHandlers() {
   handleData("gastronomy:retryWebSync", () => webCommerce.run(true));
   handleData("gastronomy:setWebPublication", (_event, input) => {
     services().localRepository.setWebPublication(input);
-    catalogChanged();
+    void pollWebCommerce();
   });
   handleData("gastronomy:listWebOrders", () => {
     const storeId = webCommerce.getStoreId();
@@ -813,7 +845,7 @@ function registerIpcHandlers() {
     services().localRepository.revokeWaiterDevice(input.sessionId);
   });
   const catalogWrites = new Set<string>([
-    "savePriceBook", "assignPriceBooks", "createProduct", "updateProduct", "deleteProduct", "bulkUpdateProducts",
+    "savePriceBook", "assignPriceBooks", "createProduct", "importProducts", "updateProduct", "deleteProduct", "bulkUpdateProducts",
     "updateCategory", "deleteCategory", "configureProductCombo", "adjustStock",
   ]);
   const userWrites = new Set<string>(["createUser", "createDriver", "updateUser", "deleteUser"]);
@@ -823,12 +855,14 @@ function registerIpcHandlers() {
       const target = appService[method] as (input?: any) => unknown;
       const idempotentMethods = [
         "repeatOrder",
+        "addOrderItem",
         "addComboItem",
         "configureProductCombo",
         "createCombo",
         "cancelPurchase",
         "correctPurchaseItemProduct",
         "payOrder",
+        "completeOrder",
         "markOrderServed",
         "createOrder",
         "registerCashMovement",
@@ -867,7 +901,7 @@ function registerIpcHandlers() {
       const result = userWrites.has(method) || hasAuthorizerPin
         ? await localRepository.withPreparedUserPins(payload, invoke)
         : await invoke();
-      if (catalogWrites.has(method)) catalogChanged();
+      if (catalogWrites.has(method)) void pollWebCommerce();
       return result;
     });
   }
@@ -891,15 +925,16 @@ function registerIpcHandlers() {
         sections?: CashSessionReportPrintSections;
       },
     ) => {
-      const { appService } = services();
+      const { appService, localRepository } = services();
       const report = appService.getCashSessionReport(payload.filters);
+      const settings = localRepository.getSettings();
       const outcome = await printHtml(
         cashSessionReportHtml(
           report,
-          appService.bootstrap().settings,
+          settings,
           payload.sections,
         ),
-        appService.bootstrap().settings.printing.bill,
+        settings.printing.bill,
         { parent: mainWindow, skipPreview: true },
       );
       return {

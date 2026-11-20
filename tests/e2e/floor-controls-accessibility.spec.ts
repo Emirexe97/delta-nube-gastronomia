@@ -12,7 +12,7 @@ import { basename, dirname, join, resolve } from "node:path";
 
 const evidence = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-floor-controls-fix-2026-10-08",
+  "docs/qa/evidence/release-readiness-20261115/e2e-rerun/floor-controls-accessibility",
 );
 let app: ElectronApplication;
 let page: Page;
@@ -43,6 +43,7 @@ test.beforeEach(async () => {
   await page.reload();
   await page.getByRole("link", { name: "Salón" }).click();
   await page.getByRole("tab", { name: "Plano por sectores" }).click();
+  await expect(mainContent()).toHaveCount(1);
 });
 
 test.afterEach(async ({}, info) => {
@@ -53,7 +54,7 @@ test.afterEach(async ({}, info) => {
         await page.evaluate(async () => ({
           url: location.href,
           bootstrap: await window.gastronomy.bootstrap(),
-          scroll: document.querySelector("main > div")?.scrollTop,
+          scroll: document.querySelector("main > .min-h-0.flex-1.overflow-auto")?.scrollTop,
         })),
         null,
         2,
@@ -118,10 +119,16 @@ async function setWindow(width: number, height: number) {
 
 async function mainScrollToTop() {
   await page.evaluate(() => {
-    const main = document.querySelector("main > div") as HTMLElement | null;
+    const main = document.querySelector(
+      "main > .min-h-0.flex-1.overflow-auto",
+    ) as HTMLElement | null;
     if (main) main.scrollTop = 0;
   });
   await settle();
+}
+
+function mainContent(): Locator {
+  return page.locator("main > .min-h-0.flex-1.overflow-auto");
 }
 
 async function controls() {
@@ -164,7 +171,7 @@ async function assertControlsReachable(group: Locator, tag: string) {
   expect(bounds, `${tag}: zoom group has a measurable box`).not.toBeNull();
   if (!bounds) return;
   expect(bounds.x).toBeGreaterThanOrEqual(0);
-  const contentBounds = await page.locator("main > div").boundingBox();
+  const contentBounds = await mainContent().boundingBox();
   expect(contentBounds).not.toBeNull();
   expect(bounds.y).toBeGreaterThanOrEqual(contentBounds!.y);
   expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
@@ -212,7 +219,7 @@ test("mantiene el grupo de zoom único y accesible arriba, fuera del lienzo, en 
         await page.getByRole("button", { name: "Editar plano" }).click();
       const naturalScrollTop = await page.evaluate(
         () =>
-          (document.querySelector("main > div") as HTMLElement | null)
+          (document.querySelector("main > .min-h-0.flex-1.overflow-auto") as HTMLElement | null)
             ?.scrollTop ?? null,
       );
       await mainScrollToTop();
@@ -228,7 +235,7 @@ test("mantiene el grupo de zoom único y accesible arriba, fuera del lienzo, en 
             naturalScrollTop,
             normalizedScrollTop: await page.evaluate(
               () =>
-                (document.querySelector("main > div") as HTMLElement | null)
+                (document.querySelector("main > .min-h-0.flex-1.overflow-auto") as HTMLElement | null)
                   ?.scrollTop ?? null,
             ),
             group: await page

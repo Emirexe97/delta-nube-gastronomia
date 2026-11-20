@@ -13,7 +13,7 @@ import { formatMoney } from "../../packages/domain/src/money";
 
 const evidence = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-navigation-frame-fix-2026-10-07",
+  "docs/qa/evidence/release-readiness-20261115/final-layout/navigation-frame-readability",
 );
 const expectedLinks = [
   "Resumen",
@@ -257,8 +257,8 @@ test("Navegación y cabecera: marca, cinco grupos, estados de links y caja abier
         ),
     ),
     await metrics(
-      page.getByText("Operación local", { exact: true }),
-      "local operation label",
+      page.getByRole("navigation").getByText("Operación", { exact: true }),
+      "operation navigation group",
     ),
     await metrics(
       page.locator("main > header .border-l p").nth(1),

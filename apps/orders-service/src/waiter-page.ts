@@ -157,6 +157,11 @@ export const waiterHtml = String.raw`<!doctype html>
         border-top: 1px solid #eef0ec;
         gap: 10px;
       }
+      .product-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; max-width:52%; }
+      .product-actions button { min-width:44px; padding:10px 12px; }
+      .product-with-halves { flex-wrap:wrap; }
+      .product-with-halves > span { width:100%; }
+      .product-with-halves .product-actions { width:100%; max-width:none; }
       .product:first-child {
         border: 0;
       }
@@ -327,6 +332,8 @@ export const waiterHtml = String.raw`<!doctype html>
             <button type="button" class="secondary" id="clearSearch" hidden>Limpiar</button>
           </div>
           <div id="products"></div>
+          <p id="productRange" class="muted" aria-live="polite"></p>
+          <button type="button" class="secondary" id="showMoreProducts" hidden>Mostrar más</button>
           <p id="noResults" class="muted" role="status" hidden>No se encontraron productos.</p>
         </div>
         <div class="card" id="draftCard">
@@ -662,6 +669,33 @@ export const waiterHtml = String.raw`<!doctype html>
         function normalizeName(value) {
           return value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
         }
+        let indexedMenu = null, menuIndex = [], filteredMenu = null, menuLimit = 100, lastMenuQuery = '', lastMenuCategory = '';
+        function getMenuIndex() {
+          if (indexedMenu !== state.menu) {
+            indexedMenu = state.menu;
+            const products = allProducts();
+            const halfIds = new Set(products.filter(product => product.halfEligible).map(productId));
+            menuIndex = products.map((product) => {
+              const id = productId(product);
+              const hasOtherHalf = !!state.menu?.halfAndHalfEnabled && !!product.halfEligible && halfIds.size > 1;
+              return { product, name: normalizeName(product.name || product.label || String(product.id ?? product.productId)), hasOtherHalf,
+                signature: JSON.stringify([id, product.name, product.label, product.price, product.halfEligible, product.categoryId, hasOtherHalf]) };
+            });
+            filteredMenu = null;
+          }
+          return menuIndex;
+        }
+        function getFilteredMenu(query, category, limit) {
+          if (!filteredMenu || filteredMenu.menu !== state.menu || filteredMenu.query !== query || filteredMenu.category !== category || filteredMenu.limit !== limit) {
+            const matches = getMenuIndex().filter(({ product: p, name }) => query
+              ? name.includes(query)
+              : !p.categoryId || String(p.categoryId) === category);
+            filteredMenu = { menu: state.menu, query, category, limit, matches,
+              visible: matches.slice(0, limit), signature: matches.slice(0, limit).map(entry => entry.signature) };
+          }
+          return filteredMenu;
+        }
+        el('showMoreProducts').onclick = () => { menuLimit += 100; updateMenu(); };
         function updateMenu() {
           if (state) renderMenu(busy || !!pending());
         }
@@ -678,6 +712,7 @@ export const waiterHtml = String.raw`<!doctype html>
           const cats = state.menu?.categories || [];
           if (!selectedCategory || !cats.some((c) => String(c.id ?? c) === selectedCategory))
             selectedCategory = String(cats[0]?.id ?? cats[0] ?? '');
+          if (query !== lastMenuQuery || selectedCategory !== lastMenuCategory) { menuLimit = 100; lastMenuQuery = query; lastMenuCategory = selectedCategory; filteredMenu = null; }
           const cs = el('categories');
           const categorySignature = JSON.stringify(cats.map((c) => [String(c.id ?? c), c.name || String(c)]));
           renderIfChanged(cs, categorySignature, () => {
@@ -693,18 +728,19 @@ export const waiterHtml = String.raw`<!doctype html>
             button.className = !query && String(cats[index]?.id ?? cats[index]) === selectedCategory ? 'active' : '';
           });
           const ps = el('products');
-          const visibleProducts = allProducts().filter((p) => query
-            ? normalizeName(p.name || p.label || String(p.id)).includes(query)
-            : !p.categoryId || String(p.categoryId) === selectedCategory);
-          el('noResults').hidden = !query || visibleProducts.length > 0;
-          const productSignature = JSON.stringify([selectedCategory, state.menu?.halfAndHalfEnabled, visibleProducts]);
+          filteredMenu = getFilteredMenu(query, selectedCategory, menuLimit);
+          const visibleProducts = filteredMenu.visible.map(({ product }) => product);
+          el('productRange').textContent = filteredMenu.matches.length ? 'Mostrando ' + visibleProducts.length + ' de ' + filteredMenu.matches.length + ' productos' : '';
+          el('showMoreProducts').hidden = visibleProducts.length >= filteredMenu.matches.length;
+          el('noResults').hidden = !query || filteredMenu.matches.length > 0;
+          const productSignature = JSON.stringify([selectedCategory, state.menu?.halfAndHalfEnabled, filteredMenu.signature]);
           const focusedProductId = document.activeElement?.dataset?.productId || '';
           renderIfChanged(ps, productSignature, () => {
             ps.replaceChildren();
-            for (const p of visibleProducts) {
-              const row = document.createElement('div'); row.className = 'product';
+            for (const { product: p, hasOtherHalf } of filteredMenu.visible) {
+              const row = document.createElement('div'); row.className = hasOtherHalf ? 'product product-with-halves' : 'product';
               const info = document.createElement('span'); info.textContent = p.name || p.label || String(p.id);
-              const control = document.createElement('div'); control.className = 'stepper';
+              const control = document.createElement('div'); control.className = 'product-actions';
               const add = document.createElement('button'); add.textContent = '+';
               add.dataset.productId = String(p.id ?? p.productId);
               add.setAttribute('aria-label', 'Agregar ' + info.textContent);
@@ -718,10 +754,16 @@ export const waiterHtml = String.raw`<!doctype html>
               withNote.setAttribute('aria-label', 'Observaciones: ' + info.textContent);
               withNote.onclick = () => {
                 const units = draft.lines.filter(line => line.productId === productId(p) && !line.secondProductId);
-                openItem(p, units.find(line => !line.note?.trim()) || units[units.length - 1]);
+                openItem(p, units.find(line => !line.note?.trim()) || units[units.length - 1], false, true);
               };
-              add.onclick = () => state.menu.halfAndHalfEnabled && p.halfEligible ? openItem(p) : addLine(p);
-              if (!(state.menu.halfAndHalfEnabled && p.halfEligible)) control.append(withNote);
+              add.onclick = () => addLine(p);
+              control.append(withNote);
+              if (hasOtherHalf) {
+                const half = document.createElement('button'); half.className = 'secondary'; half.textContent = 'Mitad y mitad';
+                half.setAttribute('aria-label', 'Mitad y mitad: ' + info.textContent);
+                half.onclick = () => openItem(p, null, true);
+                control.append(half);
+              }
               control.append(add); row.append(info, control); ps.append(row);
             }
           });
@@ -734,9 +776,9 @@ export const waiterHtml = String.raw`<!doctype html>
             if (count.textContent !== label) count.textContent = label;
             count.hidden = !quantity;
           }
-          for (const button of ps.querySelectorAll('.stepper button')) button.disabled = locked;
+          for (const button of ps.querySelectorAll('.product-actions button')) button.disabled = locked;
           if (focusedProductId) {
-            const matchingButton = Array.from(ps.querySelectorAll('.stepper button')).find((button) => button.dataset.productId === focusedProductId);
+            const matchingButton = Array.from(ps.querySelectorAll('.product-actions button[data-product-id]')).find((button) => button.dataset.productId === focusedProductId);
             if (matchingButton && document.activeElement !== matchingButton) matchingButton.focus({ preventScroll: true });
           }
         }
@@ -965,21 +1007,24 @@ export const waiterHtml = String.raw`<!doctype html>
           el('secondProductMessage').hidden = !el('secondProduct').value;
           el('secondProductMessage').textContent = el('secondProduct').selectedOptions[0]?.textContent + ' seleccionada.';
         };
-        function openItem(product, existingLine = null) {
+        function openItem(product, existingLine = null, startHalf = false, noteMode = false) {
+          if (!state || busy || pending()) return;
           editingProductId = productId(product);
           noteTarget = existingLine && { lineId: existingLine.lineId, note: existingLine.note || '' };
           const others = otherPizzaProducts();
+          if (startHalf && (!state.menu?.halfAndHalfEnabled || !others.length || !product.halfEligible)) return;
           el('itemTitle').textContent = product.name || product.label;
-          el('pizzaOptions').hidden = !others.length;
-          el('pizzaMode').value = 'whole';
-          el('secondChoice').hidden = true;
+          el('pizzaOptions').hidden = noteMode || !!noteTarget || !others.length;
+          el('pizzaMode').value = startHalf ? 'half' : 'whole';
+          el('secondChoice').hidden = !startHalf;
           const select = el('secondProduct');
           el('secondProductSearch').value = '';
           searchSecondProducts();
-          select.required = false;
+          select.required = startHalf;
           el('itemNote').value = noteTarget?.note || '';
           el('saveItem').textContent = noteTarget ? 'Guardar nota' : 'Agregar al pedido';
           el('itemDialog').showModal();
+          if (startHalf) el('secondProductSearch').focus();
         }
         el('pizzaMode').onchange = () => {
           const half = el('pizzaMode').value === 'half';
@@ -1100,17 +1145,54 @@ export const waiterHtml = String.raw`<!doctype html>
             );
           }
         }
+        // Negotiate on the existing RPC: an older desktop ignores menuProtocol
+        // and still returns a complete menu. Never install a partial catalog.
+        async function readSessionWithMenu(live) {
+          for (let attempt = 0; attempt < 2 && live(); attempt++) {
+            const next = await rpc('waiter.getState', {menuProtocol: 2});
+            if (!live()) return null;
+            if (device?.waiterId && device.waiterId !== next.waiter?.id) { replaceTab(); return null; }
+            if (device?.cashSessionId && device.cashSessionId !== next.cashSessionId) {
+              endAccess('Cambió el turno de caja. Escaneá un QR nuevo para ingresar.'); return null;
+            }
+            const menu = next.menu;
+            if (!menu?.version) return next; // Legacy desktop.
+            if (!Number.isSafeInteger(menu.productCount) || menu.productCount < 0 || !Array.isArray(menu.products))
+              throw new Error('Menú de caja inválido.');
+            if (state?.menu?.version === menu.version && state.waiter?.id === next.waiter?.id &&
+                state.cashSessionId === next.cashSessionId && state.menu.products.length === menu.productCount) {
+              // Keep the normalized search index too when only table/session data changed.
+              if (menu.halfAndHalfEnabled === state.menu.halfAndHalfEnabled &&
+                  JSON.stringify(menu.categories) === JSON.stringify(state.menu.categories)) next.menu = state.menu;
+              else menu.products = state.menu.products;
+              return next;
+            }
+            if (menu.products.length === menu.productCount) return next;
+            const loaded = [];
+            while (live()) {
+              const chunk = await rpc('waiter.getMenuPage', {version: menu.version, offset: loaded.length});
+              if (!live()) return null;
+              if (chunk.version !== menu.version) break; // Restart from fresh session metadata, once.
+              if (!Array.isArray(chunk.products) || !chunk.products.length || chunk.products.length > 1000 ||
+                  loaded.length + chunk.products.length > menu.productCount) throw new Error('Página de menú inválida.');
+              loaded.push(...chunk.products);
+              if (chunk.nextOffset === null && loaded.length === menu.productCount) {
+                menu.products = loaded;
+                return next;
+              }
+              if (chunk.nextOffset !== loaded.length || loaded.length >= menu.productCount) throw new Error('Menú incompleto.');
+            }
+          }
+          if (live()) throw new Error('El menú cambió mientras se cargaba.');
+          return null;
+        }
+        let refreshSequence = 0;
         async function refresh() {
-          const version = accessVersion;
+          const version = accessVersion, sequence = ++refreshSequence;
+          const live = () => sequence === refreshSequence && version === accessVersion && !tabReplaced;
           try {
-            const nextState = await rpc('waiter.getState');
-            if (version !== accessVersion || tabReplaced) return;
-            if (device?.waiterId && device.waiterId !== nextState.waiter?.id) {
-              replaceTab(); return;
-            }
-            if (device?.cashSessionId && device.cashSessionId !== nextState.cashSessionId) {
-              endAccess('Cambió el turno de caja. Escaneá un QR nuevo para ingresar.'); return;
-            }
+            const nextState = await readSessionWithMenu(live);
+            if (!nextState || !live()) return;
             state = nextState;
             const nextDevice = {...device, tenantId, terminalId, waiterId: state.waiter?.id, cashSessionId: state.cashSessionId,
               generation: device?.generation || newRequestId()};
@@ -1157,7 +1239,7 @@ export const waiterHtml = String.raw`<!doctype html>
             if (p) await checkPending();
             else if (readWatch()) await checkPrint();
           } catch (e) {
-            if (version !== accessVersion || tabReplaced) return;
+            if (!live()) return;
             el('connection').textContent = 'Desconectado';
             setMsg('appMessage', 'Sin conexión con caja. Tu pedido sigue guardado; tocá «Actualizar» para comprobarlo.', 'warn');
             if (!challengeId && (token || device)) {

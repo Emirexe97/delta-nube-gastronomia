@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { businessDateFromOpening } from "@gastronomy/domain";
 import { createDemoApi, DEMO_STORAGE_KEY, type DemoStorage } from "./demo-api";
 
 class MemoryStorage implements DemoStorage {
@@ -180,7 +181,7 @@ describe("recuperación de costo de una línea de compra demo", () => {
     state.purchases.push(second);
     storage.setItem(DEMO_STORAGE_KEY, JSON.stringify(state));
     const api = createDemoApi(storage);
-    const date = purchase.createdAt.slice(0, 10);
+    const date = businessDateFromOpening(purchase.createdAt);
     await expect(api.getFinanceReport({ from: date, to: date })).rejects.toThrow(/rango/i);
   });
 

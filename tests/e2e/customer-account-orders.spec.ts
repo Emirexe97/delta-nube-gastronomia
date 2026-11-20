@@ -54,7 +54,7 @@ for (const type of ["TAKEAWAY", "DELIVERY"] as const) {
     await page.getByRole("button", { name: /Cobrar.*F8/ }).click();
     const modal = page.getByRole("dialog", { name: "Cobrar pedido", exact: true });
     await modal.getByRole("button", { name: "Cargar saldo completo a cuenta corriente", exact: true }).click();
-    await expect(modal.getByLabel("Efectivo", { exact: true })).toHaveValue("");
+    await expect(modal.getByLabel("Efectivo", { exact: true })).toHaveCount(0);
     await expect(modal.getByLabel("Cuenta corriente", { exact: true })).toHaveValue(String(setup.total / 100));
     await expect(modal.getByRole("button", { name: "Confirmar cobro" })).toBeDisabled();
     await expect(modal.getByLabel("Nombre del cliente nuevo")).toHaveValue("Cliente cuenta E2E");
@@ -80,6 +80,7 @@ test("Envío: efectivo intencional + cuenta permite cobrar y entregar; recibo no
   await page.getByRole("button", { name: "Entregar", exact: true }).click();
   const modal = page.getByRole("dialog", { name: "Cobrar y entregar", exact: true });
   const cash = Math.floor(setup.total / 2);
+  await modal.getByRole("button", { name: "Pago mixto", exact: true }).click();
   await modal.getByLabel("Efectivo", { exact: true }).fill(String(cash / 100));
   await modal.getByLabel("Cuenta corriente", { exact: true }).fill(String((setup.total - cash) / 100));
   await expect(modal.getByLabel("Efectivo", { exact: true })).toHaveValue(String(cash / 100));
@@ -103,6 +104,7 @@ test("Ingresar cuenta limpia sólo efectivo automático y explica exceso sin ofr
   const setup = await seed("TAKEAWAY", true);
   await page.getByRole("button", { name: /Cobrar.*F8/ }).click();
   const modal = page.getByRole("dialog", { name: "Cobrar pedido", exact: true });
+  await modal.getByRole("button", { name: "Pago mixto", exact: true }).click();
   await modal.getByLabel("Cuenta corriente", { exact: true }).fill("0");
   await expect(modal.getByLabel("Efectivo", { exact: true })).toHaveValue(String(setup.total / 100));
   await modal.getByLabel("Cuenta corriente", { exact: true }).fill(String(setup.total / 100));

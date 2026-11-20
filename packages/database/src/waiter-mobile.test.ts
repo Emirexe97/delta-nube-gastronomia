@@ -158,6 +158,32 @@ test("waiter batch requires a live session and persists idempotent receipt", () 
   });
 });
 
+test("dos sesiones que vieron la misma mesa libre no pueden abrirla ni mezclar sus tandas", () => {
+  withRepository((repo) => {
+    repo.openCashSession({ openingAmountMinor: 0 });
+    const table = repo.ensureTable(120);
+    const sessions = ["493167", "913684"].map((pin, i) => {
+      const user = repo.createUser({ fullName: "Mozo " + i, roleCode: "WAITER", pin, authorizerPin: "2468" });
+      const { sessionToken } = repo.pairWaiterSession({ challengeId: repo.createWaiterChallenge(user.id).challengeId, pin });
+      const snapshot = repo.getWaiterSessionState(sessionToken).tables.find(t => t.id === table.id)!;
+      assert.ok(snapshot && snapshot.openOrderId == null);
+      return { user, sessionToken, snapshot };
+    });
+    const send = (i: number) => repo.submitWaiterBatch(sessions[i]!.sessionToken, {
+      requestId: randomUUID(), tableId: table.id, expectedOrderId: sessions[i]!.snapshot.openOrderId,
+      printMode: "NONE", submittedAt: new Date().toISOString(),
+      lines: [{ lineId: randomUUID(), productId: "starter-gaseosa", quantity: 1 }],
+    });
+    const first = send(0);
+    assert.throws(() => send(1), /mesa cambió/i);
+    const orders = repo.bootstrap().orders.filter(o => o.tableId === table.id);
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0]!.id, first.orderId);
+    assert.equal(orders[0]!.waiterUserId, sessions[0]!.user.id);
+    assert.deepEqual(orders[0]!.items.map(i => i.quantity), [1]);
+  });
+});
+
 test("waiter snapshot marks only open tables assigned to this waiter in this shift", () => {
   withRepository((repository) => {
     const previousCash = repository.openCashSession({ openingAmountMinor: 0 });

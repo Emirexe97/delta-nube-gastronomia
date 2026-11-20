@@ -99,3 +99,78 @@ test("unreadable persisted credential never reports a stale active status", asyn
     await broken.initialize(); assert.equal(broken.status().state, "ERROR"); assert.equal(broken.status().url, null);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("desktop negotiates banner metadata, never silently confirms an unsupported change", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "web-site-cover-"));
+  try {
+    let patchCount = 0;
+    const current = { ...metadata, designMode: "STANDARD" };
+    const value = await make(dir, async (_url, init) => {
+      if (init?.method === "POST") return Response.json({ ...registration, designMode: "STANDARD" });
+      assert.equal(new Headers(init?.headers).get("x-web-site-banner"), "1");
+      if (init?.method === "PATCH") {
+        patchCount++;
+        assert.equal(JSON.parse(String(init.body)).bannerDataUrl, null);
+        return Response.json(current); // Simulate an older server/proxy ignoring the field.
+      }
+      return Response.json({ ...current, bannerDataUrl: null });
+    });
+    const choice = { slug: "cafe-norte", whatsappNumber: "1112345678" };
+    await value.select(choice);
+    await value.provision("n".repeat(40), choice);
+    assert.equal((await value.getStatus()).bannerDataUrl, null);
+    const edit = { displayName: "Carta nueva", tagline: "", accent: "#733b28" };
+    await assert.rejects(() => value.updateBranding({ ...edit, bannerDataUrl: "not-an-image" }), /imagen de portada/);
+    await assert.rejects(() => value.updateBranding({ ...edit, bannerDataUrl: null }), /no confirmó/);
+    assert.equal(patchCount, 1);
+    assert.equal(value.status().displayName, current.displayName);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("reads one product by reference and creates a phone link without persisting its capability", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "web-site-phone-"));
+  const token = "P".repeat(43), expiresAt = new Date(Date.now()+600_000).toISOString();
+  let responseRef = "plato:1", patchCount = 0;
+  try {
+    const value = await make(dir, async (url,init) => {
+      const path = new URL(String(url)).pathname;
+      if(path === "/v1/web-sites") return Response.json({...registration,designMode:"STANDARD"});
+      assert.equal(new Headers(init?.headers).get("x-pos-installation"), "install_1");
+      if(path === "/v1/web-sites/product-photo/plato%3A1") return Response.json({productRef:responseRef,dataUrl:null});
+      if(path === "/v1/web-sites/mobile-preview") return Response.json({token,expiresAt});
+      if(path === "/v1/web-sites/branding" && init?.method==="PATCH") {
+        patchCount++; assert.equal(new Headers(init.headers).get("x-web-site-media"),"1");
+        return Response.json({...metadata,designMode:"STANDARD"}); // No acknowledgement from a legacy service.
+      }
+      throw new Error("unexpected route");
+    });
+    const choice={slug:"cafe-norte",whatsappNumber:"1112345678"}; await value.select(choice); await value.provision("n".repeat(40),choice);
+    assert.deepEqual(await value.getProductPhoto("plato:1"),{productRef:"plato:1",dataUrl:null});
+    responseRef="otro"; await assert.rejects(()=>value.getProductPhoto("plato:1"),/foto válida/);
+    const identity={displayName:"Café",tagline:"",accent:"#84432b"};
+    assert.deepEqual(await value.createMobilePreview({...identity,bannerDataUrl:null,logoDataUrl:null,product:null}),{url:registration.url+"/vista-previa#"+token,expiresAt});
+    assert.ok(!(await readFile(join(dir,"web-site-state.json"),"utf8")).includes(token));
+    await assert.rejects(()=>value.updateBranding({...identity,productPhoto:{productRef:"plato:1",dataUrl:null}}),/no confirmó/);
+    assert.equal(patchCount,1);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test("hosted installations never send a private preview to a different storefront domain", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "web-site-preview-host-"));
+  try {
+    let calls = 0;
+    const value = new WebSiteProvisioning({
+      userDataPath: dir, baseUrl: "https://pedidos.deltanubeweb.com", env: {},
+      safeStorage: vault, installationId: () => "install_1",
+      fetch: async () => { calls++; return Response.json({ ...registration, designMode: "STANDARD" }); },
+    });
+    await value.initialize();
+    const choice = { slug: registration.slug, whatsappNumber: "1112345678" };
+    await value.select(choice); await value.provision("n".repeat(40), choice);
+    await assert.rejects(() => value.createMobilePreview({
+      displayName: "Café", accent: "#704320", tagline: "", logoDataUrl: null,
+      bannerDataUrl: null, product: null,
+    }), /no corresponde/);
+    assert.equal(calls, 1, "the draft must not leave the POS");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

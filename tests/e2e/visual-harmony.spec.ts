@@ -58,8 +58,8 @@ test("alinea controles vecinos aunque sólo uno tenga texto de ayuda", async () 
 
   let dialog = page.getByRole("dialog", { name: "Nuevo cliente" });
   await expectSameControlRow(
-    dialog.getByLabel("Teléfono"),
-    dialog.getByLabel("Nombre"),
+    dialog.getByRole("textbox", { name: "Teléfono", exact: true }),
+    dialog.getByRole("textbox", { name: "Nombre", exact: true }),
   );
   await dialog.getByRole("button", { name: "Cerrar" }).click();
 
@@ -70,15 +70,15 @@ test("alinea controles vecinos aunque sólo uno tenga texto de ayuda", async () 
 
   dialog = page.getByRole("dialog", { name: "Nuevo producto" });
   await expectSameControlRow(
-    dialog.getByLabel("Nombre"),
-    dialog.getByLabel("Código"),
+    dialog.getByRole("textbox", { name: "Nombre", exact: true }),
+    dialog.getByRole("textbox", { name: "Código", exact: true }),
   );
   // Stock is now a dedicated, four-column inventory section rather than a
   // field in the product identity row.
   await expectSameControlRow(
-    dialog.getByLabel("Stock actual"),
-    dialog.getByLabel("Objetivo"),
-    dialog.getByLabel("Mínimo"),
-    dialog.getByLabel("Crítico"),
+    dialog.getByRole("textbox", { name: "Stock actual", exact: true }),
+    dialog.getByRole("textbox", { name: "Objetivo", exact: true }),
+    dialog.getByRole("textbox", { name: "Mínimo", exact: true }),
+    dialog.getByRole("textbox", { name: "Crítico", exact: true }),
   );
 });

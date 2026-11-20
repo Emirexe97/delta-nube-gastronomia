@@ -7,7 +7,7 @@ import {
 } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 let app: ElectronApplication;
 let page: Page;
@@ -25,7 +25,12 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await app?.close();
-  await rm(userData, { recursive: true, force: true });
+  const absolute = resolve(userData);
+  const underTemp = relative(resolve(tmpdir()), absolute);
+  if (!underTemp || underTemp === ".." || underTemp.startsWith(`..${sep}`) || isAbsolute(underTemp) || dirname(absolute) !== resolve(tmpdir()) || !basename(absolute).startsWith("gastronomy-customers-e2e-")) {
+    throw new Error("Unsafe disposable customer workflow profile cleanup");
+  }
+  await rm(absolute, { recursive: true, force: true });
 });
 
 async function createCustomer(input: {
@@ -38,8 +43,8 @@ async function createCustomer(input: {
     .first()
     .click();
   const dialog = page.getByRole("dialog", { name: "Nuevo cliente" });
-  await dialog.getByLabel("Teléfono").fill(input.phone);
-  await dialog.getByLabel("Nombre").fill(input.name);
+  await dialog.getByLabel("Teléfono", { exact: true }).fill(input.phone);
+  await dialog.getByLabel("Nombre", { exact: true }).fill(input.name);
   await dialog.getByLabel("Dirección", { exact: true }).fill(input.address);
   await dialog.getByLabel("Dirección", { exact: true }).press("Tab");
   await dialog.getByRole("button", { name: "Guardar cliente" }).click();
@@ -88,7 +93,7 @@ test("valida la ficha y evita reutilizar un cliente anterior durante autocomplet
     .first()
     .click();
   let customerDialog = page.getByRole("dialog", { name: "Nuevo cliente" });
-  await customerDialog.getByLabel("Teléfono").fill("11 4444-1000");
+  await customerDialog.getByLabel("Teléfono", { exact: true }).fill("11 4444-1000");
   await customerDialog.getByLabel("Nombre").fill("Familiar de Ana");
   await expect(
     customerDialog.getByText("Posibles coincidencias"),
@@ -168,7 +173,8 @@ test("valida la ficha y evita reutilizar un cliente anterior durante autocomplet
   await expect(
     page
       .getByRole("dialog", { name: /Pedido #\d+ · Envío/ })
-      .getByText("Mariana Selección QA", { exact: true }),
+      .getByRole("paragraph")
+      .filter({ hasText: /^Mariana Selección QA$/ }),
   ).toBeVisible();
   await page
     .getByRole("dialog", { name: /Pedido #\d+ · Envío/ })

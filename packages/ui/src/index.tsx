@@ -525,6 +525,7 @@ export function Modal({
       ].filter(
         (element) =>
           element.tabIndex >= 0 &&
+          !element.matches(":disabled") &&
           !element.closest("[hidden], [inert]") &&
           element.getClientRects().length > 0,
       );

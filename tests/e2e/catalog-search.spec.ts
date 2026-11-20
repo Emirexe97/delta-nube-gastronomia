@@ -51,6 +51,7 @@ test("búsqueda de catálogo conserva foco y responde al escribir con 260 produc
       ...data.products[1]!,
       parentProductId: "search-0",
       stockMinor: 1250,
+      priceBook: { baseMinor: 123456, overrides: { "search-takeaway": 234567 } },
       prices: base.prices.map((price) => ({
         ...price,
         amountMinor: price.priceListCode === "SALON" ? 123456 : 234567,
@@ -92,6 +93,16 @@ test("búsqueda de catálogo conserva foco y responde al escribir con 260 produc
       );
       (window as any).gastronomy = {
         bootstrap: async () => bootstrap,
+        isInitialAdminPinSetupRequired: async () => false,
+        getWebSyncStatus: async () => ({ state: "UNCONFIGURED" }),
+        getTutorialProgress: async () => ({ version: 1, status: "COMPLETED", stepId: "finish" }),
+        getPriceBooks: async () => ({
+          books: [
+            { id: "search-base", name: "Principal", adjustmentBps: 0, isBase: true },
+            { id: "search-takeaway", name: "Lista retiro", adjustmentBps: 0, isBase: false },
+          ],
+          assignments: { SALON: "search-base", TAKEAWAY: "search-takeaway", DELIVERY: "search-takeaway" },
+        }),
         getFinanceProductCosts: async () => {
           metrics.financeCalls++;
           return [];
@@ -112,10 +123,11 @@ test("búsqueda de catálogo conserva foco y responde al escribir con 260 produc
     await expect(input).toBeVisible();
     await expect(
       page.getByRole("checkbox", {
-        name: "Seleccionar Producto 259",
+        name: "Seleccionar Producto 000",
         exact: true,
       }),
     ).toBeVisible();
+    await expect(page.getByRole("checkbox", {name: "Seleccionar Producto 259", exact: true})).toHaveCount(0);
     await page.evaluate(async () => {
       await document.fonts.ready;
       await new Promise<void>((done) =>
@@ -170,8 +182,15 @@ test("búsqueda de catálogo conserva foco y responde al escribir con 260 produc
     await expect(variant).toBeEnabled();
     const row = page.getByRole("row").filter({ has: variant });
     await expect(row).toContainText(/1\.234,56/);
-    await expect(row).toContainText(/2\.345,67/);
+    await expect(row.getByText("Fijos", { exact: true })).toBeVisible();
     await expect(row).toContainText("1,25 u.");
+    // Current catalog displays Principal only; the fixed derived price is
+    // verified in the product form instead of assuming legacy channel columns.
+    await page.getByRole("button", { name: "Editar Producto 001", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Editar variante · Producto 001", exact: true });
+    await dialog.getByRole("tab", { name: "Precios", exact: true }).click();
+    await expect(dialog.getByLabel("Precio fijo Lista retiro", { exact: true })).toHaveValue("2.345,67");
+    await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
     await variant.check();
     await input.fill("SKU-259");
     await expect(
@@ -192,7 +211,7 @@ test("búsqueda de catálogo conserva foco y responde al escribir con 260 produc
     await input.fill("");
     await expect(
       page.getByRole("checkbox", {
-        name: "Seleccionar Producto 259",
+        name: "Seleccionar Producto 000",
         exact: true,
       }),
     ).toBeVisible();

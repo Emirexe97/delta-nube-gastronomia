@@ -66,7 +66,14 @@ export class OrdersStore {
         display_name TEXT NOT NULL, tagline TEXT NOT NULL DEFAULT '', accent TEXT NOT NULL DEFAULT '#1f6f50',
         design_mode TEXT NOT NULL DEFAULT 'STANDARD' CHECK(design_mode IN ('STANDARD','CUSTOM')),
         template_key TEXT, receive_hash TEXT NOT NULL UNIQUE,
-        access_until TEXT
+        access_until TEXT, banner_data BLOB, has_banner INTEGER NOT NULL DEFAULT 0 CHECK(has_banner IN (0,1)),
+        logo_data BLOB, has_logo INTEGER NOT NULL DEFAULT 0 CHECK(has_logo IN (0,1))
+      );
+      CREATE TABLE IF NOT EXISTS tenant_product_photos (
+        store_id TEXT NOT NULL REFERENCES tenant_sites(store_id) ON DELETE CASCADE,
+        product_ref TEXT NOT NULL, image_data BLOB NOT NULL, version TEXT NOT NULL,
+        is_visible INTEGER NOT NULL DEFAULT 0 CHECK(is_visible IN (0,1)),
+        PRIMARY KEY(store_id,product_ref)
       );
       CREATE TABLE IF NOT EXISTS waiter_connections (
         license_id TEXT PRIMARY KEY,
@@ -78,6 +85,10 @@ export class OrdersStore {
     `);
     const tenantCols = this.db.prepare("PRAGMA table_info(tenant_sites)").all() as { name: string }[];
     if (!tenantCols.some(c => c.name === "access_until")) this.db.exec("ALTER TABLE tenant_sites ADD COLUMN access_until TEXT");
+    if (!tenantCols.some(c => c.name === "banner_data")) this.db.exec("ALTER TABLE tenant_sites ADD COLUMN banner_data BLOB");
+    if (!tenantCols.some(c => c.name === "has_banner")) this.db.exec("ALTER TABLE tenant_sites ADD COLUMN has_banner INTEGER NOT NULL DEFAULT 0 CHECK(has_banner IN (0,1))");
+    if (!tenantCols.some(c => c.name === "logo_data")) this.db.exec("ALTER TABLE tenant_sites ADD COLUMN logo_data BLOB");
+    if (!tenantCols.some(c => c.name === "has_logo")) this.db.exec("ALTER TABLE tenant_sites ADD COLUMN has_logo INTEGER NOT NULL DEFAULT 0 CHECK(has_logo IN (0,1))");
     const syncStore = this.db.prepare(
       "INSERT INTO stores(id,whatsapp_number) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET whatsapp_number=excluded.whatsapp_number",
     );
@@ -271,7 +282,7 @@ export class OrdersStore {
   getTenantBySlug(slug: string): TenantSite | undefined {
     return this.db
       .prepare(
-        "SELECT store_id,slug,display_name,tagline,accent,design_mode,template_key,access_until FROM tenant_sites WHERE slug=?",
+        "SELECT store_id,slug,display_name,tagline,accent,design_mode,template_key,access_until,has_banner,has_logo FROM tenant_sites WHERE slug=?",
       )
       .get(slug) as TenantSite | undefined;
   }
@@ -285,28 +296,79 @@ export class OrdersStore {
   }
   updateTenantBranding(
     storeId: string,
-    value: { displayName: string; tagline: string; accent: string },
+    value: { displayName: string; tagline: string; accent: string; banner?: Buffer | null; logo?: Buffer | null; productPhoto?: { productRef: string; image: Buffer | null } },
   ): boolean {
-    const result = this.db
-      .prepare(
-        "UPDATE tenant_sites SET display_name=?,tagline=?,accent=? WHERE store_id=? AND design_mode='STANDARD'",
-      )
-      .run(value.displayName, value.tagline, value.accent, storeId);
-    return Number(result.changes) === 1;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const setters = ["display_name=?", "tagline=?", "accent=?"];
+      const params: (string | Buffer | null | number)[] = [value.displayName, value.tagline, value.accent];
+      if (value.banner !== undefined) { setters.push("banner_data=?", "has_banner=?"); params.push(value.banner, value.banner ? 1 : 0); }
+      if (value.logo !== undefined) { setters.push("logo_data=?", "has_logo=?"); params.push(value.logo, value.logo ? 1 : 0); }
+      params.push(storeId);
+      const result = this.db.prepare(`UPDATE tenant_sites SET ${setters.join(",")} WHERE store_id=? AND design_mode='STANDARD' AND (access_until IS NULL OR julianday(access_until)>julianday('now'))`).run(...params);
+      if (Number(result.changes) !== 1) { this.db.exec("ROLLBACK"); return false; }
+      if (value.productPhoto) {
+        const { productRef, image } = value.productPhoto;
+        const existing = this.db.prepare("SELECT 1 FROM tenant_product_photos WHERE store_id=? AND product_ref=?").get(storeId, productRef);
+        if (image) {
+          if (!existing) {
+            const count = Number((this.db.prepare("SELECT count(*) AS n FROM tenant_product_photos WHERE store_id=?").get(storeId) as { n: number }).n);
+            if (count >= 5000) { this.db.exec("ROLLBACK"); throw Object.assign(new Error("product_photo_limit"), { status: 409, code: "product_photo_limit" }); }
+          }
+          const visible = Boolean(this.db.prepare("SELECT 1 FROM web_catalogs c,json_each(c.snapshot,'$.products') p WHERE c.store_id=? AND json_extract(p.value,'$.productRef')=? LIMIT 1").get(storeId, productRef));
+          const version = createHash("sha256").update(image).digest("hex");
+          this.db.prepare("INSERT INTO tenant_product_photos(store_id,product_ref,image_data,version,is_visible) VALUES(?,?,?,?,?) ON CONFLICT(store_id,product_ref) DO UPDATE SET image_data=excluded.image_data,version=excluded.version,is_visible=excluded.is_visible").run(storeId, productRef, image, version, visible ? 1 : 0);
+        } else if (existing) this.db.prepare("DELETE FROM tenant_product_photos WHERE store_id=? AND product_ref=?").run(storeId, productRef);
+      }
+      this.db.exec("COMMIT");
+      return true;
+    } catch (e) { try { this.db.exec("ROLLBACK"); } catch {} throw e; }
+  }
+  getTenantBanner(storeId: string): Buffer | null | undefined {
+    const row = this.db.prepare("SELECT banner_data FROM tenant_sites WHERE store_id=?").get(storeId) as { banner_data: Uint8Array | null } | undefined;
+    return row ? (row.banner_data ? Buffer.from(row.banner_data) : null) : undefined;
+  }
+  getTenantLogo(storeId: string): Buffer | null | undefined {
+    const row = this.db.prepare("SELECT logo_data FROM tenant_sites WHERE store_id=?").get(storeId) as { logo_data: Uint8Array | null } | undefined;
+    return row ? (row.logo_data ? Buffer.from(row.logo_data) : null) : undefined;
+  }
+  getTenantProductPhoto(storeId: string, productRef: string, visibleOnly = false): { data: Buffer; version: string; visible: boolean } | undefined {
+    const row = this.db.prepare(`SELECT image_data,version,is_visible FROM tenant_product_photos WHERE store_id=? AND product_ref=?${visibleOnly ? " AND is_visible=1" : ""}`).get(storeId, productRef) as { image_data: Uint8Array; version: string; is_visible: number } | undefined;
+    return row ? { data: Buffer.from(row.image_data), version: row.version, visible: row.is_visible === 1 } : undefined;
+  }
+  getVisibleTenantProductPhotos(storeId: string): Array<{ productRef: string; version: string }> {
+    return this.db.prepare("SELECT product_ref,version FROM tenant_product_photos WHERE store_id=? AND is_visible=1 ORDER BY product_ref").all(storeId).map((r) => { const row=r as { product_ref:string; version:string }; return { productRef: row.product_ref, version: row.version }; });
+  }
+  /** A bounded, read-only sample of the PUBLIC catalog; never load image BLOBs here. */
+  getPreviewMenuContext(storeId: string, selectedRef: string | null) {
+    return this.db.prepare(`SELECT json_extract(p.value,'$.name') AS name,
+          json_extract(p.value,'$.category') AS category, json_extract(p.value,'$.takeawayPriceMinor') AS priceMinor,
+          json_extract(p.value,'$.productRef') AS productRef, f.version
+        FROM web_catalogs c, json_each(c.snapshot,'$.products') p
+        LEFT JOIN tenant_product_photos f ON f.store_id=c.store_id AND f.is_visible=1 AND f.product_ref=json_extract(p.value,'$.productRef')
+        WHERE c.store_id=? AND json_extract(p.value,'$.productRef')!=? LIMIT 3`)
+      .all(storeId, selectedRef ?? "").map(row => ({
+        name: String(row.name), category: String(row.category), priceMinor: Number(row.priceMinor),
+        photoSrc: row.version ? "/media/products/" + encodeURIComponent(String(row.productRef)) + ".jpg?v=" + row.version : null,
+      }));
   }
   getTenantBranding(
     storeId: string,
+    includeBanner = false,
+    includeLogo = false,
   ):
     | {
         displayName: string;
         tagline: string;
         accent: string;
         designMode: "STANDARD" | "CUSTOM";
+        bannerDataUrl?: string | null;
+        logoDataUrl?: string | null;
       }
     | undefined {
     const row = this.db
       .prepare(
-        "SELECT display_name,tagline,accent,design_mode FROM tenant_sites WHERE store_id=?",
+        `SELECT display_name,tagline,accent,design_mode${includeBanner ? ",banner_data" : ""}${includeLogo ? ",logo_data" : ""} FROM tenant_sites WHERE store_id=?`,
       )
       .get(storeId) as
       | {
@@ -314,6 +376,8 @@ export class OrdersStore {
           tagline: string;
           accent: string;
           design_mode: "STANDARD" | "CUSTOM";
+          banner_data?: Uint8Array | null;
+          logo_data?: Uint8Array | null;
         }
       | undefined;
     return row
@@ -322,6 +386,8 @@ export class OrdersStore {
           tagline: row.tagline,
           accent: row.accent,
           designMode: row.design_mode,
+        ...(includeBanner ? { bannerDataUrl: row.banner_data ? `data:image/jpeg;base64,${Buffer.from(row.banner_data).toString("base64")}` : null } : {}),
+        ...(includeLogo ? { logoDataUrl: row.logo_data ? `data:image/jpeg;base64,${Buffer.from(row.logo_data).toString("base64")}` : null } : {}),
         }
       : undefined;
   }
@@ -343,6 +409,8 @@ export class OrdersStore {
           revision,
           new Date().toISOString(),
         );
+      const visibleRefs=JSON.stringify(snapshot.products.map(product=>product.productRef));
+      this.db.prepare("UPDATE tenant_product_photos SET is_visible=CASE WHEN product_ref IN (SELECT value FROM json_each(?)) THEN 1 ELSE 0 END WHERE store_id=?").run(visibleRefs,storeId);
       this.db.exec("COMMIT");
       return { revision };
     } catch (error) {

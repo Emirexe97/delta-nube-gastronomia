@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type {
   BootstrapDto,
   OrderDto,
@@ -30,7 +31,7 @@ import {
   Select,
   useWorkspaceActive,
 } from "@gastronomy/ui";
-import { useApiMutation } from "../api";
+import { bootstrapKey, useApiMutation } from "../api";
 import { OrderEditor } from "../components/order-editor";
 import { TableFloorPlan } from "../components/table-floor-plan";
 import { DelayedWaiterInbox, DelayedWaiterCount, canReviewDelayedWaiters } from "../components/delayed-waiter-inbox";
@@ -44,6 +45,7 @@ import {
   parseMoneyInput,
 } from "../lib";
 import { filterClosedTableOrders } from "../closed-tables-history";
+import { cacheEnsuredTable, cacheOpenedTableOrder } from "../table-opening-cache";
 import { formatServiceAge, getServiceAge, sortByOldestService } from "../salon-service";
 
 type OpenTableInput = { tableId: string; waiterUserId: string };
@@ -52,6 +54,33 @@ const waiterRoleLabels = {
   MANAGER: "Supervisor",
   ADMIN: "Administrador",
 } as const;
+
+/** Both card and keyboard entry wait for the same SQLite write and patch.
+ * A late result, competing opener, or unavailable narrow read reconciles instead. */
+function useOpenTableMutation(callbacks: {
+  onSuccess?: (order: OrderDto) => void;
+  onError?: (error: Error) => void;
+} = {}) {
+  const client = useQueryClient();
+  const snapshots = useRef(new WeakMap<OpenTableInput, BootstrapDto>());
+  return useApiMutation(
+    (input: OpenTableInput) => window.gastronomy.createOrder({ type: "DINE_IN", ...input }),
+    {
+      ...callbacks,
+      onMutate: input => {
+        const before = client.getQueryData<BootstrapDto>(bootstrapKey);
+        if (before) snapshots.current.set(input, before);
+      },
+      applyBootstrapResult: async (order, input) => {
+        const before = snapshots.current.get(input);
+        if (!before || before !== client.getQueryData(bootstrapKey)) return false;
+        const table = before.tables.find(t => t.id === input.tableId);
+        const detail = await window.gastronomy.getOrderPrintState({ orderId: order.id, includeConfirmation: true });
+        return cacheOpenedTableOrder(client, order, table, detail, before);
+      },
+    },
+  );
+}
 
 export function TablesPage({ data }: { data: BootstrapDto }) {
   const workspaceActive = useWorkspaceActive();
@@ -167,18 +196,14 @@ export function TablesPage({ data }: { data: BootstrapDto }) {
     }
   }, [selectedOrderId, workspaceActive]);
 
-  const createOrder = useApiMutation(
-    (input: OpenTableInput) =>
-      window.gastronomy.createOrder({ type: "DINE_IN", ...input }),
-    {
+  const createOrder = useOpenTableMutation({
       onSuccess: (order: OrderDto) => {
         setOpeningTable(null);
         setError(null);
         setSelectedOrderId(order.id);
       },
       onError: (value) => setError(humanError(value)),
-    },
-  );
+  });
   const deleteTable = useApiMutation(
     (input: { tableId: string }) => window.gastronomy.deleteTable(input),
     {
@@ -711,6 +736,7 @@ function QuickEntry({
   removedEvent?: { tableId: string; revision: number } | null;
   isEditorOpen?: boolean;
 }) {
+  const queryClient = useQueryClient();
   const workspaceActive = useWorkspaceActive();
   const workspaceActiveRef = useRef(workspaceActive);
   workspaceActiveRef.current = workspaceActive;
@@ -759,14 +785,14 @@ function QuickEntry({
 
   const activeProducts = useMemo(
     () =>
-      data.products
+      step !== "ITEM" ? [] : data.products
         .filter((product) => product.active)
         .sort((left, right) =>
           left.name.localeCompare(right.name, "es-AR", {
             sensitivity: "base",
           }),
         ),
-    [data.products],
+    [data.products, step],
   );
   const eligibleWaiters = useMemo(
     () =>
@@ -964,12 +990,17 @@ function QuickEntry({
     if (currentOrder) setOrder(currentOrder);
   }, [data.orders, data.tables]);
 
-  const ensureTable = useApiMutation((number: number) =>
-    window.gastronomy.ensureTable({ number }),
-  );
-  const createOrder = useApiMutation((input: OpenTableInput) =>
-    window.gastronomy.createOrder({ type: "DINE_IN", ...input }),
-  );
+  const ensureSnapshot = useRef<BootstrapDto>();
+  const ensureTable = useApiMutation((number: number) => window.gastronomy.ensureTable({ number }), {
+    onMutate: () => { ensureSnapshot.current = queryClient.getQueryData(bootstrapKey); },
+    applyBootstrapResult: (table) => {
+      const before = ensureSnapshot.current;
+      ensureSnapshot.current = undefined;
+      return Boolean(before && cacheEnsuredTable(queryClient, table, before));
+    },
+    onSettled: () => { ensureSnapshot.current = undefined; },
+  });
+  const createOrder = useOpenTableMutation();
   const addItem = useApiMutation(
     (input: Parameters<typeof window.gastronomy.addOrderItem>[0]) =>
       window.gastronomy.addOrderItem(input),
@@ -997,8 +1028,10 @@ function QuickEntry({
       setTable(resolved);
       setError(null);
       if (resolved.currentOrderId) {
-        const currentOrder = data.orders.find(
-          (candidate) => candidate.id === resolved.currentOrderId,
+        // mutateAsync has reconciled any conflict. Read the latest cache, not
+        // the snapshot captured by the keypress before ensureTable finished.
+        const currentOrder = queryClient.getQueryData<BootstrapDto>(bootstrapKey)?.orders.find(
+          candidate => candidate.id === resolved.currentOrderId && candidate.tableId === resolved.id,
         );
         if (!currentOrder) {
           fail(
@@ -1038,6 +1071,11 @@ function QuickEntry({
       return;
     }
     if (order) {
+      if (order.waiterUserId !== waiter.id) {
+        resetFlow();
+        fail("Otro mozo abrió esta mesa. Volvé a ingresar el número para consultar su pedido.", tableRef);
+        return;
+      }
       openedByQuickEntryRef.current = true;
       onOpenFullOrder(order.id, order);
       resetFlow();
@@ -1053,7 +1091,10 @@ function QuickEntry({
       onOpenFullOrder(created.id, created);
       resetFlow();
     } catch (value) {
-      fail(humanError(value), waiterRef);
+      const occupied = queryClient.getQueryData<BootstrapDto>(bootstrapKey)?.tables
+        .some(t => t.id === table.id && t.currentOrderId);
+      if (occupied) resetFlow();
+      fail(humanError(value), occupied ? tableRef : waiterRef);
     } finally {
       waiterAdvanceRef.current = false;
     }

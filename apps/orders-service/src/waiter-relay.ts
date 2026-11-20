@@ -42,6 +42,7 @@ const SESSION_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const RPC_METHODS = new Set([
   "waiter.getState",
+  "waiter.getMenuPage",
   "waiter.getTable",
   "waiter.submitBatch",
   "waiter.reprintTable",

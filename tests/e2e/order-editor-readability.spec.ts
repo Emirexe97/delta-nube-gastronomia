@@ -13,7 +13,7 @@ import { formatMoney } from "../../packages/domain/src/money";
 
 const evidence = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-order-editor-fix-2026-10-07",
+  "docs/qa/evidence/release-readiness-20261115/final-editor",
 );
 let app: ElectronApplication;
 let page: Page;

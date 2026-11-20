@@ -222,12 +222,8 @@ test("cobrar y cerrar mesa devuelve la carga rápida a una nueva mesa", async ()
   const editor = await openFromQuickEntry(67);
   const search = editor.getByPlaceholder(/Código, nombre, categoría/);
   await search.fill("MUZG");
-  await editor.getByRole("button", { name: /Muzzarella grande/ }).click();
-  const addProduct = page.getByRole("dialog", {
-    name: "Agregar · Muzzarella grande",
-  });
-  await addProduct.getByRole("button", { name: "Agregar a la mesa" }).click();
-  await expect(addProduct).toBeHidden();
+  await editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Muzzarella grande" }).click();
+  await expect(page.getByRole("dialog", { name: "Agregar · Muzzarella grande" })).toHaveCount(0);
 
   await editor.getByRole("button", { name: "Confirmar pedido" }).click();
   await expect(editor.getByRole("button", { name: "Cobrar" })).toBeEnabled();

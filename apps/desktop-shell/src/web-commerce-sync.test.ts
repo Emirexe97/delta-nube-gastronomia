@@ -24,6 +24,7 @@ function setup(overrides: Record<string, unknown> = {}) {
   let cursor = 0;
   const repository = {
     getWebCommerceCatalogSnapshot: () => catalog,
+    getWebCommerceCatalogRevision: () => 1,
     getWebOrderCursor: () => cursor,
     ingestWebOrder: (_store: string, order: any) => {
       events.push("persist");
@@ -104,6 +105,7 @@ test("passes licensed installation identity only to the main-process client", as
     getInstallationId: () => "licensed-install-id",
     getRepository: () => ({
       getWebCommerceCatalogSnapshot: () => catalog,
+      getWebCommerceCatalogRevision: () => 1,
       getWebOrderCursor: () => 0,
       ingestWebOrder: () => {},
       listWebPendingAcks: () => [],
@@ -139,6 +141,162 @@ test("persists each order before acknowledging and avoids identical catalog PUTs
   assert.equal(f.sync.status().state, "SYNCED");
 });
 
+test("uses the catalog revision and does not materialize unchanged snapshots", async () => {
+  let revision = 1;
+  let snapshotReads = 0;
+  let publishCount = 0;
+  const repository = {
+    getWebCommerceCatalogSnapshot: () => {
+      snapshotReads++;
+      return catalog;
+    },
+    getWebCommerceCatalogRevision: () => revision,
+    getWebOrderCursor: () => 0,
+    ingestWebOrder: () => {},
+    listWebPendingAcks: () => [],
+    markWebOrderAcked: () => {},
+  };
+  const sync = createWebCommerceSync({
+    getRepository: () => repository,
+    env,
+    makeClient: (() => ({
+      publishCatalog: async () => {
+        publishCount++;
+        return { revision: publishCount };
+      },
+      list: async (after: number) => ({ orders: [], nextCursor: after, hasMore: false }),
+      acknowledgeReceived: async () => assert.fail("no orders expected"),
+    })) as any,
+  });
+  await sync.run();
+  await sync.run();
+  assert.equal(snapshotReads, 1);
+  assert.equal(publishCount, 1);
+  revision = 2;
+  await sync.run();
+  assert.equal(snapshotReads, 2);
+  assert.equal(publishCount, 1);
+});
+
+test("republishes when the repository instance changes even at the same revision", async () => {
+  let repository = {
+    getWebCommerceCatalogSnapshot: () => catalog,
+    getWebCommerceCatalogRevision: () => 1,
+    getWebOrderCursor: () => 0,
+    ingestWebOrder: () => {},
+    listWebPendingAcks: () => [],
+    markWebOrderAcked: () => {},
+  };
+  let publishCount = 0;
+  const sync = createWebCommerceSync({
+    getRepository: () => repository,
+    env,
+    makeClient: (() => ({
+      publishCatalog: async () => { publishCount++; return { revision: publishCount }; },
+      list: async (after: number) => ({ orders: [], nextCursor: after, hasMore: false }),
+      acknowledgeReceived: async () => assert.fail("no orders expected"),
+    })) as any,
+  });
+  await sync.run();
+  repository = { ...repository };
+  await sync.run();
+  assert.equal(publishCount, 2);
+});
+
+test("polls and persists orders when first catalog publish fails, then retries it", async () => {
+  let failPublish = true;
+  // The test fixture client is replaced through a dedicated sync to control the failure.
+  let persisted = 0;
+  let publishes = 0;
+  const repository = {
+    getWebCommerceCatalogSnapshot: () => catalog,
+    getWebCommerceCatalogRevision: () => 1,
+    getWebOrderCursor: () => 0,
+    ingestWebOrder: () => { persisted++; },
+    listWebPendingAcks: () => [],
+    markWebOrderAcked: () => {},
+  };
+  const sync = createWebCommerceSync({
+    getRepository: () => repository,
+    env,
+    makeClient: (() => ({
+      publishCatalog: async () => {
+        publishes++;
+        if (failPublish) throw new Error("publish failed");
+        return { revision: 1 };
+      },
+      list: async () => ({ orders: [{ id: "o1", storeId: "store_a", sequence: 1 }], nextCursor: 1, hasMore: false }),
+      acknowledgeReceived: async () => ({ storeId: "store_a", receivedAt: new Date().toISOString() }),
+    })) as any,
+  });
+  assert.equal((await sync.run()).state, "ERROR");
+  assert.equal(persisted, 1);
+  failPublish = false;
+  assert.equal((await sync.run(true)).state, "SYNCED");
+  assert.equal(publishes, 2);
+});
+
+test("keeps catalog pending when its revision changes during PUT", async () => {
+  let revision = 1;
+  let release!: () => void;
+  let publishes = 0;
+  const repository = {
+    getWebCommerceCatalogSnapshot: () => catalog,
+    getWebCommerceCatalogRevision: () => revision,
+    getWebOrderCursor: () => 0,
+    ingestWebOrder: () => {},
+    listWebPendingAcks: () => [],
+    markWebOrderAcked: () => {},
+  };
+  const sync = createWebCommerceSync({
+    getRepository: () => repository,
+    env,
+    makeClient: (() => ({
+      publishCatalog: async () => {
+        publishes++;
+        if (publishes === 1) await new Promise<void>((resolve) => { release = resolve; });
+        return { revision: publishes };
+      },
+      list: async (after: number) => ({ orders: [], nextCursor: after, hasMore: false }),
+      acknowledgeReceived: async () => assert.fail("no orders expected"),
+    })) as any,
+  });
+  const first = sync.run();
+  await new Promise((resolve) => setImmediate(resolve));
+  revision = 2;
+  release();
+  assert.equal((await first).state, "PENDING");
+  assert.equal((await sync.run()).state, "SYNCED");
+  assert.equal(publishes, 2);
+});
+
+test("lost publish response cannot suppress an automatic retry after a local price reverts", async () => {
+  let revision = 0, now = 0, price = 1000;
+  const received: number[] = [];
+  const repository = {
+    getWebCommerceCatalogRevision: () => revision,
+    getWebCommerceCatalogSnapshot: () => ({ products: [{ ...catalog.products[0]!, takeawayPriceMinor: price }] }),
+    getWebOrderCursor: () => 0, listWebPendingAcks: () => [],
+    markWebOrderAcked: () => {}, ingestWebOrder: () => {},
+  };
+  const sync = createWebCommerceSync({
+    env, getRepository: () => repository, now: () => now,
+    makeClient: () => ({
+      publishCatalog: async (value: typeof catalog) => {
+        received.push(value.products[0]!.takeawayPriceMinor);
+        if (received.length === 2) throw new Error("response lost after applying");
+      },
+      list: async () => ({ orders: [], nextCursor: 0, hasMore: false }),
+    } as any),
+  });
+  assert.equal((await sync.run()).state, "SYNCED");
+  price = 1200; revision++;
+  assert.equal((await sync.run()).state, "ERROR");
+  price = 1000; revision++; now += 15_000;
+  assert.equal((await sync.run()).state, "SYNCED");
+  assert.deepEqual(received, [1000, 1200, 1000]);
+});
+
 test("coalesces concurrent ticks into one in-flight run", async () => {
   const f = setup();
   const [a, b] = await Promise.all([f.sync.run(), f.sync.run()]);
@@ -151,6 +309,7 @@ test("invalidating during a catalog PUT leaves state pending and republishes nex
   let publishCount = 0;
   const repository = {
     getWebCommerceCatalogSnapshot: () => catalog,
+    getWebCommerceCatalogRevision: () => 1,
     getWebOrderCursor: () => 0,
     ingestWebOrder: () => {},
     listWebPendingAcks: () => [],
@@ -194,6 +353,7 @@ test("rejects cross-store orders without acknowledging or publishing", async () 
       ...({} as any),
       getWebOrderCursor: () => 0,
       getWebCommerceCatalogSnapshot: () => catalog,
+      getWebCommerceCatalogRevision: () => 1,
       ingestWebOrder: () => {},
       listWebPendingAcks: () => [],
       markWebOrderAcked: () => {},

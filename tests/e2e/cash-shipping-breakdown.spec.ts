@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname, basename } from "node:path";
 import { createRequire } from "node:module";
 
-const evidence = resolve("docs/qa/evidence/system-usability-salon-shipping-2026-10-10");
+const evidence = resolve("docs/qa/evidence/release-readiness-20261115/cash-shipping-rerun");
 let app: ElectronApplication;
 let page: Page;
 let profile = "";
@@ -16,8 +16,19 @@ test.beforeEach(async () => {
   page = await app.firstWindow();
   await expect(page.getByRole("link", { name: "Caja", exact: true })).toBeVisible();
   expect(resolve(await app.evaluate(({ app }) => app.getPath("userData")))).toBe(resolve(profile));
-  await app.evaluate(({ BrowserWindow }) => {
-    for (const w of BrowserWindow.getAllWindows()) w.webContents.getPrintersAsync = async () => [];
+  await app.evaluate(({ app, BrowserWindow }) => {
+    (app as any).__capturedPrintHtml = "";
+    const install = (window: any) => {
+      window.webContents.getPrintersAsync = async () => [];
+      window.webContents.print = (_options: unknown, callback?: (success: boolean) => void) => {
+        void window.webContents.executeJavaScript("document.documentElement.outerHTML").then((html: string) => {
+          (app as any).__capturedPrintHtml = html;
+          callback?.(true);
+        });
+      };
+    };
+    for (const w of BrowserWindow.getAllWindows()) install(w);
+    app.on("browser-window-created", (_event: unknown, window: any) => install(window));
   });
 });
 
@@ -56,12 +67,23 @@ async function capture(preview: Page, name: string) {
   await writeFile(join(evidence, `shipping-${name}.png`), Buffer.from(png, "base64"));
 }
 
+async function openTicketInspector(html: string): Promise<Page> {
+  const inspectorPromise = app.waitForEvent("window");
+  await app.evaluate(({ BrowserWindow }, ticketHtml) => {
+    const inspector = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+    void inspector.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(ticketHtml)}`);
+  }, html);
+  const inspector = await inspectorPromise;
+  await inspector.waitForLoadState("domcontentloaded");
+  return inspector;
+}
+
 for (const mode of ["direct", "accumulated", "driver-retained", "reversed-remittance"] as const) {
   test(`ticket separa envíos de gastos sin alterar caja: ${mode}`, async () => {
     const fixture = await page.evaluate(async (mode) => {
       const api = window.gastronomy;
       const data = await api.bootstrap();
-      await api.saveSettings({ ...data.settings, deliverySettlementEnabled: true, deliveryFeeBelongsToDriver: true, deliveryDriverPaymentMode: "ACCUMULATED" });
+      await api.saveSettings({ ...data.settings, deliverySettlementEnabled: true, deliveryFeeBelongsToDriver: true, deliveryDriverPaymentMode: "ACCUMULATED", printing: { ...data.settings.printing, bill: { ...data.settings.printing.bill, mode: "SYSTEM_DIALOG" } } });
       const session = await api.openCashSession({ openingAmountMinor: 1_000_000 });
       await api.registerCashMovement({ authorizerPin: "748259", type: "EXPENSE", amountMinor: 20_000, paymentMethodCode: "CASH", reason: "Pago de envío a repartidor: Pedido #manual no vinculado" });
       const driver = await api.createDriver({ fullName: "Repartidor informe", authorizerPin: "748259" });
@@ -85,8 +107,9 @@ for (const mode of ["direct", "accumulated", "driver-retained", "reversed-remitt
     // Attach rejection immediately so failure cleanup cannot produce an
     // unrelated unhandled Target closed rejection; still rethrow on success path.
     const outcome = page.evaluate((cashSessionId) => window.gastronomy.printCashSessionReport({ filters: { cashSessionId }, sections: { byProduct: false, byCategory: false, byTable: false, byWaiter: false, orderDetails: false } }), fixture.sessionId).catch((error) => ({ error }));
-    await expect.poll(() => app.windows().filter((p) => p.url().includes("print-preview-controls")).length).toBe(1);
-    const preview = app.windows().find((p) => p.url().includes("print-preview-controls"))!;
+    await expect.poll(() => app.evaluate(({ app }) => Boolean((app as any).__capturedPrintHtml))).toBe(true);
+    const printedHtml = await app.evaluate(({ app }) => (app as any).__capturedPrintHtml as string);
+    const preview = await openTicketInspector(printedHtml);
     const shippingRow = preview.locator(".row").filter({ has: preview.getByText("Envíos y rendiciones en efectivo", { exact: true }) });
     const generalRow = preview.locator(".row").filter({ has: preview.getByText("Gastos y otros egresos en efectivo", { exact: true }) });
     await expect(shippingRow).toBeVisible();
@@ -97,14 +120,14 @@ for (const mode of ["direct", "accumulated", "driver-retained", "reversed-remitt
     await expect(preview.getByText("Egresos en efectivo (incluye repartidores)", { exact: true })).toHaveCount(0);
     await capture(preview, mode);
     expect(await ledger()).toEqual(before);
-    await app.evaluate(({ BrowserWindow }) => { for (const w of BrowserWindow.getAllWindows()) if (w.webContents.getURL().includes("print-preview-controls")) w.close(); });
     const result = await outcome;
     if ("error" in result) throw result.error;
-    expect(result.printed).toBe(false);
+    expect(result.printed).toBe(true);
     const after = await page.evaluate((cashSessionId) => window.gastronomy.getCashSessionReport({ cashSessionId }), fixture.sessionId);
     expect(after.session.expectedAmountMinor).toBe(fixture.expected);
     expect(after.session.differenceMinor).toBe(0);
     expect(after.session.cashExpenseMinor).toBe(20_000 + fixture.shippingExpense);
     expect(after.totals.salesMinor).toBe(fixture.sales);
+    await preview.close();
   });
 }

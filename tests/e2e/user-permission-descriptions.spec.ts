@@ -11,7 +11,7 @@ import { basename, dirname, join, resolve } from "node:path";
 
 const evidence = join(
   process.cwd(),
-  "docs/qa/evidence/system-usability-user-permissions-fix-2026-10-08",
+  "docs/qa/evidence/release-readiness-20261115/user-permission-rerun",
 );
 let app: ElectronApplication;
 let page: Page;
@@ -127,7 +127,7 @@ test("muestra capacidades reales del usuario sin conteos a 1100, 1366 y 200%", a
         staffNumber: 100 + index,
         fullName: "US11 " + roleCode,
         roleCode,
-        pin: "4321",
+        pin: String(4321 + index),
         authorizerPin: "748259",
       });
     }

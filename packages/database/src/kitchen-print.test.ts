@@ -40,6 +40,67 @@ function makeOrder(repository: SqliteGastronomyRepository) {
   return order.id;
 }
 
+test("la lectura puntual de comanda coincide con la caja sin traer otros pedidos ni productos", () => {
+  withRepository((repository) => {
+    const other = makeOrder(repository);
+    const pending = repository.queuePrint(other, "KITCHEN_ORDER");
+    repository.markPrintJob(pending.jobId, "FAILED", "sin papel");
+    const free = repository.bootstrap().tables.find((t) => t.active && !t.currentOrderId)!;
+    const order = repository.createOrder({ type: "DINE_IN", tableId: free.id });
+    const productId = "starter-muzza-grande";
+    repository.addOrderItem({ orderId: order.id, productId, quantity: 2 });
+    repository.confirmOrder({ orderId: order.id });
+    const job = repository.queuePrint(order.id, "KITCHEN_ORDER");
+    function check() {
+      const full = repository.bootstrap();
+      const delta = repository.getOrderPrintState({ orderId: order.id, includeConfirmation: true });
+      assert.deepEqual(delta.order, full.orders.find((o) => o.id === order.id));
+      assert.equal(delta.cashSessionId, full.cashSession?.id);
+      assert.deepEqual(delta.printJobs, full.printJobs.filter((j) => j.orderId === order.id));
+      assert.ok(full.printJobs.some((j) => j.id === pending.jobId));
+      assert.deepEqual(delta.confirmation, {
+        table: full.tables.find((t) => t.id === free.id),
+        dashboard: full.dashboard,
+        stocks: [{productId, stockMinor: full.products.find((p) => p.id === productId)!.stockMinor}],
+      });
+      const { confirmation, ...onlyPrint } = delta;
+      assert.deepEqual(repository.getOrderPrintState({orderId: order.id}), onlyPrint);
+    }
+    repository.markPrintJob(job.jobId, "FAILED", "sin papel");
+    check();
+    repository.preparePrintRetry(job.jobId);
+    repository.markPrintJob(job.jobId, "PRINTED");
+    check();
+  });
+});
+
+test("repetir la misma segunda ronda no repite el stock ni las cantidades que recibe cocina", () => {
+  withRepository((r) => {
+    const productId = "starter-muzza-grande";
+    r.saveSettings({ ...r.getSettings(), stockEnabled: true });
+    r.adjustStock({ productId, newStockMinor: 9000, reason: "Prueba", authorizerPin: "2468" });
+    r.openCashSession({ openingAmountMinor: 0 });
+    const table = r.ensureTable(120);
+    const { id: orderId } = r.createOrder({ type: "DINE_IN", tableId: table.id });
+    r.addOrderItem({ orderId, productId, quantity: 1 });
+    const original = r.confirmOrder({ orderId });
+    r.markPrintJob(r.queuePrint(orderId, "KITCHEN_ORDER").jobId, "PRINTED");
+    const command = { orderId, productId, quantity: 2, idempotencyKey: randomUUID() };
+    const saved = r.addOrderItem(command);
+    assert.equal(saved.version, original.version! + 1);
+    assert.deepEqual(r.addOrderItem(command), saved);
+    assert.throws(() => r.addOrderItem({ ...command, quantity: 3 }), /idempotencia/i);
+    const delta = r.getOrderPrintState({ orderId, includeConfirmation: true });
+    assert.equal(delta.order.items[0]!.quantity, 3);
+    assert.deepEqual(delta.confirmation!.stocks, [{ productId, stockMinor: 6000 }]);
+    const job = r.queuePrint(orderId, "KITCHEN_ORDER", "ADDED");
+    const ticket = r.getPrintOrder(job.jobId);
+    assert.deepEqual(ticket.items.map((i) => [i.productId, i.quantity]), [[productId, 2]]);
+    r.markPrintJob(job.jobId, "PRINTED");
+    assert.throws(() => r.queuePrint(orderId, "KITCHEN_ORDER", "ADDED"), /No hay productos/);
+  });
+});
+
 test("captura tickets de cocina completos y agregados desde el último éxito", () => {
   withRepository((repository) => {
     const orderId = makeOrder(repository);

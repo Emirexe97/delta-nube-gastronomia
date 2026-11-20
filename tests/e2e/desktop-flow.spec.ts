@@ -136,11 +136,7 @@ test("abre caja y crea un takeaway desde la interfaz", async () => {
   await expect(
     page.getByPlaceholder(/Código, nombre, categoría/),
   ).toBeVisible();
-  await page.getByRole("button", { name: /Muzzarella grande/ }).click();
-  await page
-    .getByRole("dialog", { name: "Agregar · Muzzarella grande" })
-    .getByRole("button", { name: "Agregar al pedido" })
-    .click();
+  await page.locator('[id^="order-editor-product-"]').filter({ hasText: "Muzzarella grande" }).click();
   const itemRow = page
     .getByRole("dialog", { name: /Pedido #\d+/ })
     .getByRole("article");
@@ -316,8 +312,8 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
   await draftDialog
     .getByRole("button", { name: "Volver a datos del cliente y envío" })
     .click();
-  const editDraftDialog = page.getByRole("dialog", {
-    name: "Editar datos · Envío",
+  const editDraftDialog = page.getByRole("region", {
+    name: "Datos del cliente y envío",
   });
   await expect(
     editDraftDialog.getByLabel("Costo de envío", { exact: true }),
@@ -326,7 +322,7 @@ test("crea un repartidor y lo ofrece al cargar un delivery", async () => {
     .getByLabel("Costo de envío", { exact: true })
     .fill("4600");
   await editDraftDialog
-    .getByRole("button", { name: "Guardar y volver al pedido" })
+    .getByRole("button", { name: "Guardar datos" })
     .click();
   await expect(draftDialog).toBeVisible();
   await draftDialog.getByRole("button", { name: "Cerrar" }).click();
@@ -538,9 +534,7 @@ test("carga una mesa y agrega productos desde el editor con teclado", async () =
 
   const search = editor.getByPlaceholder(/Código, nombre, categoría/);
   await search.fill("MUZG");
-  await editor
-    .getByRole("button", { name: /Muzzarella grande/ })
-    .press("Enter");
+  await editor.getByRole("button", { name: "Cantidad y precio de Muzzarella grande" }).press("Enter");
   const pizza = page.getByRole("dialog", {
     name: "Agregar · Muzzarella grande",
   });
@@ -553,8 +547,7 @@ test("carga una mesa y agrega productos desde el editor con teclado", async () =
   );
 
   await search.fill("Gaseosa");
-  const sodaProduct = editor.getByRole("button", { name: /Gaseosa 1,5 L/ });
-  await sodaProduct.press("Enter");
+  await editor.getByRole("button", { name: "Cantidad y precio de Gaseosa 1,5 L" }).press("Enter");
   const soda = page.getByRole("dialog", { name: "Agregar · Gaseosa 1,5 L" });
   const price = soda.getByLabel("Precio unitario");
   const catalogPrice = await price.inputValue();
@@ -568,7 +561,7 @@ test("carga una mesa y agrega productos desde el editor con teclado", async () =
   await expect(soda).toBeHidden();
   await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveCount(0);
   await search.fill("Gaseosa");
-  await sodaProduct.press("Enter");
+  await editor.getByRole("button", { name: "Cantidad y precio de Gaseosa 1,5 L" }).press("Enter");
   await expect(price).toHaveValue(catalogPrice);
   await price.fill("9999");
   await soda.getByLabel("PIN para autorizar el precio manual").fill("0000");
@@ -710,11 +703,7 @@ test("protege modales anidados y completa atajos y recuperación por teclado", a
   const draftEditor = page.getByRole("dialog", {
     name: /Pedido #\d+ · Para retirar/,
   });
-  await draftEditor.getByRole("button", { name: /Muzzarella/ }).click();
-  await page
-    .getByRole("dialog", { name: /Agregar · Muzzarella/ })
-    .getByRole("button", { name: "Agregar al pedido" })
-    .click();
+  await draftEditor.locator('[id^="order-editor-product-"]').filter({ hasText: "Muzzarella grande" }).click();
   const draftItem = draftEditor.getByRole("article");
   await expect(draftItem.getByText("Muzzarella grande")).toBeVisible();
   await expect(

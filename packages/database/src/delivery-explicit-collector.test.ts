@@ -91,6 +91,37 @@ function movementCount(repository: SqliteGastronomyRepository) {
   return repository.bootstrap().cashSession!.movements!.length;
 }
 
+test("reintentar Cobrar y entregar devuelve el mismo envío sin repetir caja, pagos ni rendición", () => {
+  withRepository((repo) => {
+    repo.openCashSession({ openingAmountMinor: 12000 });
+    repo.saveSettings({ ...repo.bootstrap().settings, deliverySettlementEnabled: true });
+    const rider = driver(repo, "Repartidor reintento", "4729");
+    for (const collectedByDriver of [true, false]) {
+      const draft = deliveryDraft(repo, "Reintento");
+      repo.confirmOrder({ orderId: draft.order.id });
+      const input = {
+        orderId: draft.order.id, driverUserId: rider.id, idempotencyKey: randomUUID(),
+        finalStatus: "DELIVERED" as const, collectedByDriver,
+        payments: [{ methodCode: "CASH", amountMinor: draft.totalMinor }],
+      };
+      const old = repo.bootstrap();
+      const first = repo.completeOrder(input);
+      const after = repo.bootstrap();
+      assert.equal(after.cashSession!.expectedAmountMinor, old.cashSession!.expectedAmountMinor + (collectedByDriver ? 0 : draft.totalMinor));
+      assert.equal(after.dashboard.salesTotalMinor, old.dashboard.salesTotalMinor + draft.totalMinor);
+      assert.deepEqual(repo.completeOrder(input), first);
+      assert.throws(() => repo.completeOrder({ ...input, collectedByDriver: !collectedByDriver }), /idempotencia/);
+      assert.throws(() => repo.completeOrder({ ...input, idempotencyKey: randomUUID() }));
+      const replay = repo.bootstrap();
+      assert.deepEqual(replay.cashSession, after.cashSession);
+      assert.deepEqual(replay.dashboard, after.dashboard);
+      assert.deepEqual(replay.deliveryLedger, after.deliveryLedger);
+      assert.deepEqual(replay.driverDeliveryActivity, after.driverDeliveryActivity);
+      assert.equal(repo.getOrder(input.orderId).payments.length, 1);
+    }
+  });
+});
+
 test("completeOrder ausente o collectedByDriver false cobra efectivo del negocio sin deuda del repartidor", () => {
   withRepository((repository) => {
     repository.openCashSession({ openingAmountMinor: 0 });

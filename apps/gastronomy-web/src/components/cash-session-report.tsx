@@ -6,7 +6,7 @@ import {
   cashReportBreakdown,
 } from "@gastronomy/domain";
 import type {
-  CashSessionHistoryItemDto,
+  CashSessionHistoryRowDto,
   CashSessionReportFilters,
   CashSessionReportDto,
   CashSessionReportPrintSections,
@@ -21,10 +21,15 @@ export function CashSessionHistory({
 }: {
   onReport: (id: string) => void;
 }) {
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
   const history = useQuery({
-    queryKey: ["cash-session-history"],
-    queryFn: () => window.gastronomy.listCashSessionHistory(),
+    queryKey: ["cash-session-history", page, pageSize],
+    queryFn: () => window.gastronomy.listCashSessionHistoryPage({ page, pageSize }),
   });
+  useEffect(() => {
+    if (history.data && history.data.page !== page) setPage(history.data.page);
+  }, [history.data, page]);
   return (
     <Card className="overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
@@ -46,7 +51,7 @@ export function CashSessionHistory({
         <p className="p-4 text-xs text-rose-600">
           No se pudo cargar el historial.
         </p>
-      ) : !history.data?.length ? (
+      ) : !history.data?.items.length ? (
         <p className="p-6 text-center text-xs text-slate-600">
           Todavía no hay cajas cerradas.
         </p>
@@ -64,31 +69,31 @@ export function CashSessionHistory({
               </tr>
             </thead>
             <tbody>
-              {history.data.map((row: CashSessionHistoryItemDto) => (
-                <tr key={row.session.id}>
-                  <td className="font-bold">#{row.session.number}</td>
-                  <td>{row.session.businessDate}</td>
+              {history.data.items.map((row: CashSessionHistoryRowDto) => (
+                <tr key={row.id}>
+                  <td className="font-bold">#{row.number}</td>
+                  <td>{row.businessDate}</td>
                   <td>
-                    {new Date(row.session.openedAt).toLocaleString("es-AR", {
+                    {new Date(row.openedAt).toLocaleString("es-AR", {
                       timeZone: "America/Buenos_Aires",
                       hourCycle: "h23",
                     })}
                   </td>
                   <td>
-                    {row.session.closedAt
-                      ? new Date(row.session.closedAt).toLocaleString("es-AR", {
+                    {row.closedAt
+                      ? new Date(row.closedAt).toLocaleString("es-AR", {
                           timeZone: "America/Buenos_Aires",
                           hourCycle: "h23",
                         })
                       : "—"}
                   </td>
                   <td className="whitespace-nowrap">
-                    {formatMoney(row.session.salesTotalMinor ?? 0)}
+                    {formatMoney(row.salesTotalMinor)}
                   </td>
                   <td className="text-right whitespace-nowrap">
                     <Button
                       variant="secondary"
-                      onClick={() => onReport(row.session.id)}
+                      onClick={() => onReport(row.id)}
                     >
                       <Eye />{" "}
                       {row.detailAvailable ? "Ver informe" : "Ver resumen"}
@@ -98,6 +103,13 @@ export function CashSessionHistory({
               ))}
             </tbody>
           </table>
+          <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3 text-xs text-slate-600">
+            <span>Página {history.data.page} · {history.data.totalCount} cierres</span>
+            <div className="flex gap-2">
+              <Button variant="secondary" disabled={page <= 1 || history.isFetching} onClick={() => setPage((p) => p - 1)}>Anterior</Button>
+              <Button variant="secondary" disabled={!history.data.hasNextPage || history.isFetching} onClick={() => setPage((p) => p + 1)}>Siguiente</Button>
+            </div>
+          </div>
         </div>
       )}
     </Card>

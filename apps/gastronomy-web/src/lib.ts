@@ -30,13 +30,11 @@ export function localDateValue(date = new Date()): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+const orderTimeFormatter = new Intl.DateTimeFormat("es-AR", { hour: "2-digit", minute: "2-digit" });
 export function formatTime(value: string | null) {
-  return value
-    ? new Date(value).toLocaleTimeString("es-AR", {
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : "—";
+  if (!value) return "—";
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? orderTimeFormatter.format(timestamp) : "—";
 }
 
 export function formatElapsed(value: string | null) {
