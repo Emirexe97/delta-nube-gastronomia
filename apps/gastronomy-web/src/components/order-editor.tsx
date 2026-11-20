@@ -16,6 +16,7 @@ import type {
   OrderItemDto,
   OrderOperationalStatus,
   ProductDto,
+  UpdateOrderItemPriceInput,
 } from "@gastronomy/contracts";
 import {
   Check,
@@ -27,6 +28,7 @@ import {
   MagnifyingGlass,
   Minus,
   Motorcycle,
+  PencilSimple,
   Percent,
   Pizza,
   Plus,
@@ -53,6 +55,7 @@ import { isDemoMode } from "../demo/install-demo";
 import { PaymentModal } from "./payment-modal";
 import { NewOrderModal } from "./order-details-form";
 import { ComboOrderModal } from "./combo-order-modal";
+import { OrderItemPriceModal } from "./order-item-price-modal";
 import { calculateHalfAndHalfBase, getKitchenAdditions, guardOrderAction } from "@gastronomy/domain";
 import { buildProductSearchIndex, searchProductIndex } from "./order-editor-search";
 import {
@@ -137,6 +140,17 @@ export function OrderEditor({
   const [modifierItemId, setModifierItemId] = useState<string | null>(null);
   const [notesItemId, setNotesItemId] = useState<string | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
+  const [priceItemId, setPriceItemId] = useState<string | null>(null);
+  const [priceError, setPriceError] = useState<string | null>(null);
+  const canEditItemPrice =
+    order?.type === "DINE_IN" && guardOrderAction(order, "EDIT").allowed;
+  const priceItem = canEditItemPrice
+    ? order.items.find((item) => item.id === priceItemId)
+    : undefined;
+  useEffect(() => {
+    setPriceItemId(null);
+    setPriceError(null);
+  }, [orderId]);
   const [discountOpen, setDiscountOpen] = useState(false);
   const [depositOpen, setDepositOpen] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
@@ -398,6 +412,19 @@ export function OrderEditor({
       },
     },
   );
+  const updateItemPrice = useApiMutation(
+    (input: UpdateOrderItemPriceInput) =>
+      window.gastronomy.updateOrderItemPrice(input),
+    {
+      onSuccess: (_updated, input) => {
+        if (currentOrderId.current === input.orderId) setPriceItemId(null);
+      },
+      onError: (value, input) => {
+        if (currentOrderId.current === input.orderId)
+          setPriceError(humanError(value));
+      },
+    },
+  );
   const updateStatus = useOrderDispatchMutation(
     (input: { orderId: string; status: OrderOperationalStatus }) =>
       window.gastronomy.updateOrderStatus(input),
@@ -563,7 +590,8 @@ export function OrderEditor({
         Boolean(comboProduct) ||
         Boolean(variantPickerProduct) ||
         Boolean(modifierItemId) ||
-        Boolean(notesItemId);
+        Boolean(notesItemId) ||
+        Boolean(priceItem);
       if (nestedDialogOpen) return;
 
       if (event.key === "F6") {
@@ -616,6 +644,7 @@ export function OrderEditor({
     halfAndHalfEnabled,
     modifierItemId,
     notesItemId,
+    priceItem,
     order,
     orderId,
     payOpen,
@@ -681,6 +710,7 @@ export function OrderEditor({
     removeItem.isPending ||
     removeModifier.isPending ||
     updateItemNotes.isPending ||
+    updateItemPrice.isPending ||
     updateStatus.isPending ||
     assignDriver.isPending ||
     confirm.isPending ||
@@ -1220,6 +1250,21 @@ export function OrderEditor({
                                 ? "Editar observación"
                                 : "Agregar observación"}
                             </button>
+                            {canEditItemPrice ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPriceError(null);
+                                  setPriceItemId(item.id);
+                                }}
+                                disabled={editorBusy || orderPrintBusy}
+                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-bold text-brand-700 transition hover:bg-brand-50 hover:text-brand-800 disabled:opacity-50"
+                                aria-label={`Editar precio de ${item.productNameSnapshot}`}
+                              >
+                                <PencilSimple size={11} weight="bold" />
+                                Editar precio
+                              </button>
+                            ) : null}
                             {data.modifiers.length ? (
                               <button
                                 type="button"
@@ -1801,6 +1846,24 @@ export function OrderEditor({
         isPending={updateItemNotes.isPending}
         error={notesError}
       />
+      {priceItem ? (
+        <OrderItemPriceModal
+          key={priceItem.id}
+          item={priceItem}
+          onClose={() => setPriceItemId(null)}
+          onSave={(unitPriceMinor, authorizerPin) => {
+            setPriceError(null);
+            updateItemPrice.mutate({
+              orderId: order.id,
+              itemId: priceItem.id,
+              unitPriceMinor,
+              authorizerPin,
+            });
+          }}
+          isPending={updateItemPrice.isPending}
+          error={priceError}
+        />
+      ) : null}
       <DiscountModal
         open={discountOpen}
         order={order}

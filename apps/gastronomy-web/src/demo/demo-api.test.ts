@@ -1116,7 +1116,7 @@ describe("API de demostración", () => {
     },
   );
 
-  it("autoriza un precio manual por línea sin modificar el catálogo", async () => {
+  it("autoriza un precio manual al agregar y editar una línea sin modificar el catálogo", async () => {
     const api = createDemoApi(new MemoryStorage());
     const order = await api.createOrder({
       type: "DINE_IN",
@@ -1148,6 +1148,25 @@ describe("API de demostración", () => {
       unitPriceMinorSnapshot: 1_250_000,
       lineTotalMinor: 2_500_000,
     });
+    const change = {
+      orderId: order.id,
+      itemId: updated.items[0]!.id,
+      unitPriceMinor: 1_300_000,
+      authorizerPin: "0000",
+    };
+    await expect(api.updateOrderItemPrice(change)).rejects.toThrow("1234");
+    const repriced = await api.updateOrderItemPrice({
+      ...change,
+      authorizerPin: "1234",
+    });
+    expect(repriced.items).toEqual([
+      {
+        ...updated.items[0],
+        unitPriceMinorSnapshot: 1_300_000,
+        lineTotalMinor: 2_600_000,
+      },
+    ]);
+    expect(repriced.totalMinor).toBe(2_600_000);
     expect(
       (await api.bootstrap()).products
         .find((product) => product.id === "prod-muzza")!

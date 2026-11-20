@@ -72,6 +72,7 @@ const api: DesktopApi = {
   discardDraftOrder: (input) => invoke("discardDraftOrder", input),
   addOrderItem: (input) => invoke("addOrderItem", input),
   updateOrderItemQuantity: (input) => invoke("updateOrderItemQuantity", input),
+  updateOrderItemPrice: (input) => invoke("updateOrderItemPrice", input),
   updateOrderItemNotes: (input) => invoke("updateOrderItemNotes", input),
   addHalfAndHalfItem: (input) => invoke("addHalfAndHalfItem", input),
   removeOrderItem: (input) => invoke("removeOrderItem", input),

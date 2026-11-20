@@ -120,6 +120,41 @@ test.describe("foco al entrar a Salón (Electron aislado)", () => {
     await expect(editor).toBeHidden();
     await expect(tableInput).toBeFocused();
   });
+
+  test("permite editar el precio de un producto agregado desde el modal de la mesa", async () => {
+    await openCashAndSalon();
+    await page.getByRole("button", { name: "Abrir mesa 1", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Abrir mesa 1" })
+      .getByRole("button", { name: "Abrir mesa", exact: true })
+      .click();
+    const editor = page.getByRole("dialog", { name: /Pedido #\d+ · Salón/ });
+    await editor.getByPlaceholder(/Código, nombre, categoría/).fill("MUZG");
+    await editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Muzzarella grande" }).click();
+    const editPrice = editor.getByRole("button", {
+      name: "Editar precio de Muzzarella grande",
+    });
+    await editPrice.click();
+    const dialog = page.getByRole("dialog", { name: "Editar precio", exact: true });
+    const price = dialog.getByLabel("Precio unitario");
+    const pin = dialog.getByLabel("PIN de autorización");
+    const save = dialog.getByRole("button", { name: "Guardar precio" });
+    await expect(price).toBeFocused();
+    await price.fill("12345,67");
+    await expect(save).toBeDisabled();
+    await pin.fill("0000");
+    await save.click();
+    await expect(dialog.getByRole("alert")).toContainText(/PIN/i);
+    await pin.fill("748259");
+    await save.click();
+    await expect(dialog).toBeHidden();
+    await expect(editor.getByRole("article")).toContainText("12.345,67");
+
+    await editor.getByRole("button", { name: "Cerrar", exact: true }).click();
+    await page.getByRole("button", { name: "Abrir pedido de mesa 1", exact: true }).click();
+    await editPrice.click();
+    await expect(price).toHaveValue("12345,67");
+  });
 });
 
 let viteServer: ChildProcess;

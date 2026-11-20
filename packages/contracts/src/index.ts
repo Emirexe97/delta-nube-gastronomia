@@ -1158,6 +1158,13 @@ export interface UpdateOrderItemQuantityInput {
   quantity: number;
 }
 
+export interface UpdateOrderItemPriceInput {
+  orderId: Id;
+  itemId: Id;
+  unitPriceMinor: MoneyMinor;
+  authorizerPin: string;
+}
+
 export interface AddOrderItemInput extends IdempotentRequest {
   orderId: Id;
   productId: Id;
@@ -1496,6 +1503,7 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   updateOrderItemQuantity(
     input: UpdateOrderItemQuantityInput,
   ): Promise<OrderDto>;
+  updateOrderItemPrice(input: UpdateOrderItemPriceInput): Promise<OrderDto>;
   updateOrderItemNotes(input: UpdateOrderItemNotesInput): Promise<OrderDto>;
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput): Promise<OrderDto>;
   addComboItem(input: AddComboItemInput): Promise<OrderDto>;

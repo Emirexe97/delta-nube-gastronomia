@@ -1872,6 +1872,103 @@ test("precio manual exige PIN, conserva el catálogo y deja auditoría", () => {
   });
 });
 
+test("permite cambiar el precio de una línea existente con PIN y conserva sus productos y extras", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const table = repository.bootstrap().tables[0]!;
+    const extra = repository.createModifier({
+      groupName: "Extras",
+      name: "Extra queso",
+      priceMinor: 10_000,
+    });
+    const productId = "starter-muzza-grande";
+    const order = repository.createOrder({
+      type: "DINE_IN",
+      tableId: table.id,
+      waiterUserId: "user-admin",
+    });
+    const added = repository.addOrderItem({
+      orderId: order.id,
+      productId,
+      quantity: 2,
+      notes: "Sin cebolla",
+    });
+    const itemId = added.items[0]!.id;
+    repository.addOrderItemModifier({
+      orderId: order.id,
+      itemId,
+      modifierId: extra.id,
+      scope: "FULL_PIZZA",
+    });
+    const before = repository.confirmOrder({ orderId: order.id });
+    const originalItem = before.items[0]!;
+    const catalogProduct = repository
+      .bootstrap()
+      .products.find((row) => row.id === productId);
+    const input = {
+      orderId: order.id,
+      itemId,
+      unitPriceMinor: originalItem.unitPriceMinorSnapshot + 12_345,
+      authorizerPin: "0000",
+    };
+
+    assert.throws(() => repository.updateOrderItemPrice(input), /PIN|permiso/i);
+    assert.deepEqual(repository.getOrder(order.id), before);
+    assert.throws(
+      () =>
+        repository.updateOrderItemPrice({
+          ...input,
+          unitPriceMinor: Number.MAX_SAFE_INTEGER,
+        }),
+      /precio es demasiado alto/i,
+    );
+
+    const authorized = { ...input, authorizerPin: "2468" };
+    const updated = repository.updateOrderItemPrice(authorized);
+    assert.deepEqual(updated.items, [
+      {
+        ...originalItem,
+        unitPriceMinorSnapshot: input.unitPriceMinor,
+        lineTotalMinor: originalItem.lineTotalMinor + 24_690,
+      },
+    ]);
+    assert.equal(updated.totalMinor, before.totalMinor + 24_690);
+    const current = repository.bootstrap();
+    assert.equal(
+      current.tables.find((row) => row.id === table.id)?.currentTotalMinor,
+      updated.totalMinor,
+    );
+    assert.deepEqual(
+      current.products.find((row) => row.id === productId),
+      catalogProduct,
+    );
+
+    assert.deepEqual(repository.updateOrderItemPrice(authorized), updated);
+    const audits = repository.getAuditLog({
+      action: "ORDER_ITEM_PRICE_OVERRIDDEN",
+    });
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0]?.permissionUsed, "orders.override_price");
+    assert.equal(
+      JSON.parse(audits[0]!.beforeJson!).unitPriceMinor,
+      originalItem.unitPriceMinorSnapshot,
+    );
+    assert.equal(
+      JSON.parse(audits[0]!.afterJson!).unitPriceMinor,
+      input.unitPriceMinor,
+    );
+
+    repository.payOrder({
+      orderId: order.id,
+      payments: [{ methodCode: "CASH", amountMinor: updated.totalMinor }],
+    });
+    assert.throws(
+      () => repository.updateOrderItemPrice({ ...authorized, unitPriceMinor: 100 }),
+      /pagos/,
+    );
+  });
+});
+
 test("categoría puede renombrarse y ordenarse pero no ocultar productos activos", () => {
   withRepository((repository) => {
     const category = repository.createCategory({ name: "Postres" });

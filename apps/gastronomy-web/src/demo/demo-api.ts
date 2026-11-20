@@ -55,6 +55,7 @@ import {
   assertAppSettings,
   assertOperationalTransition,
   assertOrderAction,
+  assertOrderItemPrice,
   getKitchenAdditions,
   paymentStatusFor,
   businessDateFromOpening,
@@ -2989,6 +2990,31 @@ export function createDemoApi(
           ? "ORDER_EDITED_AFTER_PRINT"
           : "ORDER_ITEM_QUANTITY_UPDATED",
         `Cantidad modificada de ${oldQty} a ${newQty}`,
+      );
+      save();
+      return output(order);
+    },
+
+    async updateOrderItemPrice(input) {
+      const order = orderById(input.orderId);
+      assertOrderAction(order, "EDIT");
+      const item = order.items.find((candidate) => candidate.id === input.itemId);
+      if (!item) throw new Error("No se encontró el producto del pedido.");
+      assertOrderItemPrice(order, item, input.unitPriceMinor);
+      if (input.unitPriceMinor === item.unitPriceMinorSnapshot) return output(order);
+
+      requirePin(input.authorizerPin);
+      item.unitPriceMinorSnapshot = input.unitPriceMinor;
+      refreshOrder(order);
+      audit(
+        state,
+        "ORDER",
+        order.id,
+        "ORDER_ITEM_PRICE_OVERRIDDEN",
+        order.printedAt
+          ? "Precio unitario modificado después de imprimir"
+          : "Precio unitario modificado en una línea del pedido",
+        "orders.override_price",
       );
       save();
       return output(order);

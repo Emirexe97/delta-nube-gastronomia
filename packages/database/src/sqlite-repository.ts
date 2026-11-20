@@ -89,6 +89,7 @@ import type {
   ReportFilters,
   UpdateProductInput,
   UpdateDraftOrderInput,
+  UpdateOrderItemPriceInput,
   UpdateOrderItemQuantityInput,
   ConfirmOrderInput,
   SettleDeliveryInput,
@@ -112,6 +113,7 @@ import {
   assertAppSettings,
   assertMoneyMinor,
   assertOrderAction,
+  assertOrderItemPrice,
   assertOrderTransition,
   assertPaymentAllocation,
   businessDateFromOpening,
@@ -4550,6 +4552,51 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       return this.getOrder(input.orderId);
     });
     return run();
+  }
+
+  updateOrderItemPrice(input: UpdateOrderItemPriceInput): OrderDto {
+    return this.db.transaction(() => {
+      const order = this.getOrder(input.orderId);
+      assertOrderAction(order, "EDIT");
+      const item = requireRow(
+        order.items.find((candidate) => candidate.id === input.itemId),
+        "No se encontró el producto del pedido.",
+      );
+      const { unitPriceMinor } = input;
+      assertOrderItemPrice(order, item, unitPriceMinor);
+      if (unitPriceMinor === item.unitPriceMinorSnapshot) return order;
+
+      const authorizer = this.authorizePin(
+        input.authorizerPin,
+        "orders.override_price",
+      );
+      this.db
+        .prepare(
+          "UPDATE order_items SET unit_price_minor_snapshot = ?, updated_at = ? WHERE id = ? AND order_id = ?",
+        )
+        .run(unitPriceMinor, nowIso(), input.itemId, input.orderId);
+      this.recalculateOrder(input.orderId);
+      this.audit({
+        entityType: "ORDER",
+        entityId: input.orderId,
+        action: "ORDER_ITEM_PRICE_OVERRIDDEN",
+        permission: "orders.override_price",
+        reason: order.printedAt
+          ? "Precio unitario modificado después de imprimir"
+          : "Precio unitario modificado en una línea del pedido",
+        before: {
+          itemId: input.itemId,
+          unitPriceMinor: item.unitPriceMinorSnapshot,
+        },
+        after: { itemId: input.itemId, unitPriceMinor },
+        authorizerUserId: String(authorizer.id),
+      });
+      this.event("Order", input.orderId, "OrderUpdated", {
+        itemId: input.itemId,
+        action: "ITEM_PRICE_UPDATED",
+      });
+      return this.getOrder(input.orderId);
+    })();
   }
 
   updateOrderItemNotes(input: {

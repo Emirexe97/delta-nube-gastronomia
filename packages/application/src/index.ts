@@ -51,6 +51,7 @@ import type {
   UpdateCustomerInput,
   UpdateDraftOrderInput,
   UpdateOrderItemNotesInput,
+  UpdateOrderItemPriceInput,
   UpdateOrderItemQuantityInput,
   ConfirmOrderInput,
   CreatePurchaseInput,
@@ -207,6 +208,7 @@ export interface GastronomyRepository {
   discardDraftOrder(orderId: Id): { discarded: boolean };
   addOrderItem(input: AddOrderItemInput): OrderDto;
   updateOrderItemQuantity(input: UpdateOrderItemQuantityInput): OrderDto;
+  updateOrderItemPrice(input: UpdateOrderItemPriceInput): OrderDto;
   updateOrderItemNotes(input: UpdateOrderItemNotesInput): OrderDto;
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput): OrderDto;
   removeOrderItem(orderId: Id, itemId: Id): OrderDto;
@@ -664,6 +666,10 @@ export class GastronomyApplication {
       throw new Error("La cantidad debe ser un entero mayor que cero.");
     }
     return this.repository.updateOrderItemQuantity({ ...input, quantity });
+  }
+
+  updateOrderItemPrice(input: UpdateOrderItemPriceInput) {
+    return this.repository.updateOrderItemPrice(input);
   }
 
   updateOrderItemNotes(input: UpdateOrderItemNotesInput) {

@@ -1,6 +1,8 @@
 import type {
   HalfAndHalfPricingMode,
   ModifierScope,
+  OrderDto,
+  OrderItemDto,
 } from "@gastronomy/contracts";
 import { isPriceBookRoundingIncrementMinor, type PriceBookRoundingIncrementMinor } from "@gastronomy/contracts";
 import { nonNegativeMoney, roundHalfUp } from "./money";
@@ -46,6 +48,25 @@ export function calculateLineTotal(input: {
       modifiers * input.quantity -
       discount,
   );
+}
+
+export function assertOrderItemPrice(
+  order: Pick<OrderDto, "subtotalMinor" | "deliveryFeeMinor">,
+  item: OrderItemDto,
+  unitPriceMinor: number,
+) {
+  nonNegativeMoney(unitPriceMinor, "precio unitario");
+  const extrasMinor = item.modifiers.reduce(
+    (total, extra) => total + extra.unitPriceMinorSnapshot,
+    0,
+  );
+  const otherSubtotalMinor = order.subtotalMinor - item.lineTotalMinor;
+  const grossMinor =
+    (unitPriceMinor + extrasMinor) * item.quantity +
+    otherSubtotalMinor +
+    order.deliveryFeeMinor;
+  if (!Number.isSafeInteger(grossMinor))
+    throw new Error("El precio es demasiado alto para este pedido.");
 }
 
 export function applyPercentage(amountMinor: number, percentage: number) {

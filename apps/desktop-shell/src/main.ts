@@ -503,6 +503,7 @@ function registerIpcHandlers() {
     "discardDraftOrder",
     "addOrderItem",
     "updateOrderItemQuantity",
+    "updateOrderItemPrice",
     "addHalfAndHalfItem",
     "updateOrderItemNotes",
     "removeOrderItem",
