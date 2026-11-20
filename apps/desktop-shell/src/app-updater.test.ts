@@ -27,7 +27,7 @@ class FakeAdapter extends EventEmitter {
   }
 }
 
-test("disabled updater reports a safe disabled status", () => {
+test("disabled updater reports a safe disabled status", async () => {
   const updater = new DesktopUpdater({
     currentVersion: "1.2.3",
     adapter: null,
@@ -40,13 +40,17 @@ test("disabled updater reports a safe disabled status", () => {
     progress: null,
     message: "No compatible build.",
   });
-  assert.equal(updater.install().state, "DISABLED");
+  assert.equal((await updater.install()).state, "DISABLED");
 });
 
 test("config accepts a clean HTTPS feed and rejects insecure or decorated URLs and unsupported targets", () => {
   assert.deepEqual(
     validateUpdaterConfig(
-      { enabled: true, target: "win32-x64", feedUrl: "https://updates.example.com/releases" },
+      {
+        enabled: true,
+        target: "win32-x64",
+        feedUrl: "https://updates.example.com/releases",
+      },
       "win32",
       "x64",
     ),
@@ -60,15 +64,22 @@ test("config accepts a clean HTTPS feed and rejects insecure or decorated URLs a
     "not a url",
   ]) {
     assert.equal(
-      validateUpdaterConfig({ enabled: true, target: "darwin-arm64", feedUrl }, "darwin", "arm64")
-        .enabled,
+      validateUpdaterConfig(
+        { enabled: true, target: "darwin-arm64", feedUrl },
+        "darwin",
+        "arm64",
+      ).enabled,
       false,
       feedUrl,
     );
   }
   assert.equal(
     validateUpdaterConfig(
-      { enabled: true, target: "win32-x64", feedUrl: "https://updates.example.com" },
+      {
+        enabled: true,
+        target: "win32-x64",
+        feedUrl: "https://updates.example.com",
+      },
       "linux",
       "x64",
     ).enabled,
@@ -76,7 +87,11 @@ test("config accepts a clean HTTPS feed and rejects insecure or decorated URLs a
   );
   assert.equal(
     validateUpdaterConfig(
-      { enabled: true, target: "win32-x64", feedUrl: "https://updates.example.com" },
+      {
+        enabled: true,
+        target: "win32-x64",
+        feedUrl: "https://updates.example.com",
+      },
       "win32",
       "ia32",
     ).enabled,
@@ -84,7 +99,11 @@ test("config accepts a clean HTTPS feed and rejects insecure or decorated URLs a
   );
   assert.equal(
     validateUpdaterConfig(
-      { enabled: true, target: "darwin-arm64", feedUrl: "https://updates.example.com/stable/darwin/arm64" },
+      {
+        enabled: true,
+        target: "darwin-arm64",
+        feedUrl: "https://updates.example.com/stable/darwin/arm64",
+      },
       "win32",
       "x64",
     ).enabled,
@@ -164,13 +183,13 @@ test("download failures are sanitized and do not poison retry; unexpected events
 test("install is only permitted from READY and install errors surface as ERROR", async () => {
   const adapter = new FakeAdapter();
   const updater = new DesktopUpdater({ currentVersion: "1.0.0", adapter });
-  assert.equal(updater.install().state, "IDLE");
+  assert.equal((await updater.install()).state, "IDLE");
   assert.equal(adapter.installCalls, 0);
   const checking = updater.check();
   adapter.emit("update-available", { version: "1.1.0" });
   adapter.emit("update-downloaded", { version: "1.1.0" });
   await checking;
-  assert.equal(updater.install().state, "INSTALLING");
+  assert.equal((await updater.install()).state, "INSTALLING");
   assert.equal(adapter.installCalls, 1);
   const throwing = new FakeAdapter();
   throwing.quitAndInstall = () => {
@@ -184,7 +203,7 @@ test("install is only permitted from READY and install errors surface as ERROR",
   throwing.emit("update-available", { version: "1.1.0" });
   throwing.emit("update-downloaded", { version: "1.1.0" });
   await check;
-  assert.equal(failed.install().state, "ERROR");
+  assert.equal((await failed.install()).state, "ERROR");
   assert.doesNotMatch(failed.getStatus().message, /sensitive/);
 });
 

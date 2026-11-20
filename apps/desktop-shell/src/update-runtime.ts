@@ -3,10 +3,18 @@ import { load as parseYaml } from "js-yaml";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
+import type { KeyObject } from "node:crypto";
 import type { AppUpdateStatusDto } from "@gastronomy/contracts";
 // @ts-expect-error Node 24 direct TS test runner resolves explicit source extensions.
 import { DesktopUpdater, validateUpdaterConfig } from "./app-updater.ts";
 import type { UpdateAdapter } from "./app-updater.ts";
+// @ts-expect-error Node runs TypeScript test sources directly.
+import { WindowsSignedUpdateAdapter } from "./windows-signed-update-adapter.ts";
+// @ts-expect-error Node runs TypeScript test sources directly.
+import { launchVerifiedWindowsInstaller } from "./windows-verified-launch.ts";
+// @ts-expect-error Node runs TypeScript test sources directly.
+import { readWindowsPilotKeys } from "./windows-pilot-trust.ts";
+import type { WindowsUpdateChannel } from "./windows-signed-update.ts";
 
 const execFile = promisify(execFileCallback);
 
@@ -18,14 +26,14 @@ export interface DesktopUpdaterRuntimeOptions {
   configPath: string;
   resourcesPath: string;
   appPath: string;
+  userDataPath?: string;
+  onWindowsInstallerLaunched?: () => void;
   onStatusChange?: (status: AppUpdateStatusDto) => void;
 }
 
 export interface RuntimeDependencies {
   readText(path: string): Promise<string>;
-  verifyMacSignature(
-    path: string,
-  ): Promise<{
+  verifyMacSignature(path: string): Promise<{
     authority: string | null;
     teamId: string | null;
     valid: boolean;
@@ -35,6 +43,43 @@ export interface RuntimeDependencies {
     feedUrl: string,
   ): Promise<UpdateAdapter>;
   protectMacInstall?(adapter: UpdateAdapter): UpdateAdapter;
+  createWindowsSignedAdapter?(
+    options: DesktopUpdaterRuntimeOptions,
+    feedUrl: string,
+    channel: WindowsUpdateChannel,
+  ): UpdateAdapter;
+}
+
+const WINDOWS_SIGNED_FEED =
+  "https://actualizaciones.deltanubeweb.com/gastronomia/windows/x64/";
+const WINDOWS_PILOT_FEED =
+  "https://actualizaciones.deltanubeweb.com/gastronomia/piloto/windows/x64/";
+// No production or test key in this build. A separately reviewed release must
+// embed authorized public keys; neither config nor the feed can add trust.
+const windowsUpdateKeys: ReadonlyMap<string, KeyObject> = new Map();
+
+function defaultCreateWindowsSignedAdapter(
+  options: DesktopUpdaterRuntimeOptions,
+  feedUrl: string,
+  channel: WindowsUpdateChannel,
+) {
+  if (
+    feedUrl !==
+      (channel === "pilot" ? WINDOWS_PILOT_FEED : WINDOWS_SIGNED_FEED) ||
+    !options.userDataPath ||
+    !options.onWindowsInstallerLaunched
+  )
+    throw new Error("Windows signed channel is not provisioned");
+  return new WindowsSignedUpdateAdapter({
+    feedUrl,
+    installedVersion: options.currentVersion,
+    channel,
+    trustedKeys:
+      channel === "pilot" ? readWindowsPilotKeys() : windowsUpdateKeys,
+    userDataPath: options.userDataPath,
+    launch: launchVerifiedWindowsInstaller,
+    onLaunched: options.onWindowsInstallerLaunched,
+  });
 }
 
 function disabled(
@@ -207,6 +252,7 @@ const defaultDependencies: RuntimeDependencies = {
   readText: (path) => readFile(path, "utf8"),
   verifyMacSignature: defaultVerifyMacSignature,
   createAdapter: defaultCreateAdapter,
+  createWindowsSignedAdapter: defaultCreateWindowsSignedAdapter,
 };
 
 export async function createUpdateRuntime(
@@ -256,6 +302,41 @@ export async function createUpdateRuntime(
       options.onStatusChange,
     );
   const record = config as Record<string, unknown>;
+
+  if (record.mode !== undefined) {
+    try {
+      const channel =
+        record.mode === "windows-ed25519-pilot-v1"
+          ? "pilot"
+          : record.mode === "windows-ed25519-v1"
+            ? "stable"
+            : null;
+      if (
+        !channel ||
+        options.platform !== "win32" ||
+        options.arch !== "x64" ||
+        (channel === "pilot" && validation.feedUrl !== WINDOWS_PILOT_FEED) ||
+        !dependencies.createWindowsSignedAdapter
+      )
+        throw new Error("Unsupported signed update mode");
+      const adapter = dependencies.createWindowsSignedAdapter(
+        options,
+        validation.feedUrl,
+        channel,
+      );
+      return new DesktopUpdater({
+        currentVersion: options.currentVersion,
+        adapter,
+        onStatusChange: options.onStatusChange,
+      });
+    } catch {
+      return disabled(
+        "El canal de actualizaciones firmadas no está habilitado para esta instalación.",
+        options.currentVersion,
+        options.onStatusChange,
+      );
+    }
+  }
 
   if (options.platform === "darwin") {
     if (

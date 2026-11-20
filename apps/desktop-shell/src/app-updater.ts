@@ -4,7 +4,8 @@ export interface UpdateAdapter {
   on(event: string, listener: (...args: any[]) => void): unknown;
   checkForUpdates(): Promise<unknown>;
   downloadUpdate(): Promise<unknown>;
-  quitAndInstall(): void;
+  quitAndInstall(): void | Promise<void>;
+  dispose?(): void;
 }
 
 export interface DesktopUpdaterOptions {
@@ -54,7 +55,8 @@ export function validateUpdaterConfig(
   if (target !== `${platform}-${architecture}`) {
     return {
       enabled: false,
-      reason: "La configuración de actualizaciones no corresponde a esta plataforma y arquitectura.",
+      reason:
+        "La configuración de actualizaciones no corresponde a esta plataforma y arquitectura.",
     };
   }
   const feedUrl = (config as any).feedUrl;
@@ -170,7 +172,7 @@ export class DesktopUpdater {
     return this.getStatus();
   }
 
-  install(): AppUpdateStatusDto {
+  async install(): Promise<AppUpdateStatusDto> {
     if (this.disposed || !this.options.adapter || this.status.state !== "READY")
       return this.getStatus();
     try {
@@ -178,7 +180,7 @@ export class DesktopUpdater {
         state: "INSTALLING",
         message: "Instalando actualización…",
       });
-      this.options.adapter.quitAndInstall();
+      await this.options.adapter.quitAndInstall();
     } catch {
       this.setError(
         "No se pudo iniciar la instalación. Podés volver a intentarlo.",
@@ -189,6 +191,7 @@ export class DesktopUpdater {
 
   dispose(): void {
     this.disposed = true;
+    this.options.adapter?.dispose?.();
   }
 
   private bindEvents(adapter: UpdateAdapter): void {

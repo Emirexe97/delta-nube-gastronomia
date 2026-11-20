@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "mode": "windows-ed25519-pilot-v1",
+  "target": "win32-x64",
+  "feedUrl": "https://actualizaciones.deltanubeweb.com/gastronomia/piloto/windows/x64/"
+}

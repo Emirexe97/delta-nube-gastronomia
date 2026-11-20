@@ -6,7 +6,7 @@ import {
   DownloadSimple,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { Button, Card, Modal } from "@gastronomy/ui";
+import { Button, Card } from "@gastronomy/ui";
 import { humanError } from "../lib";
 
 import { appUpdateQueryKey, useAppUpdateStatus } from "../hooks/use-app-update-status";
@@ -14,7 +14,6 @@ export { appUpdateQueryKey, useAppUpdateStatus } from "../hooks/use-app-update-s
 
 export function AppUpdatePanel() {
   const queryClient = useQueryClient();
-  const [confirmInstall, setConfirmInstall] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const statusQuery = useAppUpdateStatus();
   const check = useMutation({
@@ -27,16 +26,13 @@ export function AppUpdatePanel() {
   });
   const install = useMutation({
     mutationFn: () => window.gastronomy.installAppUpdate(),
+    onMutate: () => setActionError(null),
     onSuccess: (status) => {
       queryClient.setQueryData(appUpdateQueryKey, status);
       setActionError(null);
-      setConfirmInstall(false);
     },
     // Keep the last status (especially READY) visible if install is refused, e.g. an open cash session.
-    onError: (error) => {
-      setActionError(humanError(error));
-      setConfirmInstall(false);
-    },
+    onError: (error) => setActionError(humanError(error)),
   });
   const status = statusQuery.data;
   const busy =
@@ -152,48 +148,26 @@ export function AppUpdatePanel() {
             )}
           </Button>
           {status?.state === "READY" && (
-            <Button onClick={() => setConfirmInstall(true)} disabled={busy}>
+            <Button
+              onClick={() => install.mutate()}
+              disabled={busy}
+              aria-describedby="settings-update-install-help"
+            >
               <DownloadSimple className="mr-1 inline" />
               Instalar y reiniciar
             </Button>
           )}
         </div>
-        <Modal
-          open={confirmInstall}
-          onClose={() => setConfirmInstall(false)}
-          title="¿Instalar la actualización?"
-          description="Confirmá que la operación está lista antes de reiniciar la aplicación."
-          closeDisabled={install.isPending}
-          width="max-w-md"
-        >
-          <div className="grid gap-3 p-4">
-            <p className="text-sm leading-6 text-slate-600">
-              La aplicación se cerrará y reiniciará para completar la
-              instalación. Cerrá la caja antes de continuar, esperá a que
-              terminen de imprimirse los comprobantes y guardá cualquier trabajo
-              pendiente.
-            </p>
-            <p className="text-xs font-semibold text-amber-800">
-              El sistema volverá a validar la caja antes de instalar; esta
-              confirmación no fuerza el reinicio.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="secondary"
-                onClick={() => setConfirmInstall(false)}
-                disabled={install.isPending}
-              >
-                Ahora no
-              </Button>
-              <Button
-                onClick={() => install.mutate()}
-                disabled={install.isPending}
-              >
-                {install.isPending ? "Preparando…" : "Confirmar instalación"}
-              </Button>
-            </div>
-          </div>
-        </Modal>
+        {status?.state === "READY" && (
+          <p
+            id="settings-update-install-help"
+            className="text-xs leading-5 text-slate-600"
+          >
+            Cerrá la caja, esperá a que se impriman los comprobantes y guardá el
+            trabajo pendiente. La aplicación te pedirá confirmación antes de
+            instalar y reiniciar.
+          </p>
+        )}
       </div>
     </Card>
   );

@@ -36,6 +36,7 @@ import { licenseAllowsMethod } from "@gastronomy/licensing";
 import { POS_AI_INTENTS } from "@gastronomy/licensing";
 import { UpdateInstallGate } from "./update-install-gate";
 import { createUpdateRuntime } from "./update-runtime";
+import { createUpdateInstallRequest } from "./update-install-request";
 import type { DesktopUpdater } from "./app-updater";
 
 let mainWindow: BrowserWindow | null = null;
@@ -573,11 +574,10 @@ function registerIpcHandlers() {
       throw new Error("No tenés permiso para buscar actualizaciones.");
     return updater!.check();
   });
-  // Installation acquires the exclusive gate itself, not an ordinary operation slot.
-  ipcMain.handle("gastronomy:installAppUpdate", () => {
-    if (updater!.getStatus().state !== "READY")
-      throw new Error("No hay una actualización lista para instalar.");
-    operationGate.beginInstall(() => {
+  const requestUpdateInstall = createUpdateInstallRequest({
+    updater: updater!,
+    gate: operationGate,
+    readState: () => {
       if (services().localRepository.isInitialAdminPinSetupRequired())
         throw new Error("Configurá el PIN inicial del administrador antes de continuar.");
       const state = services().appService.bootstrap();
@@ -585,15 +585,28 @@ function registerIpcHandlers() {
         permitted: state.currentUser.permissions.includes("settings.manage"),
         cashOpen: state.cashSession?.status === "OPEN",
       };
-    });
-    try {
-      const status = updater!.install();
-      if (status.state !== "INSTALLING") operationGate.cancelInstall();
-      return status;
-    } catch (error) {
-      operationGate.cancelInstall();
-      throw error;
-    }
+    },
+    confirm: async (version) => {
+      const window = mainWindow;
+      if (!window || window.isDestroyed()) return false;
+      const result = await dialog.showMessageBox(window, {
+        type: "question",
+        title: "Instalar actualización",
+        message: `¿Instalar Delta Nube Gastronomía ${version}?`,
+        detail: "La aplicación se cerrará para instalar. La caja debe estar cerrada y no puede haber operaciones en curso.",
+        buttons: ["Cancelar", "Instalar y reiniciar"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return !window.isDestroyed() && result.response === 1;
+    },
+  });
+  // Only the main window may request confirmation; IPC alone cannot grant it.
+  ipcMain.handle("gastronomy:installAppUpdate", (event) => {
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame)
+      throw new Error("Solicitud de actualización no autorizada.");
+    return requestUpdateInstall();
   });
   handleOperation("gastronomy:getLicenseStatus", () => licensing!.getStatus());
   handleOperation(
@@ -1092,6 +1105,9 @@ async function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+  mainWindow.on("close", (event) => {
+    if (operationGate.installationInProgress && !updateQuitRequested) event.preventDefault();
+  });
   const developmentUrl = process.env.GASTRONOMY_RENDERER_URL;
   if (developmentUrl) await mainWindow.loadURL(developmentUrl);
   else await mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
@@ -1109,6 +1125,11 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", (event) => {
+  // Rehash and native process creation may still be running under the install gate.
+  if (operationGate.installationInProgress && !updateQuitRequested) {
+    event.preventDefault();
+    return;
+  }
   // NSIS can schedule quit before an async installer-spawn error is reported.
   // Never honor that delayed update quit after its admission lock was released.
   if (updateQuitRequested && (!operationGate.installationInProgress || updater?.getStatus().state !== "INSTALLING")) {
@@ -1197,6 +1218,11 @@ app
       configPath: resolve(__dirname, "../updates-config.json"),
       resourcesPath: process.resourcesPath,
       appPath: resolve(process.execPath, "../../.."),
+      userDataPath: app.getPath("userData"),
+      onWindowsInstallerLaunched: () => {
+        updateQuitRequested = true;
+        app.quit();
+      },
       onStatusChange: (status) => {
         if (status.state === "ERROR") operationGate.cancelInstall();
       },

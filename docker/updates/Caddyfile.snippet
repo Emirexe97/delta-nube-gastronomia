@@ -1,0 +1,27 @@
+# HTTPS hosting deployed 2026-11-16; updater channel remains inactive.
+actualizaciones.deltanubeweb.com {
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        Cache-Control no-store
+    }
+    @manifest path /gastronomia/windows/x64/release.json
+    handle @manifest {
+        root * /srv/updates/gastronomy/windows/x64
+        rewrite * /release.json
+        header Cache-Control "no-cache, no-store, must-revalidate"
+        file_server
+    }
+    @artifact path_regexp artifact "^/gastronomia/windows/x64/versions/(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)/[A-Za-z0-9][A-Za-z0-9._-]*[.]exe$"
+    handle @artifact {
+        root * /srv/updates/gastronomy/windows/x64
+        uri strip_prefix /gastronomia/windows/x64
+        header Cache-Control "public, max-age=31536000, immutable" {
+            match status 2xx 304
+        }
+        file_server
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

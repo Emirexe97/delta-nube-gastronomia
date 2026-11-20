@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -15,9 +15,23 @@ let profile = "";
 
 test.beforeEach(async () => {
   profile = await mkdtemp(join(tmpdir(), "gastronomy-updates-"));
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !/^GASTRONOMY_/i.test(key)),
+  );
   app = await launchConfiguredPos({
-    args: ["apps/desktop-shell", `--user-data-dir=${profile}`],
+    args: [
+      "apps/desktop-shell",
+      `--user-data-dir=${profile}`,
+      "--disable-background-networking",
+      "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1",
+    ],
     cwd: process.cwd(),
+    env: {
+      ...env,
+      GASTRONOMY_E2E_BACKGROUND: process.env.GASTRONOMY_E2E_BACKGROUND,
+      GASTRONOMY_WEB_PROVISION_URL: "",
+      GASTRONOMY_WAITER_PROVISION_URL: "",
+    },
   });
   page = await app.firstWindow();
   expect(
@@ -32,12 +46,13 @@ test.afterEach(async () => {
   );
   await app?.close();
   if (profile) {
+    const target = await realpath(profile);
     if (
-      dirname(resolve(profile)) !== resolve(tmpdir()) ||
+      dirname(target) !== await realpath(tmpdir()) ||
       !basename(profile).startsWith("gastronomy-updates-")
     )
       throw new Error("Unsafe disposable updater profile cleanup");
-    await rm(profile, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
   }
 });
 
@@ -90,8 +105,8 @@ test("development IPC reports disabled updates without affecting cash or license
     .screenshot({ path: testInfo.outputPath("updates-disabled.png") });
 });
 
-test("simulated update IPC shows progress and READY notice, confirms explicitly, preserves readiness after refusal", async ({}, testInfo) => {
-  // UI fixture only, inside an isolated main process. No feed, download or executable is run.
+test("update UI shows progress and READY, delegates install on click, and preserves READY after cancellation or refusal", async ({}, testInfo) => {
+  // UI fixture only: simulates install IPC outcomes without opening a native dialog or running an update.
   await app.evaluate(({ ipcMain }) => {
     const fixture = {
       state: "DOWNLOADING",
@@ -117,6 +132,7 @@ test("simulated update IPC shows progress and READY notice, confirms explicitly,
     ipcMain.handle("gastronomy:checkAppUpdate", () => fixture.getStatus());
     ipcMain.handle("gastronomy:installAppUpdate", () => {
       fixture.installCalls++;
+      if (fixture.installCalls === 1) return fixture.getStatus();
       throw new Error("Cerrá la caja antes de instalar la actualización.");
     });
   });
@@ -137,41 +153,36 @@ test("simulated update IPC shows progress and READY notice, confirms explicitly,
     page.getByRole("link", { name: "Ver actualización" }),
   ).toBeVisible();
   await page.getByRole("link", { name: "Ver actualización" }).click();
-  await page
-    .getByRole("button", { name: "Instalar y reiniciar", exact: true })
-    .click();
-  const modal = page.getByRole("dialog", {
-    name: "¿Instalar la actualización?",
+  const installButton = page.getByRole("button", {
+    name: "Instalar y reiniciar",
     exact: true,
   });
-  await expect(modal).toBeVisible();
+  await expect(installButton).toBeEnabled();
+  await expect(installButton).toHaveAccessibleDescription(
+    /La aplicación te pedirá confirmación antes de instalar y reiniciar/,
+  );
   expect(
     await app.evaluate(
       () => (globalThis as any).__updateUiFixture.installCalls,
     ),
   ).toBe(0);
-  await modal.getByRole("button", { name: "Ahora no", exact: true }).click();
-  await expect(modal).toHaveCount(0);
-  expect(
-    await app.evaluate(
-      () => (globalThis as any).__updateUiFixture.installCalls,
-    ),
-  ).toBe(0);
-  await page
-    .getByRole("button", { name: "Instalar y reiniciar", exact: true })
-    .click();
-  await modal
-    .getByRole("button", { name: "Confirmar instalación", exact: true })
-    .click();
+  await installButton.click();
+  await expect
+    .poll(() =>
+      app.evaluate(() => (globalThis as any).__updateUiFixture.installCalls),
+    )
+    .toBe(1);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(installButton).toBeEnabled();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await installButton.click();
   await expect(page.getByRole("alert")).toContainText("Cerrá la caja");
   expect(
     await app.evaluate(
       () => (globalThis as any).__updateUiFixture.installCalls,
     ),
-  ).toBe(1);
-  await expect(
-    page.getByRole("button", { name: "Instalar y reiniciar", exact: true }),
-  ).toBeEnabled();
+  ).toBe(2);
+  await expect(installButton).toBeEnabled();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await page
     .locator("#settings-updates")

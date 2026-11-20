@@ -1,5 +1,9 @@
 # Actualizaciones automáticas del POS de escritorio
 
+## Preparación alternativa — 2026-11-16
+
+El usuario dejó pendiente Authenticode. El modo Ed25519 de Windows x64 ya está integrado y pasó una [actualización real NSIS con HTTPS local](WINDOWS_INSTALLED_UPDATE_QA_20261117.md), conservando datos y licencia de prueba. **El canal de clientes sigue deshabilitado.** La ruta Authenticode anterior conserva sus controles y los pasos descritos debajo le corresponden a ella. Ed25519 no sustituye un certificado de editor reconocido por Windows. Mac sigue manual.
+
 ## Política de distribución vigente — 2026-10-16
 
 - **Windows:** canal de actualización automática. La integración está preparada, pero la activación en clientes sigue pendiente de alojamiento HTTPS, firma y ensayo real entre versiones. Descarga automática; instalación confirmada con caja cerrada.
