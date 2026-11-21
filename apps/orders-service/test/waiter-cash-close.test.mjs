@@ -19,17 +19,18 @@ async function fixture(t) {
     return i < 0 ? undefined : { storeId: 'shop', role: 'receive', receiveInstallationId: `terminal${i}` };
   }, origin, '<html></html>');
   t.after(async () => { relay.close(); await new Promise(r => server.close(r)); });
-  const call = async (path, { body, auth, terminal, cash, challenge } = {}) => {
+  const call = async (path, { body, auth, terminal, cash, challenge, cookie } = {}) => {
     const r = await fetch(origin + '/v1/waiter' + path, {
       method: body === undefined ? 'GET' : 'POST',
       headers: { origin, ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         ...(auth ? { authorization: `Bearer ${auth}` } : {}),
         ...(terminal === undefined ? {} : { 'x-pos-installation': `terminal${terminal}` }),
         ...(cash === undefined ? {} : { 'x-pos-cash-session': cash }),
-        ...(challenge ? { 'x-waiter-challenge': challenge } : {}) },
+        ...(challenge ? { 'x-waiter-challenge': challenge } : {}),
+        ...(cookie ? { cookie } : {}) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    return { status: r.status, json: await r.json() };
+    return { status: r.status, json: await r.json(), setCookie: r.headers.get('set-cookie') };
   };
   const respond = (id, terminal, body) => call(`/terminal/requests/${id}/response`, { terminal, auth: terminals[terminal], body });
   const pair = async (result = {}, terminal = 0) => {
@@ -39,7 +40,7 @@ async function fixture(t) {
     assert.equal(queued.status, 202);
     assert.equal((await respond(queued.json.requestId, terminal, { result: { sessionToken, expiresAt: null, validUntil: 'CASH_CLOSE', cashSessionId: 'cash1', ...result } })).status, 200);
     const receipt = await call(`/pair/${queued.json.requestId}`, { challenge });
-    return { sessionToken, receipt: receipt.json };
+    return { sessionToken, receipt: receipt.json, cookie: receipt.setCookie?.split(';')[0] };
   };
   const rpc = (auth) => call('/rpc', { auth, body: { requestId: token(), method: 'waiter.getState', params: {} } });
   const poll = (terminal = 0, cash) => call('/terminal/requests', { terminal, auth: terminals[terminal], cash });
@@ -87,6 +88,31 @@ test('ambiguous unbounded pairing never grants access; authoritative revoke inva
   const queued = await f.rpc(valid.sessionToken);
   await f.respond(queued.json.requestId, 0, { error: { code: 'unauthorized' } });
   assert.equal((await f.rpc(valid.sessionToken)).status, 401);
+});
+
+test('the HttpOnly cookie can recover session scope without a browser token, only until cash closes', async t => {
+  const f = await fixture(t);
+  const { cookie } = await f.pair();
+  assert.ok(cookie);
+  assert.equal((await f.call('/session')).status, 401);
+  const lookup = await f.call('/session', { cookie });
+  assert.equal(lookup.status, 200);
+  assert.deepEqual(lookup.json, { tenantId: 'shop', terminalId: 'terminal0', cashSessionId: 'cash1' });
+  await f.poll(0, '');
+  const closed = await f.call('/session', { cookie });
+  assert.equal(closed.status, 401);
+  assert.match(closed.setCookie, /Max-Age=0/);
+});
+
+test('an incomplete cash-state reply fails without revoking a still-open session', async t => {
+  const f = await fixture(t);
+  const valid = await f.pair();
+  const queued = await f.rpc(valid.sessionToken);
+  await f.respond(queued.json.requestId, 0, { result: { expiresAt: null } });
+  const failed = await f.call('/requests/' + queued.json.requestId, { auth: valid.sessionToken });
+  assert.equal(failed.json.status, 'failed');
+  assert.equal(failed.json.error.code, 'pos_unavailable');
+  assert.equal((await f.rpc(valid.sessionToken)).status, 202);
 });
 
 test('cash state must confirm the same scope instead of silently downgrading expiry policy', async t => {

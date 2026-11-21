@@ -81,7 +81,7 @@ const webCommerce = createWebCommerceSync({
 });
 const waiterRelay = createWaiterRelay({
   config: currentWaiterConfig,
-  cashSessionId: () => repository?.getWaiterCashSessionId() ?? null,
+  cashSessionId: () => repository?.getWaiterCashSessionId(),
   process: async (request) => {
     const release = operationGate.enterOperation();
     try {

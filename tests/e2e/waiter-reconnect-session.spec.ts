@@ -9,8 +9,10 @@ async function fixture(context: BrowserContext, state: Record<string, any>) {
   const pairSubmits: Array<{ tenantId: string; terminalId: string; challengeId: string; pin: string }> = [];
   let pairMode: "success" | "invalid" = "success";
   const authEvidence: string[] = [];
-  const authModes: Array<"normal" | "offline-once" | "unauthorized" | "closed"> = ["normal"];
+  const authModes: Array<"normal" | "offline-once" | "unauthorized" | "closed" | "infra-unauthorized-once" | "stale-bearer"> = ["normal"];
   let offlineConsumed = false;
+  let infraUnauthorizedConsumed = false;
+  const sessionCalls: string[] = [];
   const tableDetail = { tableId: "table-owned", orderId: "order-1", items: [], canPrint: true, canReprint: false };
   const server = createServer((req, res) => {
     if (req.url === "/waiter") {
@@ -28,6 +30,19 @@ async function fixture(context: BrowserContext, state: Record<string, any>) {
     if (url.pathname === "/v1/waiter/pair" && request.method() === "POST") {
       pairSubmits.push(request.postDataJSON());
       await route.fulfill({ status: 202, json: { requestId: `pair-${pairSubmits.length}` } });
+      return;
+    }
+    if (url.pathname === "/v1/waiter/session" && request.method() === "GET") {
+      const hasCookie = headers.cookie?.includes("waiter_session=");
+      if (!hasCookie) {
+        await route.fulfill({ status: 401, json: { error: "unauthorized" } });
+        return;
+      }
+      sessionCalls.push(headers.authorization?.startsWith("Bearer ") ? "bearer" : "cookie");
+      await route.fulfill({
+        status: 200,
+        json: { tenantId: "test-tenant", terminalId: "test-terminal", cashSessionId: state.cashSessionId },
+      });
       return;
     }
     if (url.pathname.startsWith("/v1/waiter/pair/") && request.method() === "GET") {
@@ -48,9 +63,18 @@ async function fixture(context: BrowserContext, state: Record<string, any>) {
       const call = request.postDataJSON() as Rpc;
       calls.push(call);
       const mode = authModes.at(-1);
+      if (mode === "stale-bearer" && headers.authorization?.startsWith("Bearer ")) {
+        await route.fulfill({ status: 401, json: { error: "unauthorized" } });
+        return;
+      }
       if (mode === "offline-once" && call.method === "waiter.getState" && !offlineConsumed) {
         offlineConsumed = true;
         await route.fulfill({ status: 503, json: { error: "offline" } });
+        return;
+      }
+      if (mode === "infra-unauthorized-once" && call.method === "waiter.getState" && !infraUnauthorizedConsumed) {
+        infraUnauthorizedConsumed = true;
+        await route.fulfill({ status: 401, body: "upstream unavailable", headers: { "content-type": "text/plain" } });
         return;
       }
       if (mode === "unauthorized" && call.method === "waiter.getState") {
@@ -73,7 +97,7 @@ async function fixture(context: BrowserContext, state: Record<string, any>) {
     }
     await route.fulfill({ status: 500, json: { error: "Unmocked request" } });
   });
-  return { origin, server, calls, authModes, authEvidence, pairSubmits, setPairMode: (mode: "success" | "invalid") => { pairMode = mode; } };
+  return { origin, server, calls, authModes, authEvidence, sessionCalls, pairSubmits, setPairMode: (mode: "success" | "invalid") => { pairMode = mode; } };
 }
 
 const state = () => ({
@@ -163,6 +187,93 @@ test("reabrir una pestaña vinculada restablece la sesión sin pedir PIN", async
     await expect(reopened.locator("#pin")).toBeHidden();
     await expect(reopened.locator("#retrySession")).toBeHidden();
     await expect(reopened.locator("#pairMessage")).toContainText(/QR nuevo/i);
+  } finally {
+    await context.close(); mock.server.closeAllConnections();
+    await new Promise<void>(resolve => mock.server.close(() => resolve()));
+  }
+});
+
+test("recuperar una pestaña sin datos JS usa la cookie HttpOnly y conserva el mozo", async ({ browser }) => {
+  const context = await browser.newContext();
+  const mock = await fixture(context, state());
+  try {
+    const first = await context.newPage();
+    await first.goto(`${mock.origin}/waiter#tenant=test-tenant&terminal=test-terminal&challenge=challenge-cookie-recovery`);
+    await first.locator("#pin").fill("1234");
+    await first.locator("#pairForm button[type=submit]").click();
+    await expect(first.locator("#app")).toBeVisible();
+    expect(mock.pairSubmits).toHaveLength(1);
+
+    // Simulate cleared local/session storage. The browser context keeps the
+    // HttpOnly cookie, which page JavaScript cannot inspect or delete.
+    await first.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+    await first.close();
+
+    const reopened = await context.newPage();
+    await reopened.goto(`${mock.origin}/waiter`);
+    await expect(reopened.locator("#app")).toBeVisible();
+    await expect(reopened.locator("#pairing")).toBeHidden();
+    await expect(reopened.locator("#pin")).toBeHidden();
+    await expect(reopened.locator("#retrySession")).toBeHidden();
+    expect(mock.pairSubmits).toHaveLength(1);
+    expect(mock.sessionCalls).toContain("cookie");
+  } finally {
+    await context.close(); mock.server.closeAllConnections();
+    await new Promise<void>(resolve => mock.server.close(() => resolve()));
+  }
+});
+
+test("un 401 de infraestructura conserva el vínculo y permite reintentar sin QR", async ({ browser }) => {
+  const context = await browser.newContext();
+  const mock = await fixture(context, state());
+  try {
+    const page = await context.newPage();
+    await page.goto(`${mock.origin}/waiter#tenant=test-tenant&terminal=test-terminal&challenge=challenge-infra-401`);
+    await page.locator("#pin").fill("1234");
+    await page.locator("#pairForm button[type=submit]").click();
+    await expect(page.locator("#app")).toBeVisible();
+
+    mock.authModes.push("infra-unauthorized-once");
+    const stateCallsBefore = mock.calls.filter(call => call.method === "waiter.getState").length;
+    await page.locator("#reconnect").click();
+    await expect(page.locator("#app")).toBeVisible();
+    await expect(page.locator("#pairing")).toBeHidden();
+    await expect(page.locator("#pairForm")).toBeHidden();
+    await expect(page.locator("#pairMessage")).not.toContainText(/QR nuevo/i);
+
+    await page.locator("#reconnect").click();
+    await expect.poll(() => mock.calls.filter(call => call.method === "waiter.getState").length)
+      .toBe(stateCallsBefore + 2);
+    await expect(page.locator("#app")).toBeVisible();
+    expect(mock.pairSubmits).toHaveLength(1);
+  } finally {
+    await context.close(); mock.server.closeAllConnections();
+    await new Promise<void>(resolve => mock.server.close(() => resolve()));
+  }
+});
+
+test("un bearer viejo rechazado cae a cookie vigente en modo lectura sin escanear otra vez", async ({ browser }) => {
+  const context = await browser.newContext();
+  const mock = await fixture(context, state());
+  try {
+    const page = await context.newPage();
+    await page.goto(`${mock.origin}/waiter#tenant=test-tenant&terminal=test-terminal&challenge=challenge-stale-bearer`);
+    await page.locator("#pin").fill("1234");
+    await page.locator("#pairForm button[type=submit]").click();
+    await expect(page.locator("#app")).toBeVisible();
+
+    mock.authModes.push("stale-bearer");
+    await page.evaluate(() => sessionStorage.setItem("waiter:session:v1", "old-bearer-token"));
+    await page.reload();
+    await expect(page.locator("#app")).toBeVisible();
+    await expect(page.locator("#pairing")).toBeHidden();
+    await expect(page.locator("#pin")).toBeHidden();
+    expect(mock.authEvidence).toContain("bearer");
+    expect(mock.authEvidence).toContain("cookie");
+    expect(mock.pairSubmits).toHaveLength(1);
   } finally {
     await context.close(); mock.server.closeAllConnections();
     await new Promise<void>(resolve => mock.server.close(() => resolve()));

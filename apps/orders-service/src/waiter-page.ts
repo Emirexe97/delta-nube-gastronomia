@@ -506,15 +506,20 @@ export const waiterHtml = String.raw`<!doctype html>
           busy = false,
           checkingPending = false;
         let tableDetail = null, tableError = '', detailVersion = 0, menuOpen = false, printIntent = null;
+        let canDiscoverSession = true;
+        function deviceWasReplaced() {
+          const current = readDevice();
+          return !!(device?.generation && current?.generation && device.generation !== current.generation);
+        }
         const el = (id) => document.getElementById(id),
-          request = async (path, opts = {}) => {
-            if (tabReplaced || (!challengeId && device?.generation && readDevice()?.generation !== device.generation)) {
+          request = async (path, opts = {}, useBearer = true) => {
+            if (tabReplaced || (!challengeId && deviceWasReplaced())) {
               replaceTab(); throw new Error('La vinculación cambió en otra pestaña.');
             }
             const headers = {
               accept: 'application/json',
               ...(opts.body ? { 'content-type': 'application/json' } : {}),
-              ...(token ? { authorization: 'Bearer ' + token } : {}),
+              ...(useBearer && token ? { authorization: 'Bearer ' + token } : {}),
             };
             const res = await fetch(API + path, {
               ...opts,
@@ -572,13 +577,27 @@ export const waiterHtml = String.raw`<!doctype html>
           },
           rpc = async (method, params = {}, stableId = newRequestId()) => {
             const version = accessVersion;
-            try {
+            const startedWithBearer = Boolean(token);
+            const submit = async () => {
               const queued = await request('/rpc', {
                 method: 'POST',
                 body: JSON.stringify({ requestId: stableId, method, params }),
               });
               return await waitRequest(queued.requestId);
+            };
+            try {
+              return await submit();
             } catch (error) {
+              // A stale in-tab token can take precedence over a still-valid cookie.
+              // Retry only the read that validates the restored session.
+              if (version === accessVersion && startedWithBearer && error.status === 401 && error.code === 'unauthorized' &&
+                  await recoverCookieSession(version)) {
+                if (method !== 'waiter.getState') {
+                  scheduleResume();
+                  throw new Error('Estamos recuperando el vínculo. Consultá el estado antes de volver a enviar.');
+                }
+                try { return await submit(); } catch (retryError) { error = retryError; }
+              }
               if (version === accessVersion && accessEnded(error)) {
                 endAccess('Tu acceso venció o fue revocado. Escaneá un QR nuevo en caja para continuar.');
               }
@@ -586,10 +605,33 @@ export const waiterHtml = String.raw`<!doctype html>
             }
           };
         function accessEnded(error) {
-          return error.status === 401 || ['unauthorized','session_revoked'].includes(error.code);
+          return ['unauthorized', 'session_revoked'].includes(error.code);
+        }
+        async function recoverCookieSession(version) {
+          let scope;
+          try { scope = await request('/session', {}, false); }
+          catch (error) {
+            if (accessEnded(error) || error.status === 404) return false;
+            throw error;
+          }
+          if (version !== accessVersion) return false;
+          if (typeof scope.tenantId !== 'string' || !scope.tenantId || typeof scope.terminalId !== 'string' || !scope.terminalId)
+            throw new Error('No se pudo comprobar el vínculo con caja.');
+          if ((tenantId && scope.tenantId !== tenantId) || (terminalId && scope.terminalId !== terminalId) ||
+              (device?.cashSessionId && scope.cashSessionId && scope.cashSessionId !== device.cashSessionId)) {
+            replaceTab();
+            return false;
+          }
+          tenantId = scope.tenantId;
+          terminalId = scope.terminalId;
+          device = { ...device, tenantId, terminalId, cashSessionId: scope.cashSessionId ?? device?.cashSessionId };
+          token = '';
+          safeRemove(sessionStorage, TOKEN_KEY);
+          return true;
         }
         function endAccess(message, forget = true) {
           accessVersion++;
+          canDiscoverSession = false;
           if (forget && (!device?.generation || readDevice()?.generation === device.generation))
             safeRemove(localStorage, DEVICE_KEY);
           device = null; token = ''; state = null;
@@ -607,7 +649,7 @@ export const waiterHtml = String.raw`<!doctype html>
           endAccess('Cambió el acceso de este teléfono. Volvé a abrir la página para continuar.', false);
         }
         window.addEventListener('storage', e => {
-          if (e.key === DEVICE_KEY && !challengeId && device?.generation && readDevice()?.generation !== device.generation) replaceTab();
+          if (e.key === DEVICE_KEY && !challengeId && deviceWasReplaced()) replaceTab();
         });
         function loadDraft() {
           try {
@@ -1757,7 +1799,7 @@ export const waiterHtml = String.raw`<!doctype html>
           }
         }
         async function resume() {
-          if (resuming || pairPending || tabReplaced || challengeId || !(token || device)) return;
+          if (resuming || pairPending || tabReplaced || challengeId || !(token || device || canDiscoverSession)) return;
           clearTimeout(resumeTimer);
           resuming = true;
           if (!state) {
@@ -1765,7 +1807,25 @@ export const waiterHtml = String.raw`<!doctype html>
             el('retrySession').hidden = true;
             setMsg('pairMessage','Reconectando con caja…');
           }
-          try { await refresh(); } finally { resuming = false; }
+          try {
+            if (!token && !device) {
+              const version = accessVersion;
+              try {
+                if (!await recoverCookieSession(version)) {
+                  if (version === accessVersion) endAccess('Escaneá un QR nuevo en caja para ingresar.', false);
+                  return;
+                }
+              } catch {
+                if (version === accessVersion) {
+                  el('retrySession').hidden = false;
+                  setMsg('pairMessage', 'No pudimos comprobar el acceso. Reintentá la conexión con caja.', 'warn');
+                  scheduleResume();
+                }
+                return;
+              }
+            }
+            await refresh();
+          } finally { resuming = false; }
         }
         el('retrySession').onclick = resume;
         window.addEventListener('online', resume);
@@ -1788,8 +1848,7 @@ export const waiterHtml = String.raw`<!doctype html>
               return;
             }
           }
-          if (token || device) await resume();
-          else setMsg('pairMessage', 'Escaneá un QR nuevo en caja para ingresar.', 'warn');
+          await resume();
         }
         void start();
       })();

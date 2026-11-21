@@ -483,12 +483,12 @@ export class WaiterRelay {
         if (current.kind === "rpc" && current.method === "waiter.getState" && current.sessionHash) {
           const state = b.result as { expiresAt?: unknown; validUntil?: unknown; cashSessionId?: unknown };
           const session = this.sessions.get(current.sessionHash);
-          const invalidCashExpiry = (state?.expiresAt === null || state?.validUntil === "CASH_CLOSE") &&
-            (state?.expiresAt !== null || state?.validUntil !== "CASH_CLOSE" || !validId(state?.cashSessionId));
-          const changedCashSession = session?.validUntil === "CASH_CLOSE" &&
-            (state?.expiresAt !== null || state?.validUntil !== "CASH_CLOSE" || state?.cashSessionId !== session.cashSessionId);
-          if (invalidCashExpiry || changedCashSession) {
-            this.deleteSession(current.sessionHash);
+          const reportsCashClose = state?.expiresAt === null || state?.validUntil === "CASH_CLOSE";
+          const validCashState = state?.expiresAt === null && state?.validUntil === "CASH_CLOSE" && validId(state.cashSessionId);
+          if ((session?.validUntil === "CASH_CLOSE" || reportsCashClose) && !validCashState) {
+            current.result = undefined;
+            current.error = { code: "pos_unavailable" };
+          } else if (session?.validUntil === "CASH_CLOSE" && state.cashSessionId !== session.cashSessionId) {
             current.result = undefined;
             current.error = { code: "session_revoked" };
           }
@@ -539,6 +539,13 @@ export class WaiterRelay {
       )
         this.deleteSession(current.sessionHash);
       return (send(res, 200, { ok: true }), true);
+    }
+    if (method === "GET" && pathname === "/v1/waiter/session") {
+      const session = this.sessionResponse(req, res);
+      if (!session) return true;
+      const { storeId, terminalId, cashSessionId } = session.value;
+      send(res, 200, { tenantId: storeId, terminalId, cashSessionId });
+      return true;
     }
     if (method === "POST" && pathname === "/v1/waiter/rpc") {
       const s = this.sessionResponse(req, res);

@@ -58,6 +58,8 @@ test("mobile waiter request crosses desktop worker + relay HTTP + temporary SQLi
 
   let service: WaiterRelay | null = null;
   const server = createServer((req, res) => {
+    // The synchronous bulk import below can outlive a pooled connection's idle timeout.
+    res.setHeader("connection", "close");
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     if (!service) {
       send(res, 503, { error: "starting" });
@@ -223,6 +225,26 @@ test("mobile waiter request crosses desktop worker + relay HTTP + temporary SQLi
   };
   assert.ok(state.menu.products.length);
   assert.ok(state.tables.some((row) => row.id === table.id));
+
+  const previousShiftBatch = randomUUID();
+  const previousShift = await mobile("/v1/waiter/rpc", {
+    requestId: previousShiftBatch,
+    method: "waiter.submitBatch",
+    params: {
+      requestId: previousShiftBatch,
+      tableId: table.id,
+      expectedOrderId: null,
+      expectedCashSessionId: "previous-shift",
+      lines: [{ lineId: randomUUID(), productId: state.menu.products[0]!.id, quantity: 1 }],
+    },
+  }, sessionToken);
+  assert.equal(previousShift.status, 202);
+  await worker.tick();
+  const rejection = await mobile(`/v1/waiter/requests/${previousShift.value.requestId}`, undefined, sessionToken);
+  assert.equal(rejection.status, 200);
+  assert.equal(rejection.value.status, "failed");
+  assert.equal((rejection.value.error as { code: string }).code, "rejected");
+  assert.equal((await mobile("/v1/waiter/session", undefined, sessionToken)).value.cashSessionId, cash.id);
 
   // The legacy envelope above still works. A phone negotiating v2 can sell
   // the last product even if sending all 3,000 photos-free menu entries would fail.

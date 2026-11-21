@@ -40,6 +40,22 @@ test("pairing exposes safe PIN and expired-QR errors without leaking repository 
     e instanceof WaiterRequestError && e.code === "pair_failed" && !e.message.includes("confidential"));
 });
 
+test("an order from another shift is rejected without invalidating the waiter session", () => {
+  const oldOrder = new Error("El pedido pertenece a otro turno de caja.");
+  const repo = { getWaiterTable: () => { throw oldOrder; } } as any;
+  const lookup = { ...request([line()]), method: "waiter.getTable", params: { tableId: "table-1" } };
+  assert.throws(() => handleWaiterRequest(repo, lookup, () => {}), (error: unknown) =>
+    error instanceof WaiterRequestError && error.code === "rejected" && error.message === oldOrder.message,
+  );
+
+  const revoked = Object.assign(new Error("La sesión de mozo venció o fue revocada."),
+    { code: "waiter_session_invalid" });
+  repo.getWaiterTable = () => { throw revoked; };
+  assert.throws(() => handleWaiterRequest(repo, lookup, () => {}), (error: unknown) =>
+    error instanceof WaiterRequestError && error.code === "unauthorized",
+  );
+});
+
 test("waiter RPC preserves optional second half and classifies pizza validation as rejected", () => {
   let submitted: any;
   const repo = {

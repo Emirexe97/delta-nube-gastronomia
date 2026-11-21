@@ -149,3 +149,28 @@ test("cash-aware worker serves long shifts and restarts, then reports closure wi
   await worker.tick();
   assert.equal(headers.length, 3);
 });
+
+test("cash-aware worker omits cash scope while unavailable and resumes it when restored", async () => {
+  let n = 1_000_000;
+  let cash: string | null | undefined = "cash-shift-a";
+  const headers: Array<string | null> = [];
+  const worker = createWaiterRelay({
+    config: () => cfg,
+    cashSessionId: () => cash,
+    now: () => n,
+    process: async () => null,
+    fetch: async (_input, init) => {
+      headers.push(new Headers(init?.headers).get("x-pos-cash-session"));
+      return Response.json({ requests: [] });
+    },
+  });
+  await worker.tick();
+  cash = undefined;
+  n += 1_000;
+  await worker.tick();
+  assert.equal(headers.at(-1), null);
+  cash = "cash-shift-a";
+  n += 1_000;
+  await worker.tick();
+  assert.equal(headers.at(-1), "cash-shift-a");
+});

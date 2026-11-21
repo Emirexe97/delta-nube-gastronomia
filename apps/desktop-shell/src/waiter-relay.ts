@@ -57,8 +57,8 @@ export function waiterRelayConfig(
 
 type Options = {
   config(): Config | null;
-  /** Present only in shift-aware desktops; null is an explicitly closed cash. */
-  cashSessionId?(): string | null;
+  /** null means the register is explicitly closed; undefined means scope is unavailable. */
+  cashSessionId?(): string | null | undefined;
   process(request: RelayRequest): Promise<unknown>;
   fetch?: typeof fetch;
   now?: () => number;
@@ -152,7 +152,9 @@ export function createWaiterRelay(options: Options) {
           config,
           "/v1/waiter/terminal/requests",
           undefined,
-          options.cashSessionId ? { "x-pos-cash-session": cashSessionId ?? "" } : {},
+          cashSessionId !== undefined
+            ? { "x-pos-cash-session": cashSessionId ?? "" }
+            : {},
         );
         if (!Array.isArray(requests)) throw new Error("Respuesta inválida");
         for (const req of requests.slice(0, 32) as RelayRequest[]) {

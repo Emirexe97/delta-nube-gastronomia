@@ -159,6 +159,10 @@ const waiterMenuSql = `SELECT p.id,p.category_id,p.name,p.print_destination,pp.a
   JOIN categories c ON c.id=p.category_id ${halfAndHalfGroupJoin}
   WHERE p.active=1 AND p.combo_definition_json IS NULL AND c.active=1 AND pl.code='SALON' AND pl.active=1`;
 
+function waiterSessionError(message: string) {
+  return Object.assign(new Error(message), { code: "waiter_session_invalid" });
+}
+
 function halfAndHalfGroup(row: Row): HalfAndHalfGroupDto | undefined {
   return row.half_and_half_group == null ? undefined : JSON.parse(String(row.half_and_half_group));
 }
@@ -501,14 +505,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   }
 
   private requireWaiterSession(token: string) {
-    if (!token || token.length > 256) throw new Error("Sesión de mozo inválida.");
+    if (!token || token.length > 256) throw waiterSessionError("Sesión de mozo inválida.");
     const hash = createHash("sha256").update(token).digest("hex");
     const row = this.db.prepare(`SELECT s.*,u.full_name,u.active,r.code AS role_code FROM waiter_sessions s
       JOIN users u ON u.id=s.user_id JOIN roles r ON r.id=u.role_id WHERE s.token_hash=?`).get(hash) as Row | undefined;
     if (!row || row.revoked_at || (!flag(row.expires_on_cash_close) && String(row.expires_at) <= nowIso()) || !Number(row.active) || row.role_code !== "WAITER")
-      throw new Error("La sesión de mozo venció o fue revocada.");
-    const openShift = this.requireOpenCashSessionRow();
-    if (String(openShift.id) !== String(row.cash_session_id)) throw new Error("La sesión de mozo pertenece a otro turno.");
+      throw waiterSessionError("La sesión de mozo venció o fue revocada.");
+    const openShift = this.getOpenCashSessionRow();
+    if (!openShift) throw waiterSessionError("Abrí una caja antes de operar.");
+    if (String(openShift.id) !== String(row.cash_session_id)) throw waiterSessionError("La sesión de mozo pertenece a otro turno.");
     return { ...row, tokenHash: hash } as Row & { tokenHash: string };
   }
 

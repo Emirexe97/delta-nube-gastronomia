@@ -158,13 +158,13 @@ export function handleWaiterRequest(
         "pair_failed",
         "No se pudo vincular. Revisá tu PIN y solicitá otro QR en la caja.",
       );
-    if (/sesi[oó]n|turno|caja abierta|sal[oó]n deshabilitado/i.test(msg))
+    if (e instanceof Error && "code" in e && e.code === "waiter_session_invalid")
       return fail(
         "unauthorized",
         "La sesión venció, fue revocada o cambió el turno. Volvé a escanear en caja.",
       );
     if (
-      /mesa|producto|stock|pedido|tanda|impresora|cantidad|comanda|línea|combo|pizza|mitad|elegible/i.test(
+      /mesa|producto|stock|pedido|tanda|impresora|cantidad|comanda|línea|combo|pizza|mitad|elegible|el turno cambió/i.test(
         msg,
       ) &&
       !/SQLITE|constraint|SELECT |INSERT |UPDATE |DELETE |file:|[A-Z]:\\/i.test(
