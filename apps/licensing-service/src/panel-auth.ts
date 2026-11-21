@@ -6,6 +6,9 @@ import {
 const KEY_BYTES = 64;
 const SALT_BYTES = 16;
 const MAX_PASSWORD_BYTES = 1024;
+const ACCOUNT_PASSWORD_MIN_LENGTH = 8;
+const ACCOUNT_PASSWORD_MAX_LENGTH = 128;
+const ACCOUNT_PASSWORD_MAX_BYTES = 512;
 const SCRYPT_OPTIONS = { N: 1 << 14, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const derive = (password: string, salt: Buffer) =>
   new Promise<Buffer>((resolve, reject) => {
@@ -24,17 +27,27 @@ const deriveAccount = (password: string, salt: Buffer) =>
     });
   });
 
+/** Policy for setting a Caja account password, not for the owner panel login. */
+export function isValidAccountPassword(password: unknown): password is string {
+  return (
+    typeof password === "string" &&
+    password.length >= ACCOUNT_PASSWORD_MIN_LENGTH &&
+    password.length <= ACCOUNT_PASSWORD_MAX_LENGTH &&
+    Buffer.byteLength(password, "utf8") <= ACCOUNT_PASSWORD_MAX_BYTES
+  );
+}
+
 /** Account passwords use a separately versioned, stronger hash format. */
 export async function hashAccountPassword(password: string): Promise<string> {
-  if (typeof password !== "string" || password.length < 15 || password.length > 128 || Buffer.byteLength(password, "utf8") > 512)
-    throw new Error("Account password must be 15-128 characters");
+  if (!isValidAccountPassword(password))
+    throw new Error(`Account password must be ${ACCOUNT_PASSWORD_MIN_LENGTH}-${ACCOUNT_PASSWORD_MAX_LENGTH} characters`);
   const salt = randomBytes(SALT_BYTES);
   const derived = await deriveAccount(password, salt);
   return `account-scrypt-v1$${salt.toString("base64url")}$${derived.toString("base64url")}`;
 }
 
 export async function verifyAccountPassword(password: string, encoded: string): Promise<boolean> {
-  if (typeof password !== "string" || password.length > 128 || Buffer.byteLength(password, "utf8") > 512 || typeof encoded !== "string") return false;
+  if (typeof password !== "string" || password.length > ACCOUNT_PASSWORD_MAX_LENGTH || Buffer.byteLength(password, "utf8") > ACCOUNT_PASSWORD_MAX_BYTES || typeof encoded !== "string") return false;
   const match = /^account-scrypt-v1\$([A-Za-z0-9_-]{22})\$([A-Za-z0-9_-]{86})$/.exec(encoded);
   if (!match) return false;
   try {

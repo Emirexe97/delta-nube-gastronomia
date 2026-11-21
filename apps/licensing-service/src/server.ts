@@ -23,7 +23,7 @@ import {
   type LicenseLease,
   type DeviceProof,
 } from "@gastronomy/licensing";
-import { hashAccountPassword, verifyAccountPassword, verifyPanelPassword } from "./panel-auth.js";
+import { hashAccountPassword, isValidAccountPassword, verifyAccountPassword, verifyPanelPassword } from "./panel-auth.js";
 import { issueWebSiteTicket, issueWaiterTicket } from "@gastronomy/web-orders/provision";
 import { createMerchantLedger, MerchantLedgerError } from "./merchant-ledger.js";
 import { arsToCents, BillingError, createSandboxBilling, type SandboxGateway } from "./sandbox-billing.js";
@@ -645,7 +645,7 @@ export function createLicenseServer(
         const b = await body(req);
         const email = normalizeEmail(b.email);
         const reason = typeof b.reason === "string" ? b.reason.trim() : "";
-        if (!email || typeof b.password !== "string" || b.password.length < 15 || b.password.length > 128 || Buffer.byteLength(b.password, "utf8") > 512 || !validId(b.licenseId) || !reason || reason.length > 500) {
+        if (!email || !isValidAccountPassword(b.password) || !validId(b.licenseId) || !reason || reason.length > 500) {
           json(res, 400, { error: "invalid_account" });
           return true;
         }
@@ -996,7 +996,7 @@ export function createLicenseServer(
           if (!isJson(req)) return json(res, 415, { error: "unsupported_media_type" });
           const b = await body(req);
           const email = normalizeEmail(b.email);
-          if (!email || typeof b.password !== "string" || b.password.length < 15 || b.password.length > 128 || Buffer.byteLength(b.password, "utf8") > 512 || !validId(b.licenseId))
+          if (!email || !isValidAccountPassword(b.password) || !validId(b.licenseId))
             return json(res, 400, { error: "invalid_account" });
           if (!accountHashSlot()) return json(res, 429, { error: "rate_limited" });
           let passwordHash: string;

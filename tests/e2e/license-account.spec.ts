@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 
-test("cuenta activa una PC nueva, conserva licencia tras reiniciar y permite caja sin red", async () => {
+test("cuenta con contraseña de 8 caracteres activa una PC nueva y permite caja sin red tras reiniciar", async () => {
   test.setTimeout(100_000);
   const { createLicenseServer } = await import("../../apps/licensing-service/dist/server.js");
   const profile = await mkdtemp(join(tmpdir(), "gastronomy-local-pilot-e2e-"));
   const keys = generateKeyPairSync("ed25519");
   const admin = randomBytes(32).toString("base64url");
-  const email = "caja-piloto@example.test", password = randomBytes(24).toString("base64url");
+  const email = "caja-piloto@example.test", password = randomBytes(6).toString("base64url");
   const authority = createLicenseServer({ dbPath: join(profile, "authority.sqlite"), adminToken: admin, privateKey: keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString() });
   let authorityClosed = false;
   let app: ElectronApplication | undefined;

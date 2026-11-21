@@ -1,6 +1,8 @@
 (() => {
   "use strict";
   const API = "/manage/api";
+  const ACCOUNT_PASSWORD_MIN_LENGTH = 8;
+  const ACCOUNT_PASSWORD_MAX_LENGTH = 128;
   const $ = (selector, root = document) => root.querySelector(selector);
   const state = {
     csrfToken: "",
@@ -1072,11 +1074,11 @@
       "Nueva contraseña",
       "accountPassword",
       "password",
-      "De 15 a 128 caracteres. Compartila con el titular por un canal seguro. No se podrá consultar después.",
+      `De ${ACCOUNT_PASSWORD_MIN_LENGTH} a ${ACCOUNT_PASSWORD_MAX_LENGTH} caracteres. Compartila con el titular por un canal seguro. No se podrá consultar después.`,
     );
     password.required = true;
-    password.minLength = 15;
-    password.maxLength = 128;
+    password.minLength = ACCOUNT_PASSWORD_MIN_LENGTH;
+    password.maxLength = ACCOUNT_PASSWORD_MAX_LENGTH;
     password.autocomplete = "new-password";
     const repeat = addField(
       "Repetir contraseña",
@@ -1085,7 +1087,7 @@
     );
     repeat.required = true;
     repeat.autocomplete = "new-password";
-    repeat.maxLength = 128;
+    repeat.maxLength = ACCOUNT_PASSWORD_MAX_LENGTH;
     addReasonField();
     state.dialogAction = (form) => {
       if (password.value !== repeat.value)

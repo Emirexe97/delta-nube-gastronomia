@@ -26,6 +26,7 @@ function fixture() {
   };
 }
 const pw = "correct-horse-battery-staple";
+const boundaryPassword = "Abc123!x";
 function token(mail) {
   return new URL(mail.text.match(/https:\/\/[^\s]+/)[0]).hash.slice(
     "#token=".length,
@@ -65,6 +66,52 @@ test("email-first registration creates no account until verification and token i
       e.code === "invalid_or_expired_token",
   );
   db.close();
+});
+
+test("public registration and password reset enforce the 8-character boundary and 128-character maximum", async (t) => {
+  const registration = fixture();
+  t.after(registration.close);
+  await registration.api.startRegistration("boundary-registration@example.test");
+  const registrationToken = token(registration.mails[0]);
+  await assert.rejects(
+    registration.api.completeRegistration({
+      token: registrationToken,
+      businessName: "Boundary Cafe",
+      password: "Abc123!",
+    }),
+    (error) => error instanceof PublicRegistrationError && error.code === "invalid_password",
+  );
+  const completed = await registration.api.completeRegistration({
+    token: registrationToken,
+    businessName: "Boundary Cafe",
+    password: boundaryPassword,
+  });
+  assert.equal(completed.email, "boundary-registration@example.test");
+  registration.advance(60_001);
+  await registration.api.startReset("boundary-registration@example.test");
+  const resetToken = token(registration.mails[1]);
+  await assert.rejects(
+    registration.api.completeReset({ token: resetToken, password: "Abc123!" }),
+    (error) => error instanceof PublicRegistrationError && error.code === "invalid_password",
+  );
+  await registration.api.completeReset({ token: resetToken, password: "Def456!y" });
+  registration.advance(60_001);
+  await registration.api.startReset("boundary-registration@example.test");
+  const secondReset = token(registration.mails[2]);
+  await registration.api.completeReset({ token: secondReset, password: "M".repeat(128) });
+  assert.equal(registration.db.prepare("SELECT count(*) n FROM accounts").get().n, 1);
+
+  const tooLong = fixture();
+  t.after(tooLong.close);
+  await tooLong.api.startRegistration("boundary-long@example.test");
+  await assert.rejects(
+    tooLong.api.completeRegistration({
+      token: token(tooLong.mails[0]),
+      businessName: "Boundary Long",
+      password: "L".repeat(129),
+    }),
+    (error) => error instanceof PublicRegistrationError && error.code === "invalid_password",
+  );
 });
 test("expiry, resend cooldown and duplicate registration do not replace an account", async () => {
   const { db, api, mails, advance } = fixture();

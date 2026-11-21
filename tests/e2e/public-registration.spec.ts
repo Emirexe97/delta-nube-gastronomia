@@ -103,7 +103,9 @@ test("registro conserva formulario, reenvía después de cooldown y completa cue
     await page.goto(`${fixture.origin}/registro/#token=one-time-token`);
     await expect(page).toHaveURL(`${fixture.origin}/registro/`);
     await page.getByLabel("Nombre del negocio").fill("El Buen Plato");
-    await page.getByLabel("Contraseña").fill("una-clave-muy-larga-123");
+    await expect(page.getByLabel("Contraseña")).toHaveAttribute("minlength", "8");
+    await expect(page.getByLabel("Contraseña")).toHaveAttribute("maxlength", "128");
+    await page.getByLabel("Contraseña").fill("cajaQa8!");
     await page.getByRole("button", { name: "Crear cuenta" }).click();
     await expect(
       page.getByRole("heading", { name: "¡Tu cuenta está lista!" }),
@@ -113,7 +115,7 @@ test("registro conserva formulario, reenvía después de cooldown y completa cue
       body: {
         token: "one-time-token",
         businessName: "El Buen Plato",
-        password: "una-clave-muy-larga-123",
+        password: "cajaQa8!",
       },
     });
   } finally {

@@ -1,5 +1,17 @@
 # Licenciamiento manual: auditoría focal — 2026-10-13
 
+## Contraseña de cuenta de Caja de 8 caracteres — verificación local 2026-11-21
+
+- Alta por API administrativa y por panel: 7 y 129 caracteres se rechazan; 8 crean la cuenta y permiten el primer ingreso firmado desde una instalación de prueba. Registro y recuperación verifican el mismo mínimo, aceptan 128 y conservan el enlace si la contraseña ingresada es demasiado corta.
+- Panel de cuentas y formulario de registro: controles de 8–128. Electron activa con 8 caracteres, conserva el permiso al reiniciar y opera sin red, con perfil y SQLite desechables. El mínimo del acceso administrador al panel se mantiene en 12 bytes; el PIN no cambió.
+- `pnpm --filter @gastronomy/licensing-service test`: **68/68**. `node --test scripts/hosted-pilot-config.test.mjs`: **4/4**. `pnpm build` y `pnpm typecheck`: **11/11** tareas cada uno.
+- `pnpm exec playwright test tests/e2e/license-account.spec.ts tests/e2e/license-account-panel.spec.ts tests/e2e/public-registration.spec.ts tests/e2e/merchant-registration.spec.ts --workers=1`: **7/7**. Los escenarios de registro en navegador usan un simulador de API; las pruebas del servicio usan SQLite y autoridades aisladas. No se enviaron correos reales.
+- Sin despliegue, cambio de versión ni modificación de la instalación real. Para revertir el candidato, retirar el cambio de política de cuenta en el servicio, sus formularios y el validador del piloto; no requiere migración ni tocar credenciales existentes.
+
+**Publicación posterior autorizada (21/11/2026):** se aplicó un overlay de tres archivos a la imagen activa de Licencias; solo se recreó `api`. La imagen exacta, sin red y con cuentas sintéticas, rechazó 7 y 129 en ambas rutas de alta y emitió un permiso firmado con 8. La copia SQLite pasó `quick_check` e `integrity_check`; filas relevantes y los demás contenedores quedaron intactos. Panel y salud HTTPS 200; sesión anónima 401, registro público y API administrativa pública 404. Recibo privado en `/home/deploy/gastronomy-licensing/operations/account-min8-20261121/deploy.receipt`. Para revertir, volver al Compose y la imagen anteriores sin restaurar la base.
+
+## Auditoría inicial
+
 **MVP y pruebas focales aprobados; DNS/HTTPS, piloto público positivo y respaldo externo cifrado con simulacro de recuperación aprobados el 2026-10-13. Fuente0.1.22 publicada y DMG licenciados de prueba completados.** Siguen pendientes requisitos comerciales/custodia independiente. No se ejecutó la integral canónica338 ni se validó un instalador comercial en Mac física.
 
 ## Evidencia y alcance

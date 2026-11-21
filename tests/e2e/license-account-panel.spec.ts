@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 
-test("panel crea cuenta y restablece contraseña sin guardar credenciales en texto plano", async ({ page }) => {
+test("panel crea y restablece contraseñas de 8 caracteres sin guardarlas en texto plano", async ({ page }) => {
   test.setTimeout(45_000);
   const { createLicenseServer } = await import("../../apps/licensing-service/dist/server.js");
   const { hashPanelPassword } = await import("../../apps/licensing-service/dist/panel-auth.js");
@@ -18,8 +18,8 @@ test("panel crea cuenta y restablece contraseña sin guardar credenciales en tex
   const admin = randomBytes(32).toString("base64url");
   const panelPassword = randomBytes(24).toString("base64url");
   const owner = "owner@example.test";
-  const firstPassword = randomBytes(20).toString("base64url");
-  const replacementPassword = randomBytes(20).toString("base64url");
+  const firstPassword = randomBytes(6).toString("base64url");
+  const replacementPassword = randomBytes(6).toString("base64url");
   const portServer = createServer();
   await new Promise<void>((resolve) => portServer.listen(0, "127.0.0.1", resolve));
   const port = (portServer.address() as { port: number }).port;
@@ -51,6 +51,8 @@ test("panel crea cuenta y restablece contraseña sin guardar credenciales en tex
 
     await row.getByRole("button", { name: "Crear cuenta", exact: true }).click();
     let dialog = page.getByRole("dialog");
+    await expect(dialog.getByLabel("Nueva contraseña", { exact: true })).toHaveAttribute("minlength", "8");
+    await expect(dialog.getByLabel("Nueva contraseña", { exact: true })).toHaveAttribute("maxlength", "128");
     await dialog.getByLabel("Correo de la cuenta", { exact: true }).fill(owner);
     await dialog.getByLabel("Nueva contraseña", { exact: true }).fill(firstPassword);
     await dialog.getByLabel("Repetir contraseña", { exact: true }).fill("different-password-value");

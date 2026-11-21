@@ -5,7 +5,14 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { verifyPanelPassword } from "../dist/panel-auth.js";
+import { hashPanelPassword, verifyPanelPassword } from "../dist/panel-auth.js";
+
+test("owner panel password still requires a minimum of 12 UTF-8 bytes", async () => {
+  await assert.rejects(hashPanelPassword("Abc123!x"), /between 12 and 1024/);
+  const ownerPassword = "Abc123!xD9?a";
+  const hash = await hashPanelPassword(ownerPassword);
+  assert.equal(await verifyPanelPassword(ownerPassword, hash), true);
+});
 
 test("password CLI writes only new private external files, rejecting repo aliases", async () => {
   const root = fileURLToPath(new URL("../../../", import.meta.url));

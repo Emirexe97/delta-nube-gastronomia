@@ -22,7 +22,7 @@ export function validateHostedPilotConfig(config) {
   if (!/^[A-Za-z0-9_-]{43,128}$/.test(config.receiveToken)) throw new Error('receiveToken inválido.');
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(config.installationId)) throw new Error('installationId inválido.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(config.accountEmail) || config.accountEmail.length > 254) throw new Error('accountEmail inválido.');
-  if (config.accountPassword.length < 15 || config.accountPassword.length > 128 || Buffer.byteLength(config.accountPassword, 'utf8') > 512) throw new Error('accountPassword debe cumplir los límites del servicio de licencias (15-128 caracteres, hasta 512 bytes UTF-8).');
+  if (config.accountPassword.length < 8 || config.accountPassword.length > 128 || Buffer.byteLength(config.accountPassword, 'utf8') > 512) throw new Error('accountPassword debe cumplir los límites de la cuenta de Caja (8-128 caracteres, hasta 512 bytes UTF-8).');
   try {
     if (createPublicKey(config.publicKey).asymmetricKeyType !== 'ed25519') throw new Error();
   } catch { throw new Error('publicKey debe ser una clave pública Ed25519 válida.'); }

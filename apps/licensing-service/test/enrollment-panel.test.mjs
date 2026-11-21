@@ -495,6 +495,45 @@ test("account activation atomically claims a fresh license/device and one of two
   assert.equal((await afterRestart.json()).account.email, email);
 });
 
+test("account creation accepts 8 characters, rejects 7 and preserves the 128-character maximum", async () => {
+  await login();
+  const cases = [
+    { path: "/admin/accounts", options: { auth: true } },
+    { path: "/manage/api/accounts", options: { cookie: "dng_owner=" + ownerCookie, csrf: csrfToken } },
+  ];
+  for (const { path, options } of cases) {
+    const license = await createLegacyLicense("Caja de prueba — límite de contraseña");
+    const email = "boundary-" + randomBytes(6).toString("hex") + "@example.test";
+    const password = "Abc123!x";
+    const createAccount = (candidate) =>
+      api(path, {
+        ...options,
+        method: "POST",
+        data: { email, password: candidate, licenseId: license.id, reason: "Prueba aislada" },
+      });
+
+    for (const invalid of [password.slice(0, -1), "A".repeat(129)]) {
+      const rejected = await createAccount(invalid);
+      assert.equal(rejected.status, 400, path);
+      assert.equal((await rejected.json()).error, "invalid_account", path);
+    }
+    assert.equal((await createAccount(password)).status, 201, path);
+    const proof = await deviceLeaseProof(
+      deviceKeyPair(),
+      "boundary-install-" + randomBytes(6).toString("hex"),
+    );
+    const activated = await api("/v2/accounts/activate", {
+      method: "POST",
+      data: { ...proof, email, password },
+    });
+    assert.equal(activated.status, 200, path);
+    const { request, account } = await activated.json();
+    assert.equal(request.licenseId, license.id);
+    assert.equal(request.installationId, proof.installationId);
+    assert.equal(account.email, email);
+  }
+});
+
 test("owner rejects pending device; requests cannot transfer a key or bypass one-approved-device policy", async () => {
   const rejected = await makeDeviceRequest(
     deviceKeyPair(),

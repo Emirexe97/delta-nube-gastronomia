@@ -36,8 +36,9 @@ test('rejects HTTP, loopback/private IPs, local names, paths, userinfo, query, a
 test('rejects invalid Ed25519 keys and passwords outside service limits', () => {
   const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'pem' }).toString();
   assert.throws(() => validateHostedPilotConfig({ ...valid(), publicKey: rsa }), /Ed25519/);
-  assert.throws(() => validateHostedPilotConfig({ ...valid(), accountPassword: 'short' }), /15-128/);
-  assert.throws(() => validateHostedPilotConfig({ ...valid(), accountPassword: 'p'.repeat(129) }), /15-128/);
+  assert.throws(() => validateHostedPilotConfig({ ...valid(), accountPassword: 'p'.repeat(7) }), /8-128/);
+  assert.doesNotThrow(() => validateHostedPilotConfig({ ...valid(), accountPassword: 'p'.repeat(8) }));
+  assert.throws(() => validateHostedPilotConfig({ ...valid(), accountPassword: 'p'.repeat(129) }), /8-128/);
   assert.throws(() => validateHostedPilotConfig({ ...valid(), accountPassword: 'é'.repeat(128) + 'a' }), /512 bytes/);
 });
 

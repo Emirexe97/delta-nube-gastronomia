@@ -16,7 +16,7 @@ Las licencias y clientes anteriores conservan sus endpoints de código y solicit
 
 ## Seguridad y operación
 
-- Contraseñas de 15–128 caracteres, hash scrypt separado del formato histórico del panel. Comparación constante, respuestas genéricas de credenciales, cuotas por IP/correo y concurrencia de hash acotada. Parámetros basados en [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#scrypt).
+- Contraseñas de cuenta de Caja de 8–128 caracteres y hasta 512 bytes UTF-8 al crear o restablecer. El mínimo de 8 se publicó en la autoridad de producción el 21/11/2026, sin habilitar el registro ni la recuperación públicos. No cambia el límite de la contraseña administradora ni el PIN del personal. Hash scrypt separado del formato histórico del panel, comparación constante, respuestas genéricas, cuotas por IP/correo y concurrencia de hash acotada. Parámetros de hash basados en [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#scrypt).
 - API administrativa: `POST /admin/accounts` con token privado; panel: `POST /manage/api/accounts` con sesión, origen y CSRF. No copiar token ni contraseñas en argumentos de consola, QR o logs.
 - Activación: `POST /v2/accounts/activate`, con desafío de propósito `lease`. Renovación posterior: prueba del dispositivo en `/v2/devices/lease`, sin reenviar contraseña.
 - Una única instancia de autoridad/SQLite; respaldar base y clave firmante de forma segura. Las cuotas en memoria requieren controles adicionales del proxy si se cambia la topología.

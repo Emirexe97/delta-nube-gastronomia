@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { hashAccountPassword } from "./panel-auth.js";
+import { hashAccountPassword, isValidAccountPassword } from "./panel-auth.js";
 
 const TTL = 30 * 60_000;
 const COOLDOWN = 60_000;
@@ -26,14 +26,6 @@ function normalize(email: unknown): string {
   )
     throw new PublicRegistrationError(400, "invalid_email");
   return email.trim().toLowerCase();
-}
-function passwordValid(p: unknown): p is string {
-  return (
-    typeof p === "string" &&
-    p.length >= 15 &&
-    p.length <= 128 &&
-    Buffer.byteLength(p, "utf8") <= 512
-  );
 }
 export function createPublicRegistration(
   db: DatabaseSync,
@@ -138,7 +130,7 @@ export function createPublicRegistration(
   ) {
     if (typeof tokenInput !== "string" || tokenInput.length > 256)
       throw new PublicRegistrationError(400, "invalid_token");
-    if (!passwordValid(password))
+    if (!isValidAccountPassword(password))
       throw new PublicRegistrationError(400, "invalid_password");
     if (hashJobs >= 4)
       throw new PublicRegistrationError(503, "temporarily_unavailable");

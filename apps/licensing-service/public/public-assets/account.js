@@ -1,4 +1,6 @@
 const api = "/public/api/";
+const ACCOUNT_PASSWORD_MIN_LENGTH = 8;
+const ACCOUNT_PASSWORD_MAX_LENGTH = 128;
 const status = document.querySelector("#status");
 if (status) status.tabIndex = -1;
 const form = document.querySelector("#form");
@@ -51,9 +53,10 @@ if (form) {
     title.textContent = isReset
       ? "Elegí una nueva contraseña"
       : "Terminá de crear tu cuenta";
+    const passwordLength = `de ${ACCOUNT_PASSWORD_MIN_LENGTH} a ${ACCOUNT_PASSWORD_MAX_LENGTH} caracteres`;
     intro.textContent = isReset
-      ? "Usá una contraseña segura de 15 a 128 caracteres."
-      : "Contanos cómo se llama tu negocio y elegí una contraseña de 15 a 128 caracteres.";
+      ? `Usá una contraseña segura ${passwordLength}.`
+      : `Contanos cómo se llama tu negocio y elegí una contraseña ${passwordLength}.`;
     form.replaceChildren();
     if (!isReset) {
       const businessLabel = document.createElement("label");
@@ -75,8 +78,8 @@ if (form) {
     password.name = "password";
     password.type = "password";
     password.autocomplete = "new-password";
-    password.minLength = 15;
-    password.maxLength = 128;
+    password.minLength = ACCOUNT_PASSWORD_MIN_LENGTH;
+    password.maxLength = ACCOUNT_PASSWORD_MAX_LENGTH;
     password.required = true;
     const toggle = document.createElement("button");
     toggle.type = "button";
