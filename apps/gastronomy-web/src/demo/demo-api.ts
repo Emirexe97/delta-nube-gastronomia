@@ -3,6 +3,7 @@ import type {
   TutorialProgressDto,
   BootstrapDto,
   CategoryDto,
+  HalfAndHalfAssignment,
   CustomerDto,
   DeliveryLedgerDto,
   DriverDeliveryActivityDto,
@@ -61,6 +62,13 @@ import {
   businessDateFromOpening,
   assertComboDefinition,
   calculateComboPrice,
+  calculateHalfAndHalfBase,
+  canCombineHalves,
+  halfAndHalfItemName,
+  legacyPizzaGroups,
+  normalizeHalfAndHalfConfig,
+  resolveHalfAndHalfGroup,
+  validateHalfAndHalfAssignment,
   calculateBookPrice,
   applyBookAdjustment,
   assertComboLineAmount,
@@ -448,6 +456,7 @@ function seedState(): DemoState {
   oldDate.setDate(oldDate.getDate() - 120);
   const oldBusinessDate = oldDate.toISOString().slice(0, 10);
   const bootstrap = createDemoBootstrap();
+  initializeHalfAndHalfGroups(bootstrap);
   for (const product of bootstrap.products) product.priceBook = productBookFromPrices(product.prices, { SALON: "book-base", TAKEAWAY: "book-off-premise", DELIVERY: "book-off-premise" });
   return {
     version: 13,
@@ -627,6 +636,7 @@ function loadState(storage: DemoStorage): DemoState {
     parsed.data.settings.deliveryFeeBelongsToDriver ??= true;
     // Historical demo profiles predate this option; keep the feature enabled.
     parsed.data.settings.halfAndHalfEnabled ??= true;
+    initializeHalfAndHalfGroups(parsed.data);
     for (const order of parsed.data.orders) {
       // Old paid orders followed the legacy rule that the driver owned the fee.
       if (order.paidMinor > 0) order.deliveryFeeBelongsToDriver ??= true;
@@ -737,6 +747,21 @@ function methodName(data: BootstrapDto, code: string) {
   return (
     data.paymentMethods.find((method) => method.code === code)?.name ?? code
   );
+}
+
+function initializeHalfAndHalfGroups(data: BootstrapDto) {
+  for (const category of data.categories) {
+    if (category.halfAndHalfGroups !== undefined) continue;
+    const products = data.products.filter((product) => product.categoryId === category.id && !product.comboDefinition);
+    const plans = legacyPizzaGroups(category.name, products);
+    category.halfAndHalfGroups = plans.map(({ group }) => group);
+    category.defaultHalfAndHalfGroupId = null;
+    for (const { group, productIds } of plans) {
+      const ids = new Set(productIds);
+      for (const product of products)
+        if (ids.has(product.id)) product.halfAndHalf = { mode: "GROUP", groupId: group.id };
+    }
+  }
 }
 
 function orderPrice(product: ProductDto, type: OrderDto["type"], state?: DemoState) {
@@ -3047,22 +3072,30 @@ export function createDemoApi(
     async addHalfAndHalfItem(input) {
       if (state.data.settings.halfAndHalfEnabled === false)
         throw new Error(
-          "Las pizzas mitad y mitad están deshabilitadas en Configuración.",
+          "La opción mitad y mitad está deshabilitada en Configuración.",
         );
       const order = orderById(input.orderId);
       assertOrderAction(order, "EDIT");
       const first = productById(input.firstProductId);
       const second = productById(input.secondProductId);
       if (first.comboDefinition || second.comboDefinition) throw new Error("Los combos no pueden agregarse como mitad y mitad.");
-      const firstPrice = orderPrice(first, order.type, state);
-      const secondPrice = orderPrice(second, order.type, state);
-      const unit =
-        state.data.settings.halfAndHalfPricingMode === "MOST_EXPENSIVE"
-          ? Math.max(firstPrice, secondPrice)
-          : Math.round((firstPrice + secondPrice) / 2);
+      const groupFor = (product: ProductDto) => resolveHalfAndHalfGroup(
+        state.data.categories.find(({ id }) => id === product.categoryId), product,
+      );
+      const group = groupFor(first);
+      if (!group || !canCombineHalves(
+        { ...first, halfAndHalfGroupId: group.id },
+        { ...second, halfAndHalfGroupId: groupFor(second)?.id },
+      )) throw new Error("Elegí dos variedades distintas que pertenezcan al mismo grupo de mitades.");
+      const channel = order.type === "DINE_IN" ? "SALON" : order.type;
+      const firstPrice = first.prices.find((price) => price.priceListCode === channel)?.amountMinor;
+      const secondPrice = second.prices.find((price) => price.priceListCode === channel)?.amountMinor;
+      if (firstPrice == null || secondPrice == null)
+        throw new Error("Ambas variedades necesitan un precio para este canal.");
+      const unit = calculateHalfAndHalfBase(firstPrice, secondPrice, group.pricingMode ?? state.data.settings.halfAndHalfPricingMode);
       const quantity = input.quantity ?? 1;
-      if (quantity <= 0)
-        throw new Error("La cantidad debe ser mayor que cero.");
+      if (!Number.isSafeInteger(quantity) || quantity < 1)
+        throw new Error("La cantidad debe ser un entero positivo.");
       if (
         order.lifecycleStatus === "CONFIRMED" &&
         state.data.settings.stockEnabled
@@ -3089,7 +3122,8 @@ export function createDemoApi(
       order.items.push({
         id: uid("item", state),
         productId: null,
-        productNameSnapshot: `Mitad ${first.name} / mitad ${second.name}`,
+        productNameSnapshot: halfAndHalfItemName(group.name, first.name, second.name),
+        halfAndHalfGroupNameSnapshot: group.name,
         quantity,
         unitPriceMinorSnapshot: unit,
         discountMinorSnapshot: 0,
@@ -4660,6 +4694,7 @@ export function createDemoApi(
         sortOrder: state.data.categories.length + 1,
         active: true,
         stockControlEnabled: input.stockControlEnabled ?? true,
+        ...normalizeHalfAndHalfConfig(input),
       };
       state.data.categories.push(category);
       audit(state, "CATEGORY", category.id, "CATEGORY_CREATED");
@@ -4695,6 +4730,8 @@ export function createDemoApi(
           "La categoría tiene productos activos. Reasignalos o desactivalos antes.",
         );
       const before = { ...category };
+      const halfAndHalf = normalizeHalfAndHalfConfig(input, category);
+      Object.assign(category, halfAndHalf);
       const previousStockControl = category.stockControlEnabled ?? true;
       category.name = input.name.trim();
       category.active = input.active;
@@ -4726,9 +4763,13 @@ export function createDemoApi(
           }
         }
       }
-      for (const product of state.data.products)
-        if (product.categoryId === category.id)
-          product.categoryName = category.name;
+      const groupIds = new Set(halfAndHalf.halfAndHalfGroups.map(({ id }) => id));
+      for (const product of state.data.products) {
+        if (product.categoryId !== category.id) continue;
+        product.categoryName = category.name;
+        if (product.halfAndHalf?.mode === "GROUP" && !groupIds.has(product.halfAndHalf.groupId))
+          product.halfAndHalf = { mode: "DISABLED" };
+      }
       audit(
         state,
         "CATEGORY",
@@ -4866,6 +4907,8 @@ export function createDemoApi(
 
     async createProduct(input) {
       const category = categoryById(input.categoryId);
+      const halfAndHalf = input.halfAndHalf ?? { mode: "INHERIT" } as const;
+      validateHalfAndHalfAssignment(halfAndHalf, category.halfAndHalfGroups ?? []);
       const prices = input.priceBook ? [] : normalizeProductPrices(input.prices);
       validateProductInventory(input);
       if (input.parentProductId) {
@@ -4883,6 +4926,7 @@ export function createDemoApi(
         name: input.name.trim(),
         code: input.code?.trim() || null,
         parentProductId: input.parentProductId ?? null,
+        halfAndHalf,
         sortOrder:
           state.data.products.filter(
             (candidate) => candidate.categoryId === category.id,
@@ -4933,9 +4977,14 @@ export function createDemoApi(
             "Un producto con variantes no puede convertirse en variante.",
           );
       }
+      const previousAssignment = product.categoryId !== category.id && product.halfAndHalf?.mode === "GROUP"
+        ? { mode: "DISABLED" } as const : product.halfAndHalf;
+      const halfAndHalf: HalfAndHalfAssignment = input.halfAndHalf ?? previousAssignment ?? { mode: "INHERIT" };
+      validateHalfAndHalfAssignment(halfAndHalf, category.halfAndHalfGroups ?? []);
       Object.assign(product, {
         categoryId: category.id,
         categoryName: category.name,
+        halfAndHalf,
         name: input.name.trim(),
         code: input.code?.trim() || null,
         parentProductId: nextParentId,
@@ -5027,6 +5076,8 @@ export function createDemoApi(
           : null;
         for (const product of products) {
           if (category) {
+            if (product.categoryId !== category.id && product.halfAndHalf?.mode === "GROUP")
+              product.halfAndHalf = { mode: "DISABLED" };
             product.categoryId = category.id;
             product.categoryName = category.name;
           }

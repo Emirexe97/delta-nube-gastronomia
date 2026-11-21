@@ -188,9 +188,9 @@ function orderTicketHtml(
     escapeHtml(value).replaceAll("\n", "<br>");
   const itemRows = order.items
     .map((item) => {
-      const productName = isKitchen && item.halves.length === 2
-        ? "Pizza mitad y mitad"
-        : item.productNameSnapshot;
+      const productName = item.halfAndHalfGroupNameSnapshot
+        ? `${item.halfAndHalfGroupNameSnapshot} mitad y mitad`
+        : isKitchen && item.halves.length === 2 ? "Pizza mitad y mitad" : item.productNameSnapshot;
       const halves = item.halves.length
         ? `<div class="detail halves">½ ${escapeHtml(item.halves[0]?.nameSnapshot)} · ½ ${escapeHtml(item.halves[1]?.nameSnapshot)}</div>`
         : "";

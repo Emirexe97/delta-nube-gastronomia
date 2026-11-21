@@ -8,6 +8,12 @@ import type { GastronomyRepository } from "@gastronomy/application";
 import { AUDIT_FILTER_ACTIONS, assertTutorialProgressInput, isPriceBookRoundingIncrementMinor, normalizeImportProductsInput } from "@gastronomy/contracts";
 import type {
   AddHalfAndHalfItemInput,
+  CreateCategoryInput,
+  UpdateCategoryInput,
+  CreateProductInput,
+  HalfAndHalfAssignment,
+  HalfAndHalfGroupDto,
+  HalfAndHalfPricingMode,
   AddComboItemInput,
   ConfigureProductComboInput,
   CreateComboInput,
@@ -120,6 +126,11 @@ import {
   calculateCashClosing,
   calculateExpectedCash,
   calculateHalfAndHalfBase,
+  canCombineHalves,
+  halfAndHalfItemName,
+  legacyPizzaGroups,
+  normalizeHalfAndHalfConfig,
+  validateHalfAndHalfAssignment,
   calculateModifierCharge,
   calculateDiscountMinor,
   calculateLineTotal,
@@ -141,15 +152,42 @@ import { populateRepeatedOrder } from "./repeat-order";
 type SqliteDatabase = InstanceType<typeof Database>;
 type Row = Record<string, unknown>;
 
-const waiterMenuSql = `SELECT p.id,p.category_id,p.name,p.print_destination,c.name AS category_name,pp.amount_minor
+const halfAndHalfGroupJoin = `LEFT JOIN json_each(c.half_and_half_groups_json) AS hg
+  ON json_extract(hg.value, '$.id') = COALESCE(p.half_and_half_group_override, c.default_half_and_half_group_id)`;
+const waiterMenuSql = `SELECT p.id,p.category_id,p.name,p.print_destination,pp.amount_minor,hg.value AS half_and_half_group
   FROM products p JOIN product_prices pp ON pp.product_id=p.id JOIN price_lists pl ON pl.id=pp.price_list_id
-  JOIN categories c ON c.id=p.category_id WHERE p.active=1 AND p.combo_definition_json IS NULL
-  AND c.active=1 AND pl.code='SALON' AND pl.active=1`;
-const waiterPizza = (row: Row) => `${row.category_name} ${row.name}`.toLocaleLowerCase("es-AR").includes("pizza");
-function waiterMenuProduct(p: Row) {
-  return { id: String(p.id), categoryId: String(p.category_id), name: String(p.name),
-    priceMinor: Number(p.amount_minor), printDestination: p.print_destination == null ? null : String(p.print_destination),
-    halfEligible: waiterPizza(p) };
+  JOIN categories c ON c.id=p.category_id ${halfAndHalfGroupJoin}
+  WHERE p.active=1 AND p.combo_definition_json IS NULL AND c.active=1 AND pl.code='SALON' AND pl.active=1`;
+
+function halfAndHalfGroup(row: Row): HalfAndHalfGroupDto | undefined {
+  return row.half_and_half_group == null ? undefined : JSON.parse(String(row.half_and_half_group));
+}
+
+function halfAndHalfCandidate(row: Row) {
+  return { id: String(row.id), categoryId: String(row.category_id), halfAndHalfGroupId: halfAndHalfGroup(row)?.id ?? null };
+}
+
+function waiterMenuProduct(row: Row, defaultPricingMode: HalfAndHalfPricingMode) {
+  const group = halfAndHalfGroup(row);
+  return {
+    ...halfAndHalfCandidate(row),
+    name: String(row.name),
+    priceMinor: Number(row.amount_minor),
+    printDestination: row.print_destination == null ? null : String(row.print_destination),
+    ...(group ? { halfAndHalfPricingMode: group.pricingMode ?? defaultPricingMode } : {}),
+  };
+}
+
+// NULL inherits the category default. The empty string is an explicit opt-out.
+function halfAndHalfAssignment(row: Row): HalfAndHalfAssignment {
+  const override = row.half_and_half_group_override;
+  if (override == null) return { mode: "INHERIT" };
+  return override === "" ? { mode: "DISABLED" } : { mode: "GROUP", groupId: String(override) };
+}
+
+function halfAndHalfOverride(assignment: HalfAndHalfAssignment) {
+  if (assignment.mode === "GROUP") return assignment.groupId;
+  return assignment.mode === "DISABLED" ? "" : null;
 }
 function webInboxEntry(row: Row): WebInboxEntry {
   return {
@@ -308,7 +346,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     // other connections. Both are cheap without scanning prices on every page.
     const { stamp } = this.db.prepare(`SELECT total_changes() || ':' || data_version AS stamp FROM pragma_data_version`).get() as { stamp: string };
     if (!this.db.inTransaction && this.waiterMenuCache?.changeStamp === stamp) return this.waiterMenuCache;
-    const products = (this.db.prepare(waiterMenuSql + " ORDER BY c.sort_order,p.sort_order,p.name,p.id").all() as Row[]).map(waiterMenuProduct);
+    const defaultPricingMode = this.getSettings().halfAndHalfPricingMode;
+    const products = (this.db.prepare(waiterMenuSql + " ORDER BY c.sort_order,p.sort_order,p.name,p.id").all() as Row[])
+      .map((row) => waiterMenuProduct(row, defaultPricingMode));
     const serialized = JSON.stringify(products);
     const snapshot = { changeStamp: stamp, products, inline: Buffer.byteLength(serialized) < 48 * 1024,
       version: createHash("sha256").update(serialized).digest("hex") };
@@ -724,7 +764,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         const lines = input.lines.map((line) => {
           const product = this.db.prepare("SELECT name FROM products WHERE id=?").get(line.productId) as Row | undefined;
           const second = line.secondProductId ? this.db.prepare("SELECT name FROM products WHERE id=?").get(line.secondProductId) as Row | undefined : undefined;
-          return { ...line, name: line.secondProductId ? `Pizza mitad ${String(product?.name ?? line.productId)} / mitad ${String(second?.name ?? line.secondProductId)}` : String(product?.name ?? line.productId), note: line.note?.trim() || null };
+          const firstName = String(product?.name ?? line.productId);
+          const name = line.secondProductId ? `Mitad y mitad · ${firstName} / ${String(second?.name ?? line.secondProductId)}` : firstName;
+          return { ...line, name, note: line.note?.trim() || null };
         });
         this.db.prepare(`INSERT INTO waiter_pending_batches(request_id,user_id,cash_session_id,table_id,table_number,waiter_name,expected_order_id,submitted_at,received_at,payload_hash,status,lines_json,print_mode)
           VALUES(?,?,?,?,?,?,?,?,?,?,'PENDING_REVIEW',?,?)`).run(input.requestId, session.user_id, session.cash_session_id, input.tableId, tableSnapshot.number, session.full_name, input.expectedOrderId ?? null, submittedAt, nowIso(), payloadHash, JSON.stringify(lines),input.printMode ?? null);
@@ -746,9 +788,9 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         const first = requireRow(lookupProduct.get(line.productId) as Row | undefined, "Un producto ya no está disponible en el menú del salón. Actualizá y revisá la tanda.");
         if (!line.secondProductId) continue;
         if (!halfEnabled) throw new Error("La opción mitad y mitad está deshabilitada.");
-        if (line.secondProductId === line.productId) throw new Error("Elegí dos variedades distintas para la pizza.");
         const second = requireRow(lookupProduct.get(line.secondProductId) as Row | undefined, "La otra mitad ya no está disponible en el menú del salón.");
-        if (!waiterPizza(first) || !waiterPizza(second)) throw new Error("Ambos productos deben ser variedades de pizza.");
+        if (!canCombineHalves(halfAndHalfCandidate(first), halfAndHalfCandidate(second)))
+          throw new Error("Elegí dos variedades distintas que pertenezcan al mismo grupo de mitades.");
       }
       const openOrders = this.db.prepare("SELECT id,waiter_user_id,lifecycle_status,operational_status FROM orders WHERE table_id=? AND operational_status NOT IN ('DELIVERED','CANCELLED') ORDER BY created_at")
         .all(input.tableId) as Row[];
@@ -940,6 +982,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       for (const migration of migrations) {
         if (applied.has(migration.version)) continue;
         this.db.exec(migration.sql);
+        if (migration.name === "catalog_half_and_half_groups") this.migrateLegacyPizzaGroups();
         this.db
           .prepare(
             "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
@@ -948,6 +991,21 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       }
     });
     apply();
+  }
+
+  private migrateLegacyPizzaGroups() {
+    const categories = this.db.prepare("SELECT id, name FROM categories").all() as { id: string; name: string }[];
+    const products = this.db.prepare(`SELECT id, name, parent_product_id AS parentProductId FROM products
+      WHERE category_id = ? AND combo_definition_json IS NULL ORDER BY sort_order, id`);
+    const updateCategory = this.db.prepare("UPDATE categories SET half_and_half_groups_json = ? WHERE id = ?");
+    const assignProduct = this.db.prepare("UPDATE products SET half_and_half_group_override = ? WHERE id = ?");
+    for (const category of categories) {
+      const plans = legacyPizzaGroups(category.name, products.all(category.id) as Parameters<typeof legacyPizzaGroups>[1]);
+      if (!plans.length) continue;
+      updateCategory.run(JSON.stringify(plans.map(({ group }) => group)), category.id);
+      for (const { group, productIds } of plans)
+        for (const id of productIds) assignProduct.run(group.id, id);
+    }
   }
 
   private seed(options: SqliteRepositoryOptions) {
@@ -1117,13 +1175,20 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       ["starter-emp-carne", "category-2", "Empanada de carne", "EMPC", 180_000],
       ["starter-gaseosa", "category-3", "Gaseosa 1,5 L", "GAS15", 450_000],
     ] as const;
+    const starterGroup = { id: "legacy-pizza-1", name: "Pizza grande" };
+    if (!this.db.prepare("SELECT id FROM products WHERE id = ?").get(products[0][0])) {
+      this.db.prepare("UPDATE categories SET half_and_half_groups_json = ? WHERE id = 'category-1' AND half_and_half_groups_json = '[]'")
+        .run(JSON.stringify([starterGroup]));
+    }
+    const starterCategory = this.listCategories().find((category) => category.id === "category-1");
+    const starterGroupId = starterCategory?.halfAndHalfGroups?.some((group) => group.id === starterGroup.id) ? starterGroup.id : null;
     for (const [id, categoryId, name, code, salonPrice] of products) {
       const inserted = this.db
         .prepare(
-          `INSERT OR IGNORE INTO products(id, category_id, name, code, sort_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 0, ?, ?)`,
+          `INSERT OR IGNORE INTO products(id, category_id, name, code, sort_order, created_at, updated_at, half_and_half_group_override)
+           VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
         )
-        .run(id, categoryId, name, code, timestamp, timestamp);
+        .run(id, categoryId, name, code, timestamp, timestamp, categoryId === "category-1" ? starterGroupId : null);
       // Existing products may legitimately lack one legacy channel; let the
       // conversion copy its counterpart instead of filling it with demo prices.
       if (!inserted.changes) continue;
@@ -2177,6 +2242,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       name: String(row.name),
       sortOrder: Number(row.sort_order),
       active: flag(row.active),
+      halfAndHalfGroups: JSON.parse(String(row.half_and_half_groups_json)),
+      defaultHalfAndHalfGroupId: row.default_half_and_half_group_id == null ? null : String(row.default_half_and_half_group_id),
       stockControlEnabled:
         row.stock_control_enabled == null
           ? true
@@ -2474,7 +2541,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     const rows = this.db
       .prepare(
         `SELECT p.id,p.category_id,p.name,p.code,p.parent_product_id,p.sort_order,p.active,
-           p.web_published,p.stock_minor,p.stock_target_minor,p.stock_min_minor,p.stock_critical_minor,
+           p.web_published,p.half_and_half_group_override,p.stock_minor,p.stock_target_minor,p.stock_min_minor,p.stock_critical_minor,
            p.combo_definition_json, p.image_data_url IS NOT NULL AS has_image,
            ${includeImage ? "p.image_data_url" : "NULL"} AS image_data_url, c.name AS category_name
          FROM products p JOIN categories c ON c.id = p.category_id ${where("p.id")}
@@ -2523,6 +2590,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       sortOrder: Number(row.sort_order),
       active: flag(row.active),
       webPublished: flag(row.web_published ?? 0),
+      halfAndHalf: halfAndHalfAssignment(row),
       stockMinor: row.stock_minor == null ? null : Number(row.stock_minor),
       stockTargetMinor:
         row.stock_target_minor == null ? null : Number(row.stock_target_minor),
@@ -3025,6 +3093,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           halves,
           modifiers,
           ...(comboComponents ? { comboComponents } : {}),
+          ...(item.half_and_half_group_name_snapshot == null ? {} : { halfAndHalfGroupNameSnapshot: String(item.half_and_half_group_name_snapshot) }),
           lineTotalMinor,
         };
       });
@@ -4646,8 +4715,12 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
 
   addHalfAndHalfItem(input: AddHalfAndHalfItemInput): OrderDto {
     const run = this.db.transaction(() => {
-      if (!(this.getSettings().halfAndHalfEnabled ?? true))
-        throw new Error("La opción de pizzas mitad y mitad está deshabilitada.");
+      const settings = this.getSettings();
+      if (settings.halfAndHalfEnabled === false)
+        throw new Error("La opción mitad y mitad está deshabilitada.");
+      const quantity = input.quantity ?? 1;
+      if (!Number.isSafeInteger(quantity) || quantity < 1)
+        throw new Error("La cantidad debe ser un entero positivo.");
       const order = this.editableOrder(input.orderId);
       const code = this.priceListCodeForOrder(
         String(order.type) as OrderDto["type"],
@@ -4655,11 +4728,14 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const comboFlags = this.db.prepare("SELECT combo_definition_json FROM products WHERE id IN (?,?)").all(input.firstProductId, input.secondProductId) as Row[];
       if (comboFlags.some((row) => row.combo_definition_json != null)) throw new Error("Los combos no pueden agregarse como mitad y mitad.");
       const productStatement = this.db.prepare(
-        `SELECT p.id, p.name, p.combo_definition_json, c.name AS category_name, pp.amount_minor, pp.price_list_id FROM products p
+        `SELECT p.id, p.category_id, p.name, c.name AS category_name, pp.amount_minor, pp.price_list_id,
+                hg.value AS half_and_half_group
+         FROM products p
          JOIN categories c ON c.id = p.category_id
          JOIN product_prices pp ON pp.product_id = p.id
          JOIN price_lists pl ON pl.id = pp.price_list_id
-         WHERE p.id = ? AND p.active = 1 AND pl.code = ?`,
+         ${halfAndHalfGroupJoin}
+         WHERE p.id = ? AND p.active = 1 AND c.active = 1 AND pl.code = ? AND pl.active = 1`,
       );
       const first = requireRow(
         productStatement.get(input.firstProductId, code) as Row | undefined,
@@ -4669,13 +4745,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         productStatement.get(input.secondProductId, code) as Row | undefined,
         "La segunda variedad no tiene un precio válido.",
       );
-      if (first.combo_definition_json || second.combo_definition_json) throw new Error("Los combos no pueden agregarse como mitad y mitad.");
-      const settings = this.getSettings();
-      const basePrice = calculateHalfAndHalfBase(
-        Number(first.amount_minor),
-        Number(second.amount_minor),
-        settings.halfAndHalfPricingMode,
-      );
+      const group = halfAndHalfGroup(first);
+      if (!group || !canCombineHalves(halfAndHalfCandidate(first), halfAndHalfCandidate(second)))
+        throw new Error("Elegí dos variedades distintas que pertenezcan al mismo grupo de mitades.");
+      const mode = group.pricingMode ?? settings.halfAndHalfPricingMode;
+      const basePrice = calculateHalfAndHalfBase(Number(first.amount_minor), Number(second.amount_minor), mode);
       const itemId = randomUUID();
       const timestamp = nowIso();
       const nextSort = Number(
@@ -4690,21 +4764,22 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       this.db
         .prepare(
           `INSERT INTO order_items(id, order_id, product_id, product_name_snapshot, category_name_snapshot, quantity,
-            unit_price_minor_snapshot, price_list_id, notes, sort_order, created_at, updated_at)
-           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            unit_price_minor_snapshot, price_list_id, notes, sort_order, created_at, updated_at, half_and_half_group_name_snapshot)
+           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           itemId,
           input.orderId,
-          `Pizza mitad ${String(first.name)} / mitad ${String(second.name)}`,
+          halfAndHalfItemName(group.name, String(first.name), String(second.name)),
           first.category_name,
-          input.quantity ?? 1,
+          quantity,
           basePrice,
           first.price_list_id,
           input.notes ?? null,
           nextSort,
           timestamp,
           timestamp,
+          group.name,
         );
       const insertHalf = this.db.prepare(
         `INSERT INTO order_item_halves(id, order_item_id, product_id, position, product_name_snapshot, price_minor_snapshot)
@@ -4730,7 +4805,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         String(order.lifecycle_status) === "CONFIRMED" &&
         this.getSettings().stockEnabled
       ) {
-        const requiredPerHalf = (input.quantity ?? 1) * 500;
+        const requiredPerHalf = quantity * 500;
         for (const half of [first, second]) {
           const stock = (
             this.db
@@ -4755,7 +4830,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         action: order.printed_at
           ? "ORDER_EDITED_AFTER_PRINT"
           : "HALF_AND_HALF_ADDED",
-        after: { itemId, mode: settings.halfAndHalfPricingMode, basePrice },
+        after: { itemId, groupId: group.id, mode, basePrice },
       });
       this.event("Order", input.orderId, "OrderUpdated", {
         itemId,
@@ -7371,10 +7446,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return run();
   }
 
-  createCategory(input: {
-    name: string;
-    stockControlEnabled?: boolean;
-  }): CategoryDto {
+  createCategory(input: CreateCategoryInput): CategoryDto {
     const run = this.db.transaction(() => {
       const name = input.name.trim();
       const existing = this.db
@@ -7384,6 +7456,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       const id = randomUUID();
       const timestamp = nowIso();
       const stockControlEnabled = input.stockControlEnabled ?? true;
+      const halfAndHalf = normalizeHalfAndHalfConfig(input);
       const sortOrder = Number(
         (
           this.db
@@ -7395,7 +7468,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
       this.db
         .prepare(
-          "INSERT INTO categories(id, name, sort_order, stock_control_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO categories(id, name, sort_order, stock_control_enabled, created_at, updated_at, half_and_half_groups_json, default_half_and_half_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           id,
@@ -7404,26 +7477,20 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           stockControlEnabled ? 1 : 0,
           timestamp,
           timestamp,
+          JSON.stringify(halfAndHalf.halfAndHalfGroups),
+          halfAndHalf.defaultHalfAndHalfGroupId,
         );
       this.audit({
         entityType: "CATEGORY",
         entityId: id,
         action: "CATEGORY_CREATED",
       });
-      return { id, name, sortOrder, active: true, stockControlEnabled };
+      return { id, name, sortOrder, active: true, stockControlEnabled, ...halfAndHalf };
     });
     return run();
   }
 
-  updateCategory(input: {
-    categoryId: Id;
-    name: string;
-    active: boolean;
-    sortOrder: number;
-    reason: string;
-    authorizerPin: string;
-    stockControlEnabled?: boolean;
-  }): CategoryDto {
+  updateCategory(input: UpdateCategoryInput): CategoryDto {
     const run = this.db.transaction(() => {
       const before = requireRow(
         this.listCategories().find(
@@ -7454,10 +7521,11 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
       const stockControlEnabled =
         input.stockControlEnabled ?? before.stockControlEnabled;
+      const halfAndHalf = normalizeHalfAndHalfConfig(input, before);
       const timestamp = nowIso();
       this.db
         .prepare(
-          "UPDATE categories SET name = ?, active = ?, sort_order = ?, stock_control_enabled = ?, updated_at = ? WHERE id = ?",
+          "UPDATE categories SET name = ?, active = ?, sort_order = ?, stock_control_enabled = ?, updated_at = ?, half_and_half_groups_json = ?, default_half_and_half_group_id = ? WHERE id = ?",
         )
         .run(
           input.name.trim(),
@@ -7465,8 +7533,16 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           input.sortOrder,
           stockControlEnabled ? 1 : 0,
           timestamp,
+          JSON.stringify(halfAndHalf.halfAndHalfGroups),
+          halfAndHalf.defaultHalfAndHalfGroupId,
           input.categoryId,
         );
+      if (input.halfAndHalfGroups !== undefined) {
+        this.db.prepare(`UPDATE products SET half_and_half_group_override = '', updated_at = ?
+          WHERE category_id = ? AND half_and_half_group_override <> ''
+          AND half_and_half_group_override NOT IN (SELECT value FROM json_each(?))`)
+          .run(timestamp, input.categoryId, JSON.stringify(halfAndHalf.halfAndHalfGroups.map(({ id }) => id)));
+      }
       if (
         input.stockControlEnabled !== undefined &&
         input.stockControlEnabled !== before.stockControlEnabled
@@ -7557,22 +7633,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     return run();
   }
 
-  createProduct(input: {
-    priceBook?: { baseMinor: number; overrides: Record<string, number> };
-    categoryId: Id;
-    name: string;
-    code?: string | null;
-    parentProductId?: Id | null;
-    stockMinor?: number | null;
-    stockTargetMinor?: number | null;
-    stockMinMinor?: number | null;
-    stockCriticalMinor?: number | null;
-    imageDataUrl?: string | null;
-    prices: Array<{
-      priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY";
-      amountMinor: number;
-    }>;
-  }): ProductDto {
+  createProduct(input: CreateProductInput): ProductDto {
     return this.db.transaction(() => {
       const id = this.insertProductRecord(input);
       return requireRow(
@@ -7588,13 +7649,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
   ): string {
     if (input.priceBook) this.validateProductPriceBook("", input.priceBook);
     const run = this.db.transaction(() => {
-      const category = requireRow(
-        this.db
-          .prepare("SELECT id FROM categories WHERE id = ? AND active = 1")
-          .get(input.categoryId),
-        "La categoría no existe.",
-      );
-      void category;
+      const assignment = this.catalogHalfAndHalfAssignment(input.categoryId, input.halfAndHalf ?? { mode: "INHERIT" });
       if (input.parentProductId) {
         const parentRow = this.db
           .prepare("SELECT id, parent_product_id FROM products WHERE id = ?")
@@ -7620,8 +7675,8 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       );
       this.db
         .prepare(
-          `INSERT INTO products(id, category_id, name, code, parent_product_id, sort_order, stock_minor, stock_target_minor, stock_min_minor, stock_critical_minor, image_data_url, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO products(id, category_id, name, code, parent_product_id, sort_order, stock_minor, stock_target_minor, stock_min_minor, stock_critical_minor, image_data_url, created_at, updated_at, half_and_half_group_override)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -7637,6 +7692,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           input.imageDataUrl ?? null,
           timestamp,
           timestamp,
+          halfAndHalfOverride(assignment),
         );
       const insertPrice = this.db.prepare(
         `INSERT INTO product_prices(product_id, price_list_id, amount_minor, updated_at)
@@ -7735,6 +7791,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     );
   }
 
+  private catalogHalfAndHalfAssignment(categoryId: Id, assignment: HalfAndHalfAssignment) {
+    const category = requireRow(
+      this.db.prepare("SELECT half_and_half_groups_json FROM categories WHERE id = ? AND active = 1").get(categoryId) as Row | undefined,
+      "La categoría no existe.",
+    );
+    validateHalfAndHalfAssignment(assignment, JSON.parse(String(category.half_and_half_groups_json)));
+    return assignment;
+  }
+
   updateProduct(input: UpdateProductInput): ProductDto {
     if (!input.reason.trim()) throw new Error("Indicá el motivo del cambio.");
     if (input.priceBook)
@@ -7752,11 +7817,10 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         throw new Error(
           "Un combo no puede tener stock propio; configurá el inventario de sus componentes.",
         );
-      requireRow(
-        this.db
-          .prepare("SELECT id FROM categories WHERE id = ? AND active = 1")
-          .get(input.categoryId),
-        "La categoría no existe.",
+      const previousAssignment = before.categoryId !== input.categoryId && before.halfAndHalf?.mode === "GROUP"
+        ? { mode: "DISABLED" } as const : before.halfAndHalf;
+      const assignment = this.catalogHalfAndHalfAssignment(
+        input.categoryId, input.halfAndHalf ?? previousAssignment ?? { mode: "INHERIT" },
       );
       const timestamp = nowIso();
       const stockMinor =
@@ -7817,7 +7881,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           `UPDATE products
            SET category_id = ?, name = ?, code = ?, parent_product_id = ?, active = ?, stock_minor = ?,
                stock_target_minor = ?, stock_min_minor = ?, stock_critical_minor = ?,
-               image_data_url = ?, updated_at = ?
+               image_data_url = ?, updated_at = ?, half_and_half_group_override = ?
            WHERE id = ?`,
         )
         .run(
@@ -7832,6 +7896,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
           stockCriticalMinor,
           imageDataUrl,
           timestamp,
+          halfAndHalfOverride(assignment),
           input.productId,
         );
       const upsertPrice = this.db
@@ -8001,14 +8066,15 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       }
       const timestamp = nowIso();
       const updateCategory = this.db.prepare(
-        "UPDATE products SET category_id = ?, updated_at = ? WHERE id = ?",
+        `UPDATE products SET category_id = ?, updated_at = ?, half_and_half_group_override =
+          CASE WHEN category_id <> ? AND half_and_half_group_override <> '' THEN '' ELSE half_and_half_group_override END WHERE id = ?`,
       );
       const updateActive = this.db.prepare(
         "UPDATE products SET active = ?, updated_at = ? WHERE id = ?",
       );
       for (const productId of requestedIds) {
         if (input.categoryId != null)
-          updateCategory.run(input.categoryId, timestamp, productId);
+          updateCategory.run(input.categoryId, timestamp, input.categoryId, productId);
         if (input.active != null)
           updateActive.run(input.active ? 1 : 0, timestamp, productId);
       }

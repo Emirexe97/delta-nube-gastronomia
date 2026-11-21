@@ -7,6 +7,53 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { SqliteGastronomyRepository } from "./sqlite-repository";
 
+test("catalog migration groups existing pizza formats and leaves prior order snapshots intact", () => {
+  const path = join(tmpdir(), `half-and-half-migration-${randomUUID()}.sqlite`);
+  let repo = configuredTestRepository(path, { seedStarterCatalog: true });
+  try {
+    repo.openCashSession({ openingAmountMinor: 0 });
+    const order = repo.createOrder({ type: "TAKEAWAY", customerName: "Cliente", customerPhone: "1112345678" });
+    const old = repo.addHalfAndHalfItem({
+      orderId: order.id, firstProductId: "starter-muzza-grande", secondProductId: "starter-napo-grande",
+      notes: "Sin aceitunas",
+    }).items[0]!;
+    repo.db.prepare("UPDATE order_items SET product_name_snapshot = ?, half_and_half_group_name_snapshot = NULL WHERE id = ?")
+      .run("Pizza mitad Muzzarella grande / mitad Napolitana grande", old.id);
+    const previous = repo.getOrder(order.id).items[0];
+    repo.createProduct({
+      categoryId: "category-1",
+      name: "Muzzarella chica",
+      prices: [{ priceListCode: "SALON", amountMinor: 900000 }],
+    });
+    repo.createProduct({
+      categoryId: "category-1",
+      name: "Calabresa",
+      prices: [{ priceListCode: "SALON", amountMinor: 900000 }],
+    });
+    repo.db.exec(`
+      ALTER TABLE categories DROP COLUMN half_and_half_groups_json;
+      ALTER TABLE categories DROP COLUMN default_half_and_half_group_id;
+      ALTER TABLE products DROP COLUMN half_and_half_group_override;
+      ALTER TABLE order_items DROP COLUMN half_and_half_group_name_snapshot;
+      DELETE FROM schema_migrations WHERE name = 'catalog_half_and_half_groups';
+    `);
+    repo.close();
+    repo = configuredTestRepository(path, {});
+    const catalog = repo.bootstrap();
+    const first = catalog.products.find(({ id }) => id === "starter-muzza-grande")!;
+    const second = catalog.products.find(({ id }) => id === "starter-napo-grande")!;
+    assert.equal(first.halfAndHalf?.mode, "GROUP");
+    assert.deepEqual(first.halfAndHalf, second.halfAndHalf);
+    assert.notDeepEqual(first.halfAndHalf, catalog.products.find(({ name }) => name === "Muzzarella chica")?.halfAndHalf);
+    assert.deepEqual(catalog.products.find(({ name }) => name === "Calabresa")?.halfAndHalf, { mode: "INHERIT" });
+    assert.deepEqual(repo.getOrder(order.id).items[0], previous);
+  } finally {
+    repo.close();
+    for (const suffix of ["", "-wal", "-shm"])
+      rmSync(`${path}${suffix}`, { force: true });
+  }
+});
+
 test("half-and-half setting defaults and legacy-absent true, persists toggles, and blocks only new combinations", () => {
   const path = join(tmpdir(), `half-and-half-settings-${randomUUID()}.sqlite`);
   let repo = configuredTestRepository(path, {

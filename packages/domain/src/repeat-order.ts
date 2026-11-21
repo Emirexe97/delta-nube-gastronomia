@@ -10,6 +10,7 @@ import type {
   RepeatOrderInput,
 } from "@gastronomy/contracts";
 import { assertPermission } from "./permissions";
+import { canCombineHalves, resolveHalfAndHalfGroup } from "./half-and-half";
 
 export type RepeatOrderLine = {
   item:
@@ -151,18 +152,19 @@ export function planRepeatOrder(
     if (old.halves.length) {
       if (data.settings.halfAndHalfEnabled === false)
         throw new Error(
-          "Las pizzas mitad y mitad están deshabilitadas. Armá el pedido manualmente.",
+          "La opción mitad y mitad está deshabilitada. Armá el pedido manualmente.",
         );
       const first = old.halves.find((half) => half.position === "FIRST");
       const second = old.halves.find((half) => half.position === "SECOND");
-      if (
-        !first ||
-        !second ||
-        old.halves.length !== 2 ||
-        product(first.productId).comboDefinition ||
-        product(second.productId).comboDefinition
-      )
+      if (!first || !second || old.halves.length !== 2)
         throw new Error("Las mitades originales ya no están disponibles.");
+      const candidate = (id: string) => {
+        const item = product(id);
+        const category = data.categories.find((entry) => entry.id === item.categoryId);
+        return { ...item, halfAndHalfGroupId: resolveHalfAndHalfGroup(category, item)?.id };
+      };
+      if (!canCombineHalves(candidate(first.productId), candidate(second.productId)))
+        throw new Error("Las mitades originales ya no son compatibles. Armá el pedido nuevamente.");
       return {
         item: {
           kind: "HALF",

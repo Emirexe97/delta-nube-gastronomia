@@ -224,7 +224,7 @@ test("configure and order a real combo with variant extras, fixed price and comp
   await expect(chooser).toBeVisible();
   await chooser.press("F6");
   await expect(
-    page.getByRole("dialog", { name: "Pizza mitad y mitad", exact: true }),
+    page.getByRole("dialog", { name: "Armar mitad y mitad", exact: true }),
   ).toHaveCount(0);
   await chooser
     .getByRole("button", { name: "Burger doble QA", exact: true })

@@ -57,7 +57,7 @@ test("catalog and table rendering skips DOM rebuilds for quantity-only rerenders
   assert.equal(rebuilds, 1, "unchanged input keeps the same rendered children");
   renderIfChanged(node, '["table-1","table-2"]', build); // table/catalog input changed
   assert.equal(rebuilds, 2);
-  assert.match(waiterHtml, /const productSignature = JSON\.stringify\(\[selectedCategory, state\.menu\?\.halfAndHalfEnabled, filteredMenu\.signature\]\)/);
+  assert.match(waiterHtml, /const productSignature = JSON\.stringify\(\[selectedCategory, state\.menu\?\.halfAndHalfEnabled, state\.menu\?\.halfAndHalfPricingMode, filteredMenu\.signature\]\)/);
   assert.match(waiterHtml, /const categorySignature = JSON\.stringify\(cats\.map/);
   assert.match(waiterHtml, /const tableSignature = JSON\.stringify\(\[ts, state\.waiterTableWorkflow, missingTable \? draft\.tableId : null\]\)/);
 });
@@ -87,16 +87,47 @@ test("catalog caches normalized names per menu reference and pages full-catalog 
   assert.equal(cache.getFilteredMenu('z', 'c', 2).matches[0].product.id, 'z', 'new RPC menu reference invalidates index and filter');
 });
 
-test("simple add and unit notes are separate from explicit half-and-half selection", () => {
+test("simple add and unit notes are separate from explicit grouped half-and-half selection", () => {
   assert.match(waiterHtml, /add\.onclick = \(\) => addLine\(p\)/);
   assert.match(waiterHtml, /Mitad y mitad: /);
   assert.match(waiterHtml, /half\.onclick = \(\) => openItem\(p, null, true\)/);
-  assert.match(waiterHtml, /el\('pizzaOptions'\)\.hidden = noteMode \|\| !!noteTarget/);
+  assert.match(waiterHtml, /el\('halfOptions'\)\.hidden = noteMode \|\| !!noteTarget/);
   assert.match(waiterHtml, /control\.append\(withNote\)/);
   assert.match(waiterHtml, /querySelectorAll\('\.product-actions button'\)\) button\.disabled = locked/);
   assert.match(waiterHtml, /querySelectorAll\('\.product-actions button\[data-product-id\]'\)/);
   assert.match(waiterHtml, /if \(!state \|\| busy \|\| pending\(\)\) return;/);
-  assert.match(waiterHtml, /const hasOtherHalf = .*halfIds\.size > 1/);
+  assert.match(waiterHtml, /el\('saveItem'\)\.hidden = startHalf/);
+  assert.match(waiterHtml, /halfAndHalfGroupId/);
+  assert.match(waiterHtml, /el\('secondProduct'\)\.onchange = finishHalfSelection/);
+  assert.match(waiterHtml, /addLine\(first, second\)/);
+  assert.doesNotMatch(waiterHtml, /halfEligible|pizzaOptions|pizzaMode/);
+  assert.doesNotMatch(waiterHtml, /nombre de la pizza|No encontramos esa pizza/);
+  assert.match(waiterHtml, /function halfAndHalfPrice\(first, second\)/);
+
+  assert.match(waiterHtml, /secondHalfLabel\(first, p\)/);
+});
+
+test("half-and-half option labels preview the effective combined price", () => {
+  const match = waiterHtml.match(/function productPriceMinor\(product\) \{[\s\S]*?(?=        function secondHalfLabel)/);
+  assert.ok(match);
+  const halfAndHalfPrice = new Function("state", `${match[0]}\nreturn halfAndHalfPrice;`)({ menu: {} });
+  assert.equal(halfAndHalfPrice({ priceMinor: 1200 }, { priceMinor: 1401 }), 1301);
+  assert.equal(halfAndHalfPrice({ priceMinor: 1200, halfAndHalfPricingMode: "MOST_EXPENSIVE" }, { priceMinor: 1400 }), 1400);
+  assert.equal(halfAndHalfPrice({ priceMinor: 1200 }, { priceMinor: 1400, halfAndHalfPricingMode: "MOST_EXPENSIVE" }), 1400);
+  assert.equal(halfAndHalfPrice({ priceMinor: 1200 }, { priceMinor: null }), null);
+});
+
+test("half-and-half compatibility requires the global toggle, same non-empty group and category, and distinct products", () => {
+  const match = waiterHtml.match(/function canPairHalf\(first, second\) \{([\s\S]*?)\n        \}/);
+  assert.ok(match);
+  const canPairHalf = new Function("state", "productId", `return function canPairHalf(first, second) {${match[1]}\n}`)(
+    { menu: { halfAndHalfEnabled: true } }, (p) => String(p.id),
+  );
+  assert.equal(canPairHalf({id: "a", categoryId: "c", halfAndHalfGroupId: "g"}, {id: "b", categoryId: "c", halfAndHalfGroupId: "g"}), true);
+  assert.equal(canPairHalf({id: "a", categoryId: "c", halfAndHalfGroupId: "g"}, {id: "b", categoryId: "d", halfAndHalfGroupId: "g"}), false);
+  assert.equal(canPairHalf({id: "a", categoryId: "c", halfAndHalfGroupId: "g"}, {id: "b", categoryId: "c", halfAndHalfGroupId: "other"}), false);
+  assert.equal(canPairHalf({id: "a", categoryId: "c", halfAndHalfGroupId: null}, {id: "b", categoryId: "c", halfAndHalfGroupId: null}), false);
+  assert.equal(canPairHalf({id: "a", categoryId: "c", halfAndHalfGroupId: "g"}, {id: "a", categoryId: "c", halfAndHalfGroupId: "g"}), false);
 });
 
 test("waiter page labels cash-close sessions without an artificial expiry", () => {

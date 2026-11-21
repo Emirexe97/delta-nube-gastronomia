@@ -196,7 +196,23 @@ export interface UserDto {
   active: boolean;
 }
 
-export interface CategoryDto {
+export interface HalfAndHalfGroupDto {
+  id: Id;
+  name: string;
+  pricingMode?: HalfAndHalfPricingMode;
+}
+
+export interface CategoryHalfAndHalfConfig {
+  halfAndHalfGroups?: HalfAndHalfGroupDto[];
+  defaultHalfAndHalfGroupId?: Id | null;
+}
+
+export type HalfAndHalfAssignment =
+  | { mode: "INHERIT" }
+  | { mode: "GROUP"; groupId: Id }
+  | { mode: "DISABLED" };
+
+export interface CategoryDto extends CategoryHalfAndHalfConfig {
   id: Id;
   name: string;
   sortOrder: number;
@@ -248,6 +264,7 @@ export interface ProductPriceDto {
 }
 
 export interface ProductDto {
+  halfAndHalf?: HalfAndHalfAssignment;
   priceBook?: ProductPriceBookDto;
   webPublished?: boolean;
   id: Id;
@@ -505,6 +522,7 @@ export interface OrderItemHalfDto {
 }
 
 export interface OrderItemDto {
+  halfAndHalfGroupNameSnapshot?: string;
   id: Id;
   productId: Id | null;
   productNameSnapshot: string;
@@ -1008,7 +1026,39 @@ export interface ConfirmOrderInput extends IdempotentRequest {
   orderId: Id;
 }
 
+export interface CreateCategoryInput extends CategoryHalfAndHalfConfig {
+  name: string;
+  stockControlEnabled?: boolean;
+}
+
+export interface UpdateCategoryInput extends CreateCategoryInput {
+  categoryId: Id;
+  active: boolean;
+  sortOrder: number;
+  reason: string;
+  authorizerPin: string;
+}
+
+export interface CreateProductInput {
+  halfAndHalf?: HalfAndHalfAssignment;
+  priceBook?: ProductPriceBookDto;
+  categoryId: Id;
+  name: string;
+  code?: string | null;
+  parentProductId?: Id | null;
+  stockMinor?: number | null;
+  stockTargetMinor?: number | null;
+  stockMinMinor?: number | null;
+  stockCriticalMinor?: number | null;
+  imageDataUrl?: string | null;
+  prices: Array<{
+    priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY";
+    amountMinor: MoneyMinor;
+  }>;
+}
+
 export interface UpdateProductInput {
+  halfAndHalf?: HalfAndHalfAssignment;
   priceBook?: ProductPriceBookDto;
   productId: Id;
   categoryId: Id;
@@ -1589,19 +1639,8 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
     reason: string;
     authorizerPin: string;
   }): Promise<CustomerDto>;
-  createCategory(input: {
-    name: string;
-    stockControlEnabled?: boolean;
-  }): Promise<CategoryDto>;
-  updateCategory(input: {
-    categoryId: Id;
-    name: string;
-    active: boolean;
-    sortOrder: number;
-    stockControlEnabled?: boolean;
-    reason: string;
-    authorizerPin: string;
-  }): Promise<CategoryDto>;
+  createCategory(input: CreateCategoryInput): Promise<CategoryDto>;
+  updateCategory(input: UpdateCategoryInput): Promise<CategoryDto>;
   deleteCategory(input: {
     categoryId: Id;
     reason: string;
@@ -1611,22 +1650,7 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   savePriceBook(input: SavePriceBookInput): Promise<PriceBooksDto>;
   assignPriceBooks(input: AssignPriceBooksInput): Promise<PriceBooksDto>;
   importProducts(input: ImportProductsInput): Promise<ProductDto[]>;
-  createProduct(input: {
-    priceBook?: ProductPriceBookDto;
-    categoryId: Id;
-    name: string;
-    code?: string | null;
-    parentProductId?: Id | null;
-    stockMinor?: number | null;
-    stockTargetMinor?: number | null;
-    stockMinMinor?: number | null;
-    stockCriticalMinor?: number | null;
-    imageDataUrl?: string | null;
-    prices: Array<{
-      priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY";
-      amountMinor: MoneyMinor;
-    }>;
-  }): Promise<ProductDto>;
+  createProduct(input: CreateProductInput): Promise<ProductDto>;
   createCombo(input: CreateComboInput): Promise<ProductDto>;
   updateProduct(input: UpdateProductInput): Promise<ProductDto>;
   configureProductCombo(input: ConfigureProductComboInput): Promise<ProductDto>;

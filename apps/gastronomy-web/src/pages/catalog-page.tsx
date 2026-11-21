@@ -5,6 +5,8 @@ import type {
   AuditEntryDto,
   BootstrapDto,
   CategoryDto,
+  HalfAndHalfAssignment,
+  HalfAndHalfGroupDto,
   ProductDto,
   FinanceReportDto,
   PriceBookDto,
@@ -63,7 +65,6 @@ import {
   type CatalogFilters,
   type ProductCost,
 } from "./catalog-filters";
-
 
 function moneyInput(amountMinor: number) {
   const [pesos, cents] = moneyInputValue(amountMinor).split(",");
@@ -1385,6 +1386,8 @@ function CategoryModal({
   const [active, setActive] = useState(true);
   const [stockControlEnabled, setStockControlEnabled] = useState(true);
   const [sortOrder, setSortOrder] = useState(0);
+  const [halfGroups, setHalfGroups] = useState<HalfAndHalfGroupDto[]>([]);
+  const [defaultHalfGroupId, setDefaultHalfGroupId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -1394,6 +1397,8 @@ function CategoryModal({
     setActive(category?.active ?? true);
     setStockControlEnabled(category?.stockControlEnabled ?? true);
     setSortOrder(category?.sortOrder ?? 0);
+    setHalfGroups(category?.halfAndHalfGroups ?? []);
+    setDefaultHalfGroupId(category?.defaultHalfAndHalfGroupId ?? null);
     setReason("");
     setPin("");
     setError(null);
@@ -1409,10 +1414,14 @@ function CategoryModal({
             reason: reason.trim(),
             authorizerPin: pin,
             stockControlEnabled,
+            halfAndHalfGroups: halfGroups,
+            defaultHalfAndHalfGroupId: defaultHalfGroupId,
           })
         : window.gastronomy.createCategory({
             name: name.trim(),
             stockControlEnabled,
+            halfAndHalfGroups: halfGroups,
+            defaultHalfAndHalfGroupId: defaultHalfGroupId,
           }),
     {
       onSuccess: onClose,
@@ -1471,6 +1480,27 @@ function CategoryModal({
             </span>
           </div>
         </label>
+        <section className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/40 p-3" aria-label="Grupos mitad y mitad">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">Grupos mitad y mitad</h3>
+            <p className="text-xs text-slate-600">Los productos pueden heredar el grupo predeterminado o elegir otro.</p>
+          </div>
+          <div className="space-y-2">
+            {halfGroups.map((group, index) => (
+              <div key={group.id} className="grid gap-2 sm:grid-cols-[1fr_230px_auto]">
+                <Input aria-label={`Nombre del grupo ${index + 1}`} value={group.name} onChange={(event) => setHalfGroups((current) => current.map((item) => item.id === group.id ? { ...item, name: event.target.value } : item))} placeholder="Ej.: Pizzas clásicas" />
+                <Select aria-label={`Precio del grupo ${index + 1}`} value={group.pricingMode ?? "GENERAL"} onChange={(event) => setHalfGroups((current) => current.map((item) => item.id === group.id ? { ...item, pricingMode: event.target.value === "GENERAL" ? undefined : event.target.value as HalfAndHalfGroupDto["pricingMode"] } : item))}>
+                  <option value="GENERAL">Usar configuración general</option>
+                  <option value="HALF_PLUS_HALF">Mitad del precio de cada variedad</option>
+                  <option value="MOST_EXPENSIVE">Precio de la variedad más cara</option>
+                </Select>
+                <Button type="button" variant="secondary" onClick={() => { setHalfGroups((current) => current.filter((item) => item.id !== group.id)); if (defaultHalfGroupId === group.id) setDefaultHalfGroupId(null); }}>Quitar</Button>
+              </div>
+            ))}
+            <Button type="button" variant="secondary" onClick={() => setHalfGroups((current) => [...current, { id: crypto.randomUUID(), name: "" }])}><Plus size={15} /> Agregar grupo</Button>
+          </div>
+          {halfGroups.length ? <Field label="Grupo predeterminado (opcional)"><Select value={defaultHalfGroupId ?? ""} onChange={(event) => setDefaultHalfGroupId(event.target.value || null)}><option value="">Sin predeterminado</option>{halfGroups.filter((group) => group.name.trim()).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</Select></Field> : null}
+        </section>
         {category ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -2356,6 +2386,39 @@ function ProductModal(props: Parameters<typeof ProductFormModal>[0]) {
   );
 }
 
+function HalfAndHalfAssignmentField({
+  categories,
+  categoryId,
+  value,
+  onChange,
+}: {
+  categories: CategoryDto[];
+  categoryId: string;
+  value: HalfAndHalfAssignment;
+  onChange(value: HalfAndHalfAssignment): void;
+}) {
+  const category = categories.find(({ id }) => id === categoryId);
+  const groups = category?.halfAndHalfGroups ?? [];
+  const defaultId = category?.defaultHalfAndHalfGroupId;
+  return (
+    <section className="space-y-2 rounded-xl border border-violet-200 bg-violet-50/40 p-3" aria-label="Configuración mitad y mitad">
+      <div>
+        <h3 className="text-sm font-bold text-slate-900">Mitad y mitad</h3>
+        <p className="text-xs text-slate-600">Define qué grupos de esta categoría puede usar este producto.</p>
+      </div>
+      <Select aria-label="Asignación mitad y mitad" value={value.mode === "GROUP" ? `GROUP:${value.groupId}` : value.mode} onChange={(event) => {
+        const next = event.target.value;
+        onChange(next === "DISABLED" ? { mode: "DISABLED" } : next.startsWith("GROUP:") ? { mode: "GROUP", groupId: next.slice(6) } : { mode: "INHERIT" });
+      }}>
+        <option value="INHERIT">Heredar{defaultId ? " (predeterminado)" : ""}</option>
+        <option value="DISABLED">Desactivar</option>
+        {groups.filter((group) => group.name.trim()).map((group) => <option key={group.id} value={`GROUP:${group.id}`}>{group.name}</option>)}
+      </Select>
+      {!groups.length ? <p className="text-xs text-slate-500">Esta categoría no tiene grupos configurados.</p> : null}
+    </section>
+  );
+}
+
 function ProductFormModal({
   open,
   product,
@@ -2406,6 +2469,7 @@ function ProductFormModal({
     return allProducts.filter((p) => p.parentProductId === product.id);
   }, [allProducts, product]);
   const [categoryId, setCategoryId] = useState("");
+  const [halfAndHalf, setHalfAndHalf] = useState<HalfAndHalfAssignment>({ mode: "INHERIT" });
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [trackStock, setTrackStock] = useState(true);
@@ -2451,6 +2515,7 @@ function ProductFormModal({
       categories.find((item) => item.active)?.id ??
       "";
     setCategoryId(initialCatId);
+    setHalfAndHalf((duplicateSource ?? product)?.halfAndHalf ?? { mode: "INHERIT" });
     const selectedCategory = categories.find(
       (item) => item.id === initialCatId,
     );
@@ -2485,12 +2550,13 @@ function ProductFormModal({
     setReason("");
     setPin("");
     setError(null);
-    cleanDraftRef.current = productDraftSnapshot([initialCatId, initialName, initialCode, initialTrackStock, initialStock, initialTarget, initialMin, initialCritical, initialImage, duplicateSource ? true : product?.active ?? true, initialPrice, initialOverrides]);
+    cleanDraftRef.current = productDraftSnapshot([initialCatId, initialName, initialCode, initialTrackStock, initialStock, initialTarget, initialMin, initialCritical, initialImage, duplicateSource ? true : product?.active ?? true, initialPrice, initialOverrides, (duplicateSource ?? product)?.halfAndHalf ?? { mode: "INHERIT" }]);
     setShowDuplicateNotice(Boolean(duplicateSource));
   }, [categories, initialCategoryId, open, product, duplicateSource]);
 
   const handleCategoryChange = (newCategoryId: string) => {
     setCategoryId(newCategoryId);
+    setHalfAndHalf({ mode: "INHERIT" });
     if (!product) {
       const selectedCategory = categories.find(
         (item) => item.id === newCategoryId,
@@ -2560,7 +2626,7 @@ function ProductFormModal({
   }, [open, product, activeTab]);
 
   const hasDraftChanges = Boolean(
-    (!product && cleanDraftRef.current && cleanDraftRef.current !== productDraftSnapshot([categoryId,name,code,trackStock,stock,stockTarget,stockMin,stockCritical,imageDataUrl,active,basePrice,bookOverrides])) ||
+    (!product && cleanDraftRef.current && cleanDraftRef.current !== productDraftSnapshot([categoryId,name,code,trackStock,stock,stockTarget,stockMin,stockCritical,imageDataUrl,active,basePrice,bookOverrides,halfAndHalf])) ||
     product &&
     (categoryId !== product.categoryId ||
       name !== product.name ||
@@ -2569,6 +2635,7 @@ function ProductFormModal({
       imageDataUrl !== (product.imageDataUrl ?? null) ||
       basePrice !== moneyInput(product.priceBook?.baseMinor ?? product.prices.find((p) => p.priceListCode === "SALON")?.amountMinor ?? 0) ||
       JSON.stringify(bookOverrides) !== JSON.stringify(Object.fromEntries(Object.entries(product.priceBook?.overrides ?? {}).map(([id, amount]) => [id, moneyInput(amount)]))) ||
+      JSON.stringify(halfAndHalf) !== JSON.stringify(product.halfAndHalf ?? { mode: "INHERIT" }) ||
       trackStock !== (product.stockMinor != null) ||
       stock !==
         (product.stockMinor == null ? "" : String(product.stockMinor / 1000)) ||
@@ -2643,10 +2710,10 @@ function ProductFormModal({
     { onSuccess: (_result, variables) => {
       if (variables.intent === "another" && !variables.isEditing) {
         const stockEnabled = categories.find((item) => item.id === variables.categoryId)?.stockControlEnabled ?? true;
-        const empty = productDraftSnapshot([variables.categoryId, "", "", stockEnabled, "", "", "", "", null, true, "", {}]);
+        const empty = productDraftSnapshot([variables.categoryId, "", "", stockEnabled, "", "", "", "", null, true, "", {}, { mode: "INHERIT" }]);
         setTrackStock(stockEnabled); setName(""); setCode(""); setStock("");
         setStockTarget(""); setStockMin(""); setStockCritical(""); setImageDataUrl(null);
-        setActive(true); setBasePrice(""); setBookOverrides({}); setError(null); setReason(""); setPin("");
+        setActive(true); setBasePrice(""); setBookOverrides({}); setHalfAndHalf({ mode: "INHERIT" }); setError(null); setReason(""); setPin("");
         cleanDraftRef.current = empty; setShowDuplicateNotice(false);
         requestAnimationFrame(() => nameInputRef.current?.focus());
       } else onCloseRef.current();
@@ -2686,11 +2753,13 @@ function ProductFormModal({
       stockMinor: parsedStockMinor, stockTargetMinor: parsedTarget, stockMinMinor: parsedMin,
       stockCriticalMinor: parsedCritical, ...(imageDataUrl !== product.imageDataUrl ? { imageDataUrl } : {}), prices: normalizedPrices,
       priceBook: { baseMinor, overrides }, reason, authorizerPin: pin,
+      halfAndHalf,
     }) : window.gastronomy.createProduct({
       categoryId, name, code: code || null, stockMinor: parsedStockMinor,
       stockTargetMinor: parsedTarget, stockMinMinor: parsedMin,
       stockCriticalMinor: parsedCritical, imageDataUrl, prices: normalizedPrices,
       priceBook: { baseMinor, overrides },
+      halfAndHalf,
     });
     mutation.mutate({ intent, isEditing, categoryId, run });
   };
@@ -2819,6 +2888,7 @@ function ProductFormModal({
                 ))}
             </Select>
           </Field>
+          <HalfAndHalfAssignmentField categories={categories} categoryId={categoryId} value={halfAndHalf} onChange={setHalfAndHalf} />
           <div className="grid gap-3 sm:grid-cols-[1fr_150px]">
             <Field label="Nombre">
               <Input
@@ -3330,6 +3400,7 @@ function CreateVariantModal({
 }) {
   const open = Boolean(baseProduct);
   const [categoryId, setCategoryId] = useState("");
+  const [halfAndHalf, setHalfAndHalf] = useState<HalfAndHalfAssignment>({ mode: "INHERIT" });
   const [name, setName] = useState("");
   const [selectedAttribute, setSelectedAttribute] = useState("");
   const [code, setCode] = useState("");
@@ -3369,6 +3440,7 @@ function CreateVariantModal({
       categories.find((category) => category.active)?.id ||
       "";
     setCategoryId(initialCatId);
+    setHalfAndHalf({ mode: "INHERIT" });
     setName(`${baseProduct.name} `);
     setSelectedAttribute("");
     setCode(baseProduct.code ? `${baseProduct.code}-` : "");
@@ -3479,6 +3551,7 @@ function CreateVariantModal({
       const normalizedPrices: Array<{ priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY"; amountMinor: number }> = [];
       return window.gastronomy.createProduct({
         categoryId,
+        halfAndHalf,
         name: name.trim(),
         code: code.trim() || null,
         parentProductId: baseProduct.id,
@@ -3584,7 +3657,7 @@ function CreateVariantModal({
         >
           <Select
             value={categoryId}
-            onChange={(event) => setCategoryId(event.target.value)}
+            onChange={(event) => { setCategoryId(event.target.value); setHalfAndHalf({ mode: "INHERIT" }); }}
           >
             {categories
               .filter((item) => item.active)
@@ -3595,6 +3668,7 @@ function CreateVariantModal({
               ))}
           </Select>
         </Field>
+        <HalfAndHalfAssignmentField categories={categories} categoryId={categoryId} value={halfAndHalf} onChange={setHalfAndHalf} />
 
         <div className="space-y-1.5">
           <label className="text-xs font-semibold text-slate-700">

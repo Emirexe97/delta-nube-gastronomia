@@ -357,19 +357,19 @@ export const waiterHtml = String.raw`<!doctype html>
     <dialog id="itemDialog" aria-labelledby="itemTitle">
       <form id="itemForm">
         <h2 id="itemTitle"></h2>
-        <div id="pizzaOptions">
-          <label for="pizzaMode">Tipo de pizza</label>
-          <select id="pizzaMode"><option value="whole">Entera</option><option value="half">Mitad y mitad</option></select>
+        <div id="halfOptions">
           <div id="secondChoice" hidden>
             <label for="secondProductSearch">Buscar otra mitad</label>
-            <input id="secondProductSearch" type="search" autocomplete="off" placeholder="Escribí el nombre de la pizza" aria-describedby="secondProductMessage" />
+            <input id="secondProductSearch" type="search" autocomplete="off" placeholder="Escribí el nombre del producto" aria-describedby="secondProductMessage" />
             <label for="secondProduct">Otra mitad</label>
             <select id="secondProduct"></select>
             <p id="secondProductMessage" class="muted" role="status" aria-live="polite" hidden></p>
           </div>
         </div>
-        <label for="itemNote">Observaciones</label>
-        <textarea id="itemNote" maxlength="300" placeholder="Por ejemplo: sin cebolla"></textarea>
+        <div id="itemNoteField">
+          <label for="itemNote">Observaciones</label>
+          <textarea id="itemNote" maxlength="300" placeholder="Por ejemplo: sin cebolla"></textarea>
+        </div>
         <div class="row">
           <button type="button" class="secondary" id="cancelItem">Cancelar</button>
           <button id="saveItem" type="submit">Agregar al pedido</button>
@@ -674,12 +674,20 @@ export const waiterHtml = String.raw`<!doctype html>
           if (indexedMenu !== state.menu) {
             indexedMenu = state.menu;
             const products = allProducts();
-            const halfIds = new Set(products.filter(product => product.halfEligible).map(productId));
+            const groupKey = (product) => JSON.stringify([product.categoryId, product.halfAndHalfGroupId]);
+            const groupMembers = new Map();
+            if (state.menu?.halfAndHalfEnabled) for (const product of products) {
+              if (!product.halfAndHalfGroupId) continue;
+              const key = groupKey(product);
+              const ids = groupMembers.get(key) || new Set();
+              ids.add(productId(product));
+              groupMembers.set(key, ids);
+            }
             menuIndex = products.map((product) => {
               const id = productId(product);
-              const hasOtherHalf = !!state.menu?.halfAndHalfEnabled && !!product.halfEligible && halfIds.size > 1;
+              const hasOtherHalf = (groupMembers.get(groupKey(product))?.size ?? 0) > 1;
               return { product, name: normalizeName(product.name || product.label || String(product.id ?? product.productId)), hasOtherHalf,
-                signature: JSON.stringify([id, product.name, product.label, product.price, product.halfEligible, product.categoryId, hasOtherHalf]) };
+                signature: JSON.stringify([id, product.name, product.label, product.priceMinor, product.price, product.halfAndHalfGroupId ?? null, product.halfAndHalfPricingMode, product.categoryId, hasOtherHalf]) };
             });
             filteredMenu = null;
           }
@@ -733,7 +741,7 @@ export const waiterHtml = String.raw`<!doctype html>
           el('productRange').textContent = filteredMenu.matches.length ? 'Mostrando ' + visibleProducts.length + ' de ' + filteredMenu.matches.length + ' productos' : '';
           el('showMoreProducts').hidden = visibleProducts.length >= filteredMenu.matches.length;
           el('noResults').hidden = !query || filteredMenu.matches.length > 0;
-          const productSignature = JSON.stringify([selectedCategory, state.menu?.halfAndHalfEnabled, filteredMenu.signature]);
+          const productSignature = JSON.stringify([selectedCategory, state.menu?.halfAndHalfEnabled, state.menu?.halfAndHalfPricingMode, filteredMenu.signature]);
           const focusedProductId = document.activeElement?.dataset?.productId || '';
           renderIfChanged(ps, productSignature, () => {
             ps.replaceChildren();
@@ -753,7 +761,7 @@ export const waiterHtml = String.raw`<!doctype html>
               withNote.textContent = 'Nota';
               withNote.setAttribute('aria-label', 'Observaciones: ' + info.textContent);
               withNote.onclick = () => {
-                const units = draft.lines.filter(line => line.productId === productId(p) && !line.secondProductId);
+                const units = draft.lines.filter(line => line.productId === productId(p));
                 openItem(p, units.find(line => !line.note?.trim()) || units[units.length - 1], false, true);
               };
               add.onclick = () => addLine(p);
@@ -983,64 +991,96 @@ export const waiterHtml = String.raw`<!doctype html>
         }
         const productId = (p) => String(p.id ?? p.productId);
         let editingProductId = '', noteTarget = null;
-        function otherPizzaProducts() {
+        function canPairHalf(first, second) {
+          if (!state?.menu?.halfAndHalfEnabled || !first || !second) return false;
+          const group = first.halfAndHalfGroupId;
+          return group != null && group !== '' && group === second.halfAndHalfGroupId &&
+            String(first.categoryId ?? '') === String(second.categoryId ?? '') && productId(first) !== productId(second);
+        }
+        function productPriceMinor(product) {
+          const value = product?.priceMinor ?? product?.unitPriceMinor ?? product?.price;
+          return Number.isSafeInteger(value) && value >= 0 ? value : null;
+        }
+        function formatMoneyMinor(value) {
+          return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(value / 100);
+        }
+        function halfAndHalfPrice(first, second) {
+          const firstPrice = productPriceMinor(first), secondPrice = productPriceMinor(second);
+          if (firstPrice == null || secondPrice == null) return null;
+          const mode = first?.halfAndHalfPricingMode || second?.halfAndHalfPricingMode || state?.menu?.halfAndHalfPricingMode || 'HALF_PLUS_HALF';
+          return mode === 'MOST_EXPENSIVE' ? Math.max(firstPrice, secondPrice) : Math.round(firstPrice / 2 + secondPrice / 2);
+        }
+        function secondHalfLabel(first, second) {
+          const name = second.name || second.label || productId(second);
+          const total = halfAndHalfPrice(first, second);
+          return total == null ? name : name + ' — ' + formatMoneyMinor(total);
+        }
+        function otherHalfProducts() {
           const first = allProducts().find(p => productId(p) === editingProductId);
-          return state?.menu?.halfAndHalfEnabled && first?.halfEligible
-            ? allProducts().filter(p => p.halfEligible && productId(p) !== editingProductId) : [];
+          return first ? allProducts().filter(p => canPairHalf(first, p)) : [];
         }
         function searchSecondProducts() {
           const query = normalizeName(el('secondProductSearch').value);
-          const matches = otherPizzaProducts().filter(p => normalizeName(p.name || p.label || '').includes(query));
+          const matches = otherHalfProducts().filter(p => normalizeName(p.name || p.label || '').includes(query));
           const select = el('secondProduct');
           select.replaceChildren(new Option(query && !matches.length ? 'Sin coincidencias' : 'Elegí la otra mitad', ''));
-          for (const p of matches) select.add(new Option(p.name || p.label, productId(p)));
+          const first = allProducts().find(p => productId(p) === editingProductId);
+          for (const p of matches) select.add(new Option(secondHalfLabel(first, p), productId(p)));
           // A unique visible result can be accepted directly with Enter.
           select.value = query && matches.length === 1 ? productId(matches[0]) : '';
           const message = el('secondProductMessage');
           message.hidden = !query;
-          message.textContent = !matches.length ? 'No encontramos esa pizza. Probá con otro nombre.'
+          message.textContent = !matches.length ? 'No encontramos ese producto. Probá con otro nombre.'
             : select.value ? select.selectedOptions[0].textContent + ' seleccionada.'
             : 'Elegí la otra mitad entre las coincidencias.';
         }
         el('secondProductSearch').oninput = searchSecondProducts;
-        el('secondProduct').onchange = () => {
-          el('secondProductMessage').hidden = !el('secondProduct').value;
-          el('secondProductMessage').textContent = el('secondProduct').selectedOptions[0]?.textContent + ' seleccionada.';
+        el('secondProductSearch').onkeydown = (event) => {
+          if (event.key === 'Enter' && el('secondProduct').value) {
+            event.preventDefault();
+            finishHalfSelection();
+          }
         };
         function openItem(product, existingLine = null, startHalf = false, noteMode = false) {
           if (!state || busy || pending()) return;
           editingProductId = productId(product);
           noteTarget = existingLine && { lineId: existingLine.lineId, note: existingLine.note || '' };
-          const others = otherPizzaProducts();
-          if (startHalf && (!state.menu?.halfAndHalfEnabled || !others.length || !product.halfEligible)) return;
+          const others = otherHalfProducts();
+          if (startHalf && !others.length) return;
           el('itemTitle').textContent = product.name || product.label;
-          el('pizzaOptions').hidden = noteMode || !!noteTarget || !others.length;
-          el('pizzaMode').value = startHalf ? 'half' : 'whole';
+          el('halfOptions').hidden = noteMode || !!noteTarget || !others.length;
           el('secondChoice').hidden = !startHalf;
           const select = el('secondProduct');
           el('secondProductSearch').value = '';
           searchSecondProducts();
-          select.required = startHalf;
+          select.required = false;
           el('itemNote').value = noteTarget?.note || '';
+          el('itemNoteField').hidden = startHalf;
+          el('saveItem').hidden = startHalf;
           el('saveItem').textContent = noteTarget ? 'Guardar nota' : 'Agregar al pedido';
           el('itemDialog').showModal();
           if (startHalf) el('secondProductSearch').focus();
         }
-        el('pizzaMode').onchange = () => {
-          const half = el('pizzaMode').value === 'half';
-          el('secondChoice').hidden = !half;
-          el('secondProduct').required = half;
-          if (half) el('secondProductSearch').focus();
-        };
+        function finishHalfSelection() {
+          if (!el('itemDialog').open) return;
+          const first = allProducts().find((p) => productId(p) === editingProductId);
+          const second = otherHalfProducts().find((p) => productId(p) === el('secondProduct').value);
+          if (!first || !canPairHalf(first, second)) return;
+          el('itemDialog').close();
+          addLine(first, second);
+        }
+        el('secondProduct').onchange = finishHalfSelection;
         el('cancelItem').onclick = () => el('itemDialog').close();
         el('itemForm').onsubmit = (event) => {
           event.preventDefault();
           if (!el('itemDialog').open || !state || busy || pending()) return;
+          if (!el('secondChoice').hidden) {
+            finishHalfSelection();
+            return;
+          }
           const first = allProducts().find((p) => productId(p) === editingProductId);
-          const half = !el('pizzaOptions').hidden && el('pizzaMode').value === 'half';
-          const second = half && otherPizzaProducts().find((p) => productId(p) === el('secondProduct').value);
           el('itemDialog').close();
-          if (!first || (half && !(state?.menu?.halfAndHalfEnabled && first.halfEligible && second))) {
+          if (!first) {
             setMsg('appMessage', 'El menú cambió. Volvé a elegir el producto.', 'warn');
             return;
           }
@@ -1052,12 +1092,12 @@ export const waiterHtml = String.raw`<!doctype html>
               return;
             }
             if (note !== noteTarget.note) updateUnitNote(line, note);
-          } else addLine(first, second || null, note);
+          } else addLine(first, null, note);
         };
         function updateUnitNote(line, note) {
           // Move one pending unit, never add to the order total.
           const matching = draft.lines.find(x => x !== line && x.productId === line.productId &&
-            !x.secondProductId && (x.note || '') === note && x.quantity < 99);
+            (x.secondProductId || null) === (line.secondProductId || null) && (x.note || '') === note && x.quantity < 99);
           if (matching) {
             matching.quantity++;
             if (--line.quantity === 0) draft.lines = draft.lines.filter(x => x !== line);

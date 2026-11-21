@@ -272,7 +272,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
                 }
                 className="h-4 w-4 accent-brand-600"
               />
-              Habilitar pizzas mitad y mitad
+              Habilitar mitad y mitad
             </label>
           </div>
         </Card>

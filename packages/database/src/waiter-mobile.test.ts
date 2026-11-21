@@ -45,7 +45,7 @@ test("waiter challenge is short-lived, pairing binds a real waiter to the open s
   });
 });
 
-test("waiter menu exposes half eligibility and persists a two-pizza line through receipt and delayed review", () => {
+test("waiter menu exposes the group and persists two compatible halves through delayed review", () => {
   withRepository((repository) => {
     repository.openCashSession({ openingAmountMinor: 0 });
     const waiter = repository.createUser({ fullName: "Moza Pizza", roleCode: "WAITER", pin: "1357", authorizerPin: "2468" });
@@ -53,7 +53,8 @@ test("waiter menu exposes half eligibility and persists a two-pizza line through
     const state = repository.getWaiterSessionState(token);
     assert.equal(state.menu.halfAndHalfEnabled, true);
     const pizza = state.menu.products.find((product) => product.id === "starter-muzza-grande")!;
-    assert.equal(pizza.halfEligible, true);
+    assert.equal(pizza.halfAndHalfGroupId, "legacy-pizza-1");
+    assert.equal(pizza.halfAndHalfPricingMode, "HALF_PLUS_HALF");
     const table = repository.ensureTable(97);
     const settings = repository.getSettings();
     settings.printing.kitchen.deviceName = "Kitchen Test";
@@ -65,7 +66,7 @@ test("waiter menu exposes half eligibility and persists a two-pizza line through
     assert.equal(repository.submitWaiterBatch(token, input).status, "PENDING_REVIEW");
     const pending = repository.listDelayedWaiterBatches().find((batch) => batch.requestId === requestId)!;
     assert.equal(pending.lines[0]!.secondProductId, "starter-napo-grande");
-    assert.match(pending.lines[0]!.name, /mitad .+ \/ mitad .+/);
+    assert.match(pending.lines[0]!.name, /Mitad y mitad · .+ \/ .+/);
     assert.equal(pending.lines[0]!.note, "Sin aceitunas");
     const result = repository.confirmDelayedWaiterBatch({ requestId });
     assert.equal(result.created, true);
@@ -76,6 +77,87 @@ test("waiter menu exposes half eligibility and persists a two-pizza line through
     const ticket = repository.getPrintOrder(result.printJobId!);
     assert.equal(ticket.items[0]!.notes, "Sin aceitunas");
     assert.equal(ticket.items[0]!.halves.length, 2);
+  });
+});
+
+test("caja and waiter use the same category groups, pricing and product overrides for non-pizza combinations", () => {
+  withRepository((repo) => {
+    const category = repo.createCategory({
+      name: "Tartas",
+      halfAndHalfGroups: [
+        { id: "grande", name: "Tarta grande", pricingMode: "MOST_EXPENSIVE" },
+        { id: "chica", name: "Tarta chica" },
+      ],
+      defaultHalfAndHalfGroupId: "grande",
+    });
+    const product = (name: string, amountMinor: number) => ({
+      categoryId: category.id,
+      name,
+      stockMinor: 2000,
+      prices: [{ priceListCode: "SALON" as const, amountMinor }],
+    });
+    const first = repo.createProduct(product("Verdura", 120000));
+    const second = repo.createProduct(product("Pollo", 160000));
+    const variant = repo.createProduct({
+      ...product("Pollo chica", 80000),
+      parentProductId: second.id,
+      halfAndHalf: { mode: "GROUP", groupId: "chica" },
+    });
+    const excluded = repo.createProduct({
+      ...product("Jamón", 100000),
+      halfAndHalf: { mode: "DISABLED" },
+    });
+    assert.throws(() => repo.createProduct({
+      ...product("Inválido", 100000),
+      halfAndHalf: { mode: "GROUP", groupId: "otro" },
+    }), /grupo de mitades de la categoría/);
+    repo.openCashSession({ openingAmountMinor: 0 });
+    const waiter = repo.createUser({ fullName: "Moza Tartas", roleCode: "WAITER", pin: "1357", authorizerPin: "2468" });
+    const token = repo.pairWaiterSession({ challengeId: repo.createWaiterChallenge(waiter.id).challengeId, pin: "1357" }).sessionToken;
+    const menu = repo.getWaiterSessionState(token).menu.products;
+    assert.equal(menu.find(({ id }) => id === first.id)?.halfAndHalfPricingMode, "MOST_EXPENSIVE");
+    assert.equal(menu.find(({ id }) => id === second.id)?.halfAndHalfGroupId, "grande");
+    assert.equal(menu.find(({ id }) => id === variant.id)?.halfAndHalfGroupId, "chica");
+    assert.equal(menu.find(({ id }) => id === excluded.id)?.halfAndHalfGroupId, null);
+
+    const caja = repo.createOrder({ type: "DINE_IN", tableId: repo.ensureTable(96).id, waiterUserId: waiter.id });
+    const add = (secondProductId: string) => repo.addHalfAndHalfItem({
+      orderId: caja.id,
+      firstProductId: first.id,
+      secondProductId,
+    });
+    for (const other of [first, variant, excluded]) assert.throws(() => add(other.id), /mismo grupo de mitades/);
+    const added = add(second.id).items[0]!;
+    assert.equal(added.productNameSnapshot, "Tarta grande mitad y mitad · Verdura / Pollo");
+    assert.equal(added.unitPriceMinorSnapshot, 160000);
+
+    const tableId = repo.ensureTable(97).id;
+    const submit = (secondProductId: string) => repo.submitWaiterBatch(token, {
+      requestId: randomUUID(),
+      tableId,
+      submittedAt: new Date().toISOString(),
+      printMode: "NONE",
+      lines: [{ lineId: randomUUID(), productId: first.id, secondProductId, quantity: 1 }],
+    });
+    assert.throws(() => submit(variant.id), /mismo grupo de mitades/);
+    const mobile = submit(second.id);
+    const saved = repo.getOrder(mobile.orderId!).items[0]!;
+    assert.deepEqual(saved.halves, added.halves);
+    assert.equal(saved.unitPriceMinorSnapshot, added.unitPriceMinorSnapshot);
+
+    repo.updateCategory({
+      categoryId: category.id, name: "Tartas nuevas", active: true, sortOrder: category.sortOrder,
+      halfAndHalfGroups: [{ id: "grande", name: "Formato familiar" }],
+      reason: "Cambió la carta", authorizerPin: "2468",
+    });
+    assert.deepEqual(repo.getOrder(caja.id).items[0], added);
+    assert.deepEqual(repo.getOrder(mobile.orderId!).items[0], saved);
+    assert.deepEqual(repo.bootstrap().products.find(({ id }) => id === variant.id)?.halfAndHalf, { mode: "DISABLED" });
+    repo.updateProduct({
+      ...product("Pollo chica", 80000), productId: variant.id, active: true,
+      halfAndHalf: { mode: "INHERIT" }, reason: "Habilitar para el nuevo formato", authorizerPin: "2468",
+    });
+    assert.equal(add(variant.id).items.at(-1)?.halfAndHalfGroupNameSnapshot, "Formato familiar");
   });
 });
 

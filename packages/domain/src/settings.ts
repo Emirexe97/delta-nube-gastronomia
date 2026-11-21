@@ -10,7 +10,7 @@ export function assertAppSettings(settings: AppSettingsDto) {
     typeof settings.halfAndHalfEnabled !== "boolean"
   )
     throw new Error(
-      "La configuración de pizzas mitad y mitad debe ser verdadera o falsa.",
+      "La configuración de mitad y mitad debe ser verdadera o falsa.",
     );
   for (const profile of [settings.printing.kitchen, settings.printing.bill]) {
     if (!profile.profileName.trim())

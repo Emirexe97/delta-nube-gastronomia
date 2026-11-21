@@ -251,7 +251,7 @@ test("la pizza mitad y mitad muestra variedades una sola vez y OBS sólo contien
   };
   let preview = await startPrint("KITCHEN_ORDER");
   await expect(preview.locator(".product")).toContainText(
-    "Pizza mitad y mitad",
+    "Pizza grande mitad y mitad",
   );
   await expect(preview.locator(".halves")).toHaveText(
     `½ ${setup.firstName} · ½ ${setup.secondName}`,
@@ -282,8 +282,9 @@ test("la pizza mitad y mitad muestra variedades una sola vez y OBS sólo contien
   await result();
 
   preview = await startPrint("CUSTOMER_BILL");
-  await expect(preview.locator(".product")).toContainText(
-    setup.item.productNameSnapshot,
+  await expect(preview.locator(".product")).toContainText("Pizza grande mitad y mitad");
+  await expect(preview.locator(".halves")).toHaveText(
+    `½ ${setup.firstName} · ½ ${setup.secondName}`,
   );
   await expect(preview.locator(".item-obs")).toHaveCount(0);
   await cancelPreview(preview);

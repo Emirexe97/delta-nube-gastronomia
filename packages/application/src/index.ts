@@ -7,6 +7,9 @@ import type {
   CancelPurchaseInput,
   CorrectPurchaseItemProductInput,
   AddHalfAndHalfItemInput,
+  CreateCategoryInput,
+  UpdateCategoryInput,
+  CreateProductInput,
   AddOrderItemInput,
   AppSettingsDto,
   AuditEntryDto,
@@ -287,40 +290,14 @@ export interface GastronomyRepository {
     reason: string;
     authorizerPin: string;
   }): CustomerDto;
-  createCategory(input: {
-    name: string;
-    stockControlEnabled?: boolean;
-  }): CategoryDto;
-  updateCategory(input: {
-    categoryId: Id;
-    name: string;
-    active: boolean;
-    sortOrder: number;
-    stockControlEnabled?: boolean;
-    reason: string;
-    authorizerPin: string;
-  }): CategoryDto;
+  createCategory(input: CreateCategoryInput): CategoryDto;
+  updateCategory(input: UpdateCategoryInput): CategoryDto;
   deleteCategory(input: {
     categoryId: Id;
     reason: string;
     authorizerPin: string;
   }): { deleted: true };
-  createProduct(input: {
-    priceBook?: ProductPriceBookDto;
-    categoryId: Id;
-    name: string;
-    code?: string | null;
-    parentProductId?: Id | null;
-    stockMinor?: number | null;
-    stockTargetMinor?: number | null;
-    stockMinMinor?: number | null;
-    stockCriticalMinor?: number | null;
-    imageDataUrl?: string | null;
-    prices: Array<{
-      priceListCode: "SALON" | "TAKEAWAY" | "DELIVERY";
-      amountMinor: number;
-    }>;
-  }): ProductDto;
+  createProduct(input: CreateProductInput): ProductDto;
   importProducts(input: ImportProductsInput): ProductDto[];
   updateProduct(input: UpdateProductInput): ProductDto;
   deleteProduct(input: {
@@ -955,13 +932,10 @@ export class GastronomyApplication {
     });
   }
 
-  createCategory(input: { name: string; stockControlEnabled?: boolean }) {
+  createCategory(input: CreateCategoryInput) {
     if (!input.name.trim())
       throw new Error("Ingresá el nombre de la categoría.");
-    return this.repository.createCategory({
-      name: input.name.trim(),
-      stockControlEnabled: input.stockControlEnabled,
-    });
+    return this.repository.createCategory({ ...input, name: input.name.trim() });
   }
 
   updateCategory(input: Parameters<GastronomyRepository["updateCategory"]>[0]) {

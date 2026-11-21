@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { createServer } from "node:http";
 
-type Product = { id: string; name: string; categoryId: string; halfEligible?: boolean };
+type Product = { id: string; name: string; categoryId: string; halfAndHalfGroupId?: string | null; priceMinor?: number };
 
 async function openMenu(page: Page, products: Product[]) {
   const { waiterHtml } = await import("../../apps/orders-service/dist/waiter-page.js");
@@ -116,7 +116,7 @@ test("menú de 1001 productos renderiza por lotes y busca fuera del lote sin per
 });
 
 test("pizza única o mitades deshabilitadas conserva agregado directo y notas sin duplicar", async ({ page }) => {
-  const fixture = await openMenu(page, [{ id: "pizza", name: "Pizza única", categoryId: "food", halfEligible: true }]);
+  const fixture = await openMenu(page, [{ id: "pizza", name: "Pizza única", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1200 }]);
   try {
     const add = page.getByRole("button", { name: "Agregar Pizza única", exact: true });
     const halves = page.getByRole("button", { name: "Mitad y mitad: Pizza única", exact: true });
@@ -129,7 +129,7 @@ test("pizza única o mitades deshabilitadas conserva agregado directo y notas si
     await dialog.getByLabel("Observaciones").fill("Bien cocida");
     await dialog.getByRole("button", { name: "Guardar nota", exact: true }).click();
     await expect(page.locator("#draft strong")).toHaveText(["Pizza única × 1"]);
-    fixture.state.menu.products.push({ id: "second", name: "Otra pizza", categoryId: "food", halfEligible: true });
+    fixture.state.menu.products.push({ id: "second", name: "Otra pizza", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1300 });
     fixture.state.menu.halfAndHalfEnabled = false;
     await fixture.refresh();
     await expect(halves).toHaveCount(0);
@@ -142,8 +142,8 @@ test("pizza única o mitades deshabilitadas conserva agregado directo y notas si
 
 test("un envío pendiente bloquea agregado, notas y mitades sin cambiar líneas ni reenviar", async ({ page }) => {
   const fixture = await openMenu(page, [
-    { id: "pizza", name: "Pizza entera", categoryId: "food", halfEligible: true },
-    { id: "other", name: "Otra pizza", categoryId: "food", halfEligible: true },
+    { id: "pizza", name: "Pizza entera", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1200 },
+    { id: "other", name: "Otra pizza", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1300 },
   ]);
   const submissions: Array<{ requestId: string; lines: Array<{ lineId: string; quantity: number }> }> = [];
   await page.route("**/v1/waiter/**", async route => {

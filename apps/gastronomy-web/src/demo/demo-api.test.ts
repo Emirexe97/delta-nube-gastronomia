@@ -3625,7 +3625,8 @@ describe("API de demostración", () => {
     expect(item.halves).toHaveLength(2);
     expect(item.halves[0]?.productId).toBe("prod-muzza");
     expect(item.halves[1]?.productId).toBe("prod-napo");
-    expect(item.productNameSnapshot).toContain("Mitad");
+    expect(item.halfAndHalfGroupNameSnapshot).toBe("Pizza grande");
+    expect(item.productNameSnapshot).toContain("mitad y mitad");
     expect(item.lineTotalMinor).toBeGreaterThan(0);
   });
 

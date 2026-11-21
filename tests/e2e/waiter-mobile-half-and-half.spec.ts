@@ -17,10 +17,10 @@ test("QR móvil agrega pizzas enteras o mitad y mitad con notas independientes",
     waiter: { id: "waiter-test", name: "Ana" },
     tables: [{ id: "table-1", number: 1, name: "Mesa 1", openOrderId: null }],
     menu: { halfAndHalfEnabled: true, categories: [{ id: "food", name: "Comidas" }], products: [
-      { id: "muzza", name: "Pizza Muzzarella", categoryId: "food", halfEligible: true },
-      { id: "napo", name: "Pizza Napolitana", categoryId: "food", halfEligible: true },
-      { id: "fugazza", name: "Pizza Fugazza", categoryId: "food", halfEligible: true },
-      { id: "empanada", name: "Empanada", categoryId: "food", halfEligible: false },
+      { id: "muzza", name: "Pizza Muzzarella", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1200, halfAndHalfPricingMode: "HALF_PLUS_HALF" },
+      { id: "napo", name: "Pizza Napolitana", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1400, halfAndHalfPricingMode: "HALF_PLUS_HALF" },
+      { id: "fugazza", name: "Pizza Fugazza", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1300, halfAndHalfPricingMode: "HALF_PLUS_HALF" },
+      { id: "empanada", name: "Empanada", categoryId: "food", halfAndHalfGroupId: null, priceMinor: 900 },
     ] },
   };
   let submitted: any[] = [];
@@ -59,7 +59,6 @@ test("QR móvil agrega pizzas enteras o mitad y mitad con notas independientes",
     await expect(page.locator("#draft strong")).toHaveText(["Pizza Muzzarella × 1"]);
     await page.getByRole("button", { name: "Observaciones: Pizza Muzzarella", exact: true }).click();
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel("Tipo de pizza")).toBeHidden();
     await dialog.getByLabel("Observaciones").fill("Extra crocante");
     await dialog.getByRole("button", { name: "Guardar nota", exact: true }).click();
     await expect(page.locator("#draft strong")).toHaveText(["Pizza Muzzarella × 1"]);
@@ -70,20 +69,23 @@ test("QR móvil agrega pizzas enteras o mitad y mitad con notas independientes",
 
     const halves = page.getByRole("button", { name: "Mitad y mitad: Pizza Muzzarella", exact: true });
     await halves.click();
-    await expect(dialog.getByLabel("Tipo de pizza")).toHaveValue("half");
     await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
     await expect(page.locator("#draft strong")).toHaveText(["Pizza Muzzarella × 1"]);
     await halves.click();
-    await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
-    await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel("Otra mitad", { exact: true }).locator("option", { hasText: "Empanada" })).toHaveCount(0);
+    await expect(dialog.getByLabel("Observaciones")).toBeHidden();
+    await expect(dialog.getByRole("button", { name: "Agregar al pedido" })).toBeHidden();
     await dialog.getByLabel("Otra mitad", { exact: true }).selectOption("napo");
+    await expect(dialog).toBeHidden();
+    await page.getByRole("button", { name: "Observaciones: Pizza Muzzarella", exact: true }).click();
     await dialog.getByLabel("Observaciones").fill("Sin aceitunas");
-    await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
+    await dialog.getByRole("button", { name: "Guardar nota", exact: true }).click();
     await halves.click();
     await dialog.getByLabel("Otra mitad", { exact: true }).selectOption("fugazza");
+    await expect(dialog).toBeHidden();
+    await page.getByRole("button", { name: "Observaciones: Pizza Muzzarella", exact: true }).click();
     await dialog.getByLabel("Observaciones").fill("Bien cocida");
-    await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
+    await dialog.getByRole("button", { name: "Guardar nota", exact: true }).click();
 
     await page.getByRole("button", { name: "Agregar Empanada", exact: true }).click();
     await expect(dialog).toBeHidden();
@@ -94,7 +96,6 @@ test("QR móvil agrega pizzas enteras o mitad y mitad con notas independientes",
     // A second empanada is deliberate: + changes quantity, Nota only personalizes it.
     await page.getByRole("button", { name: "Agregar Empanada", exact: true }).click();
     await page.getByRole("button", { name: "Observaciones: Empanada", exact: true }).click();
-    await expect(dialog.getByLabel("Tipo de pizza")).toBeHidden();
     await dialog.getByLabel("Observaciones").fill("Sin cebolla");
     await dialog.getByRole("button", { name: "Guardar nota", exact: true }).click();
 

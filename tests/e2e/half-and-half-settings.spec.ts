@@ -78,7 +78,7 @@ test("settings persist the half-and-half toggle, block all new entry points and 
   await page.getByRole("link", { name: "Configuración", exact: true }).click();
   await page.getByRole("tab", { name: "General", exact: true }).click();
   let toggle = page.getByRole("checkbox", {
-    name: "Habilitar pizzas mitad y mitad",
+    name: "Habilitar mitad y mitad",
     exact: true,
   });
   let pricing = page.getByRole("combobox", { name: /^Precio mitad y mitad/ });
@@ -98,7 +98,7 @@ test("settings persist the half-and-half toggle, block all new entry points and 
   await close();
   await launch();
   toggle = page.getByRole("checkbox", {
-    name: "Habilitar pizzas mitad y mitad",
+    name: "Habilitar mitad y mitad",
     exact: true,
   });
   pricing = page.getByRole("combobox", { name: /^Precio mitad y mitad/ });
@@ -123,11 +123,11 @@ test("settings persist the half-and-half toggle, block all new entry points and 
   }
   const editor = await openOrder();
   const halfModal = page.getByRole("dialog", {
-    name: "Pizza mitad y mitad",
+    name: "Armar mitad y mitad",
     exact: true,
   });
   await expect(
-    editor.getByRole("button", { name: "Pizza mitad y mitad", exact: true }),
+    editor.getByRole("button", { name: "Armar mitad y mitad", exact: true }),
   ).toBeDisabled();
   await expect(page.locator("#order-editor-half-and-half-card")).toHaveCount(0);
   const search = editor.getByPlaceholder(/^Código, nombre, categoría/);
@@ -180,7 +180,7 @@ test("settings persist the half-and-half toggle, block all new entry points and 
   ).toBeVisible();
   const enabledEditor = await openOrder();
   await expect(
-    enabledEditor.getByRole("button", { name: /Pizza mitad y mitad/ }),
+    enabledEditor.getByRole("button", { name: /Armar mitad y mitad/ }),
   ).toBeEnabled();
   await enabledEditor
     .getByPlaceholder(/^Código, nombre, categoría/)
@@ -190,10 +190,8 @@ test("settings persist the half-and-half toggle, block all new entry points and 
   await halfModal.getByRole("option").first().click();
   await halfModal.getByPlaceholder(/^Buscar segunda mitad/).fill("Napolitana");
   await halfModal.getByRole("option").first().click();
-  await halfModal
-    .getByRole("button", { name: "Agregar pizza", exact: true })
-    .click();
   await expect(halfModal).toHaveCount(0);
+  await expect(page.getByText("Confirmá cantidad y precio antes de incorporarlo al pedido")).toHaveCount(0);
   await expect
     .poll(() =>
       page.evaluate(

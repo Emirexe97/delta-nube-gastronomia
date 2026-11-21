@@ -15,12 +15,12 @@ test("el mozo abre mesas por número y busca la otra mitad sin perder el flujo h
     ],
     waiterTableWorkflow: true,
     menu: { halfAndHalfEnabled: true, categories: [{ id: "food", name: "Comidas" }], products: [
-      { id: "muzza", name: "Pizza Muzzarella", categoryId: "food", halfEligible: true },
-      { id: "napo", name: "Pizza Napolitana", categoryId: "food", halfEligible: true },
-      { id: "fugazza", name: "Pizza Fugazza", categoryId: "food", halfEligible: true },
-      { id: "roquefort", name: "Pizza Roquefort", categoryId: "food", halfEligible: true },
-      { id: "jamon", name: "Pizza Jamón y morrones", categoryId: "food", halfEligible: true },
-      { id: "empanada", name: "Empanada", categoryId: "food", halfEligible: false },
+      { id: "muzza", name: "Pizza Muzzarella", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1200 },
+      { id: "napo", name: "Pizza Napolitana", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1400 },
+      { id: "fugazza", name: "Pizza Fugazza", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1300 },
+      { id: "roquefort", name: "Pizza Roquefort", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1500 },
+      { id: "jamon", name: "Pizza Jamón y morrones", categoryId: "food", halfAndHalfGroupId: "pizzas", priceMinor: 1600 },
+      { id: "empanada", name: "Empanada", categoryId: "food", halfAndHalfGroupId: null, priceMinor: 900 },
     ] },
   };
   const calls: Rpc[] = [];
@@ -105,7 +105,6 @@ test("el mozo abre mesas por número y busca la otra mitad sin perder el flujo h
     await page.getByRole("button", { name: "Mitad y mitad: Pizza Muzzarella", exact: true }).click();
     const dialog = page.locator("#itemDialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel("Tipo de pizza")).toHaveValue("half");
     const search = dialog.getByLabel("Buscar otra mitad");
     await expect(search).toBeVisible();
     await search.fill("napo");
@@ -114,7 +113,7 @@ test("el mozo abre mesas por número y busca la otra mitad sin perder el flujo h
     await expect(second.locator("option", { hasText: "Muzzarella" })).toHaveCount(0);
     await expect(second.locator("option", { hasText: "Napolitana" })).toHaveCount(1);
     await second.selectOption("napo");
-    await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
+    await expect(dialog).toBeHidden();
     await expect(page.locator("#draft")).toContainText("mitad");
     await expect(table).toBeVisible();
     await expect(table).toBeDisabled();
@@ -126,7 +125,6 @@ test("el mozo abre mesas por número y busca la otra mitad sin perder el flujo h
     await page.getByRole("button", { name: "Mitad y mitad: Pizza Muzzarella", exact: true }).click();
     await expect(dialog.getByLabel("Buscar otra mitad")).toHaveValue("");
     await expect(second).toHaveValue("");
-    await expect(dialog.getByLabel("Tipo de pizza")).toHaveValue("half");
     await search.fill("Pizza");
     await expect(second).toHaveValue("");
     await dialog.getByLabel("Buscar otra mitad").fill("roque");
@@ -141,7 +139,6 @@ test("el mozo abre mesas por número y busca la otra mitad sin perder el flujo h
     await dialog.getByLabel("Buscar otra mitad").fill("zz-no-existe");
     await expect(dialog.locator("#secondProductMessage")).toBeVisible();
     await expect(second).toHaveValue("");
-    await dialog.getByRole("button", { name: "Agregar al pedido", exact: true }).click();
     await expect(dialog).toBeVisible();
     await dialog.getByLabel("Buscar otra mitad").fill("fugazza");
     await expect(second).toHaveValue("fugazza");

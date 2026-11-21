@@ -388,13 +388,13 @@ test("editor real: campos, filtros, notas, footer y atajos legibles sin mutar da
   await expect(halfCard).toBeVisible();
   observations.push(
     await readable(
-      halfCard.getByText("Pizza mitad y mitad", { exact: true }),
+      halfCard.getByText("Armar mitad y mitad", { exact: true }),
       "half-and-half card title",
     ),
   );
   for (const [locator, label] of [
     [
-      halfCard.getByText("Pizzas combinadas", { exact: true }),
+      halfCard.getByText("Pizzas", { exact: true }),
       "half-and-half card category",
     ],
     [
@@ -402,7 +402,7 @@ test("editor real: campos, filtros, notas, footer y atajos legibles sin mutar da
       "half-and-half card helper",
     ],
     [
-      halfCard.getByText("Configurar →", { exact: true }),
+      halfCard.getByText("Elegir →", { exact: true }),
       "half-and-half card action",
     ],
     [halfCard.getByText("F6", { exact: true }), "half-and-half F6 hint"],
@@ -875,25 +875,15 @@ test("editor: opciones de mitad y mitad y F6 conservan accesibilidad visual sin 
   });
   await expect(editor).toBeVisible();
   await page.keyboard.press("F6");
-  const half = page.getByRole("dialog", { name: "Pizza mitad y mitad" });
+  const half = page.getByRole("dialog", { name: "Armar mitad y mitad" });
   await expect(half).toBeVisible();
   await settle();
   const observations = [];
-  const first = half.getByPlaceholder(
-    "Buscar primera mitad (ej. Muzzarella, Jamón...)",
-  );
-  const second = half.getByPlaceholder(
-    "Buscar segunda mitad (ej. Muzzarella, Jamón...)",
-  );
-  const rule = half.getByText(/^Regla:/);
+  const first = half.getByRole("combobox", { name: "Primera mitad" });
+  const second = half.getByRole("combobox", { name: "Segunda mitad" });
   await expect(first).toBeVisible();
-  await expect(second).toBeVisible();
-  await expect(rule).toBeVisible();
-  observations.push(
-    await readable(first, "first half selector"),
-    await readable(second, "second half selector"),
-    await readable(rule, "half-and-half pricing rule"),
-  );
+  await expect(second).toBeHidden();
+  observations.push(await readable(first, "first half selector"));
   await first.fill("Muzzarella");
   const firstOptions = half.getByRole("option");
   await expect(firstOptions.first()).toBeVisible();
@@ -914,31 +904,25 @@ test("editor: opciones de mitad y mitad y F6 conservan accesibilidad visual sin 
     .split("\n")[0]!
     .trim();
   await firstOptions.first().click();
-  await second.fill("Muzzarella");
+  await expect(second).toBeVisible();
+  observations.push(await readable(second, "second half selector"));
+  await second.fill("Napolitana");
   const secondOptions = half.getByRole("option");
   await expect(secondOptions.first()).toBeVisible();
   observations.push(
     await readable(secondOptions.first(), "second half product option"),
   );
-  await secondOptions.first().click();
-  const calculated = half.getByText(/Precio final calculado/);
-  await expect(calculated).toBeVisible();
-  observations.push(
-    await readable(calculated, "half-and-half calculated-price helper"),
-  );
-  const addHalf = half.getByRole("button", {
-    name: "Agregar pizza",
-    exact: true,
-  });
-  await expect(addHalf).toBeVisible();
-  await expect(addHalf).toBeEnabled();
+  const secondPrice = secondOptions.first().getByText(/\$/);
+  await expect(secondPrice).toBeVisible();
   await settle();
-  observations.push(await readable(addHalf, "half-and-half add action"));
+  observations.push(await readable(secondPrice, "half-and-half total price"));
   expect(firstOptionName.length).toBeGreaterThan(0);
   await page.screenshot({
     path: join(evidence, "order-editor-half-and-half.png"),
     fullPage: true,
   });
+  await page.keyboard.press("Escape");
+  await expect(second).toHaveAttribute("aria-expanded", "false");
   await page.keyboard.press("Escape");
   await expect(half).toBeHidden();
   await expect(editor).toBeVisible();

@@ -72,7 +72,7 @@ test("los atajos no abren diálogos sobre el modal de seña", async () => {
   await page.keyboard.press("F6");
   await expect(deposit).toBeVisible();
   await expect(
-    page.getByRole("dialog", { name: "Pizza mitad y mitad" }),
+    page.getByRole("dialog", { name: "Armar mitad y mitad" }),
   ).toHaveCount(0);
   await page.keyboard.press("F8");
   await expect(deposit).toBeVisible();
@@ -128,7 +128,7 @@ test("los atajos no abren diálogos sobre la confirmación de reimpresión", asy
   await page.keyboard.press("F6");
   await expect(reprint).toBeVisible();
   await expect(
-    page.getByRole("dialog", { name: "Pizza mitad y mitad" }),
+    page.getByRole("dialog", { name: "Armar mitad y mitad" }),
   ).toHaveCount(0);
   await page.keyboard.press("F8");
   await expect(reprint).toBeVisible();

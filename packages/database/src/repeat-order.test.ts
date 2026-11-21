@@ -220,7 +220,7 @@ test("repeat respects disabled halves and reconstructs current selections when r
       customerId: customer.id,
       type: "TAKEAWAY" as const,
     };
-    assert.throws(() => repo.repeatOrder(input), /deshabilitadas/);
+    assert.throws(() => repo.repeatOrder(input), /mitad y mitad está deshabilitada/);
     repo.saveSettings({
       ...settings,
       halfAndHalfEnabled: true,
@@ -230,4 +230,12 @@ test("repeat respects disabled halves and reconstructs current selections when r
     assert.equal(repeated.items[0]!.halves.length, 2);
     assert.equal(repeated.totalMinor, 2 * 1800000);
     assert.equal(repo.getOrder(source.id).lifecycleStatus, "CONFIRMED");
+    const otherHalf = repo.bootstrap().products.find(({ id }) => id === "starter-napo-grande")!;
+    repo.updateProduct({
+      productId: otherHalf.id, categoryId: otherHalf.categoryId, name: otherHalf.name, code: otherHalf.code,
+      active: true, prices: [], halfAndHalf: { mode: "DISABLED" },
+      reason: "La variedad dejó de venderse por mitades", authorizerPin: "2468",
+    });
+    assert.throws(() => repo.repeatOrder(input), /mitades originales ya no son compatibles/);
+    assert.equal(repo.getOrder(fresh.id).items[0]!.halves.length, 2);
   }));

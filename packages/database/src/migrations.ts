@@ -1295,4 +1295,14 @@ BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
           CREATE INDEX IF NOT EXISTS delivery_outstanding_order_idx
           ON delivery_ledger(order_id) WHERE status = 'PENDING' AND amount_due_minor > settled_amount_minor;`,
   },
+  {
+    version: 55,
+    name: "catalog_half_and_half_groups",
+    sql: `
+      ALTER TABLE categories ADD COLUMN half_and_half_groups_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE categories ADD COLUMN default_half_and_half_group_id TEXT;
+      ALTER TABLE products ADD COLUMN half_and_half_group_override TEXT;
+      ALTER TABLE order_items ADD COLUMN half_and_half_group_name_snapshot TEXT;
+    `,
+  },
 ];
