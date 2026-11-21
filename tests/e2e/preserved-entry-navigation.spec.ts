@@ -94,11 +94,14 @@ test("retoma carga de mesa y pedido de envío al alternar secciones", async () =
   const tableEditor = await openTable(61);
   const search = tableEditor.getByPlaceholder(/Código, nombre, categoría/);
   await search.fill("MUZG");
-  await tableEditor.getByRole("button", { name: "Cantidad y precio de Muzzarella grande" }).click();
-  const add = page.getByRole("dialog", { name: "Agregar · Muzzarella grande" });
-  await add.getByLabel("Cantidad", { exact: true }).fill("2");
-  await capture("table-add-modal-with-navigation");
-  await add.getByRole("button", { name: "Agregar a la mesa" }).click();
+  await tableEditor
+    .locator('[id^="order-editor-product-"]')
+    .filter({ hasText: "Muzzarella grande" })
+    .click();
+  await expect(
+    tableEditor.getByLabel("Cantidad de Muzzarella grande"),
+  ).toHaveValue("1");
+  await capture("table-entry-with-navigation");
   const addNote = tableEditor.getByRole("button", {
     name: "Agregar observación para Muzzarella grande",
   });
@@ -109,7 +112,6 @@ test("retoma carga de mesa y pedido de envío al alternar secciones", async () =
 
   await page.getByRole("link", { name: "Pedidos", exact: true }).click();
   await expect(tableEditor).toBeHidden();
-  await expect(add).toHaveCount(0);
   await expectNavigationUsable();
   await capture("table-note-modal-with-navigation");
   await page.locator('[data-app-navigation="true"] button').click();
@@ -228,7 +230,7 @@ test("retoma carga de mesa y pedido de envío al alternar secciones", async () =
     .click();
   await expect(
     tableEditor.getByLabel("Cantidad de Muzzarella grande"),
-  ).toHaveValue("2");
+  ).toHaveValue("1");
   expect(unexpectedDialogs).toEqual([]);
 });
 
@@ -247,12 +249,12 @@ test("el editor de pedido conserva búsqueda y teclado solo opera en la sección
   });
   const search = editor.getByPlaceholder(/Código, nombre, categoría/);
   await search.fill("MUZG");
-  await editor.getByRole("button", { name: "Cantidad y precio de Muzzarella grande" }).click();
-  const add = page.getByRole("dialog", { name: "Agregar · Muzzarella grande" });
-  await add.getByLabel("Cantidad", { exact: true }).fill("3");
-  await add.getByRole("button", { name: "Agregar al pedido" }).click();
+  await editor
+    .locator('[id^="order-editor-product-"]')
+    .filter({ hasText: "Muzzarella grande" })
+    .click();
   await expect(editor.getByLabel("Cantidad de Muzzarella grande")).toHaveValue(
-    "3",
+    "1",
   );
   await search.fill("COCA");
   await expect(search).toHaveValue("COCA");
@@ -281,9 +283,7 @@ test("el editor de pedido conserva búsqueda y teclado solo opera en la sección
   await expect(tableEditor).toBeHidden();
   await page.getByRole("link", { name: "Pedidos", exact: true }).click();
   await expect(editor).toBeVisible();
-  await expect(editor.getByLabel("Cantidad de Muzzarella grande")).toHaveValue(
-    "3",
-  );
+  await expect(editor.getByLabel("Cantidad de Muzzarella grande")).toHaveValue("1");
   await expect(search).toHaveValue("COCA");
   expect(unexpectedDialogs).toEqual([]);
 });

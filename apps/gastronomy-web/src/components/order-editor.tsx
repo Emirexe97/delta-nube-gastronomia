@@ -144,7 +144,7 @@ export function OrderEditor({
   const [priceItemId, setPriceItemId] = useState<string | null>(null);
   const [priceError, setPriceError] = useState<string | null>(null);
   const canEditItemPrice =
-    order?.type === "DINE_IN" && guardOrderAction(order, "EDIT").allowed;
+    order != null && guardOrderAction(order, "EDIT").allowed;
   const priceItem = canEditItemPrice
     ? order.items.find((item) => item.id === priceItemId)
     : undefined;
@@ -167,18 +167,11 @@ export function OrderEditor({
     "KITCHEN_ORDER" | "CUSTOMER_BILL" | null
   >(null);
   const [kitchenPrintScope, setKitchenPrintScope] = useState<KitchenPrintScope>("FULL");
-  const [addingProduct, setAddingProduct] = useState<ProductDto | null>(null);
   const [comboProduct, setComboProduct] = useState<ProductDto | null>(null);
   const [comboAddError, setComboAddError] = useState<string | null>(null);
   const [variantPickerProduct, setVariantPickerProduct] =
     useState<ProductDto | null>(null);
-  const [addingQuantity, setAddingQuantity] = useState("1");
-  const [addingPrice, setAddingPrice] = useState("");
-  const [addingPin, setAddingPin] = useState("");
-  const [addingError, setAddingError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const addingQuantityRef = useRef<HTMLInputElement>(null);
-  const addingPriceRef = useRef<HTMLInputElement>(null);
   const addItemLockRef = useRef(false);
   const submittedAddSearchRef = useRef("");
   const addComboLockRef = useRef(false);
@@ -272,16 +265,10 @@ export function OrderEditor({
       secondRound: true,
       onSuccess: (_saved, variables) => {
         if (currentOrderId.current !== variables.orderId) return;
-        setAddingProduct(null);
-        setAddingError(null);
         setSearch((current) => current === submittedAddSearchRef.current ? "" : current);
         window.setTimeout(() => searchRef.current?.focus(), 50);
       },
-      onError: (value) => {
-        const message = humanError(value);
-        setAddingError(message);
-        setError(message);
-      },
+      onError: (value) => setError(humanError(value)),
       onSettled: () => {
         addItemLockRef.current = false;
       },
@@ -300,28 +287,6 @@ export function OrderEditor({
         ?.amountMinor ?? null
     );
   };
-  const openProduct = (product: ProductDto) => {
-    if (addItemLockRef.current || addItem.isPending) return;
-    if (product.comboDefinition) {
-      setComboAddError(null);
-      setComboProduct(product);
-      return;
-    }
-    const price = productPrice(product);
-    if (price == null) {
-      setError("El producto no tiene un precio configurado para este canal.");
-      return;
-    }
-    setAddingProduct(product);
-    setAddingQuantity("1");
-    setAddingPrice(String(price / 100).replace(".", ","));
-    setAddingPin("");
-    setAddingError(null);
-    window.setTimeout(() => {
-      addingQuantityRef.current?.focus();
-      addingQuantityRef.current?.select();
-    }, 50);
-  };
   const addCatalogUnit = (product: ProductDto) => {
     if (!order || locked || addItemLockRef.current || addItem.isPending) return;
     if (productPrice(product) == null) {
@@ -331,7 +296,6 @@ export function OrderEditor({
     addItemLockRef.current = true;
     submittedAddSearchRef.current = search;
     setError(null);
-    setAddingError(null);
     addItem.mutate({ orderId: order.id, productId: product.id, quantity: 1 });
   };
   const handleProductCardClick = (product: ProductDto) => {
@@ -344,38 +308,6 @@ export function OrderEditor({
     } else {
       addCatalogUnit(product);
     }
-  };
-  const addProduct = () => {
-    if (!order || addItemLockRef.current || addItem.isPending) return;
-    if (!addingProduct) return;
-    const quantity = Number(addingQuantity);
-    const price = parseMoneyInput(addingPrice);
-    const catalogPrice = productPrice(addingProduct);
-    if (!Number.isInteger(quantity) || quantity <= 0) {
-      setAddingError("Ingresá una cantidad entera mayor que cero.");
-      return;
-    }
-    if (price == null || catalogPrice == null) {
-      setAddingError("Ingresá un precio válido.");
-      return;
-    }
-    const changed = price !== catalogPrice;
-    if (changed && !/^\d{4,8}$/.test(addingPin)) {
-      setAddingError("Ingresá un PIN válido para autorizar el precio manual.");
-      return;
-    }
-    addItemLockRef.current = true;
-    submittedAddSearchRef.current = search;
-    setError(null);
-    setAddingError(null);
-    addItem.mutate({
-      orderId: order.id,
-      productId: addingProduct.id,
-      quantity,
-      ...(changed
-        ? { unitPriceMinorOverride: price, authorizerPin: addingPin }
-        : {}),
-    });
   };
   const updateItemQuantity = useOrderEntryMutation(
     (input: { orderId: string; itemId: string; quantity: number }) =>
@@ -556,9 +488,7 @@ export function OrderEditor({
     setError(null);
     setPrintConfirmKind(null);
     setSkippedPrintKind(null);
-    setAddingProduct(null);
     setVariantPickerProduct(null);
-    setAddingError(null);
     setNotesItemId(null);
     setNotesError(null);
   }, [orderId]);
@@ -617,7 +547,6 @@ export function OrderEditor({
         discardConfirmOpen ||
         driverOpen ||
         Boolean(printConfirmKind) ||
-        Boolean(addingProduct) ||
         Boolean(comboProduct) ||
         Boolean(variantPickerProduct) ||
         Boolean(modifierItemId) ||
@@ -661,7 +590,6 @@ export function OrderEditor({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [
-    addingProduct,
     cancelOpen,
     comboProduct,
     changeTableOpen,
@@ -702,12 +630,6 @@ export function OrderEditor({
   const categoryHalves = availableHalves.filter((product) => product.categoryId === categoryId);
   const showHalfAndHalfCard = canOpenHalf && !locked &&
     (isHalfAndHalfSearch || (categoryHalves.length > 0 && !search.trim()));
-  const addingCatalogPrice = addingProduct ? productPrice(addingProduct) : null;
-  const addingParsedPrice = parseMoneyInput(addingPrice);
-  const addingPriceChanged =
-    addingCatalogPrice != null &&
-    addingParsedPrice != null &&
-    addingParsedPrice !== addingCatalogPrice;
   const canConfirm = guardOrderAction(order, "CONFIRM");
   const canDeliver = guardOrderAction(order, "DELIVER");
   const confirmReprint = () => {
@@ -845,7 +767,6 @@ export function OrderEditor({
                   !locked &&
                   !addItem.isPending &&
                   !variantPickerProduct &&
-                  !addingProduct &&
                   !halfOpen
                 ) {
                   if (
@@ -972,7 +893,7 @@ export function OrderEditor({
                       if (!disabled) handleProductCardClick(product);
                     }}
                     onKeyDown={(event) => {
-                      if (disabled) return;
+                      if (event.target !== event.currentTarget || disabled) return;
                       if (
                         event.repeat &&
                         (event.key === "Enter" || event.key === " ")
@@ -1020,7 +941,7 @@ export function OrderEditor({
                           disabled={locked || addItem.isPending}
                           onClick={(e) => {
                             e.stopPropagation();
-                            openProduct(product);
+                            addCatalogUnit(product);
                           }}
                           title={`Agregar ${product.name} (Base) - ${formatMoney(price)}`}
                           className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-xs font-bold text-slate-700 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800"
@@ -1043,7 +964,7 @@ export function OrderEditor({
                             }
                             onClick={(e) => {
                               e.stopPropagation();
-                              openProduct(v);
+                              addCatalogUnit(v);
                             }}
                             title={`Agregar ${v.name} - ${vPrice == null ? "Sin precio" : formatMoney(vPrice)}`}
                             className="inline-flex items-center gap-1 rounded-md border border-brand-200 bg-brand-50/70 px-1.5 py-0.5 text-xs font-bold text-brand-800 transition hover:border-brand-400 hover:bg-brand-100"
@@ -1067,28 +988,16 @@ export function OrderEditor({
                     </div>
                   )}
                   </div>
-                  {!hasVariants && !product.comboDefinition ? (
-                    <div className="flex flex-wrap justify-end gap-1 px-1 pb-1 pt-0.5">
-                      {availableHalfIds.has(product.id) ? (
-                        <button
-                          type="button"
-                          className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-brand-700 hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-                          aria-label={`Mitad y mitad: ${product.name}`}
-                          disabled={locked || addItem.isPending}
-                          onClick={() => openHalfPicker(product.id)}
-                        >
-                          Mitad y mitad
-                        </button>
-                      ) : null}
+                  {!hasVariants && availableHalfIds.has(product.id) ? (
+                    <div className="flex justify-end px-1 pb-1 pt-0.5">
                       <button
                         type="button"
-                        className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-100 hover:text-brand-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-                        aria-label={`Cantidad y precio de ${product.name}`}
-                        title={`Cantidad y precio de ${product.name}`}
+                        className="rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-brand-700 hover:bg-brand-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                        aria-label={`Mitad y mitad: ${product.name}`}
                         disabled={locked || addItem.isPending}
-                        onClick={() => openProduct(product)}
+                        onClick={() => openHalfPicker(product.id)}
                       >
-                        Cantidad y precio
+                        Mitad y mitad
                       </button>
                     </div>
                   ) : null}
@@ -1695,125 +1604,6 @@ export function OrderEditor({
           </footer>
         </fieldset>
       </div>
-      <Modal
-        open={Boolean(addingProduct)}
-        onClose={() => {
-          setAddingProduct(null);
-          setAddingError(null);
-          window.setTimeout(() => searchRef.current?.focus(), 50);
-        }}
-        closeDisabled={addItem.isPending}
-        title={
-          addingProduct ? `Agregar · ${addingProduct.name}` : "Agregar producto"
-        }
-        description="Confirmá cantidad y precio antes de incorporarlo al pedido"
-      >
-        <form
-          className="grid gap-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            addProduct();
-          }}
-        >
-          <div className="grid gap-3 sm:grid-cols-[120px_1fr]">
-            <Field label="Cantidad">
-              <Input
-                ref={addingQuantityRef}
-                autoFocus
-                inputMode="numeric"
-                value={addingQuantity}
-                disabled={addItem.isPending}
-                onFocus={(event) => event.currentTarget.select()}
-                onChange={(event) => {
-                  setAddingQuantity(event.target.value.replace(/\D/g, ""));
-                  setAddingError(null);
-                }}
-              />
-            </Field>
-            <Field
-              label="Precio unitario"
-              hintMode="inline"
-              hint={
-                addingPriceChanged
-                  ? "Precio manual · requiere PIN"
-                  : addingCatalogPrice == null
-                    ? undefined
-                    : `Precio de lista: ${formatMoney(addingCatalogPrice)}`
-              }
-            >
-              <Input
-                ref={addingPriceRef}
-                inputMode="decimal"
-                value={addingPrice}
-                disabled={addItem.isPending}
-                onFocus={(event) => event.currentTarget.select()}
-                onChange={(event) => {
-                  setAddingPrice(event.target.value);
-                  setAddingError(null);
-                }}
-                className={
-                  addingPriceChanged
-                    ? "border-amber-300 bg-amber-50 font-extrabold text-amber-800"
-                    : "font-bold"
-                }
-              />
-            </Field>
-          </div>
-          {addingPriceChanged ? (
-            <Field label="PIN para autorizar el precio manual">
-              <Input
-                type="password"
-                inputMode="numeric"
-                maxLength={8}
-                value={addingPin}
-                disabled={addItem.isPending}
-                onChange={(event) => {
-                  setAddingPin(event.target.value.replace(/\D/g, ""));
-                  setAddingError(null);
-                }}
-                placeholder="••••"
-              />
-            </Field>
-          ) : null}
-          {addingError ? (
-            <p
-              role="alert"
-              className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs font-semibold text-rose-700"
-            >
-              {addingError}
-            </p>
-          ) : null}
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={addItem.isPending}
-              onClick={() => {
-                setAddingProduct(null);
-                window.setTimeout(() => searchRef.current?.focus(), 50);
-              }}
-            >
-              Cancelar
-            </Button>
-            <Button
-              type="submit"
-              disabled={
-                addItem.isPending ||
-                !addingQuantity ||
-                addingParsedPrice == null ||
-                (addingPriceChanged && addingPin.length < 4)
-              }
-            >
-              <Plus size={16} />
-              {addItem.isPending
-                ? "Agregando…"
-                : order.type === "DINE_IN"
-                  ? "Agregar a la mesa"
-                  : "Agregar al pedido"}
-            </Button>
-          </div>
-        </form>
-      </Modal>
       <SelectVariantModal
         open={Boolean(variantPickerProduct)}
         parentProduct={variantPickerProduct}
@@ -1826,7 +1616,7 @@ export function OrderEditor({
         initialQuery={search}
         onSelect={(product) => {
           setVariantPickerProduct(null);
-          openProduct(product);
+          addCatalogUnit(product);
         }}
         onClose={() => {
           setVariantPickerProduct(null);

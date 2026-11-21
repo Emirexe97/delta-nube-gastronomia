@@ -59,6 +59,7 @@ test("producto simple se agrega de inmediato por clic/Enter; repetición rápida
   await search.fill("GAS15");
   const card = editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Gaseosa 1,5 L" });
   await expect(card).toBeVisible();
+  await expect(editor.getByRole("button", { name: /^Cantidad y precio/ })).toHaveCount(0);
   await card.dblclick();
   await expect(page.getByRole("dialog", { name: "Agregar · Gaseosa 1,5 L" })).toHaveCount(0);
   const quantity = editor.getByLabel("Cantidad de Gaseosa 1,5 L");
@@ -101,23 +102,91 @@ test("una búsqueda nueva durante una respuesta demorada se conserva al terminar
   await expect(search).toBeFocused();
 });
 
-test("la acción accesible cantidad y precio conserva el editor y exige PIN para precio manual", async () => {
+test("la cantidad y el precio se editan desde el renglón después de agregar el producto", async () => {
   const editor = await openOrder(48);
-  const search = editor.getByPlaceholder(/Código, nombre, categoría/);
-  await search.fill("GAS15");
-  await editor.getByRole("button", { name: "Cantidad y precio de Gaseosa 1,5 L" }).click();
-  const modal = page.getByRole("dialog", { name: "Agregar · Gaseosa 1,5 L" });
-  await expect(modal).toBeVisible();
-  await modal.getByLabel("Cantidad", { exact: true }).fill("2");
+  await editor.getByPlaceholder(/Código, nombre, categoría/).fill("GAS15");
+  await editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Gaseosa 1,5 L" }).click();
+  const quantity = editor.getByLabel("Cantidad de Gaseosa 1,5 L");
+  await expect(quantity).toHaveValue("1");
+  await editor.getByRole("button", { name: "Sumar una unidad de Gaseosa 1,5 L" }).click();
+  await expect(quantity).toHaveValue("2");
+
+  await editor.getByRole("button", { name: "Editar precio de Gaseosa 1,5 L" }).click();
+  const modal = page.getByRole("dialog", { name: "Editar precio", exact: true });
   await modal.getByLabel("Precio unitario").fill("9999");
-  await modal.getByLabel("PIN para autorizar el precio manual").fill("0000");
-  await modal.getByRole("button", { name: "Agregar a la mesa" }).click();
-  await expect(modal.getByRole("alert")).toContainText("PIN incorrecto");
-  await modal.getByLabel("PIN para autorizar el precio manual").fill("748259");
-  await modal.getByRole("button", { name: "Agregar a la mesa" }).click();
+  await modal.getByLabel("PIN de autorización").fill("0000");
+  await modal.getByRole("button", { name: "Guardar precio" }).click();
+  await expect(modal.getByRole("alert")).toContainText(/PIN/i);
+  await modal.getByLabel("PIN de autorización").fill("748259");
+  await modal.getByRole("button", { name: "Guardar precio" }).click();
   await expect(modal).toBeHidden();
-  await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveValue("2");
+  await expect(editor.getByRole("article").filter({ hasText: "Gaseosa 1,5 L" })).toContainText("19.998");
+});
+
+test("una variante se agrega directo desde el selector y desde su botón en la tarjeta", async () => {
+  const variant = await page.evaluate(async () => {
+    const api = window.gastronomy;
+    const base = (await api.bootstrap()).products.find((product) => product.code === "GAS15")!;
+    return api.createProduct({
+      categoryId: base.categoryId,
+      parentProductId: base.id,
+      name: "Gaseosa 1,5 L retornable",
+      code: "GAS-RET-E2E",
+      prices: [
+        { priceListCode: "SALON", amountMinor: 450000 },
+        { priceListCode: "TAKEAWAY", amountMinor: 450000 },
+        { priceListCode: "DELIVERY", amountMinor: 450000 },
+      ],
+    });
+  });
+  await page.reload();
+  const editor = await openOrder(51);
+  const search = editor.getByPlaceholder(/Código, nombre, categoría/);
+  const card = editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Gaseosa 1,5 L" });
+  await search.fill("GAS15");
+  await card.getByText("Gaseosa 1,5 L", { exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "Seleccionar variante / opción · Gaseosa 1,5 L" });
+  await picker.getByRole("button", { name: /retornable/ }).press("2");
+  await expect(picker).toBeHidden();
+  const quantity = editor.getByLabel("Cantidad de " + variant.name);
+  await expect(quantity).toHaveValue("1");
+  await expect(page.getByRole("dialog", { name: /^Agregar ·/ })).toHaveCount(0);
   await expect(search).toBeFocused();
+
+  await search.fill("GAS15");
+  await card.getByTitle(/^Agregar Gaseosa 1,5 L retornable/).press("Enter");
+  await expect(quantity).toHaveValue("2");
+  await expect(picker).toBeHidden();
+});
+
+test("retiro y envío conservan la edición de precio desde el renglón", async () => {
+  const orders = await page.evaluate(async () => {
+    const api = window.gastronomy;
+    return [
+      await api.createOrder({ type: "TAKEAWAY", customerName: "Retiro precio QA", customerPhone: "1155550601" }),
+      await api.createOrder({
+        type: "DELIVERY",
+        customerName: "Envío precio QA",
+        customerPhone: "1155550600",
+        deliveryAddress: "Calle Prueba 123",
+      }),
+    ];
+  });
+  await page.reload();
+  await page.getByRole("link", { name: "Pedidos", exact: true }).click();
+  for (const order of orders) {
+    await page.getByText("#" + order.number, { exact: true }).click();
+    const editor = page.getByRole("dialog", { name: new RegExp("Pedido #" + order.number + " ·") });
+    await editor.getByPlaceholder(/Código, nombre, categoría/).fill("GAS15");
+    await editor.locator('[id^="order-editor-product-"]').filter({ hasText: "Gaseosa 1,5 L" }).click();
+    await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveValue("1");
+    await editor.getByRole("button", { name: "Editar precio de Gaseosa 1,5 L" }).click();
+    const price = page.getByRole("dialog", { name: "Editar precio", exact: true });
+    await expect(price.getByLabel("Precio unitario")).not.toHaveValue("");
+    await price.getByRole("button", { name: "Cancelar", exact: true }).click();
+    await editor.getByRole("button", { name: "Cerrar", exact: true }).click();
+    await expect(editor).toBeHidden();
+  }
 });
 
 test("el alta de borrador evita bootstrap; confirmar refresca y una edición confirmada conserva error de stock", async () => {

@@ -505,6 +505,7 @@ test("carga una mesa y agrega productos desde el editor con teclado", async () =
       authorizerPin: "748259",
     }),
   );
+  await page.reload();
   await page.getByRole("link", { name: "Salón" }).click();
   const tableInput = page.getByLabel("Número de mesa");
   await tableInput.fill("37");
@@ -534,44 +535,42 @@ test("carga una mesa y agrega productos desde el editor con teclado", async () =
 
   const search = editor.getByPlaceholder(/Código, nombre, categoría/);
   await search.fill("MUZG");
-  await editor.getByRole("button", { name: "Cantidad y precio de Muzzarella grande" }).press("Enter");
-  const pizza = page.getByRole("dialog", {
-    name: "Agregar · Muzzarella grande",
+  const pizzaCard = editor.locator('[id^="order-editor-product-"]').filter({
+    hasText: "Muzzarella grande",
   });
-  await expect(pizza.getByLabel("Precio unitario")).toHaveValue("15000");
-  await pizza.getByLabel("Cantidad", { exact: true }).fill("2");
-  await pizza.getByRole("button", { name: "Agregar a la mesa" }).press("Enter");
-  await expect(pizza).toBeHidden();
+  await pizzaCard.press("Enter");
+  await expect(editor.getByLabel("Cantidad de Muzzarella grande")).toHaveValue(
+    "1",
+  );
+  await editor.getByLabel("Cantidad de Muzzarella grande").fill("2");
+  await editor.getByLabel("Cantidad de Muzzarella grande").press("Enter");
   await expect(editor.getByLabel("Cantidad de Muzzarella grande")).toHaveValue(
     "2",
   );
 
   await search.fill("Gaseosa");
-  await editor.getByRole("button", { name: "Cantidad y precio de Gaseosa 1,5 L" }).press("Enter");
-  const soda = page.getByRole("dialog", { name: "Agregar · Gaseosa 1,5 L" });
-  const price = soda.getByLabel("Precio unitario");
-  const catalogPrice = await price.inputValue();
-  await price.fill("9999");
-  await expect(
-    soda.getByRole("button", { name: "Agregar a la mesa" }),
-  ).toBeDisabled();
-  await soda
-    .getByRole("button", { name: "Cancelar", exact: true })
-    .press("Enter");
-  await expect(soda).toBeHidden();
-  await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveCount(0);
-  await search.fill("Gaseosa");
-  await editor.getByRole("button", { name: "Cantidad y precio de Gaseosa 1,5 L" }).press("Enter");
-  await expect(price).toHaveValue(catalogPrice);
-  await price.fill("9999");
-  await soda.getByLabel("PIN para autorizar el precio manual").fill("0000");
-  await soda.getByRole("button", { name: "Agregar a la mesa" }).press("Enter");
-  await expect(soda.getByRole("alert")).toContainText("PIN incorrecto");
-  await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveCount(0);
-  await soda.getByLabel("PIN para autorizar el precio manual").fill("748259");
-  await soda.getByRole("button", { name: "Agregar a la mesa" }).press("Enter");
-  await expect(soda).toBeHidden();
+  const sodaCard = editor.locator('[id^="order-editor-product-"]').filter({
+    hasText: "Gaseosa 1,5 L",
+  });
+  await sodaCard.press("Enter");
   await expect(editor.getByLabel("Cantidad de Gaseosa 1,5 L")).toHaveValue("1");
+  const sodaRow = editor.getByRole("article").filter({
+    hasText: "Gaseosa 1,5 L",
+  });
+  await sodaRow
+    .getByRole("button", { name: "Editar precio de Gaseosa 1,5 L" })
+    .click();
+  const sodaPrice = page.getByRole("dialog", { name: "Editar precio" });
+  const catalogPrice = await sodaPrice
+    .getByLabel("Precio unitario")
+    .inputValue();
+  await sodaPrice.getByLabel("Precio unitario").fill("9999");
+  await sodaPrice.getByLabel("PIN de autorización").fill("0000");
+  await sodaPrice.getByRole("button", { name: "Guardar precio" }).click();
+  await expect(sodaPrice.getByRole("alert")).toContainText("PIN incorrecto");
+  await sodaPrice.getByLabel("PIN de autorización").fill("748259");
+  await sodaPrice.getByRole("button", { name: "Guardar precio" }).click();
+  await expect(sodaPrice).toBeHidden();
   const persisted = await page.evaluate(async () => {
     const data = await window.gastronomy.bootstrap();
     const order = data.orders.find((item) => item.tableNumber === 37)!;

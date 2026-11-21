@@ -108,20 +108,20 @@ test.describe("foco al entrar a Salón (Electron aislado)", () => {
     const search = editor.getByPlaceholder(/Código, nombre, categoría/);
     await expect(search).toBeFocused();
     await search.fill("MUZG");
-    await editor.getByRole("button", { name: "Cantidad y precio de Muzzarella grande" }).click();
-    const addItem = page.getByRole("dialog", {
-      name: "Agregar · Muzzarella grande",
-    });
-    await expect(addItem.getByLabel("Cantidad", { exact: true })).toBeFocused();
+    await editor
+      .locator('[id^="order-editor-product-"]')
+      .filter({ hasText: "Muzzarella grande" })
+      .click();
+    await expect(editor.getByLabel("Cantidad de Muzzarella grande")).toHaveValue(
+      "1",
+    );
     await expect(tableInput).not.toBeFocused();
-    await addItem.getByRole("button", { name: "Cancelar" }).click();
-    await expect(search).toBeFocused();
     await editor.getByRole("button", { name: "Cerrar", exact: true }).click();
     await expect(editor).toBeHidden();
     await expect(tableInput).toBeFocused();
   });
 
-  test("permite editar el precio de un producto agregado desde el modal de la mesa", async () => {
+  test("permite editar el precio de un producto agregado en la mesa", async () => {
     await openCashAndSalon();
     await page.getByRole("button", { name: "Abrir mesa 1", exact: true }).click();
     await page
