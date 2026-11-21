@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { BootstrapDto } from "@gastronomy/contracts";
 import {
@@ -13,12 +14,18 @@ import { formatMoney, localDateValue, typeLabels } from "../lib";
 import { useApiMutation } from "../api";
 
 export function ReportsPage({ data }: { data: BootstrapDto }) {
+  const [params] = useSearchParams();
+  const requestedFrom = params.get("desde") ?? "";
+  const requestedTo = params.get("hasta") ?? "";
+  const hasRange = [requestedFrom,requestedTo].every((date)=>/^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date)))
+    && requestedFrom <= requestedTo;
   const [dateFrom, setDateFrom] = useState(() => {
+    if (hasRange) return requestedFrom;
     const date = new Date();
     date.setDate(date.getDate() - 6);
     return localDateValue(date);
   });
-  const [dateTo, setDateTo] = useState(() => localDateValue());
+  const [dateTo, setDateTo] = useState(() => hasRange ? requestedTo : localDateValue());
   const [message, setMessage] = useState<string | null>(null);
   const report = useQuery({
     queryKey: ["detailed-report", dateFrom, dateTo],

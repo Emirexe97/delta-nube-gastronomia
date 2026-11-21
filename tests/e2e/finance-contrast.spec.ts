@@ -107,6 +107,7 @@ for (const { width, state, zoom } of scenarios) {
     else expect(profit).toBe(0);
     await page.reload();
     await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+      await page.getByRole("button", { name: "Resultados y costos" }).click();
     await page.getByLabel("Desde", { exact: true }).fill(fixture.date);
     await page.getByLabel("Hasta", { exact: true }).fill(fixture.date);
     const card = page

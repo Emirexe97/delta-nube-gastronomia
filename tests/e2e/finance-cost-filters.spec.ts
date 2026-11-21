@@ -59,6 +59,7 @@ test("costo explícito cero es conocido; aviso histórico continúa al completar
     page.getByText("No hay productos que coincidan con los filtros actuales."),
   ).toBeVisible();
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Resultados y costos" }).click();
   await expect(
     page
       .getByText("Resultado operativo estimado", { exact: true })
@@ -184,6 +185,7 @@ test("aviso permanece aunque la cobertura redondeada muestre 100 por ciento", as
   expect(fixture.report.unknownCostItems).toBe(1);
   await page.reload();
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Resultados y costos" }).click();
   await expect(
     page.getByText("Margen bruto estimado", { exact: true }).locator(".."),
   ).toContainText("Cobertura de costos: 100%");
@@ -198,6 +200,7 @@ test("aviso y acceso por teclado siguen utilizables con ampliación 200 por cien
   const fixture = await makeConfirmedMuzg(false);
   await page.reload();
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Resultados y costos" }).click();
   await app.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0]!;
     window.setSize(1100, 820);
@@ -448,6 +451,7 @@ test("avisa de MUZG sin costo sin alterar reporte; el enlace filtra el catálogo
     );
     await page.reload();
     await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Resultados y costos" }).click();
     await page.getByLabel("Desde", { exact: true }).fill(fixture.date);
     await page.getByLabel("Hasta", { exact: true }).fill(fixture.date);
 
@@ -555,6 +559,7 @@ test("ventas con costo cargado no muestran aviso y mantienen cifras al recargar"
   const known = await makeConfirmedMuzg(true);
   await page.reload();
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Resultados y costos" }).click();
   await page.getByLabel("Desde", { exact: true }).fill(known.date);
   await page.getByLabel("Hasta", { exact: true }).fill(known.date);
   const knownGross = page
@@ -596,6 +601,7 @@ test("reporte sin ventas no muestra aviso", async () => {
   });
   await page.reload();
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Resultados y costos" }).click();
   await page.getByLabel("Desde", { exact: true }).fill(empty.date);
   await page.getByLabel("Hasta", { exact: true }).fill(empty.date);
   await expect(
@@ -649,6 +655,7 @@ test("ventas con y sin costo conservan reporte y muestran el aviso", async () =>
   });
   await page.reload();
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Resultados y costos" }).click();
   await page.getByLabel("Desde", { exact: true }).fill(mixed.date);
   await page.getByLabel("Hasta", { exact: true }).fill(mixed.date);
   const gross = page

@@ -105,6 +105,7 @@ test("cobra 150,50 pesos exactos y conserva el costo manual en centavos", async 
   await editor.getByRole("button", { name: "Cerrar", exact: true }).click();
 
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Gastos y vencimientos" }).click();
   await expect(
     page
       .getByRole("heading", { name: "Finanzas", exact: true, level: 1 })
@@ -158,6 +159,7 @@ test("Finanzas rechaza abc y exporta gastos filtrados con fórmula neutralizada"
   });
   await page.reload();
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Gastos y vencimientos" }).click();
   await page.getByLabel("Mes", { exact: true }).fill("2026-10");
   await expect(
     page.getByText("Calculando período…", { exact: true }),

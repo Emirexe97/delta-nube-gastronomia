@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import type {
+  AdjustCustomerAccountInput,
   BootstrapDto,
   CustomerAddressInput,
   CustomerDto,
@@ -48,6 +49,7 @@ import {
   formatTime,
   humanError,
   parseMoneyInput,
+  parsePriceInput,
   paymentStatusLabels,
   statusLabels,
   typeLabels,
@@ -57,6 +59,7 @@ const CUSTOMER_PAGE_SIZE = 24;
 
 export function CustomersPage({ data }: { data: BootstrapDto }) {
   const navigate = useNavigate();
+  const [routeParams, setRouteParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
   const [results, setResults] = useState<CustomerDto[]>([]);
@@ -74,6 +77,21 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const customerId = routeParams.get("ver");
+    if (!customerId) return;
+    let active = true;
+    window.gastronomy.getCustomerProfile({customerId, page:1, pageSize:1})
+      .then((profile)=>{if(active) setViewing(profile.customer);})
+      .catch((cause)=>{if(active) setError(humanError(cause));})
+      .finally(()=>{
+        if (!active) return;
+        const next=new URLSearchParams(routeParams);
+        next.delete("ver");
+        setRouteParams(next,{replace:true});
+      });
+    return ()=>{active=false;};
+  },[routeParams,setRouteParams]);
   const [repeatSource, setRepeatSource] = useState<import("@gastronomy/contracts").OrderDto | null>(null);
   const [createdDraft, setCreatedDraft] = useState<import("@gastronomy/contracts").OrderDto | null>(null);
   const [editingRepeatedOrder, setEditingRepeatedOrder] = useState<import("@gastronomy/contracts").OrderDto | null>(null);
@@ -185,6 +203,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
     setReload((current) => current + 1);
   };
   const range = customerResultRange(page, CUSTOMER_PAGE_SIZE, total);
+  const pagination = { page, pageCount, busy: waiting || searching, onPageChange: setPage };
 
   return (
     <div className="panel-enter mx-auto max-w-[1200px] space-y-3">
@@ -315,36 +334,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
           </span>
         ) : null}
       </div>
-      {pageCount > 1 ? (
-        <nav
-          aria-label="Paginación de clientes"
-          className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2"
-        >
-          <Button
-            type="button"
-            variant="secondary"
-            className="h-8"
-            disabled={page <= 1 || waiting || searching}
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-          >
-            <CaretLeft size={14} /> Anterior
-          </Button>
-          <span className="text-xs font-bold text-slate-600">
-            Página {page} de {pageCount}
-          </span>
-          <Button
-            type="button"
-            variant="secondary"
-            className="h-8"
-            disabled={page >= pageCount || waiting || searching}
-            onClick={() =>
-              setPage((current) => Math.min(pageCount, current + 1))
-            }
-          >
-            Siguiente <CaretRight size={14} />
-          </Button>
-        </nav>
-      ) : null}
+      <CustomerPagination {...pagination} label="Paginación de clientes" />
       <section
         aria-label="Directorio de clientes"
         aria-busy={waiting || searching}
@@ -478,11 +468,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
           );
         })}
       </section>
-      {pageCount > 1 && !waiting && !searching ? (
-        <p className="text-center text-xs font-semibold text-slate-600">
-          Mostrando {range.from}–{range.to} de {total} clientes
-        </p>
-      ) : null}
+      <CustomerPagination {...pagination} label="Paginación de clientes al pie" />
       {!waiting && !searching && loadedOnce && !error && !results.length ? (
         <div className="grid h-52 place-items-center text-center">
           <div>
@@ -531,6 +517,7 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
           setViewing(customer);
           setReload((current) => current + 1);
         }}
+        onDebtAdjusted={() => setReload((current) => current + 1)}
         onNewOrder={(customer) => {
           setViewing(null);
           navigate(
@@ -543,6 +530,36 @@ export function CustomersPage({ data }: { data: BootstrapDto }) {
       <OrderEditor data={data} orderId={editingRepeatedOrder ? null : createdDraft?.id ?? null} fallbackOrder={createdDraft} onClose={() => setCreatedDraft(null)} onEditDraft={(orderId) => setEditingRepeatedOrder(data.orders.find((order) => order.id === orderId) ?? createdDraft)} />
       <NewOrderModal open={Boolean(editingRepeatedOrder)} type={editingRepeatedOrder?.type ?? "TAKEAWAY"} data={data} editingOrder={editingRepeatedOrder} initialCustomer={null} onClose={() => setEditingRepeatedOrder(null)} onSaved={(order) => { setCreatedDraft(order); setEditingRepeatedOrder(null); }} />
     </div>
+  );
+}
+
+function CustomerPagination({
+  label, page, pageCount, busy, onPageChange,
+}: {
+  label: string;
+  page: number;
+  pageCount: number;
+  busy: boolean;
+  onPageChange(page: number): void;
+}) {
+  if (pageCount <= 1) return null;
+  return (
+    <nav
+      aria-label={label}
+      className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2"
+    >
+      <Button type="button" variant="secondary" className="h-8"
+        disabled={page <= 1 || busy} onClick={() => onPageChange(page - 1)}>
+        <CaretLeft size={14} /> Anterior
+      </Button>
+      <span className="text-xs font-bold text-slate-600">
+        Página {page} de {pageCount}
+      </span>
+      <Button type="button" variant="secondary" className="h-8"
+        disabled={page >= pageCount || busy} onClick={() => onPageChange(page + 1)}>
+        Siguiente <CaretRight size={14} />
+      </Button>
+    </nav>
   );
 }
 
@@ -1448,6 +1465,7 @@ function CustomerProfileModal({
   onClose,
   onEdit,
   onUpdated,
+  onDebtAdjusted,
   onNewOrder,
   onRepeatOrder,
 }: {
@@ -1458,6 +1476,7 @@ function CustomerProfileModal({
   onClose(): void;
   onEdit(): void;
   onUpdated(customer: CustomerDto): void;
+  onDebtAdjusted(): void;
   onNewOrder(customer: CustomerDto): void;
   onRepeatOrder(order: import("@gastronomy/contracts").OrderDto): void;
 }) {
@@ -1468,6 +1487,7 @@ function CustomerProfileModal({
   const [mergeOpen, setMergeOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [settleOpen, setSettleOpen] = useState(false);
+  const [adjustOpen, setAdjustOpen] = useState(false);
   const [settleAmount, setSettleAmount] = useState("");
   const [settleMethod, setSettleMethod] = useState("CASH");
   const [settleReference, setSettleReference] = useState("");
@@ -1498,7 +1518,12 @@ function CustomerProfileModal({
     };
   }, [customer, page]);
 
-  useEffect(() => { setPage(1); setSettleOpen(false); setSelectedOrders([]); }, [customer?.id]);
+  useEffect(() => {
+    setPage(1);
+    setSettleOpen(false);
+    setAdjustOpen(false);
+    setSelectedOrders([]);
+  }, [customer?.id]);
 
   const currentCustomer = profile?.customer ?? customer;
   const preferredPayment = paymentMethods.find(
@@ -1506,6 +1531,9 @@ function CustomerProfileModal({
   );
   const metrics = profile?.metrics;
   const openCharges = profile?.accountCharges.filter((charge) => charge.outstandingMinor > 0) ?? [];
+  const editableCharges = profile?.accountCharges.filter(
+    (charge) => charge.outstandingMinor > 0 || charge.adjustmentMinor < 0,
+  ) ?? [];
   const selectedBalance = selectedOrders.length
     ? openCharges.filter((charge) => selectedOrders.includes(charge.orderId)).reduce((sum, charge) => sum + charge.outstandingMinor, 0)
     : metrics?.outstandingMinor ?? 0;
@@ -1586,9 +1614,33 @@ function CustomerProfileModal({
                 <h3 className="text-sm font-extrabold text-indigo-950">Cuenta corriente</h3>
                 <p className="text-xs text-indigo-700">Deuda pendiente: <strong>{formatMoney(metrics?.outstandingMinor ?? 0)}</strong></p>
               </div>
-              <Button type="button" disabled={!cashOpen || !metrics?.outstandingMinor || settling} onClick={() => {setSettleOpen(true); setSettleAmount(moneyInputValue(metrics?.outstandingMinor ?? 0)); setSelectedOrders([]); setSettleError(null);}}>Registrar pago</Button>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary"
+                  disabled={!currentCustomer.active || !editableCharges.length || adjustOpen || settling || loading}
+                  onClick={() => { setSettleOpen(false); setAdjustOpen(true); }}>
+                  Ajustar deuda
+                </Button>
+                <Button type="button" disabled={!cashOpen || !metrics?.outstandingMinor || settling || adjustOpen}
+                  onClick={() => {setSettleOpen(true); setSettleAmount(moneyInputValue(metrics?.outstandingMinor ?? 0)); setSelectedOrders([]); setSettleError(null);}}>
+                  Registrar pago
+                </Button>
+              </div>
             </div>
             {!cashOpen ? <p className="text-xs text-amber-700">Abrí una caja para registrar cobros.</p> : null}
+            {adjustOpen ? (
+              <CustomerDebtAdjustmentForm
+                key={currentCustomer.id}
+                customerId={currentCustomer.id}
+                charges={editableCharges}
+                onCancel={() => setAdjustOpen(false)}
+                onUpdated={onDebtAdjusted}
+                onSaved={(result) => {
+                  setProfile(result);
+                  setPage(result.history.page);
+                  setAdjustOpen(false);
+                }}
+              />
+            ) : null}
             {openCharges.length ? <div className="space-y-1 text-xs">
               {openCharges.map((charge) => <div key={charge.orderId} className="flex justify-between gap-2 rounded bg-white p-2"><span>Pedido #{charge.orderNumber} · {new Date(charge.createdAt).toLocaleDateString("es-AR")}</span><b>{formatMoney(charge.outstandingMinor)}</b></div>)}
             </div> : <p className="text-xs text-slate-600">Sin deuda pendiente.</p>}
@@ -1902,6 +1954,102 @@ function CustomerProfileModal({
         </div>
       ) : null}
     </Modal>
+  );
+}
+
+function CustomerDebtAdjustmentForm({
+  customerId, charges, onCancel, onUpdated, onSaved,
+}: {
+  customerId: string;
+  charges: CustomerProfileDto["accountCharges"];
+  onCancel(): void;
+  onUpdated(): void;
+  onSaved(result: CustomerProfileDto): void;
+}) {
+  const [rows, setRows] = useState(() => charges.map((charge) => ({
+    ...charge,
+    value: moneyInputValue(charge.outstandingMinor),
+  })));
+  const [reason, setReason] = useState("");
+  const [pin, setPin] = useState("");
+  const adjustment = useApiMutation(
+    (input: AdjustCustomerAccountInput) => window.gastronomy.adjustCustomerAccount(input),
+    { onSuccess: onUpdated, retry: false },
+  );
+  const balances = rows.map((row) => parsePriceInput(row.value));
+  const hasChanges = rows.some((row, index) => balances[index] !== row.outstandingMinor);
+  const canSave = hasChanges && balances.every((balance) => balance !== null) &&
+    reason.trim().length >= 4 && /^\d{4,8}$/.test(pin) && !adjustment.isPending;
+
+  return (
+    <form
+      className="space-y-3 rounded-xl border border-indigo-200 bg-white p-4"
+      aria-labelledby="customer-debt-adjustment-title"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!canSave) return;
+        adjustment.mutate({
+          customerId,
+          reason: reason.trim(),
+          authorizerPin: pin,
+          charges: rows.flatMap((row, index) => {
+            const outstandingMinor = balances[index];
+            return outstandingMinor == null || outstandingMinor === row.outstandingMinor ? [] : [{
+              orderId: row.orderId,
+              expectedOutstandingMinor: row.outstandingMinor,
+              outstandingMinor,
+            }];
+          }),
+        }, { onSuccess: onSaved });
+      }}
+    >
+      <h3 id="customer-debt-adjustment-title" className="text-sm font-bold">Ajustar deuda</h3>
+      <p className="text-xs text-slate-600">
+        Indicá el saldo pendiente de cada pedido. El ajuste queda en auditoría y se realiza fuera de caja.
+      </p>
+      <div className="max-h-64 space-y-2 overflow-auto">
+        {rows.map((row) => (
+          <div key={row.orderId} className="grid items-end gap-2 rounded bg-slate-50 p-2 sm:grid-cols-2">
+            <div className="text-xs">
+              <b>Pedido #{row.orderNumber}</b>
+              <p className="text-slate-600">Saldo actual {formatMoney(row.outstandingMinor)}</p>
+              {row.settledMinor > 0 ? <p className="text-slate-600">Ya cobrado {formatMoney(row.settledMinor)}</p> : null}
+            </div>
+            <Field label={`Nuevo saldo del pedido #${row.orderNumber}`}>
+              <Input
+                inputMode="decimal"
+                required
+                value={row.value}
+                disabled={adjustment.isPending}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setRows((current) => current.map((item) => item.orderId === row.orderId ? { ...item, value } : item));
+                }}
+              />
+            </Field>
+          </div>
+        ))}
+      </div>
+      <Button type="button" variant="secondary"
+        disabled={adjustment.isPending || balances.every((balance) => balance === 0)}
+        onClick={() => setRows((current) => current.map((row) => ({ ...row, value: "0" })))}>
+        Eliminar toda la deuda
+      </Button>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Field label="Motivo">
+          <Input value={reason} required disabled={adjustment.isPending} onChange={(event) => setReason(event.target.value)} />
+        </Field>
+        <Field label="PIN de autorización">
+          <Input type="password" inputMode="numeric" maxLength={8} required value={pin}
+            disabled={adjustment.isPending} onChange={(event) => setPin(event.target.value)} />
+        </Field>
+      </div>
+      {adjustment.error ? <p role="alert" className="text-xs text-rose-700">{humanError(adjustment.error)}</p> : null}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="secondary" disabled={adjustment.isPending} onClick={onCancel}>Cancelar</Button>
+        <Button type="submit" disabled={!canSave}>{adjustment.isPending ? "Guardando…" : "Guardar ajuste"}</Button>
+      </div>
+    </form>
   );
 }
 

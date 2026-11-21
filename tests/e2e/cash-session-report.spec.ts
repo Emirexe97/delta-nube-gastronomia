@@ -78,6 +78,7 @@ test("pagina los cierres sin perder el informe del turno seleccionado", async ()
   });
   await page.reload();
   await page.getByRole("link", { name: "Caja", exact: true }).click();
+  await page.getByRole("button", { name: "Historial", exact: true }).click();
   const first = page.getByRole("row").filter({ has: page.getByRole("cell", { name: `#${numbers[0]}`, exact: true }) });
   await expect(page.getByText("Página 1 · 22 cierres")).toBeVisible();
   await expect(first).toHaveCount(0);
@@ -166,6 +167,7 @@ test("paga el envío desde Repartidores y lo descuenta en cierre, historial y ti
   expect(closed.differenceMinor).toBe(0);
   await page.reload();
   await page.getByRole("link", { name: "Caja" }).click();
+  await page.getByRole("button", { name: "Historial", exact: true }).click();
   await page.getByRole("button", { name: "Ver informe", exact: true }).click();
   const report = page.getByRole("dialog", { name: "Informe de caja" });
   await expect(
@@ -551,6 +553,7 @@ test("separa el cambio final del efectivo neto en revisión, historial e informe
   await expect(
     page.getByText(`#${session.number}`, { exact: true }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "Historial", exact: true }).click();
   await page.getByRole("button", { name: "Ver informe", exact: true }).click();
   const historyReport = page.getByRole("dialog", { name: "Informe de caja" });
   for (const value of ["$ 4.500", "$ 4.400", "$ 1.500"]) {

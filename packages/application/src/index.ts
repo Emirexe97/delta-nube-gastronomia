@@ -1,4 +1,6 @@
 import type {
+  ShiftAuditDto, ShiftAuditInput, ShiftOrderAuditDto, ShiftOrderAuditInput, DeliveryShipmentsInput, DeliveryShipmentsDto,
+  FinanceBooksInput, FinanceBooksDto, FinanceEntryInput, FinanceBookEvent,
   AddComboItemInput,
   AssignPriceBooksInput, PriceBooksDto, ProductPriceBookDto, SavePriceBookInput,
   ConfigureProductComboInput,
@@ -78,6 +80,7 @@ import type {
   CreateFinanceRecurringInput,
   SettleDeliveryInput,
   SettleCustomerAccountInput,
+  AdjustCustomerAccountInput,
   TableSectorDto,
 } from "@gastronomy/contracts";
 import { isPriceBookRoundingIncrementMinor, normalizeImportProductsInput } from "@gastronomy/contracts";
@@ -202,7 +205,10 @@ export interface GastronomyRepository {
   registerCashMovement(input: CashMovementInput): CashSessionDto;
   closeCashSession(input: CloseCashSessionInput): CashSessionDto;
   listCashSessionHistory(): CashSessionHistoryItemDto[];
-  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number }): CashSessionHistoryPageDto;
+  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number; search?: string }): CashSessionHistoryPageDto;
+  getShiftAudit(input: ShiftAuditInput): ShiftAuditDto;
+  getShiftOrderAudit(input: ShiftOrderAuditInput): ShiftOrderAuditDto;
+  getDeliveryShipments(input: DeliveryShipmentsInput): DeliveryShipmentsDto;
   getCashSessionReport(filters: CashSessionReportFilters): CashSessionReportDto;
   markOrderServed(input: MarkOrderServedInput): OrderDto;
   createOrder(input: CreateOrderInput): OrderDto;
@@ -239,6 +245,7 @@ export interface GastronomyRepository {
   assignDeliveryDriver(input: {
     orderId: Id;
     driverUserId: Id | null;
+    driverRemunerationMinor?: number | null;
   }): OrderDto;
   payOrder(input: PayOrderInput): OrderDto;
   refundPayment(input: RefundPaymentInput): OrderDto;
@@ -267,6 +274,7 @@ export interface GastronomyRepository {
     pageSize: number;
   }): CustomerProfileDto;
   settleCustomerAccount(input: SettleCustomerAccountInput): CustomerProfileDto;
+  adjustCustomerAccount(input: AdjustCustomerAccountInput): CustomerProfileDto;
   createCustomer(input: {
     name: string;
     phone: string;
@@ -319,6 +327,8 @@ export interface GastronomyRepository {
   ): PurchaseDto;
   correctPurchaseItemCost(input: CorrectPurchaseItemCostInput): PurchaseDto;
   getFinanceReport(input: { from: string; to: string }): FinanceReportDto;
+  getFinanceBooks(input: FinanceBooksInput): FinanceBooksDto;
+  postFinanceEntry(input: FinanceEntryInput): FinanceBookEvent;
   getFinanceProductCosts(): FinanceReportDto["productCosts"];
   createFinanceExpense(input: CreateFinanceExpenseInput): FinanceExpenseDto;
   correctFinanceExpense(input: CorrectFinanceExpenseInput): FinanceExpenseDto;
@@ -851,6 +861,10 @@ export class GastronomyApplication {
     return this.repository.settleCustomerAccount(input);
   }
 
+  adjustCustomerAccount(input: AdjustCustomerAccountInput) {
+    return this.repository.adjustCustomerAccount(input);
+  }
+
   createCustomer(input: {
     name: string;
     phone: string;
@@ -1162,6 +1176,14 @@ export class GastronomyApplication {
     return this.repository.getFinanceReport(input);
   }
 
+  getFinanceBooks(input: FinanceBooksInput) {
+    return this.repository.getFinanceBooks(input);
+  }
+
+  postFinanceEntry(input: FinanceEntryInput) {
+    return this.repository.postFinanceEntry(input);
+  }
+
   getFinanceProductCosts() {
     return this.repository.getFinanceProductCosts();
   }
@@ -1390,8 +1412,20 @@ export class GastronomyApplication {
     return this.repository.listCashSessionHistory();
   }
 
-  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number }) {
+  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number; search?: string }) {
     return this.repository.listCashSessionHistoryPage(input);
+  }
+
+  getShiftAudit(input: ShiftAuditInput) {
+    return this.repository.getShiftAudit(input);
+  }
+
+  getShiftOrderAudit(input: ShiftOrderAuditInput) {
+    return this.repository.getShiftOrderAudit(input);
+  }
+
+  getDeliveryShipments(input: DeliveryShipmentsInput) {
+    return this.repository.getDeliveryShipments(input);
   }
 
   getCashSessionReport(filters: CashSessionReportFilters) {

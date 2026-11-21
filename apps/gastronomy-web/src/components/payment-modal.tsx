@@ -66,6 +66,9 @@ export function PaymentModal({
     order.deliveryFeeBelongsToDriver ??
     data.settings.deliveryFeeBelongsToDriver ??
     true;
+  const driverRemunerationMinor =
+    order.driverRemunerationMinor ??
+    (deliveryFeeBelongsToDriver ? order.deliveryFeeMinor : 0);
   const completionDriverUserId =
     completeOnPay && order.type === "DELIVERY"
       ? driverUserId
@@ -74,8 +77,7 @@ export function PaymentModal({
     order.type === "DELIVERY" &&
     Boolean(initialDriverUserId) &&
     data.settings.deliverySettlementEnabled &&
-    deliveryFeeBelongsToDriver &&
-    order.deliveryFeeMinor > 0;
+    driverRemunerationMinor > 0;
   const [payDriverNow, setPayDriverNow] = useState(
     initialCanSettleDriverFee &&
       data.settings.deliveryDriverPaymentMode === "ON_ORDER_PAYMENT",
@@ -123,7 +125,7 @@ export function PaymentModal({
     initialCollectedByDriver,
     initialCanSettleDriverFee,
     deliveryFeeBelongsToDriver,
-    order.deliveryFeeMinor,
+    driverRemunerationMinor,
     data.settings.deliverySettlementEnabled,
     data.settings.deliveryDriverPaymentMode,
   ]);
@@ -190,8 +192,7 @@ export function PaymentModal({
     order.type === "DELIVERY" &&
     Boolean(completionDriverUserId) &&
     data.settings.deliverySettlementEnabled &&
-    deliveryFeeBelongsToDriver &&
-    order.deliveryFeeMinor > 0;
+    driverRemunerationMinor > 0;
 
   const deliveryCashTotal = payments
     .filter((payment) => payment.methodCode === "CASH")
@@ -726,11 +727,11 @@ export function PaymentModal({
               <div className="text-xs">
                 <span className="font-bold text-slate-800">
                   Pagar envío al repartidor ahora (
-                  {formatMoney(order.deliveryFeeMinor)})
+                  {formatMoney(driverRemunerationMinor)})
                 </span>
                 <p className="text-slate-600 mt-0.5">
                   {payDriverNow
-                    ? `Se registrará el egreso de caja (${formatMoney(order.deliveryFeeMinor)}) y el reparto quedará liquidado.`
+                    ? `Se registrará el egreso de caja (${formatMoney(driverRemunerationMinor)}) y el reparto quedará liquidado.`
                     : "El envío se acumulará en la cuenta corriente del repartidor para liquidarse luego en la sección Repartidores."}
                 </p>
               </div>

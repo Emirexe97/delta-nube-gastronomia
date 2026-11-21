@@ -76,6 +76,7 @@ test("cash withdrawal requires an authorization PIN and keeps the draft after PI
 
 test("finance expense requests an authorization PIN and preserves entered details on rejection", async () => {
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Gastos y vencimientos" }).click();
   await page.getByLabel("Categoría").fill("Prueba UX");
   await page.getByLabel("Concepto").fill("Gasto protegido");
   await page.getByLabel("Importe").fill("1500");
@@ -144,6 +145,7 @@ test("finance expense shows authorization verification while IPC is pending", as
     });
   });
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Gastos y vencimientos" }).click();
   await page.getByLabel("Categoría").fill("Prueba UX");
   await page.getByLabel("Concepto").fill("Gasto pendiente UX");
   await page.getByLabel("Importe").fill("1500");

@@ -12,20 +12,23 @@ import type {
   CashSessionReportPrintSections,
 } from "@gastronomy/contracts";
 import { Printer, Eye, Funnel, X, Check, Receipt } from "@phosphor-icons/react";
-import { Badge, Button, Card, Field, Modal, Select } from "@gastronomy/ui";
+import { Badge, Button, Card, Field, Input, Modal, Select } from "@gastronomy/ui";
 import { formatMoney, statusLabels, typeLabels } from "../lib";
 import { useApiMutation, useBootstrap } from "../api";
 
 export function CashSessionHistory({
   onReport,
+  onAudit,
 }: {
   onReport: (id: string) => void;
+  onAudit?: (id: string) => void;
 }) {
   const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
   const pageSize = 20;
   const history = useQuery({
-    queryKey: ["cash-session-history", page, pageSize],
-    queryFn: () => window.gastronomy.listCashSessionHistoryPage({ page, pageSize }),
+    queryKey: ["cash-session-history", page, pageSize, search],
+    queryFn: () => window.gastronomy.listCashSessionHistoryPage({ page, pageSize, search: search.trim() || undefined }),
   });
   useEffect(() => {
     if (history.data && history.data.page !== page) setPage(history.data.page);
@@ -36,12 +39,17 @@ export function CashSessionHistory({
         <div>
           <h2 className="text-sm font-bold">Historial de cajas</h2>
           <p className="text-xs text-slate-600">
-            Consultá cierres anteriores y el detalle reciente del turno.
+            Consultá los pedidos y movimientos de cada cierre.
           </p>
         </div>
         <Button variant="secondary" onClick={() => history.refetch()}>
           Actualizar
         </Button>
+      </div>
+      <div className="border-b border-slate-100 px-4 py-3">
+        <Field label="Buscar por caja, fecha o responsable">
+          <Input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Número, fecha o responsable" />
+        </Field>
       </div>
       {history.isLoading ? (
         <p className="p-6 text-center text-xs text-slate-600">
@@ -53,7 +61,7 @@ export function CashSessionHistory({
         </p>
       ) : !history.data?.items.length ? (
         <p className="p-6 text-center text-xs text-slate-600">
-          Todavía no hay cajas cerradas.
+          {search.trim() ? "No se encontraron cajas con esos datos." : "Todavía no hay cajas cerradas."}
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -91,13 +99,10 @@ export function CashSessionHistory({
                     {formatMoney(row.salesTotalMinor)}
                   </td>
                   <td className="text-right whitespace-nowrap">
-                    <Button
-                      variant="secondary"
-                      onClick={() => onReport(row.id)}
-                    >
-                      <Eye />{" "}
-                      {row.detailAvailable ? "Ver informe" : "Ver resumen"}
-                    </Button>
+                    <div className="flex justify-end gap-2">
+                      <Button variant="secondary" onClick={() => onReport(row.id)}><Eye /> {row.detailAvailable ? "Ver informe" : "Ver resumen"}</Button>
+                      {onAudit ? <Button variant="ghost" onClick={() => onAudit(row.id)}>Auditar turno</Button> : null}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -115,6 +120,9 @@ export function CashSessionHistory({
     </Card>
   );
 }
+
+/** Compact, paginated turn audit. It is intentionally read-only and keeps the selected section while loading. */
+export { ShiftAuditModal } from "./shift-audit-modal";
 
 type FilterState = {
   tableId: string;

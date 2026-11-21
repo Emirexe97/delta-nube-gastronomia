@@ -19,6 +19,7 @@ import {
   PlusCircle,
   Receipt,
   WarningCircle,
+  ShieldCheck,
 } from "@phosphor-icons/react";
 import {
   Badge,
@@ -35,6 +36,7 @@ import { cashClosingTotals } from "@gastronomy/domain";
 import {
   CashSessionHistory,
   CashSessionReportModal,
+  ShiftAuditModal,
 } from "../components/cash-session-report";
 import {
   countPendingCashOrders,
@@ -59,11 +61,17 @@ export function CashPage({ data }: { data: BootstrapDto }) {
   const [reverseMovement, setReverseMovement] = useState<CashMovementDto | null>(
     null,
   );
+  const [activeTab, setActiveTab] = useState<"current" | "sales" | "movements" | "history">("current");
+  const [salesPage, setSalesPage] = useState(1);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditSessionId, setAuditSessionId] = useState<string | null>(null);
   const session = data.cashSession;
   const manualMovements = (session?.movements ?? []).filter(
     (m) => m.type !== "SALE",
   );
   const paidOrders = paidOrdersForSession(data.orders, session);
+  const salesPages = Math.max(1, Math.ceil(paidOrders.length / 20));
+  const visibleSalesPage = Math.min(salesPage, salesPages);
   const channelTotals = salesByChannel(paidOrders);
   const paymentTotals = paidOrders
     .flatMap((o) => o.payments)
@@ -95,8 +103,17 @@ export function CashPage({ data }: { data: BootstrapDto }) {
       <div>
         <h2 className="text-lg font-extrabold">Caja y día comercial</h2>
       </div>
+      <nav aria-label="Secciones de caja" className="sticky top-0 z-10 -mx-1 flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/95 p-1 shadow-sm backdrop-blur">
+        {([['current', 'Turno actual'], ['sales', 'Ventas'], ['movements', 'Movimientos'], ['history', 'Historial']] as const).map(([value, label]) => (
+          <button key={value} type="button" aria-current={activeTab === value ? "page" : undefined} onClick={() => setActiveTab(value)} className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition ${activeTab === value ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+            {label}
+          </button>
+        ))}
+      </nav>
       {session ? (
         <>
+          {activeTab === "current" ? (
+          <>
           <Card className="overflow-hidden">
             <div className="grid items-stretch gap-px bg-slate-200 md:grid-cols-4">
               <CashHeader label="Caja">
@@ -139,6 +156,12 @@ export function CashPage({ data }: { data: BootstrapDto }) {
               onClick={() => setCloseOpen(true)}
               danger
             />
+            <ActionCard
+              icon={<ShieldCheck size={21} />}
+              title="Auditar turno"
+              description="Cierre, pedidos, cobros, movimientos y repartidores"
+              onClick={() => { setAuditSessionId(session.id); setAuditOpen(true); }}
+            />
           </section>
           <section className="grid gap-3 lg:grid-cols-2">
             <CashBreakdown session={session} />
@@ -160,6 +183,10 @@ export function CashPage({ data }: { data: BootstrapDto }) {
               </p>
             </div>
           </section>
+          </>
+          ) : null}
+          {activeTab === "sales" ? (
+          <>
           <Card className="overflow-hidden">
             <div className="border-b border-slate-100 px-4 py-3">
               <h2 className="text-sm font-bold">Ventas cobradas del turno</h2>
@@ -182,7 +209,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
               )}
             </div>
             {paidOrders.length ? (
-              <div className="overflow-auto">
+              <div className="max-h-[52vh] overflow-auto">
                 <table className="dn-table min-w-[640px]">
                   <thead>
                     <tr>
@@ -195,7 +222,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {paidOrders.slice(0, 20).map((order) => (
+                    {paidOrders.slice((visibleSalesPage-1)*20, visibleSalesPage*20).map((order) => (
                       <tr key={order.id}>
                         <td className="font-bold">#{order.number}</td>
                         <td>{typeLabels[order.type]}</td>
@@ -226,16 +253,21 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                 No hay ventas cobradas en esta caja.
               </p>
             )}
+            {salesPages > 1 && <div className="flex items-center justify-end gap-3 p-3 text-xs"><span>Página {visibleSalesPage} de {salesPages}</span><Button variant="secondary" disabled={visibleSalesPage===1} onClick={()=>setSalesPage(visibleSalesPage-1)}>Anterior</Button><Button variant="secondary" disabled={visibleSalesPage===salesPages} onClick={()=>setSalesPage(visibleSalesPage+1)}>Siguiente</Button></div>}
           </Card>
+          </>
+          ) : null}
+          {activeTab === "movements" ? (
+          <>
           <Card className="overflow-hidden">
             <div className="border-b border-slate-100 px-4 py-3">
               <h2 className="text-sm font-bold">Movimientos de caja del turno</h2>
               <p className="text-xs text-slate-600">
-                Total movimientos manuales: {manualMovements.length}
+                {manualMovements.length} movimientos
               </p>
             </div>
             {manualMovements.length ? (
-              <div className="overflow-auto">
+              <div className="max-h-[52vh] overflow-auto">
                 <table className="dn-table min-w-[640px]">
                   <thead>
                     <tr>
@@ -337,13 +369,11 @@ export function CashPage({ data }: { data: BootstrapDto }) {
               <Badge tone="amber">Bloquea cierre normal</Badge>
             </div>
           ) : null}
-          <CashSessionHistory
-            onReport={(id) => {
-              setReportSessionId(id);
-              setReportOpen(true);
-            }}
-          />
+          </>
+          ) : null}
         </>
+      ) : activeTab === "history" ? null : activeTab !== "current" ? (
+        <Card className="p-5"><p className="text-sm">La caja está cerrada. Podés consultar las ventas y los movimientos de cada turno en el historial.</p><Button className="mt-3" variant="secondary" onClick={() => setActiveTab("history")}>Ir al historial</Button></Card>
       ) : (
         <Card className="grid min-h-[380px] place-items-center p-8 text-center">
           <div className="max-w-md">
@@ -394,18 +424,24 @@ export function CashPage({ data }: { data: BootstrapDto }) {
           }}
         />
       ) : null}
-      {!session ? (
+      {activeTab === "history" ? (
         <CashSessionHistory
           onReport={(id) => {
             setReportSessionId(id);
             setReportOpen(true);
           }}
+          onAudit={(id) => { setAuditSessionId(id); setAuditOpen(true); }}
         />
       ) : null}
       <CashSessionReportModal
         open={reportOpen}
         sessionId={reportSessionId}
         onClose={() => setReportOpen(false)}
+      />
+      <ShiftAuditModal
+        open={auditOpen}
+        sessionId={auditSessionId ?? session?.id ?? null}
+        onClose={() => setAuditOpen(false)}
       />
       <ReverseMovementModal
         movement={reverseMovement}

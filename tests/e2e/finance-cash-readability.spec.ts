@@ -280,6 +280,7 @@ for (const width of [1100, 1366]) {
 
       await page.reload();
       await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+      await page.getByRole("button", { name: "Resultados y costos" }).click();
       await page.getByLabel("Desde", { exact: true }).fill(fixture.date);
       await page.getByLabel("Hasta", { exact: true }).fill(fixture.date);
       await expect(
@@ -505,6 +506,7 @@ for (const width of [1100, 1366])
     );
     await page.reload();
     await page.getByRole("link", { name: "Caja", exact: true }).click();
+    await page.getByRole("button", { name: "Historial", exact: true }).click();
     await page
       .getByRole("button", { name: "Ver informe", exact: true })
       .click();

@@ -296,6 +296,7 @@ for (const paperWidth of ["58mm", "80mm"] as const) {
     expect(fixture.report.session.differenceMinor).toBe(-10_000);
     await page.reload();
     await page.getByRole("link", { name: "Caja", exact: true }).click();
+    await page.getByRole("button", { name: "Historial", exact: true }).click();
     await page
       .getByRole("button", { name: "Ver informe", exact: true })
       .click();

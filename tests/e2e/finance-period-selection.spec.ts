@@ -108,15 +108,22 @@ test("Mes representa el período completo y nunca conserva un mes obsoleto en ra
     }
   });
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Gastos y vencimientos" }).click();
   const month = page.getByLabel("Mes", { exact: true });
   const from = page.getByLabel("Desde", { exact: true });
   const to = page.getByLabel("Hasta", { exact: true });
-  await expect(month).toHaveValue(
+  const periodExpenses = page.getByRole("region", { name: "Registro y gastos del período" });
+  await expect(month).toHaveValue("");
+  await expect(from).toHaveValue(
     await page.evaluate(() => {
       const now = new Date();
-      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
     }),
   );
+  await expect(to).toHaveValue(await page.evaluate(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }));
   await from.fill("2026-10-08");
   await to.fill("2026-10-08");
   await expect(month).toHaveValue("");
@@ -132,8 +139,8 @@ test("Mes representa el período completo y nunca conserva un mes obsoleto en ra
   await from.fill("2024-02-01");
   await to.fill("2024-02-29");
   await expect(month).toHaveValue("2024-02");
-  await expect(page.getByText("US12 febrero", { exact: true })).toBeVisible();
-  await expect(page.getByText("US12 marzo", { exact: true })).toHaveCount(0);
+  await expect(periodExpenses.getByText("US12 febrero", { exact: true })).toBeVisible();
+  await expect(periodExpenses.getByText("US12 marzo", { exact: true })).toHaveCount(0);
   await capture("finance-period-manual-full-leap-month", {
     month: "2024-02",
     from: "2024-02-01",
@@ -142,8 +149,8 @@ test("Mes representa el período completo y nunca conserva un mes obsoleto en ra
 
   await to.fill("2024-03-01");
   await expect(month).toHaveValue("");
-  await expect(page.getByText("US12 febrero", { exact: true })).toBeVisible();
-  await expect(page.getByText("US12 marzo", { exact: true })).toBeVisible();
+  await expect(periodExpenses.getByText("US12 febrero", { exact: true })).toBeVisible();
+  await expect(periodExpenses.getByText("US12 marzo", { exact: true })).toBeVisible();
   await capture("finance-period-cross-month", {
     month: "",
     from: "2024-02-01",
@@ -162,8 +169,8 @@ test("Mes representa el período completo y nunca conserva un mes obsoleto en ra
   expect(realReport.from).toBe("2024-02-01");
   expect(realReport.to).toBe("2024-02-29");
   expect(realReport.expensesMinor).toBe(12345);
-  await expect(page.getByText("US12 febrero", { exact: true })).toBeVisible();
-  await expect(page.getByText("US12 marzo", { exact: true })).toHaveCount(0);
+  await expect(periodExpenses.getByText("US12 febrero", { exact: true })).toBeVisible();
+  await expect(periodExpenses.getByText("US12 marzo", { exact: true })).toHaveCount(0);
   await capture("finance-period-month-selection-api", {
     month: "2024-02",
     from: "2024-02-01",
@@ -181,6 +188,7 @@ test("rango inválido conserva el error sin mutar datos y controles siguen acces
     }),
   }));
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Resultados y costos" }).click();
   const from = page.getByLabel("Desde", { exact: true });
   const to = page.getByLabel("Hasta", { exact: true });
   for (const width of [1100, 1366]) {

@@ -1305,4 +1305,39 @@ BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
       ALTER TABLE order_items ADD COLUMN half_and_half_group_name_snapshot TEXT;
     `,
   },
+  {
+    version: 56,
+    name: "customer_account_balance_adjustments",
+    sql: "ALTER TABLE customer_account_charges ADD COLUMN adjustment_minor INTEGER NOT NULL DEFAULT 0;",
+  },
+  {
+    version: 57,
+    name: "finance_book_entries",
+    sql: `CREATE TABLE finance_book_entries (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      request_key TEXT NOT NULL UNIQUE,
+      entry_json TEXT NOT NULL
+    );`,
+  },
+  {
+    version: 58,
+    name: "shift_audit_and_driver_remuneration",
+    sql: `
+      ALTER TABLE domain_events ADD COLUMN cash_session_id TEXT;
+      ALTER TABLE domain_events ADD COLUMN actor_user_id TEXT;
+      CREATE INDEX domain_events_shift_time_idx ON domain_events(cash_session_id, occurred_at);
+      CREATE INDEX domain_events_aggregate_time_idx ON domain_events(aggregate_type, aggregate_id, occurred_at);
+      CREATE TABLE shift_order_closures (
+        cash_session_id TEXT NOT NULL REFERENCES cash_sessions(id),
+        order_id TEXT NOT NULL,
+        order_json TEXT NOT NULL,
+        settlement_status TEXT,
+        PRIMARY KEY(cash_session_id, order_id)
+      );
+      CREATE INDEX shift_order_closures_order_idx ON shift_order_closures(order_id);
+      ALTER TABLE orders ADD COLUMN driver_remuneration_minor INTEGER
+        CHECK (driver_remuneration_minor IS NULL OR driver_remuneration_minor >= 0);
+    `,
+  },
 ];

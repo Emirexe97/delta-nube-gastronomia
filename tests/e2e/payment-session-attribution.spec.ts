@@ -281,6 +281,7 @@ test("US17 reports attribute refund and API repayment to immutable cash sessions
     expect(await ledger()).toEqual(beforeQueries);
     await page.reload();
     await page.getByRole("link", { name: "Caja", exact: true }).click();
+    await page.getByRole("button", { name: "Historial", exact: true }).click();
     await page
       .getByRole("row")
       .filter({ hasText: `#${s1.number}` })
@@ -327,8 +328,11 @@ test("US17 reports attribute refund and API repayment to immutable cash sessions
     expect(
       after.cash1.byProduct[0]!.quantity + after.cash2.byProduct[0]!.quantity,
     ).toBeCloseTo(1, 10);
-    expect(after.finance1.salesMinor).toBe(1400000);
+    expect(after.finance1.salesMinor).toBe(1500000);
     expect(after.finance2.salesMinor).toBe(0);
+    expect(after.finance1.orderMoneyDetails[0]?.recoveredMinor).toBe(100000);
+    expect(after.finance1.orderMoneyDetails[0]?.netSalesMinor).toBe(1500000);
+    expect(after.finance1.commercialRefundsMinor).toBe(0);
     expect(after.dashboard.salesTotalMinor).toBe(100000);
     expect(after.cash1.orders.find((o) => o.id === sale.id)?.paidMinor).toBe(
       1400000,

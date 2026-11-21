@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { BootstrapDto, DeliveryLedgerDto } from "@gastronomy/contracts";
 import {
@@ -20,6 +21,7 @@ import {
   Modal,
   Select,
 } from "@gastronomy/ui";
+import { ShipmentsPanel } from "../components/shipments-panel";
 import { useApiMutation } from "../api";
 import {
   filterDeliveryLedger,
@@ -40,16 +42,19 @@ const movementDateFormatter = new Intl.DateTimeFormat("es-AR", {
 });
 
 export function DeliveriesPage({ data }: { data: BootstrapDto }) {
+  const [params] = useSearchParams();
+  const dateParam = params.get("fecha") ?? "";
+  const linkedDate = /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null;
   const [driverOpen, setDriverOpen] = useState(false);
   const [settleOpen, setSettleOpen] = useState(false);
   const [reversingRow, setReversingRow] = useState<DeliveryLedgerDto | null>(
     null,
   );
-  const [driverFilter, setDriverFilter] = useState("ALL");
+  const [driverFilter, setDriverFilter] = useState(params.get("repartidor") || "ALL");
   const [historyScope, setHistoryScope] =
-    useState<DeliveryHistoryScope>("CURRENT_SHIFT");
+    useState<DeliveryHistoryScope>(linkedDate ? "DATE" : "CURRENT_SHIFT");
   const [selectedDate, setSelectedDate] = useState(() =>
-    localDateKey(new Date()),
+    linkedDate ?? localDateKey(new Date()),
   );
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const historyQuery = useQuery({
@@ -202,7 +207,6 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
   const ledgerRange = visibleDeliveryRange(ledger.length, ledgerScrollTop, 460);
   const visibleLedger = ledger.slice(ledgerRange.start, ledgerRange.end);
   const orderById = useMemo(() => new Map(data.orders.map((order) => [order.id, order])), [data.orders]);
-
   return (
     <div className="panel-enter mx-auto max-w-[1450px] space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -290,6 +294,11 @@ export function DeliveriesPage({ data }: { data: BootstrapDto }) {
           </Select>
         </Field>
       </Card>
+
+      {historyScope === "CURRENT_SHIFT" && data.cashSession && sourceLedger.some(row => row.cashSessionId !== data.cashSession?.id && row.status === "PENDING") && (
+        <Button variant="secondary" onClick={() => setHistoryScope("ALL")}>Ver rendiciones pendientes de turnos anteriores</Button>
+      )}
+      <ShipmentsPanel key={JSON.stringify([historyScope,selectedDate,driverFilter])} data={data} scope={historyScope} date={selectedDate} driverFilter={driverFilter} />
 
       {historyScope === "CURRENT_SHIFT" || historyQuery.data ? <>
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">

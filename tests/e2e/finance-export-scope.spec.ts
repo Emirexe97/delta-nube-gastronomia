@@ -172,6 +172,8 @@ test("exporta únicamente los gastos del período y conserva el CSV y su nombre"
     };
   });
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Gastos y vencimientos" }).click();
+  const periodExpenses = page.getByRole("region", { name: "Registro y gastos del período" });
   const button = page.getByRole("button", { name: /CSV/i });
   await expect(button).toBeEnabled();
   const initial = {
@@ -195,10 +197,10 @@ test("exporta únicamente los gastos del período y conserva el CSV y su nombre"
     page.getByText("Calculando período…", { exact: true }),
   ).toBeHidden();
   await expect(
-    page.getByText('Servicio; "luz" local', { exact: true }),
+    periodExpenses.getByText('Servicio; "luz" local', { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("Gasto fuera del mes", { exact: true }),
+    periodExpenses.getByText("Gasto fuera del mes", { exact: true }),
   ).toHaveCount(0);
 
   const exportPath = join(profile, "finanzas-2024-02-01-2024-02-29.csv");
@@ -272,6 +274,7 @@ test("el período vacío exporta solo encabezado y la acción es legible y opera
     }),
   }));
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Gastos y vencimientos" }).click();
   await page.getByLabel("Desde", { exact: true }).fill("2024-04-01");
   await page.getByLabel("Hasta", { exact: true }).fill("2024-04-30");
   await expect(

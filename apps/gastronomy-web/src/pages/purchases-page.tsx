@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import type { BootstrapDto, PurchaseDto } from "@gastronomy/contracts";
 import { Package, Plus, Receipt, Trash, Wallet } from "@phosphor-icons/react";
 import {
@@ -60,6 +61,15 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
     { productId: "", quantity: "", cost: "" },
   ]);
   const [history, setHistory] = useState<PurchaseDto[]>([]);
+  const [params] = useSearchParams();
+  const linkedPurchase = params.get("ver");
+  const linkedRow = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (linkedPurchase && linkedRow.current) {
+      linkedRow.current.scrollIntoView({ block: "center" });
+      linkedRow.current.focus({ preventScroll: true });
+    }
+  }, [linkedPurchase, history]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [documentAction, setDocumentAction] = useState<{ purchase: PurchaseDto; itemId?: string } | null>(null);
@@ -594,7 +604,9 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
             {history.map((p) => (
               <div
                 key={p.id}
-                className="flex flex-col gap-3 p-4 transition-colors hover:bg-slate-50/70 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-4"
+                ref={p.id === linkedPurchase ? linkedRow : undefined}
+                tabIndex={p.id === linkedPurchase ? -1 : undefined}
+                className={`flex flex-col gap-3 p-4 transition-colors hover:bg-slate-50/70 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-4 ${p.id === linkedPurchase ? "bg-amber-50 ring-2 ring-inset ring-amber-400" : ""}`}
               >
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2">

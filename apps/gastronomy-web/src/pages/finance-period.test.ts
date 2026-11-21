@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fullMonthForRange } from "./finance-period";
+import { fullMonthForRange, previousPeriodRange } from "./finance-period";
 
 describe("mes completo derivado del período financiero", () => {
   it.each([
@@ -23,5 +23,19 @@ describe("mes completo derivado del período financiero", () => {
     ["malformed", "2026-10-31", ""],
   ])("%s a %s → %s", (from, to, expected) => {
     expect(fullMonthForRange(from, to)).toBe(expected);
+  });
+});
+
+describe("período anterior de igual duración", () => {
+  it.each([
+    ["2026-11-01", "2026-11-30", { from: "2026-10-01", to: "2026-10-31" }],
+    ["2026-11-01", "2026-11-21", { from: "2026-10-01", to: "2026-10-21" }],
+    ["2024-03-01", "2024-03-31", { from: "2024-02-01", to: "2024-02-29" }],
+    ["2024-02-01", "2024-02-29", { from: "2024-01-01", to: "2024-01-31" }],
+    ["2026-10-08", "2026-10-08", { from: "2026-10-07", to: "2026-10-07" }],
+    ["2026-10-09", "2026-10-08", null],
+    ["2026-02-30", "2026-03-01", null],
+  ] as const)("%s a %s → %o", (from, to, expected) => {
+    expect(previousPeriodRange(from, to)).toEqual(expected);
   });
 });

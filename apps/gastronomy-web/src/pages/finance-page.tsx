@@ -31,9 +31,14 @@ import {
   humanError,
   moneyInputValue,
   parseMoneyInput,
+  typeLabels,
 } from "../lib";
-import { fullMonthForRange } from "./finance-period";
+import { fullMonthForRange, previousPeriodRange } from "./finance-period";
 import { ProductCostEditor } from "../components/product-cost-editor";
+import { FinanceBooksPanel } from "./finance-books-panel";
+
+type FinanceSection = "overview" | "expenses" | "treasury" | "results";
+type DueBucket = "all" | "overdue" | "today" | "upcoming" | "paid";
 
 const today = () => {
   const date = new Date();
@@ -47,15 +52,23 @@ const monthEnd = (month: string) => {
 
 export function FinancePage({ data }: { data: BootstrapDto }) {
   const queryClient = useQueryClient();
-  const [, setMonth] = useState(thisMonth);
+  const [section, setSection] = useState<FinanceSection>("overview");
   const [from, setFrom] = useState(`${thisMonth()}-01`);
-  const [to, setTo] = useState(() => monthEnd(thisMonth()));
+  const [to, setTo] = useState(today);
   const [report, setReport] = useState<FinanceReportDto | null>(null);
+  const [previousReport, setPreviousReport] = useState<FinanceReportDto | null>(null);
   const [reload, setReload] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [agendaBucket, setAgendaBucket] = useState<DueBucket>("all");
+  const [agendaSearch, setAgendaSearch] = useState("");
+  const [agendaCategory, setAgendaCategory] = useState("all");
+  const [orderSearch, setOrderSearch] = useState("");
+  const [orderLimit, setOrderLimit] = useState(25);
+  const [unknownCostLimit, setUnknownCostLimit] = useState(25);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const previousRange = previousPeriodRange(from, to);
 
   const [kind, setKind] = useState<FinanceExpenseKind>("GENERAL");
   const [title, setTitle] = useState("");
@@ -69,6 +82,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
   const [repeat, setRepeat] = useState(false);
   const [dayOfMonth, setDayOfMonth] = useState(String(new Date().getDate()));
   const [payingId, setPayingId] = useState<string | null>(null);
+  const [agendaPayingId, setAgendaPayingId] = useState<string | null>(null);
   const [payingRevision, setPayingRevision] = useState<number | null>(null);
   const [payMethod, setPayMethod] = useState("CASH");
   const [paymentPin, setPaymentPin] = useState("");
@@ -135,6 +149,19 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
     };
   }, [from, to, reload]);
 
+  useEffect(() => {
+    if (section !== "overview" && section !== "results") { setPreviousReport(null); return; }
+    const range = previousPeriodRange(from, to);
+    if (!range) { setPreviousReport(null); return; }
+    let current = true;
+    window.gastronomy.getFinanceReport(range).then((value) => {
+      if (current) setPreviousReport(value);
+    }).catch(() => {
+      if (current) setPreviousReport(null);
+    });
+    return () => { current = false; };
+  }, [from, to, reload, section]);
+
   const methods = data.paymentMethods.filter(
     (item) => item.active && item.code !== "ACCOUNT",
   );
@@ -157,6 +184,13 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
       );
     return [...grouped].sort((a, b) => b[1] - a[1]);
   }, [activeExpenses, report?.expenseReturns]);
+  const knownCategories = useMemo(() => [...new Set([
+    "Alquiler", "Servicios", "Mercadería", "Sueldos", "Impuestos",
+    "Mantenimiento", "Comisiones", "Reparto", "Caja sin clasificar",
+    ...activeExpenses.map((item) => item.category),
+    ...(report?.dueAgenda ?? []).map((item) => item.category),
+    ...(report?.paidAgenda ?? []).map((item) => item.category),
+  ])].sort((a, b) => a.localeCompare(b, "es")), [activeExpenses, report?.dueAgenda, report?.paidAgenda]);
 
   const coverage =
     report && report.costedItems + report.unknownCostItems > 0
@@ -165,6 +199,37 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
             (report.costedItems + report.unknownCostItems),
         )
       : 0;
+  const pesoCoverage = report?.salesMinor
+    ? Math.round(100 * Math.max(0, report.salesMinor - report.unknownCostSalesMinor) / report.salesMinor)
+    : 0;
+  const visibleAgendaItems = useMemo(() => {
+    if (!report) return [];
+    const source = agendaBucket === "paid"
+      ? (report.paidAgenda ?? report.expenses.filter((item) => item.paidAt && !item.cancelledAt))
+      : report.dueAgenda;
+    const q = agendaSearch.trim().toLocaleLowerCase("es");
+    return source.filter((item) => {
+      const matchesText = !q || [item.title, item.category, item.employeeName ?? "", item.note ?? ""].some((value) => value.toLocaleLowerCase("es").includes(q));
+      const bucket = item.dueOn < today() ? "overdue" : item.dueOn === today() ? "today" : "upcoming";
+      return matchesText && (agendaCategory === "all" || item.category === agendaCategory) &&
+        (agendaBucket === "all" || agendaBucket === "paid" || agendaBucket === bucket);
+    }).sort((a, b) => agendaBucket === "paid"
+      ? (a.paidBusinessDate ?? a.paidAt ?? "").localeCompare(b.paidBusinessDate ?? b.paidAt ?? "")
+      : a.dueOn.localeCompare(b.dueOn));
+  }, [agendaBucket, agendaCategory, agendaSearch, report]);
+  const matchingOrderDetails = useMemo(() => {
+    if (!report) return [];
+    const q = orderSearch.trim().toLocaleLowerCase("es");
+    return report.orderMoneyDetails.filter((order) => !q ||
+      String(order.orderNumber).includes(q) || order.movements.some((movement) =>
+        (movement.paymentMethodName ?? "").toLocaleLowerCase("es").includes(q) ||
+        (movement.paymentMethodCode ?? "").toLocaleLowerCase("es").includes(q)));
+  }, [orderSearch, report]);
+  const matchingUnknownCostOrders = useMemo(() => {
+    if (!report) return [];
+    const q = orderSearch.trim().toLocaleLowerCase("es");
+    return report.unknownCostOrders.filter((order) => !q || String(order.orderNumber).includes(q) || order.productNames.some((name) => name.toLocaleLowerCase("es").includes(q)));
+  }, [orderSearch, report]);
 
   async function run(action: () => Promise<unknown>, success: string) {
     if (busy) return false;
@@ -243,6 +308,49 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = `finanzas-${from}-${to}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportResultsCsv() {
+    if (!report || loading || report.from !== from || report.to !== to) return;
+    const expenses = report.netExpensesMinor ?? report.expensesMinor;
+    const rows = [
+      ["Rubro", "Importe (pesos)"],
+      ["Ventas netas", moneyInputValue(report.salesMinor, true).replace(",", ".")],
+      ["Costo de mercadería vendida", moneyInputValue(report.cogsMinor, true).replace(",", ".")],
+      ["Costo de reparto", moneyInputValue(report.deliveryCostsMinor, true).replace(",", ".")],
+      ["Margen bruto estimado", moneyInputValue(report.grossProfitMinor, true).replace(",", ".")],
+      ["Sueldos", moneyInputValue(report.payrollMinor, true).replace(",", ".")],
+      ["Gastos operativos netos", moneyInputValue(expenses - report.payrollMinor, true).replace(",", ".")],
+      ["Resultado operativo estimado", moneyInputValue(report.estimatedOperatingProfitMinor, true).replace(",", ".")],
+      ["Comisiones de cobro", moneyInputValue(report.commissionCostsMinor ?? 0, true).replace(",", ".")],
+      ["Ajustes de gestión", moneyInputValue(report.managementAdjustmentMinor ?? 0, true).replace(",", ".")],
+      ...(previousRange && previousReport && previousRange.from === previousReport.from && previousRange.to === previousReport.to ? [
+        [`Comparativo ${previousReport.from}–${previousReport.to} · ventas`, moneyInputValue(previousReport.salesMinor, true).replace(",", ".")],
+        [`Comparativo ${previousReport.from}–${previousReport.to} · margen bruto`, moneyInputValue(previousReport.grossProfitMinor, true).replace(",", ".")],
+        [`Comparativo ${previousReport.from}–${previousReport.to} · gastos netos`, moneyInputValue(previousReport.netExpensesMinor ?? previousReport.expensesMinor, true).replace(",", ".")],
+        [`Comparativo ${previousReport.from}–${previousReport.to} · resultado`, moneyInputValue(previousReport.estimatedOperatingProfitMinor, true).replace(",", ".")],
+      ] : []),
+      ["Venta sin costo conocido", moneyInputValue(report.unknownCostSalesMinor, true).replace(",", ".")],
+      ["Cobertura de costos (%)", String(coverage)],
+      ...report.monthly.flatMap((item) => [
+        [`${item.month} · ventas`, moneyInputValue(item.salesMinor, true).replace(",", ".")],
+        [`${item.month} · gastos netos`, moneyInputValue(item.netExpensesMinor ?? item.expensesMinor - (item.expenseReturnsMinor ?? 0), true).replace(",", ".")],
+        [`${item.month} · comisiones`, moneyInputValue(item.commissionCostsMinor ?? 0, true).replace(",", ".")],
+        [`${item.month} · ajustes`, moneyInputValue(item.managementAdjustmentMinor ?? 0, true).replace(",", ".")],
+        [`${item.month} · resultado`, moneyInputValue(item.salesMinor - item.cogsMinor - item.deliveryCostsMinor - (item.netExpensesMinor ?? item.expensesMinor - (item.expenseReturnsMinor ?? 0)) - (item.commissionCostsMinor ?? 0) + (item.managementAdjustmentMinor ?? 0), true).replace(",", ".")],
+      ]),
+      ...report.productMargins.map((item) => [`Producto · ${item.productName} · ventas`, moneyInputValue(item.salesMinor, true).replace(",", ".")]),
+      ...report.productMargins.map((item) => [`Producto · ${item.productName} · margen`, moneyInputValue(item.grossMarginMinor, true).replace(",", ".")]),
+      ...report.channelMargins.map((item) => [`Canal · ${typeLabels[item.channel as keyof typeof typeLabels] ?? item.channel} · ventas`, moneyInputValue(item.salesMinor, true).replace(",", ".")]),
+      ...report.channelMargins.map((item) => [`Canal · ${typeLabels[item.channel as keyof typeof typeLabels] ?? item.channel} · margen`, moneyInputValue(item.grossMarginMinor, true).replace(",", ".")]),
+    ];
+    const csv = "\ufeff" + rows.map((row) => row.map((value, column) => csvCell(value, column === 1)).join(";")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `resultados-${from}-${to}.csv`;
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -518,6 +626,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
     hint: string,
     emphasis = false,
     missingCosts = false,
+    href?: string,
   ) => (
     <Card
       className={`p-4 ${emphasis ? "!bg-slate-950 text-white" : "bg-white"}`}
@@ -535,6 +644,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
       >
         {hint}
       </p>
+      {href ? <Link to={href} className={`mt-2 inline-flex rounded px-2 py-1 text-xs font-bold underline underline-offset-2 ${emphasis ? "text-white" : "text-slate-800"}`}>Ver detalle de origen</Link> : null}
       {missingCosts ? (
         <div className="mt-3 space-y-2">
           <p
@@ -590,6 +700,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
             >
               <DownloadSimple size={16} /> Exportar gastos (CSV)
             </Button>
+            {section === "results" ? <Button type="button" variant="secondary" disabled={!report || loading || report.from !== from || report.to !== to} onClick={exportResultsCsv}><DownloadSimple size={16} /> Exportar resultados (CSV)</Button> : null}
           </div>
         </div>
       </header>
@@ -602,7 +713,6 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
               value={fullMonthForRange(from, to)}
               onChange={(event) => {
                 const value = event.target.value;
-                setMonth(value);
                 if (value) {
                   setFrom(`${value}-01`);
                   setTo(monthEnd(value));
@@ -627,10 +737,31 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
           <span className="pb-2 text-xs text-slate-500">
             {fullMonthForRange(from, to)
               ? "Mes completo · hasta 3 años"
-              : "Período personalizado de hasta 3 años"}
+              : from === `${thisMonth()}-01` && to === today()
+                ? "Mes hasta hoy · acumulado al día actual"
+                : "Período personalizado de hasta 3 años"}
           </span>
+          <div className="flex flex-wrap gap-2 pb-1" aria-label="Atajos de período">
+            <Button type="button" variant="secondary" onClick={() => { setFrom(`${thisMonth()}-01`); setTo(today()); }}>Mes hasta hoy</Button>
+            <Button type="button" variant="secondary" onClick={() => { setFrom(`${thisMonth()}-01`); setTo(monthEnd(thisMonth())); }}>Mes completo</Button>
+          </div>
         </div>
       </Card>
+      <nav aria-label="Secciones de Finanzas" className="flex flex-wrap gap-2">
+        {([
+          ["overview", "Resumen"], ["expenses", "Gastos y vencimientos"],
+          ["treasury", "Tesorería y cobros"], ["results", "Resultados y costos"],
+        ] as const).map(([key, label]) => (
+          <Button key={key} type="button" variant={section === key ? "primary" : "secondary"} aria-current={section === key ? "page" : undefined} onClick={() => setSection(key)}>{label}</Button>
+        ))}
+      </nav>
+      <nav aria-label="Módulos relacionados" className="flex flex-wrap gap-3 text-xs font-semibold text-slate-600">
+        <Link to="/caja" className="underline underline-offset-2">Ver turno de caja</Link>
+        <Link to={`/informes?desde=${encodeURIComponent(from)}&hasta=${encodeURIComponent(to)}`} className="underline underline-offset-2">Ver informe del período</Link>
+        <Link to="/clientes" className="underline underline-offset-2">Ver cuentas de clientes</Link>
+        <Link to="/repartidores" className="underline underline-offset-2">Ver rendiciones de repartidores</Link>
+        <Link to="/compras" className="underline underline-offset-2">Ver compras y comprobantes</Link>
+      </nav>
       {error ? (
         <p
           role="alert"
@@ -652,11 +783,49 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
       ) : null}
       {report && !loading && report.from === from && report.to === to ? (
         <>
+          {section === "treasury" ? <FinanceBooksPanel section={section} data={data} from={from} to={to} onChange={() => setReload((value) => value + 1)} report={report} /> : null}
+          {(section === "overview" || section === "expenses") ? (
+            <Card className="p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div><h2 className="text-sm font-extrabold">Agenda global de vencimientos</h2><p className="mt-1 text-xs text-slate-500">Incluye saldos impagos anteriores al período, ordenados por fecha de vencimiento.</p></div>
+                <div className="flex flex-wrap gap-2">
+                  <Input aria-label="Buscar vencimientos" placeholder="Proveedor, empleado, concepto…" value={agendaSearch} onChange={(event) => setAgendaSearch(event.target.value)} />
+                  <Select aria-label="Filtrar vencimientos" value={agendaBucket} onChange={(event) => setAgendaBucket(event.target.value as DueBucket)}>
+                    <option value="all">Todos los pendientes</option><option value="overdue">Vencidos</option><option value="today">Vencen hoy</option><option value="upcoming">Próximos</option><option value="paid">Pagados del período</option>
+                  </Select>
+                  <Select aria-label="Categoría del vencimiento" value={agendaCategory} onChange={(event) => setAgendaCategory(event.target.value)}>
+                    <option value="all">Todas las categorías</option>{knownCategories.map((categoryName) => <option key={categoryName} value={categoryName}>{categoryName}</option>)}
+                  </Select>
+                </div>
+              </div>
+              <div className="mt-3 space-y-2">
+                {visibleAgendaItems.map((item) => (
+                  <article key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-xs">
+                    <div><b>{item.title}</b>{item.forecast ? <Badge tone="slate">Programado</Badge> : null}<p className="text-slate-600">{item.category}{item.employeeName ? ` · ${item.employeeName}` : ""} · gasto {item.incurredOn} · {agendaBucket === "paid" ? `pagado ${item.paidBusinessDate ?? item.paidAt?.slice(0, 10) ?? "sin fecha"}` : `vence ${item.dueOn}`}</p></div>
+                    <div className="flex flex-wrap items-center gap-2"><b>{formatMoney(item.amountMinor)}</b>
+                      {item.forecast ? <Button type="button" variant="secondary" onClick={() => { const month = item.dueOn.slice(0, 7); setFrom(`${month}-01`); setTo(monthEnd(month)); setSection("expenses"); }}>Abrir mes para pagar</Button> : agendaPayingId === item.id ? <>
+                        <Select aria-label={`Medio de pago de ${item.title}`} value={payMethod} onChange={(event) => setPayMethod(event.target.value)}>{methods.map((method) => <option key={method.code} value={method.code}>{method.name}</option>)}</Select>
+                        <label className="flex items-center gap-1"><input type="checkbox" checked={fromCash} disabled={!data.cashSession} onChange={(event) => setFromCash(event.target.checked)} />Desde caja</label>
+                        <Input aria-label="PIN de autorización" type="password" inputMode="numeric" autoComplete="off" maxLength={8} value={paymentPin} onChange={(event) => setPaymentPin(event.target.value.replace(/\D/g, ""))} />
+                        <Button type="button" disabled={busy || !/^\d{4,8}$/.test(paymentPin)} onClick={() => void run(() => window.gastronomy.payFinanceExpense({ expenseId: item.id, paymentMethodCode: payMethod, fromCash, authorizerPin: paymentPin, expectedRevision: item.revision ?? 0, idempotencyKey: crypto.randomUUID() }), "Pago registrado.").then((saved) => { if (saved) { setAgendaPayingId(null); setPaymentPin(""); void queryClient.invalidateQueries({ queryKey: bootstrapKey }); } })}>Confirmar pago</Button>
+                        <Button type="button" variant="secondary" onClick={() => setAgendaPayingId(null)}>Cancelar</Button>
+                      </> : <Button type="button" disabled={!canManageFinance || busy || methods.length === 0} onClick={() => { setAgendaPayingId(item.id); setPayMethod(methods[0]?.code ?? "CASH"); setFromCash(false); setPaymentPin(""); }}>Registrar pago</Button>}
+                    </div>
+                  </article>
+                ))}
+                {!visibleAgendaItems.length ? <p className="text-xs text-slate-500">{agendaBucket === "paid" ? "No hay gastos pagados en el período." : "No hay gastos pendientes que coincidan con los filtros."}</p> : null}
+              </div>
+            </Card>
+          ) : null}
+          {section !== "expenses" && <>
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {card(
               "Ventas confirmadas",
               report.salesMinor,
               `Incluye pendientes de cobro · Devoluciones descontadas: ${formatMoney(report.refundsMinor)}`,
+              false,
+              false,
+              `/informes?desde=${encodeURIComponent(from)}&hasta=${encodeURIComponent(to)}`,
             )}
             {card(
               report.unknownCostItems > 0 ? "Costo conocido" : "Costo vendido",
@@ -666,10 +835,11 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
             {card(
               "Margen bruto estimado",
               report.grossProfitMinor,
-              `Cobertura de costos: ${coverage}%`,
+              `Cobertura por líneas: ${coverage}% · por pesos: ${pesoCoverage}% (${formatMoney(Math.max(0, report.salesMinor - report.unknownCostSalesMinor))} conocidos · ${formatMoney(report.unknownCostSalesMinor)} sin costo) · Comisiones: ${formatMoney(report.commissionCostsMinor ?? 0)}`,
               false,
               report.unknownCostItems > 0,
             )}
+            {card("Ajustes de gestión", report.managementAdjustmentMinor ?? 0, "Movimientos identificados en tesorería")}
             {card(
               "Gastos operativos",
               (report.netExpensesMinor ?? report.expensesMinor) -
@@ -691,6 +861,22 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
               report.unknownCostItems > 0,
             )}
           </section>
+          {previousRange && previousReport && previousRange.from === previousReport.from && previousRange.to === previousReport.to ? (
+            <Card className="p-4">
+              <h2 className="text-sm font-extrabold">Comparación con período anterior</h2>
+              <p className="mt-1 text-xs text-slate-500">{previousReport.from} a {previousReport.to} · {fullMonthForRange(from, to) ? "mes calendario anterior" : from === `${from.slice(0, 7)}-01` ? "mismos días calendario del mes anterior" : "período inmediato anterior de igual duración"}.</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                {([
+                  ["Ventas", report.salesMinor, previousReport.salesMinor],
+                  ["Margen bruto", report.grossProfitMinor, previousReport.grossProfitMinor],
+                  ["Gastos netos", report.netExpensesMinor ?? report.expensesMinor, previousReport.netExpensesMinor ?? previousReport.expensesMinor],
+                  ["Resultado operativo", report.estimatedOperatingProfitMinor, previousReport.estimatedOperatingProfitMinor],
+                ] as const).map(([label, current, prior]) => (
+                  <div key={label} className="rounded-lg bg-slate-50 p-3 text-xs"><span className="text-slate-600">{label}</span><p className="font-bold">{formatMoney(current)}</p><p className={current >= prior ? "text-emerald-700" : "text-rose-700"}>Δ {formatMoney(current - prior)}{prior ? ` · ${((100 * (current - prior)) / Math.abs(prior)).toFixed(1)}%` : " · sin base porcentual"}</p></div>
+                ))}
+              </div>
+            </Card>
+          ) : null}
           <section className="grid gap-3 lg:grid-cols-2">
             <Card className="p-4">
               <h2 className="flex items-center gap-2 text-sm font-extrabold">
@@ -720,20 +906,18 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                         <span className="text-right font-bold tabular-nums">
                           {formatMoney(row.salesMinor)}
                         </span>
-                        {(row.expenseReturnsMinor ?? 0) > 0 ? (
-                          <p className="col-span-3 text-slate-600">
-                            Reintegros:{" "}
-                            {formatMoney(row.expenseReturnsMinor ?? 0)} ·
+                        <p className="col-span-3 text-slate-600">
+                            Gastos netos: {formatMoney(row.netExpensesMinor ?? row.expensesMinor - (row.expenseReturnsMinor ?? 0))} · Comisiones: {formatMoney(row.commissionCostsMinor ?? 0)} · Ajustes: {formatMoney(row.managementAdjustmentMinor ?? 0)} ·
                             Resultado:{" "}
                             {formatMoney(
                               row.salesMinor -
                                 row.cogsMinor -
                                 row.deliveryCostsMinor -
-                                row.expensesMinor +
-                                (row.expenseReturnsMinor ?? 0),
+                                (row.netExpensesMinor ?? row.expensesMinor - (row.expenseReturnsMinor ?? 0)) -
+                                (row.commissionCostsMinor ?? 0) +
+                                (row.managementAdjustmentMinor ?? 0),
                             )}
-                          </p>
-                        ) : null}
+                        </p>
                       </div>
                     );
                   })}
@@ -778,6 +962,49 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
               </div>
             </Card>
           </section>
+          <Card className="p-4">
+            <h2 className="text-sm font-extrabold">Pedidos, cobros y devoluciones</h2>
+            <p className="mt-1 text-xs text-slate-500">La venta sigue la fecha comercial. Los movimientos conservan fecha y medio originales; cada fila abre el pedido histórico.</p>
+            <Input aria-label="Buscar pedidos por número o medio de pago" className="mt-3 max-w-sm" placeholder="Número de pedido o medio de pago" value={orderSearch} onChange={(event) => { setOrderSearch(event.target.value); setOrderLimit(25); setUnknownCostLimit(25); }} />
+            <div className="mt-3 max-h-96 space-y-2 overflow-auto">
+              {matchingOrderDetails.length ? matchingOrderDetails.slice(0, orderLimit).map((order) => (
+                <article key={order.orderId} className="rounded-lg border border-slate-200 p-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2"><b>Pedido #{order.orderNumber} · {order.businessDate}</b><Link className="font-bold underline" to={`/pedidos?ver=${encodeURIComponent(order.orderId)}`}>Abrir pedido</Link></div>
+                  <p className="mt-1">Venta neta {formatMoney(order.netSalesMinor)} · Cobrado neto {formatMoney(order.netCollectedMinor)} · Devuelto {formatMoney(order.refundedMinor)}</p>
+                  <details className="mt-1"><summary className="cursor-pointer font-semibold">Ver movimientos ({order.movements.length})</summary>
+                    <ul className="mt-1 space-y-1">{order.movements.map((movement) => <li key={movement.id}>{movement.occurredAt.slice(0, 10)} · {movement.kind === "REFUND" ? "Devolución" : "Cobro"} · {formatMoney(movement.amountMinor)} · {movement.paymentMethodName ?? movement.paymentMethodCode ?? "Sin medio"}{movement.reason ? ` · ${movement.reason}` : ""}</li>)}</ul>
+                  </details>
+                </article>
+              )) : <p className="text-xs text-slate-500">Sin pedidos que coincidan con la búsqueda.</p>}
+            </div>
+            {matchingOrderDetails.length > orderLimit ? <Button type="button" variant="secondary" className="mt-3" onClick={() => setOrderLimit((limit) => limit + 25)}>Ver 25 pedidos más ({matchingOrderDetails.length - orderLimit} restantes)</Button> : null}
+          </Card>
+          {section === "results" ? <>
+            <Card className="p-4">
+              <h2 className="text-sm font-extrabold">Costos como porcentaje de ventas</h2>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                {([
+                  ["Mercadería / ventas", report.cogsMinor],
+                  ["Sueldos / ventas", report.payrollMinor],
+                  ["Mercadería + sueldos / ventas", report.cogsMinor + report.payrollMinor],
+                ] as const).map(([label, amountMinor]) => <div key={label} className="rounded-lg bg-slate-50 p-3 text-xs"><p className="text-slate-600">{label}</p><b>{formatMoney(amountMinor)}</b><p className="mt-1">{report.salesMinor === 0 ? "Sin base (ventas = $0)" : `${((100 * amountMinor) / report.salesMinor).toFixed(1)}%`}</p></div>)}
+              </div>
+            </Card>
+            <Card className="p-4">
+              <h2 className="text-sm font-extrabold">Margen estimado por producto y canal</h2>
+              <p className="mt-1 text-xs text-slate-500">Producto: importe de las líneas vendidas, sin el cargo de envío cobrado al cliente; descuenta costo histórico y comisión de cobro asignada. Canal: incluye el ingreso del canal y descuenta mercadería, costo de reparto y comisión asignada. Las dos vistas agrupan la misma venta desde dimensiones distintas.</p>
+              <div className="mt-3 grid gap-4 lg:grid-cols-2">
+                <div><h3 className="mb-2 text-xs font-bold">Productos</h3><div className="max-h-80 space-y-2 overflow-auto">{report.productMargins.map((item) => <div key={`${item.productId ?? "deleted"}-${item.productName}`} className="flex justify-between gap-3 border-b pb-2 text-xs"><span>{item.productName} · {item.quantity} uds. · ventas {formatMoney(item.salesMinor)} · costo {formatMoney(item.cogsMinor)}{item.unknownCostSalesMinor ? ` · ${formatMoney(item.unknownCostSalesMinor)} sin costo` : ""}</span><b>{formatMoney(item.grossMarginMinor)}{item.salesMinor ? ` · ${Math.round(100 * item.grossMarginMinor / item.salesMinor)}%` : " · sin base"}</b></div>)}</div></div>
+                <div><h3 className="mb-2 text-xs font-bold">Canales</h3><div className="space-y-2">{report.channelMargins.map((item) => <div key={item.channel} className="flex justify-between gap-3 border-b pb-2 text-xs"><span>{typeLabels[item.channel as keyof typeof typeLabels] ?? item.channel} · {item.orderCount} pedidos · ventas {formatMoney(item.salesMinor)} · mercadería y reparto {formatMoney(item.cogsMinor + item.deliveryCostsMinor)}</span><b>{formatMoney(item.grossMarginMinor)}{item.salesMinor ? ` · ${Math.round(100 * item.grossMarginMinor / item.salesMinor)}%` : " · sin base"}</b></div>)}</div></div>
+              </div>
+            </Card>
+            <Card className="p-4">
+              <h2 className="text-sm font-extrabold">Ventas afectadas por costo desconocido</h2>
+              <p className="mt-1 text-xs text-slate-500">{formatMoney(report.unknownCostSalesMinor)} de ventas, en {report.unknownCostOrders.length} pedidos. El editor actualiza costos futuros; no completa el costo histórico.</p>
+              <div className="mt-3 space-y-2">{matchingUnknownCostOrders.slice(0, unknownCostLimit).map((order) => <div key={order.orderId} className="flex flex-wrap justify-between gap-2 border-b pb-2 text-xs"><span>Pedido #{order.orderNumber} · {order.businessDate} · {order.productNames.join(", ")} · {formatMoney(order.unknownCostSalesMinor)}</span><Link className="font-bold underline" to={`/pedidos?ver=${encodeURIComponent(order.orderId)}`}>Abrir venta histórica</Link></div>)}{!matchingUnknownCostOrders.length ? <p className="text-xs text-slate-500">{report.unknownCostOrders.length ? "Sin pedidos que coincidan con la búsqueda." : "Todas las líneas vendidas tienen costo conocido en este período."}</p> : null}</div>
+              {matchingUnknownCostOrders.length > unknownCostLimit ? <Button type="button" variant="secondary" className="mt-3" onClick={() => setUnknownCostLimit((limit) => limit + 25)}>Ver 25 pedidos más ({matchingUnknownCostOrders.length - unknownCostLimit} restantes)</Button> : null}
+            </Card>
+          </> : null}
 
           {(report.expenseReturns?.length ?? 0) > 0 ? (
             <Card className="p-4">
@@ -810,7 +1037,9 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
               </div>
             </Card>
           ) : null}
-          <section className="grid gap-3 xl:grid-cols-[1fr_1.4fr]">
+          </>}
+          {section === "expenses" && <>
+          <section aria-label="Registro y gastos del período" className="grid gap-3 xl:grid-cols-[1fr_1.4fr]">
             <Card className="p-4">
               <h2 className="text-sm font-extrabold">
                 Registrar gasto o sueldo
@@ -890,9 +1119,13 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                       value={category}
                       onChange={(event) => setCategory(event.target.value)}
                       placeholder="Alquiler, servicios, personal…"
+                      list="finance-category-suggestions"
                       required
                     />
                   </Field>
+                  <datalist id="finance-category-suggestions">
+                    {knownCategories.map((value) => <option key={value} value={value} />)}
+                  </datalist>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   <Field label="Concepto">
@@ -1229,6 +1462,8 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
             </Card>
           </section>
 
+          </>}
+          {(section === "expenses" || section === "results") && <>
           <section className="grid gap-3 xl:grid-cols-2">
             <Card className="p-4">
               <h2 className="text-sm font-extrabold">Gastos fijos activos</h2>
@@ -1364,6 +1599,8 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
               </div>
             </Card>
           </section>
+          </>}
+          {section !== "treasury" ? <FinanceBooksPanel section={section} data={data} from={from} to={to} onChange={() => setReload((value) => value + 1)} report={report} /> : null}
         </>
       ) : null}
       {receiving ? (

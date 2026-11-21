@@ -90,15 +90,17 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
     if (!active) return;
     const value = params.get("nuevo");
     const customerId = params.get("cliente");
+    const viewId = params.get("ver");
     const focusSearch = params.get("buscar") === "1";
-    if (!value && !focusSearch && !customerId) return;
+    if (!value && !focusSearch && !customerId && !viewId) return;
     // Returning via a shortcut must resume the pending entry, not replace its data.
     const hasPendingEntry = Boolean(
       newType || editingDraftOrderId || selectedOrder,
     );
     const orderType =
       value === "TAKEAWAY" || value === "DELIVERY" ? value : null;
-    if (customerId && orderType && !hasPendingEntry)
+    if (viewId && !hasPendingEntry) setSelectedOrder(viewId);
+    else if (customerId && orderType && !hasPendingEntry)
       void window.gastronomy
         .getCustomerProfile({ customerId, page: 1, pageSize: 1 })
         .then((profile) => {
@@ -113,6 +115,7 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
     next.delete("nuevo");
     next.delete("buscar");
     next.delete("cliente");
+    next.delete("ver");
     setParams(next, { replace: true });
   }, [active, params, setParams, newType, editingDraftOrderId, selectedOrder]);
   const index = useMemo(

@@ -111,3 +111,52 @@ test("un turno nuevo inicia Pedidos y Salón en cero y la auditoría omite accio
     auditTable.getByText("Cliente creado", { exact: true }),
   ).toHaveCount(0);
 });
+
+test("audita un envío sin cargo y su cobro en el turno anterior", async () => {
+  const setup = await page.evaluate(async () => {
+    const api = window.gastronomy;
+    const session = await api.openCashSession({ openingAmountMinor: 0 });
+    const driver = await api.createDriver({ fullName: "Chofer auditoría", authorizerPin: "748259" });
+    const order = await api.createOrder({ type: "DELIVERY", customerName: "Entrega de prueba", customerPhone: "1100000091", deliveryAddress: "Calle 91", deliveryFeeMinor: 0, driverUserId: driver.id });
+    await api.addOrderItem({orderId:order.id, productId:"starter-muzza-grande"});
+    const confirmed = await api.confirmOrder({orderId:order.id});
+    await api.completeOrder({orderId:order.id, finalStatus:"DELIVERED", payments:[{methodCode:"TRANSFER", amountMinor:confirmed.totalMinor, reference:"QA-ENVIO"}]});
+    await api.closeCashSession({countedAmountMinor:0});
+    await api.openCashSession({openingAmountMinor:0});
+    return {number:order.number, shift:session.number};
+  });
+  await page.reload();
+  await page.getByRole("link", { name: "Caja", exact: true }).click();
+  const caja = page.getByRole("navigation", {name:"Secciones de caja"});
+  await caja.getByRole("button", {name:"Ventas",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Ventas cobradas del turno"})).toBeVisible();
+  await caja.getByRole("button", {name:"Movimientos",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Movimientos de caja del turno"})).toBeVisible();
+  await page.getByRole("button", { name: "Historial", exact: true }).click();
+  const row = page.getByRole("row").filter({ has: page.getByRole("cell", {name:`#${setup.shift}`,exact:true}) });
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "Auditar turno", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Auditar turno" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("tab", { name: "Pedidos", exact: true }).click();
+  await expect(dialog.getByText(`#${setup.number}`, { exact: true })).toBeVisible();
+  await dialog.getByRole("tab", { name: "Cobros y movimientos", exact: true }).click();
+  await expect(dialog.getByText("Cobro", { exact: true })).toBeVisible();
+  await dialog.getByRole("tab", { name: "Pedidos", exact: true }).click();
+  await dialog.getByRole("button", { name: `Ver pedido #${setup.number}`, exact: true }).click();
+  await expect(dialog.getByText("Detalle guardado al cierre.")).toBeVisible();
+  await expect(dialog.getByText("Chofer auditoría", {exact:true})).toBeVisible();
+  await expect(dialog.getByText(/QA-ENVIO/).first()).toBeVisible();
+  await dialog.getByRole("button",{name:"Volver al turno"}).click();
+  await dialog.getByRole("tab",{name:"Repartidores"}).click();
+  await expect(dialog.getByText("Sin rendición",{exact:true})).toBeVisible();
+  await expect(dialog.getByRole("row").filter({hasText:"Sin rendición"})).toContainText("Chofer auditoría");
+  await page.keyboard.press("Escape");
+  await page.getByRole("link",{name:"Repartidores",exact:true}).click();
+  await page.getByRole("combobox",{name:/Período/}).selectOption("ALL");
+  await page.getByRole("textbox",{name:"Buscar envío"}).fill("Entrega de prueba");
+  const shipment=page.getByRole("row").filter({hasText:"Entrega de prueba"});
+  await expect(shipment).toContainText("Chofer auditoría");
+  await expect(shipment).toContainText("Sin rendición");
+  await expect(shipment.getByRole("cell").nth(3)).toHaveText(/\$\s*0/);
+});

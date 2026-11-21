@@ -106,6 +106,7 @@ async function seed(title: string, amountMinor = 1_234_500) {
 }
 async function openFinance(date: string) {
   await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+  await page.getByRole("button", { name: "Gastos y vencimientos" }).click();
   await page.getByLabel("Desde", { exact: true }).fill(date);
   await page.getByLabel("Hasta", { exact: true }).fill(date);
 }

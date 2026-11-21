@@ -32,10 +32,13 @@ async function launch(tag: string) {
   await page.reload();
 }
 async function cleanup() {
-  await app?.evaluate(({ BrowserWindow }) => {
-    for (const w of BrowserWindow.getAllWindows()) w.destroy();
-  });
-  await app?.close();
+  if (app) {
+    const closed = app.waitForEvent("close");
+    await app.evaluate(({ app: electronApp }) => {
+      setImmediate(() => electronApp.exit(0));
+    });
+    await closed;
+  }
   if (profile) {
     if (
       !resolve(profile).startsWith(resolve(tmpdir()) + "\\gastronomy-us19-fix-")
@@ -186,6 +189,7 @@ test("Finanzas descuenta el envío una vez en ambos circuitos sin alterar caja",
       );
       expect(settled.ledger[0]?.status).toBe("SETTLED");
       await page.getByRole("link", { name: "Finanzas", exact: true }).click();
+      await page.getByRole("button", { name: "Resultados y costos" }).click();
       await expect(
         page
           .locator("main")

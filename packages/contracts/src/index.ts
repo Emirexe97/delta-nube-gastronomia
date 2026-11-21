@@ -1,4 +1,12 @@
 import type { ImportProductsInput } from "./catalog-import";
+import type { ShiftAuditDto, ShiftAuditInput, ShiftOrderAuditDto, ShiftOrderAuditInput } from "./shift-audit";
+import type { DeliveryShipmentsDto, DeliveryShipmentsInput } from "./delivery-shipments";
+export type * from "./shift-audit";
+export type * from "./delivery-shipments";
+import type { FinanceInsightsDto } from "./finance-insights";
+import type { FinanceBooksInput, FinanceBooksDto, FinanceEntryInput, FinanceBookEvent } from "./finance-books";
+export type * from "./finance-insights";
+export type * from "./finance-books";
 
 export type Id = string;
 export type IsoDateTime = string;
@@ -54,6 +62,7 @@ export const AUDIT_FILTER_ACTIONS = [
   "ORDER_SERVED",
   "ORDER_TABLE_CHANGED",
   "CUSTOMER_ARCHIVED",
+  "CUSTOMER_ACCOUNT_ADJUSTED",
   "CUSTOMER_MERGED",
   "CUSTOMER_MERGE_RECEIVED",
   "CATEGORY_DELETED",
@@ -83,6 +92,7 @@ export const AUDIT_FILTER_ACTIONS = [
   "TABLE_SECTOR_DELETED",
   "SETTINGS_UPDATED",
   "FINANCE_EXPENSE_CREATED",
+  "FINANCE_BOOK_ENTRY",
   "FINANCE_EXPENSE_PAID",
   "FINANCE_EXPENSE_PAYMENT_UNMARKED",
   "FINANCE_EXPENSE_CASH_PAYMENT_CORRECTED",
@@ -400,6 +410,7 @@ export interface CustomerProfileDto {
     amountMinor: MoneyMinor;
     settledMinor: MoneyMinor;
     outstandingMinor: MoneyMinor;
+    adjustmentMinor: MoneyMinor;
   }>;
   accountReceipts: Array<{
     id: Id;
@@ -580,6 +591,8 @@ export interface OrderDto {
   deliveryFeeMinor: MoneyMinor;
   /** Ownership selected when payment was first recorded; absent until then. */
   deliveryFeeBelongsToDriver?: boolean;
+  /** Agreed amount for the driver. Null follows the order's fee ownership. */
+  driverRemunerationMinor?: number | null;
   promisedAt: IsoDateTime | null;
   scheduled: boolean;
   waiterUserId: Id | null;
@@ -616,6 +629,10 @@ export interface CashSessionDto {
   openedByUserId: Id;
   openedByName: string;
   openingAmountMinor: MoneyMinor;
+  closedByName?: string | null;
+  closingReason?: string | null;
+  closingAuthorizedBy?: string | null;
+  forcedClose?: boolean;
   expectedAmountMinor: MoneyMinor;
   countedAmountMinor: MoneyMinor | null;
   differenceMinor: MoneyMinor | null;
@@ -1256,6 +1273,10 @@ export interface PayOrderInput extends IdempotentRequest {
 export type FinanceExpenseKind = "GENERAL" | "FIXED" | "PAYROLL";
 
 export interface FinanceExpenseDto {
+  /** A future recurring occurrence projected for the agenda; it is not yet payable. */
+  forecast?: boolean;
+  /** Business date of payment, used when a prior-period expense was paid in this shift. */
+  paidBusinessDate?: string;
   canRecoverMonthlyExpense?: boolean;
   returnInfo?: FinanceExpenseReturnDto | null;
   canReceiveReturn?: boolean;
@@ -1318,7 +1339,9 @@ export interface FinanceRecurringDto {
   stopMonth?: string | null;
 }
 
-export interface FinanceReportDto {
+export interface FinanceReportDto extends FinanceInsightsDto {
+  commissionCostsMinor?: MoneyMinor;
+  managementAdjustmentMinor?: MoneyMinor;
   expenseReturns?: FinanceExpenseReturnDto[];
   expenseReturnsMinor?: MoneyMinor;
   netExpensesMinor?: MoneyMinor;
@@ -1346,6 +1369,8 @@ export interface FinanceReportDto {
     source: "MANUAL" | "PURCHASE" | "UNKNOWN" | "RECIPE";
   }>;
   monthly: Array<{
+    commissionCostsMinor?: MoneyMinor;
+    managementAdjustmentMinor?: MoneyMinor;
     expenseReturnsMinor?: MoneyMinor;
     netExpensesMinor?: MoneyMinor;
     month: string;
@@ -1455,6 +1480,17 @@ export interface SettleCustomerAccountInput extends IdempotentRequest {
   orderIds?: Id[];
 }
 
+export interface AdjustCustomerAccountInput extends IdempotentRequest {
+  customerId: Id;
+  reason: string;
+  authorizerPin: string;
+  charges: {
+    orderId: Id;
+    expectedOutstandingMinor: MoneyMinor;
+    outstandingMinor: MoneyMinor;
+  }[];
+}
+
 export interface OrderActionGuardDto {
   allowed: boolean;
   reason: string | null;
@@ -1539,7 +1575,10 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
 
   closeCashSession(input: CloseCashSessionInput): Promise<CashSessionDto>;
   listCashSessionHistory(): Promise<CashSessionHistoryItemDto[]>;
-  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number }): Promise<CashSessionHistoryPageDto>;
+  listCashSessionHistoryPage(input?: { page?: number; pageSize?: number; search?: string }): Promise<CashSessionHistoryPageDto>;
+  getShiftAudit(input: ShiftAuditInput): Promise<ShiftAuditDto>;
+  getShiftOrderAudit(input: ShiftOrderAuditInput): Promise<ShiftOrderAuditDto>;
+  getDeliveryShipments(input: DeliveryShipmentsInput): Promise<DeliveryShipmentsDto>;
   getCashSessionReport(
     filters: CashSessionReportFilters,
   ): Promise<CashSessionReportDto>;
@@ -1588,6 +1627,7 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   assignDeliveryDriver(input: {
     orderId: Id;
     driverUserId: Id | null;
+    driverRemunerationMinor?: number | null;
   }): Promise<OrderDto>;
   payOrder(input: PayOrderInput): Promise<OrderDto>;
   refundPayment(input: RefundPaymentInput): Promise<OrderDto>;
@@ -1615,6 +1655,9 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
   }): Promise<CustomerProfileDto>;
   settleCustomerAccount(
     input: SettleCustomerAccountInput,
+  ): Promise<CustomerProfileDto>;
+  adjustCustomerAccount(
+    input: AdjustCustomerAccountInput,
   ): Promise<CustomerProfileDto>;
   createCustomer(input: {
     name: string;
@@ -1681,6 +1724,8 @@ export interface DesktopApi extends WebCommerceApi, WaiterDeskApi {
     input: CorrectPurchaseItemCostInput,
   ): Promise<PurchaseDto>;
   getFinanceProductCosts(): Promise<FinanceReportDto["productCosts"]>;
+  getFinanceBooks(input: FinanceBooksInput): Promise<FinanceBooksDto>;
+  postFinanceEntry(input: FinanceEntryInput): Promise<FinanceBookEvent>;
   getFinanceReport(input: {
     from: string;
     to: string;

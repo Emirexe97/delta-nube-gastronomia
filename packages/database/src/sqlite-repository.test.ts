@@ -984,6 +984,67 @@ test("cobros de cuenta corriente imputan FIFO o pedidos elegidos", () => {
   });
 });
 
+test("ajusta o elimina deuda pendiente con caja cerrada y conserva cobros parciales", () => {
+  withRepository((repository) => {
+    repository.openCashSession({ openingAmountMinor: 0 });
+    const customer = repository.createCustomer({ name: "Cliente ajuste", phone: "1155551276" });
+    const orders = [0, 1].map(() => {
+      const draft = repository.createOrder(takeawayOrder({ customerId: customer.id }));
+      const added = repository.addOrderItem({ orderId: draft.id, productId: "starter-muzza-grande" });
+      return repository.completeOrder({
+        orderId: draft.id,
+        finalStatus: "DELIVERED",
+        payments: [{ methodCode: "ACCOUNT", amountMinor: added.totalMinor }],
+      });
+    });
+    const firstOrder = orders[0]!;
+    const secondOrder = orders[1]!;
+    const partialPayment = 10_000;
+    const before = repository.settleCustomerAccount({
+      customerId: customer.id,
+      orderIds: [firstOrder.id],
+      amountMinor: partialPayment,
+      methodCode: "CASH",
+    });
+    repository.closeCashSession({ countedAmountMinor: partialPayment });
+    const cashHistory = repository.db.prepare("SELECT * FROM cash_movements ORDER BY id").all();
+    const input = {
+      customerId: customer.id,
+      idempotencyKey: "adjust-account-closed",
+      authorizerPin: "2468",
+      reason: "Corrección de saldo acordada con el cliente",
+      charges: [
+        { orderId: firstOrder.id, expectedOutstandingMinor: firstOrder.totalMinor - partialPayment, outstandingMinor: 0 },
+        { orderId: secondOrder.id, expectedOutstandingMinor: secondOrder.totalMinor, outstandingMinor: 25_000 },
+      ],
+    };
+    assert.throws(() => repository.adjustCustomerAccount({ ...input, authorizerPin: "99999999" }), /PIN/);
+    const adjusted = repository.adjustCustomerAccount(input);
+    assert.equal(adjusted.metrics.outstandingMinor, 25_000);
+    assert.equal(adjusted.accountCharges.find((charge) => charge.orderId === firstOrder.id)?.settledMinor, partialPayment);
+    assert.deepEqual(adjusted.accountReceipts, before.accountReceipts);
+    assert.deepEqual(repository.adjustCustomerAccount(input), adjusted);
+    assert.throws(
+      () => repository.adjustCustomerAccount({ ...input, idempotencyKey: "adjust-stale" }),
+      /deuda cambió/i,
+    );
+    assert.equal(repository.searchCustomersPage({ query: customer.name, page: 1, pageSize: 10 }).items[0]?.outstandingMinor, 25_000);
+    const businessDate = businessDateFromOpening(new Date().toISOString());
+    const audit = repository.getAuditLog({
+      action: "CUSTOMER_ACCOUNT_ADJUSTED",
+      dateFrom: businessDate,
+      dateTo: businessDate,
+    });
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0]?.permissionUsed, "customers.manage");
+    assert.equal(audit[0]?.reason, input.reason);
+    assert.ok(audit[0]?.authorizerName);
+    assert.deepEqual(repository.db.prepare("SELECT * FROM cash_movements ORDER BY id").all(), cashHistory);
+    assert.deepEqual(repository.getOrder(firstOrder.id).payments, firstOrder.payments);
+    assert.equal(repository.bootstrap().cashSession, null);
+  });
+});
+
 test("finanzas separa ventas, costo congelado, sueldo y gasto fijo de compras", () => {
   withRepository((repository) => {
     const date = businessDateFromOpening(new Date().toISOString());
@@ -1362,6 +1423,34 @@ function withRepository(run: (repository: SqliteGastronomyRepository) => void) {
       rmSync(`${path}${suffix}`, { force: true });
   }
 }
+
+test("finanzas mantiene venta por jornada al recobrar, detalla movimientos y agenda vencimientos previos", () => {
+  withRepository((repository) => {
+    const session = repository.openCashSession({ openingAmountMinor: 0 });
+    const order = repository.createOrder(takeawayOrder());
+    repository.addOrderItem({ orderId: order.id, productId: "starter-muzza-grande" });
+    const confirmed = repository.confirmOrder({ orderId: order.id });
+    const paid = repository.payOrder({ orderId: order.id, payments: [{ methodCode: "CASH", amountMinor: confirmed.totalMinor }] });
+    const part = 100_000;
+    repository.refundPayment({ orderId: order.id, paymentId: paid.payments[0]!.id, amountMinor: part, reason: "Cambio de medio", authorizerPin: "2468" });
+    repository.payOrder({ orderId: order.id, payments: [{ methodCode: "TRANSFER", amountMinor: part }] });
+    const previous = new Date(`${session.businessDate}T00:00:00Z`);
+    previous.setUTCDate(previous.getUTCDate() - 1);
+    const incurredOn = previous.toISOString().slice(0, 10);
+    const due = repository.createFinanceExpense({ authorizerPin: "2468", title: "Servicio anterior", category: "Servicios", kind: "GENERAL", amountMinor: 80_000, incurredOn, dueOn: session.businessDate });
+    const report = repository.getFinanceReport({ from: session.businessDate, to: session.businessDate });
+    assert.equal(report.salesMinor, confirmed.totalMinor);
+    assert.equal(report.orderMoneyDetails[0]?.recoveredMinor, part);
+    assert.equal(report.orderMoneyDetails[0]?.netSalesMinor, confirmed.totalMinor);
+    assert.equal(report.orderMoneyDetails[0]?.movements.length, 3);
+    assert.ok(report.dueAgenda.some((item) => item.id === due.id));
+    assert.ok(report.productMargins.some((item) => item.productName.includes("Muzza")));
+    repository.payFinanceExpense({authorizerPin:"2468",expenseId:due.id,paymentMethodCode:"CASH",fromCash:true});
+    const paidReport=repository.getFinanceReport({from:session.businessDate,to:session.businessDate});
+    assert.ok(paidReport.paidAgenda.some((item)=>item.id===due.id));
+    assert.ok(!paidReport.dueAgenda.some((item)=>item.id===due.id));
+  });
+});
 
 test("la consulta IA identifica por número y PIN al operador activo, no al administrador compartido", () => {
   withRepository((repo) => {
@@ -5671,7 +5760,7 @@ test("informe de caja aplica filtros combinables de mesa, mozo y producto", () =
   });
 });
 
-test("historial lista cajas cerradas y sesión antigua queda sólo en resumen", () => {
+test("historial conserva el detalle y los filtros de cajas antiguas", () => {
   withRepository((repository) => {
     repository.openCashSession({ openingAmountMinor: 0 });
     const session = repository.bootstrap().cashSession!;
@@ -5685,22 +5774,19 @@ test("historial lista cajas cerradas y sesión antigua queda sólo en resumen", 
       .run("2020-01-01", "2020-01-01T12:00:00.000Z", session.id);
     const history = repository.listCashSessionHistory();
     const item = history.find((entry) => entry.session.id === session.id)!;
-    assert.equal(item.detailAvailable, false);
+    assert.equal(item.detailAvailable, true);
     const report = repository.getCashSessionReport({
       cashSessionId: session.id,
       tableId: "ignored",
       paymentMethodCode: "CASH",
     });
-    assert.equal(report.detailAvailable, false);
+    assert.equal(report.detailAvailable, true);
     assert.equal(report.orders.length, 0);
-    assert.equal(report.movements.length, 0);
+    assert.ok(report.movements.some(movement => movement.type === "CLOSING"));
     assert.equal(report.byProduct.length, 0);
-    assert.equal(report.filters.tableId, undefined);
-    assert.equal(report.filters.paymentMethodCode, undefined);
-    const cutoff = new Date();
-    cutoff.setDate(1);
-    cutoff.setMonth(cutoff.getMonth() - 2);
-    assert.equal(report.retentionCutoff, cutoff.toISOString().slice(0, 10));
+    assert.equal(report.filters.tableId, "ignored");
+    assert.equal(report.filters.paymentMethodCode, "CASH");
+    assert.equal(report.retentionCutoff, "");
   });
 });
 

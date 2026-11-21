@@ -115,3 +115,65 @@ test("Ingresar cuenta limpia sólo efectivo automático y explica exceso sin ofr
   await expect(modal.getByRole("alert")).toContainText("de más");
   await expect(modal.getByText("Vuelto a entregar", { exact: true })).not.toBeVisible();
 });
+
+test("Clientes pagina al pie y permite ajustar o eliminar deuda con caja cerrada", async () => {
+  const setup = await page.evaluate(async () => {
+    const api = window.gastronomy;
+    const data = await api.bootstrap();
+    for (let index = 0; index < 24; index++) {
+      await api.createCustomer({
+        name: `Cliente directorio ${index}`,
+        phone: `115999${String(index).padStart(4, "0")}`,
+      });
+    }
+    const customer = await api.createCustomer({ name: "Cliente ajuste E2E", phone: "1155553376" });
+    await api.openCashSession({ openingAmountMinor: 0 });
+    const order = await api.createOrder({
+      type: "TAKEAWAY", customerId: customer.id, customerName: customer.name, customerPhone: customer.phone,
+    });
+    const added = await api.addOrderItem({ orderId: order.id, productId: data.products[0]!.id });
+    await api.completeOrder({
+      orderId: order.id, finalStatus: "DELIVERED", payments: [{ methodCode: "ACCOUNT", amountMinor: added.totalMinor }],
+    });
+    const receiptAmount = Math.floor(added.totalMinor / 2);
+    const before = await api.settleCustomerAccount({ customerId: customer.id, amountMinor: receiptAmount, methodCode: "CASH" });
+    await api.closeCashSession({ countedAmountMinor: receiptAmount });
+    return { customerId: customer.id, receipts: before.accountReceipts };
+  });
+  await page.reload();
+  await page.getByRole("link", { name: "Clientes", exact: true }).click();
+  const top = page.getByRole("navigation", { name: "Paginación de clientes", exact: true });
+  const bottom = page.getByRole("navigation", { name: "Paginación de clientes al pie" });
+  await bottom.getByRole("button", { name: "Siguiente" }).click();
+  await expect(top.getByText(/^Página 2 de/)).toBeVisible();
+  await bottom.getByRole("button", { name: "Anterior" }).click();
+  await expect(top.getByText(/^Página 1 de/)).toBeVisible();
+
+  await page.getByLabel("Buscar clientes", { exact: true }).fill("Cliente ajuste E2E");
+  await page.getByRole("button", { name: "Ver ficha de Cliente ajuste E2E" }).click();
+  const profile = page.getByRole("dialog", { name: "Ficha · Cliente ajuste E2E" });
+  await expect(profile.getByRole("button", { name: "Registrar pago" })).toBeDisabled();
+  await profile.getByRole("button", { name: "Ajustar deuda" }).click();
+
+  const adjust = profile.getByRole("form", { name: "Ajustar deuda" });
+  await adjust.getByLabel(/Nuevo saldo del pedido/).fill("450,25");
+  await adjust.getByLabel("Motivo").fill("Corregir saldo pendiente");
+  await adjust.getByLabel("PIN de autorización").fill("748259");
+  await adjust.getByRole("button", { name: "Guardar ajuste" }).click();
+  await expect(profile.getByText(/Deuda pendiente:/)).toContainText("450,25");
+
+  await profile.getByRole("button", { name: "Ajustar deuda" }).click();
+  await adjust.getByRole("button", { name: "Eliminar toda la deuda" }).click();
+  await expect(adjust.getByLabel(/Nuevo saldo del pedido/)).toHaveValue("0");
+  await adjust.getByLabel("Motivo").fill("Condonación de saldo pendiente");
+  await adjust.getByLabel("PIN de autorización").fill("748259");
+  await adjust.getByRole("button", { name: "Guardar ajuste" }).click();
+  await expect(profile.getByText("Sin deuda pendiente.")).toBeVisible();
+  const after = await page.evaluate(async (customerId) => {
+    const api = window.gastronomy;
+    const profile = await api.getCustomerProfile({ customerId, page: 1, pageSize: 10 });
+    return { receipts: profile.accountReceipts, cash: (await api.bootstrap()).cashSession };
+  }, setup.customerId);
+  expect(after.receipts).toEqual(setup.receipts);
+  expect(after.cash).toBeNull();
+});

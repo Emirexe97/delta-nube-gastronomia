@@ -18,6 +18,7 @@ import type {
   CashSessionHistoryPageDto,
   CashMovementType,
   OrderDto,
+  CustomerProfileDto,
   OrderPrintStateDto,
   MarkOrderServedInput,
   OrderItemDto,
@@ -25,6 +26,8 @@ import type {
   PriceBookDto, PriceBooksDto, PriceChannel, SavePriceBookInput, AssignPriceBooksInput,
   PurchaseDto,
   FinanceExpenseDto,
+  FinanceInsightsDto,
+  FinanceBookEvent, FinanceBooksDto, FinanceBooksInput, FinanceEntryInput,
   FinanceExpenseReturnDto,
   ReceiveFinanceExpenseReturnInput,
   CorrectFinanceExpenseInput,
@@ -46,10 +49,15 @@ import type {
   CreateComboInput,
   RepeatOrderInput,
   IngredientDto, SaveIngredientInput, ProductCostConfigurationDto, SetProductCostConfigurationInput,
+  AdjustCustomerAccountInput,
 } from "@gastronomy/contracts";
 import { assertTutorialProgressInput, isPriceBookRoundingIncrementMinor, normalizeImportProductsInput } from "@gastronomy/contracts";
+import { buildFinanceBooks, validateFinanceEntry, financeClosingSnapshot, financeMonthRange, withFinanceBookResults, calculateFinanceRecovery, projectFinanceRecurringExpenses } from "@gastronomy/domain";
+import { demoFinanceBookSources, applyDemoFinanceBookChange } from "./finance-book-sources";
 import { createDemoBootstrap, emptyDashboard } from "./demo-data";
 import { populateRepeatedDemoOrder } from "./repeat-order";
+import { getShiftAudit as getDemoShiftAudit, getShiftOrderAudit as getDemoShiftOrderAudit, snapshotOrdersAtClose } from "./shift-audit";
+import { projectDemoShipments } from "./delivery-shipments";
 import {
   assertOffPremiseCustomer,
   assertOrderTransition,
@@ -75,6 +83,7 @@ import {
   assertIngredientValues,
   calculateIngredientRecipeCost,
   planLegacyChannelPrices,
+  resolveCustomerAccountAdjustments,
 } from "@gastronomy/domain";
 
 export const DEMO_STORAGE_KEY = "delta-nube-gastronomia.demo.v5";
@@ -93,9 +102,11 @@ const SENSITIVE_DEMO_AUDIT_ACTIONS = new Set([
   "MODIFICADOR_QUITADO",
   "DESCUENTO_APLICADO",
   "PAGO_DEVUELTO",
+  "FINANCE_BOOK_ENTRY",
   "PEDIDO_CANCELADO",
   "ORDER_SERVED",
   "CUSTOMER_ARCHIVED",
+  "CUSTOMER_ACCOUNT_ADJUSTED",
   "CUSTOMER_MERGED",
   "CUSTOMER_MERGE_RECEIVED",
   "CATEGORY_DELETED",
@@ -145,6 +156,9 @@ interface DemoState {
   data: BootstrapDto;
   printSnapshots?: Record<string, { ticket: OrderDto; kitchenQuantities: Record<string, number> }>;
   historicalSessions: CashSessionDto[];
+  orderEvents?: import("./shift-audit").DemoOrderEvent[];
+  settlementAtClose?: Record<string,Record<string,string>>;
+  orderCloseSnapshots?: Record<string, Record<string, OrderDto>>;
   movements: Array<{
     id: string;
     sessionId: string;
@@ -154,6 +168,9 @@ interface DemoState {
     paymentMethodCode: string | null;
     orderId: string | null;
     referenceId?: string;
+    receivedMinor?: number | null;
+    reference?: string | null;
+    authorizerName?: string | null;
     userId: string;
     reason: string | null;
     createdAt: string;
@@ -174,6 +191,8 @@ interface DemoState {
       amountMinor: number;
     }>;
   }>;
+  customerAccountAdjustments?: Record<string, number>;
+  customerAccountAdjustmentReceipts?: Record<string, { fingerprint: string }>;
   audit: AuditEntryDto[];
   purchases: PurchaseDto[];
   purchaseReceipts: Record<string, { purchaseId: string; requestJson: string; result?: PurchaseDto }>;
@@ -198,6 +217,7 @@ interface DemoState {
   }>;
   purchaseItemQuantityCorrectionReceipts?: Record<string, { fingerprint: string; result: PurchaseDto }>;
   financeExpenses?: FinanceExpenseDto[];
+  financeBookEvents?: FinanceBookEvent[];
   financeRecurring?: FinanceRecurringDto[];
   financeManualCosts?: Record<string, number>;
   ingredients?: IngredientDto[];
@@ -497,6 +517,7 @@ function seedState(): DemoState {
         status: "CLOSED",
       },
     ],
+    orderCloseSnapshots: {},
     movements: [],
     customers: [
       {
@@ -571,6 +592,7 @@ function loadState(storage: DemoStorage): DemoState {
       parsed.version = 6;
     }
     parsed.historicalSessions ??= [];
+    parsed.orderCloseSnapshots ??= {};
     parsed.movements ??= [];
     parsed.purchases ??= [];
     parsed.ingredients ??= [];
@@ -976,8 +998,8 @@ function makeDriverDeliveryActivity(
       sessionsById.get(cashSessionId)?.businessDate ?? today();
     const activityKey = `${order.driverUserId}:${cashSessionId}`;
     const current = byDriver.get(activityKey);
-    const earningsMinor =
-      (order.deliveryFeeBelongsToDriver ?? true) ? order.deliveryFeeMinor : 0;
+    const earningsMinor = order.driverRemunerationMinor ??
+      ((order.deliveryFeeBelongsToDriver ?? true) ? order.deliveryFeeMinor : 0);
     if (current) {
       current.deliveryCount += 1;
       current.earningsMinor += earningsMinor;
@@ -1125,10 +1147,12 @@ function audit(
   reason: string | null = null,
   permissionUsed: string | null = null,
 ) {
+  if (entityType !== "ORDER" && !SENSITIVE_DEMO_AUDIT_ACTIONS.has(action)) return;
+  const id = uid("audit", state), timestamp = now();
+  if (entityType === "ORDER") (state.orderEvents ??= []).push({id,timestamp,entityId,action,reason,operatorName:state.data.currentUser.fullName,authorizerName:permissionUsed ? state.data.currentUser.fullName : null,cashSessionId:state.data.cashSession?.id ?? null});
   if (!SENSITIVE_DEMO_AUDIT_ACTIONS.has(action)) return;
   state.audit.unshift({
-    id: uid("audit", state),
-    timestamp: now(),
+    id, timestamp,
     businessDate: today(),
     operatorName: state.data.currentUser.fullName,
     authorizerName: permissionUsed ? state.data.currentUser.fullName : null,
@@ -1157,9 +1181,7 @@ function sessionReport(
     (candidate) => candidate?.id === filters.cashSessionId,
   );
   if (!session) throw new Error("No se encontró la caja.");
-  const detailAvailable =
-    session.status === "OPEN" ||
-    (session.closedAt ?? session.openedAt).slice(0, 10) >= retentionCutoff();
+  const detailAvailable = true;
   const base = state.data.orders.filter(
     (order) =>
       order.cashSessionPaidId === session.id &&
@@ -1641,28 +1663,39 @@ export function createDemoApi(
     if (!category) throw new Error("No se encontró la categoría.");
     return category;
   };
-  const customerOutstandingDebt = (customerId: string): number => {
-    const metricOrders = state.data.orders.filter(
-      (order) =>
-        order.customerId === customerId &&
-        order.lifecycleStatus === "CONFIRMED" &&
-        order.operationalStatus !== "CANCELLED",
+  const customerAccountCharge = (order: OrderDto): CustomerProfileDto["accountCharges"][number] => {
+    const amountMinor = order.payments
+      .filter((payment) => payment.methodCode === "ACCOUNT")
+      .reduce((sum, payment) => sum + payment.amountMinor - (payment.refundedMinor ?? 0), 0);
+    const adjustmentMinor = state.customerAccountAdjustments?.[order.id] ?? 0;
+    const settledMinor = (state.accountReceipts ?? []).reduce(
+      (sum, receipt) => sum + receipt.allocations
+        .filter((allocation) => allocation.orderId === order.id)
+        .reduce((total, allocation) => total + allocation.amountMinor, 0),
+      0,
     );
-    return metricOrders.reduce((sum, order) => {
-      const amountMinor = order.payments
-        .filter((payment) => payment.methodCode === "ACCOUNT")
-        .reduce((part, p) => part + p.amountMinor - p.refundedMinor, 0);
-      if (!amountMinor) return sum;
-      const settledMinor = (state.accountReceipts ?? []).reduce(
-        (part, receipt) =>
-          part +
-          receipt.allocations
-            .filter((allocation) => allocation.orderId === order.id)
-            .reduce((acc, alloc) => acc + alloc.amountMinor, 0),
-        0,
-      );
-      return sum + Math.max(0, amountMinor - settledMinor);
-    }, 0);
+    return {
+      orderId: order.id,
+      orderNumber: order.number,
+      createdAt: order.createdAt,
+      amountMinor,
+      settledMinor,
+      adjustmentMinor,
+      outstandingMinor: Math.max(0, amountMinor + adjustmentMinor - settledMinor),
+    };
+  };
+  const customerAccountCharges = (orders: OrderDto[]) => orders.map(customerAccountCharge)
+    .filter((charge) => charge.amountMinor || charge.adjustmentMinor);
+  const customerOutstandingDebt = (customerId: string) => customerAccountCharges(
+    state.data.orders.filter((order) => order.customerId === customerId &&
+      order.lifecycleStatus === "CONFIRMED" && order.operationalStatus !== "CANCELLED"),
+  ).reduce((sum, charge) => sum + charge.outstandingMinor, 0);
+  const assertAccountRefund = (order: OrderDto, refundMinor: number) => {
+    const charge = customerAccountCharge(order);
+    if (refundMinor > charge.amountMinor - charge.settledMinor)
+      throw new Error("No se puede devolver un cargo de cuenta ya cobrado; sólo se puede reducir la deuda pendiente.");
+    if (refundMinor > charge.outstandingMinor)
+      throw new Error("La devolución supera el saldo ajustado. Revisá la deuda en la ficha del cliente.");
   };
   const customerOrderMetrics = (customerId: string) => {
     const metricOrders = state.data.orders.filter(
@@ -1852,6 +1885,11 @@ export function createDemoApi(
         })),
         driverDeliveryActivity: data.driverDeliveryActivity.filter((row) => includes(row.businessDate)),
       });
+    },
+
+    async getDeliveryShipments(input) {
+      const data = state.data;
+      return projectDemoShipments(data.orders, data.deliveryLedger, [...state.historicalSessions, ...(data.cashSession ? [data.cashSession] : [])], input, data.settings.deliveryFeeBelongsToDriver ?? true);
     },
 
     async getProductImage({ productId }) {
@@ -2248,8 +2286,12 @@ export function createDemoApi(
         );
       const closed = {
         ...cash,
+        salesTotalMinor: getDemoShiftAudit(state,{cashSessionId:cash.id,section:"movements",pageSize:1}).session.salesTotalMinor,
         status: "CLOSED" as const,
         closedAt: now(),
+        closedByName: state.data.currentUser.fullName,
+        forcedClose: Boolean(input.force), closingReason: input.reason ?? null,
+        closingAuthorizedBy: input.force ? state.data.currentUser.fullName : null,
         countedAmountMinor: input.countedAmountMinor,
         differenceMinor,
         closingFloatAmountMinor,
@@ -2257,6 +2299,7 @@ export function createDemoApi(
           input.countedAmountMinor - closingFloatAmountMinor,
         floatDifferenceMinor: closingFloatAmountMinor - cash.openingAmountMinor,
       };
+      snapshotOrdersAtClose(state, cash.id);
       audit(
         state,
         "CASH_SESSION",
@@ -2500,29 +2543,7 @@ export function createDemoApi(
             throw new Error(
               "La devolución indicada no corresponde a un pago vigente.",
             );
-          if (payment.methodCode === "ACCOUNT") {
-            const settled = (state.accountReceipts ?? []).reduce(
-              (total, receipt) =>
-                total +
-                receipt.allocations
-                  .filter((allocation) => allocation.orderId === order.id)
-                  .reduce((sum, allocation) => sum + allocation.amountMinor, 0),
-              0,
-            );
-            const otherAccountRefunded = order.payments
-              .filter((candidate) => candidate.methodCode === "ACCOUNT")
-              .reduce((sum, candidate) => sum + candidate.refundedMinor, 0);
-            const accountOutstanding =
-              order.payments
-                .filter((candidate) => candidate.methodCode === "ACCOUNT")
-                .reduce((sum, candidate) => sum + candidate.amountMinor, 0) -
-              otherAccountRefunded -
-              settled;
-            if (refund.amountMinor > accountOutstanding)
-              throw new Error(
-                "No se puede devolver un cargo de cuenta ya cobrado; sólo se puede reducir la deuda pendiente.",
-              );
-          }
+          if (payment.methodCode === "ACCOUNT") assertAccountRefund(order, refund.amountMinor);
         }
         if (changingType) {
           const ledger = state.data.deliveryLedger.find(
@@ -3290,19 +3311,18 @@ export function createDemoApi(
         order.driverUserId &&
         state.data.settings.deliverySettlementEnabled &&
         ((order.deliveryFeeBelongsToDriver ?? true) ||
-          order.collectedByDriver) &&
+          order.collectedByDriver ||
+          (order.driverRemunerationMinor ?? 0) > 0) &&
         !state.data.deliveryLedger.some((row) => row.orderId === order.id)
       ) {
+        const remunerationMinor = order.driverRemunerationMinor ??
+          ((order.deliveryFeeBelongsToDriver ?? true) ? order.deliveryFeeMinor : 0);
         const restaurantAmount = Math.max(
           0,
           order.totalMinor - order.deliveryFeeMinor,
         );
-        const amountDue = order.collectedByDriver
-          ? restaurantAmount +
-            ((order.deliveryFeeBelongsToDriver ?? true)
-              ? 0
-              : order.deliveryFeeMinor)
-          : order.deliveryFeeMinor;
+        const balance = (order.collectedByDriver ? order.totalMinor : 0) - remunerationMinor;
+        const amountDue = Math.abs(balance);
         if (amountDue > 0)
           state.data.deliveryLedger.unshift({
             id: uid("ledger", state),
@@ -3315,7 +3335,7 @@ export function createDemoApi(
             driverName: order.driverName ?? "Repartidor",
             restaurantAmountMinor: restaurantAmount,
             deliveryFeeMinor: order.deliveryFeeMinor,
-            direction: order.collectedByDriver
+            direction: balance > 0
               ? "DRIVER_OWES_BUSINESS"
               : "BUSINESS_OWES_DRIVER",
             amountDueMinor: amountDue,
@@ -3352,6 +3372,9 @@ export function createDemoApi(
         if (!driver)
           throw new Error("El repartidor no existe o está inactivo.");
       }
+      if (input.driverRemunerationMinor !== undefined && input.driverRemunerationMinor !== null &&
+          (!Number.isSafeInteger(input.driverRemunerationMinor) || input.driverRemunerationMinor < 0))
+        throw new Error("La remuneración del repartidor no es válida.");
       const ledger = state.data.deliveryLedger.find(
         (row) => row.orderId === order.id,
       );
@@ -3362,12 +3385,15 @@ export function createDemoApi(
         throw new Error(
           "Revertí la liquidación del repartidor antes de reasignar este pedido.",
         );
+      if (input.driverRemunerationMinor !== undefined && input.driverRemunerationMinor !== (order.driverRemunerationMinor ?? null) && (order.payments.length || order.depositMinor || order.paymentStatus === "PAID")) throw new Error("La remuneración sólo se puede cambiar antes del primer cobro.");
       const previousDriverUserId = order.driverUserId;
       order.driverUserId = input.driverUserId;
       order.driverName = input.driverUserId
         ? (state.data.users.find((user) => user.id === input.driverUserId)
             ?.fullName ?? null)
         : null;
+      if (input.driverRemunerationMinor !== undefined)
+        order.driverRemunerationMinor = input.driverRemunerationMinor;
       if (ledger?.status === "PENDING") {
         ledger.driverUserId = order.driverUserId ?? ledger.driverUserId;
         ledger.driverName = order.driverName ?? ledger.driverName;
@@ -3580,6 +3606,7 @@ export function createDemoApi(
                 ? false
                 : (method?.affectsCash ?? false),
               paymentMethodCode: payment.methodCode,
+              receivedMinor: payment.receivedMinor ?? null, reference: payment.reference ?? null,
               orderId: order.id,
               userId: state.data.currentUser.id,
               reason: null,
@@ -3589,23 +3616,25 @@ export function createDemoApi(
         }
         if (
           order.type === "DELIVERY" &&
-          order.driverUserId &&
+          order.driverUserId && order.paymentStatus === "PAID" &&
           state.data.settings.deliverySettlementEnabled &&
-          (order.deliveryFeeBelongsToDriver || order.collectedByDriver)
+          ((order.deliveryFeeBelongsToDriver ?? true) || order.collectedByDriver || (order.driverRemunerationMinor ?? 0) > 0)
         ) {
+          const remunerationMinor = order.driverRemunerationMinor ??
+            (order.deliveryFeeBelongsToDriver ? order.deliveryFeeMinor : 0);
           const restaurantAmount = Math.max(
             0,
             order.totalMinor - order.deliveryFeeMinor,
           );
           const shouldPayDriverNow =
             input.payDriverNow === true &&
-            order.deliveryFeeBelongsToDriver &&
+            ((order.deliveryFeeBelongsToDriver ?? true) || (order.driverRemunerationMinor ?? 0) > 0) &&
             !driverCollected &&
-            order.deliveryFeeMinor > 0;
+            remunerationMinor > 0;
           if (shouldPayDriverNow) {
             if (
               state.data.cashSession &&
-              order.deliveryFeeMinor >
+              remunerationMinor >
                 state.data.cashSession.expectedAmountMinor
             ) {
               throw new Error(
@@ -3614,15 +3643,15 @@ export function createDemoApi(
             }
             if (state.data.cashSession) {
               state.data.cashSession.expectedAmountMinor -=
-                order.deliveryFeeMinor;
+                remunerationMinor;
               state.data.cashSession.cashExpenseMinor =
                 (state.data.cashSession.cashExpenseMinor ?? 0) +
-                order.deliveryFeeMinor;
+                remunerationMinor;
               state.movements.push({
                 id: uid("movement", state),
                 sessionId: state.data.cashSession.id,
                 type: "EXPENSE",
-                amountMinor: order.deliveryFeeMinor,
+                amountMinor: remunerationMinor,
                 affectsCash: true,
                 paymentMethodCode: "CASH",
                 orderId: order.id,
@@ -3636,7 +3665,7 @@ export function createDemoApi(
             );
             if (existingLedger) {
               existingLedger.status = "SETTLED";
-              existingLedger.settledAmountMinor = order.deliveryFeeMinor;
+              existingLedger.settledAmountMinor = remunerationMinor;
               existingLedger.settledAt = now();
             } else {
               state.data.deliveryLedger.unshift({
@@ -3653,22 +3682,22 @@ export function createDemoApi(
                 restaurantAmountMinor: restaurantAmount,
                 deliveryFeeMinor: order.deliveryFeeMinor,
                 direction: "BUSINESS_OWES_DRIVER",
-                amountDueMinor: order.deliveryFeeMinor,
-                settledAmountMinor: order.deliveryFeeMinor,
+                amountDueMinor: remunerationMinor,
+                settledAmountMinor: remunerationMinor,
                 status: "SETTLED",
                 createdAt: now(),
                 settledAt: now(),
               });
             }
           }
-          // Under business-owned fees, driver-collected customer payments are
-          // fully owed back to the business, including the delivery fee.
-          if (driverCollected && !order.deliveryFeeBelongsToDriver) {
+          if (!shouldPayDriverNow && order.operationalStatus === "DELIVERED" && order.paymentStatus === "PAID") {
             const existingLedger = state.data.deliveryLedger.find(
               (ledger) => ledger.orderId === order.id,
             );
-            const amountDue = order.totalMinor;
+            const balance = (driverCollected ? order.totalMinor : 0) - remunerationMinor;
+            const amountDue = Math.abs(balance);
             if (existingLedger) {
+              existingLedger.direction = balance > 0 ? "DRIVER_OWES_BUSINESS" : "BUSINESS_OWES_DRIVER";
               existingLedger.amountDueMinor = amountDue;
               existingLedger.settledAmountMinor = 0;
               existingLedger.status = "PENDING";
@@ -3688,7 +3717,7 @@ export function createDemoApi(
                   order.totalMinor - order.deliveryFeeMinor,
                 ),
                 deliveryFeeMinor: order.deliveryFeeMinor,
-                direction: "DRIVER_OWES_BUSINESS",
+                direction: balance > 0 ? "DRIVER_OWES_BUSINESS" : "BUSINESS_OWES_DRIVER",
                 amountDueMinor: amountDue,
                 settledAmountMinor: 0,
                 status: "PENDING",
@@ -3746,28 +3775,7 @@ export function createDemoApi(
           amountMinor > payment.refundableMinor
         )
           throw new Error("El importe de devolución no es válido.");
-        if (payment.methodCode === "ACCOUNT") {
-          const settled = (state.accountReceipts ?? []).reduce(
-            (total, receipt) =>
-              total +
-              receipt.allocations
-                .filter((allocation) => allocation.orderId === order.id)
-                .reduce((sum, allocation) => sum + allocation.amountMinor, 0),
-            0,
-          );
-          const outstanding =
-            order.payments
-              .filter((candidate) => candidate.methodCode === "ACCOUNT")
-              .reduce(
-                (sum, candidate) =>
-                  sum + candidate.amountMinor - candidate.refundedMinor,
-                0,
-              ) - settled;
-          if (amountMinor > outstanding)
-            throw new Error(
-              "No se puede devolver un cargo de cuenta ya cobrado; sólo se puede reducir la deuda pendiente.",
-            );
-        }
+        if (payment.methodCode === "ACCOUNT") assertAccountRefund(order, amountMinor);
         const method = state.data.paymentMethods.find(
           (candidate) => candidate.code === payment.methodCode,
         );
@@ -3794,10 +3802,7 @@ export function createDemoApi(
                 sum + candidate.amountMinor - (candidate.refundedMinor ?? 0),
               0,
             );
-          const feeEarned =
-            (order.deliveryFeeBelongsToDriver ?? true)
-              ? order.deliveryFeeMinor
-              : 0;
+          const feeEarned = order.driverRemunerationMinor ?? ((order.deliveryFeeBelongsToDriver ?? true) ? order.deliveryFeeMinor : 0);
           const delivered = order.operationalStatus === "DELIVERED";
           const fullyRefunded = order.paidMinor === 0;
           if (!delivered && fullyRefunded) {
@@ -3864,6 +3869,7 @@ export function createDemoApi(
             orderId: order.id,
             userId: state.data.currentUser.id,
             reason: input.reason,
+            authorizerName: state.data.currentUser.fullName,
             createdAt: now(),
           });
         }
@@ -3882,6 +3888,7 @@ export function createDemoApi(
             orderId: order.id,
             userId: state.data.currentUser.id,
             reason: input.reason,
+            authorizerName: state.data.currentUser.fullName,
             createdAt: now(),
           });
         audit(
@@ -4249,35 +4256,7 @@ export function createDemoApi(
             order.operationalStatus !== "CANCELLED",
         )
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-      const accountCharges = metricOrders.flatMap((order) => {
-        // Multiple payments after a modality change are one receivable per order.
-        const amountMinor = order.payments
-          .filter((payment) => payment.methodCode === "ACCOUNT")
-          .reduce(
-            (sum, payment) =>
-              sum + payment.amountMinor - (payment.refundedMinor ?? 0),
-            0,
-          );
-        if (!amountMinor) return [];
-        const settledMinor = (state.accountReceipts ?? []).reduce(
-          (sum, receipt) =>
-            sum +
-            receipt.allocations
-              .filter((allocation) => allocation.orderId === order.id)
-              .reduce((part, allocation) => part + allocation.amountMinor, 0),
-          0,
-        );
-        return [
-          {
-            orderId: order.id,
-            orderNumber: order.number,
-            createdAt: order.createdAt,
-            amountMinor,
-            settledMinor,
-            outstandingMinor: Math.max(0, amountMinor - settledMinor),
-          },
-        ];
-      });
+      const accountCharges = customerAccountCharges(metricOrders);
       const totalSpentMinor = metricOrders.reduce(
         (total, order) => total + order.totalMinor,
         0,
@@ -4532,6 +4511,44 @@ export function createDemoApi(
       });
     },
 
+    async adjustCustomerAccount(input: AdjustCustomerAccountInput) {
+      state = loadState(storage);
+      const key = input.idempotencyKey?.trim();
+      const fingerprint = JSON.stringify({ ...input, idempotencyKey: undefined, authorizerPin: undefined });
+      const profileInput = { customerId: input.customerId, page: 1, pageSize: 10 };
+      const prior = key && state.customerAccountAdjustmentReceipts?.[key];
+      if (prior) {
+        if (prior.fingerprint !== fingerprint)
+          throw new Error("La clave de idempotencia fue reutilizada con datos diferentes.");
+        return this.getCustomerProfile(profileInput);
+      }
+      const customer = state.customers.find((candidate) => candidate.id === input.customerId);
+      if (!customer?.active) throw new Error("No se encontró un cliente activo.");
+      requirePin(input.authorizerPin);
+      const orders = state.data.orders.filter((order) => order.customerId === customer.id &&
+        order.lifecycleStatus === "CONFIRMED" && order.operationalStatus !== "CANCELLED");
+      const { reason, adjustments } = resolveCustomerAccountAdjustments(input, customerAccountCharges(orders));
+      const before = clone(state);
+      try {
+        const amounts = state.customerAccountAdjustments ??= {};
+        for (const adjustment of adjustments)
+          amounts[adjustment.orderId] = adjustment.adjustmentMinor;
+        audit(state, "CUSTOMER", customer.id, "CUSTOMER_ACCOUNT_ADJUSTED", reason, "customers.manage");
+        const entry = state.audit[0];
+        if (entry?.action === "CUSTOMER_ACCOUNT_ADJUSTED") {
+          entry.beforeJson = JSON.stringify(adjustments.map(({ orderId, beforeMinor }) => ({ orderId, outstandingMinor: beforeMinor })));
+          entry.afterJson = JSON.stringify(adjustments.map(({ orderId, afterMinor }) => ({ orderId, outstandingMinor: afterMinor })));
+        }
+        if (key)
+          (state.customerAccountAdjustmentReceipts ??= {})[key] = { fingerprint };
+        save();
+      } catch (error) {
+        restore(before);
+        throw error;
+      }
+      return this.getCustomerProfile(profileInput);
+    },
+
     async setCustomerActive(input) {
       requirePin(input.authorizerPin);
       const customer = state.customers.find(
@@ -4545,7 +4562,7 @@ export function createDemoApi(
         });
         if (profile.metrics.outstandingMinor > 0)
           throw new Error(
-            "El cliente tiene deuda de cuenta corriente; cobrá o fusioná la ficha antes de archivarla.",
+            "El cliente tiene deuda de cuenta corriente. Resolvé el saldo antes de archivar la ficha.",
           );
       }
       if (!customer) throw new Error("El cliente no existe.");
@@ -5251,12 +5268,7 @@ export function createDemoApi(
           orderBusinessDate(order) <= input.to,
       );
       const deliveryCostForOrder = (order: OrderDto) =>
-        order.type === "DELIVERY" &&
-        (order.deliveryFeeBelongsToDriver ??
-          state.data.settings.deliveryFeeBelongsToDriver ??
-          true)
-          ? order.deliveryFeeMinor
-          : 0;
+        order.type === "DELIVERY" ? (order.driverRemunerationMinor ?? ((order.deliveryFeeBelongsToDriver ?? state.data.settings.deliveryFeeBelongsToDriver ?? true) ? order.deliveryFeeMinor : 0)) : 0;
       const deliveryCostsMinor = periodOrders.reduce(
         (sum, order) => sum + deliveryCostForOrder(order),
         0,
@@ -5305,6 +5317,9 @@ export function createDemoApi(
           dueOn:
             sessionsById.get(movement.sessionId)?.businessDate ??
             businessDateFromOpening(movement.createdAt),
+          paidBusinessDate:
+            sessionsById.get(movement.sessionId)?.businessDate ??
+            businessDateFromOpening(movement.createdAt),
           paidAt: movement.createdAt,
           paymentMethodCode: movement.paymentMethodCode,
           employeeId: null,
@@ -5321,6 +5336,19 @@ export function createDemoApi(
       ].sort((a, b) => b.incurredOn.localeCompare(a.incurredOn));
       const periodExpenseDtos = periodExpenses.map(financeExpenseDto);
       const activePeriodExpenses = periodExpenses.filter((item) => !item.cancelledAt);
+      const paidAgenda = [
+        ...expenses.filter((item) => item.paidAt && !item.cancelledAt).flatMap((item) => {
+          const movementId = (state.financeExpenseMovements ?? {})[item.id];
+          const movement = movementId ? state.movements.find((row) => row.id === movementId) : undefined;
+          const paidBusinessDate = movement
+            ? sessionsById.get(movement.sessionId)?.businessDate ?? businessDateFromOpening(movement.createdAt)
+            : businessDateFromOpening(item.paidAt!);
+          return paidBusinessDate >= input.from && paidBusinessDate <= input.to
+            ? [{ ...financeExpenseDto(item), paidBusinessDate }]
+            : [];
+        }),
+        ...cashExpenses,
+      ].sort((a,b)=>(a.paidAt??"").localeCompare(b.paidAt??""));
       const costRows = periodOrders.flatMap((order) =>
         order.items.map((item) => ({
           month: orderBusinessDate(order).slice(0, 7),
@@ -5339,11 +5367,234 @@ export function createDemoApi(
           ),
         0,
       );
-      const salesMinor =
-        periodOrders.reduce(
-          (sum, order) => sum + order.totalMinor + (order.depositMinor ?? 0),
+      const usedPaymentMovements = new Set<string>();
+      const orderMoneyDetails: FinanceInsightsDto["orderMoneyDetails"] =
+        periodOrders.map((order) => {
+          const refunds = state.movements.filter(
+            (movement) =>
+              movement.orderId === order.id &&
+              movement.type === "REFUND" &&
+              !movement.reason?.startsWith("Vuelto cobro pedido #"),
+          );
+          const changes = state.movements.filter(
+            (movement) =>
+              movement.orderId === order.id &&
+              movement.type === "REFUND" &&
+              movement.reason?.startsWith("Vuelto cobro pedido #"),
+          );
+          const events: FinanceInsightsDto["orderMoneyDetails"][number]["movements"] =
+            [
+              ...order.payments.map((payment) => ({
+                id: payment.id,
+                kind: "PAYMENT" as const,
+                amountMinor: payment.amountMinor,
+                businessDate: (() => {
+                  const candidates = state.movements.filter((movement) =>
+                    movement.orderId === order.id && movement.type === "SALE" &&
+                    movement.amountMinor === payment.amountMinor && movement.paymentMethodCode === payment.methodCode &&
+                    !usedPaymentMovements.has(movement.id),
+                  ).sort((a,b)=>Math.abs(Date.parse(a.createdAt)-Date.parse(payment.createdAt))-Math.abs(Date.parse(b.createdAt)-Date.parse(payment.createdAt)));
+                  const movement=candidates[0];
+                  if(movement)usedPaymentMovements.add(movement.id);
+                  return movement ? sessionsById.get(movement.sessionId)?.businessDate ?? businessDateFromOpening(movement.createdAt) : businessDateFromOpening(payment.createdAt);
+                })(),
+                occurredAt: payment.createdAt,
+                paymentMethodCode: payment.methodCode,
+                paymentMethodName: payment.methodName,
+                reason: payment.reference,
+              })),
+              ...refunds.map((movement) => ({
+                id: movement.id,
+                kind: "REFUND" as const,
+                amountMinor: movement.amountMinor,
+                businessDate:
+                  sessionsById.get(movement.sessionId)?.businessDate ??
+                  businessDateFromOpening(movement.createdAt),
+                occurredAt: movement.createdAt,
+                paymentMethodCode: movement.paymentMethodCode,
+                paymentMethodName: movement.paymentMethodCode
+                  ? methodName(state.data, movement.paymentMethodCode)
+                  : null,
+                reason: movement.reason,
+              })),
+              ...changes.map((movement) => ({
+                id: movement.id,
+                kind: "CHANGE" as const,
+                amountMinor: movement.amountMinor,
+                businessDate:
+                  sessionsById.get(movement.sessionId)?.businessDate ??
+                  businessDateFromOpening(movement.createdAt),
+                occurredAt: movement.createdAt,
+                paymentMethodCode: movement.paymentMethodCode,
+                paymentMethodName: movement.paymentMethodCode
+                  ? methodName(state.data, movement.paymentMethodCode)
+                  : null,
+                reason: movement.reason,
+              })),
+            ].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+          let returnedChange = 0;
+          for (const event of events)
+            if (event.kind === "CHANGE") returnedChange += event.amountMinor;
+          const recovery = calculateFinanceRecovery({
+            totalMinor: order.totalMinor,
+            depositMinor: order.depositMinor ?? 0,
+            movements: events,
+          });
+          const refunded = recovery.refundMinor,
+            recovered = recovery.recoveredMinor;
+          const collected = order.payments
+            .filter((payment) => payment.methodCode !== "ACCOUNT")
+            .reduce((sum, payment) => sum + payment.amountMinor, 0);
+          const effectiveRefund = recovery.effectiveRefundMinor;
+          return {
+            orderId: order.id,
+            orderNumber: order.number,
+            businessDate: orderBusinessDate(order),
+            type: order.type,
+            totalMinor: order.totalMinor,
+            depositMinor: order.depositMinor ?? 0,
+            discountMinor: order.discountMinor,
+            collectedMinor: collected,
+            refundedMinor: refunded,
+            recoveredMinor: recovered,
+            effectiveRefundMinor: effectiveRefund,
+            netCollectedMinor: collected - refunded - returnedChange,
+            netSalesMinor: recovery.netSalesMinor,
+            movements: events,
+            productSales: [],
+          };
+        });
+      const commercialRefundsMinor = orderMoneyDetails.reduce(
+        (sum, detail) => sum + (detail.effectiveRefundMinor ?? 0),
+        0,
+      );
+      const salesMinor = orderMoneyDetails.reduce(
+        (sum, detail) => sum + detail.netSalesMinor,
+        0,
+      );
+      const productMap = new Map<
+        string,
+        FinanceInsightsDto["productMargins"][number]
+      >();
+      const unknownOrders = new Map<
+        string,
+        FinanceInsightsDto["unknownCostOrders"][number]
+      >();
+      let unknownCostSalesMinor = 0;
+      for (const order of periodOrders) {
+        const linesTotal = order.items.reduce(
+          (sum, item) => sum + item.lineTotalMinor,
           0,
-        ) - refundsMinor;
+        );
+        const detail = orderMoneyDetails.find(
+          (row) => row.orderId === order.id,
+        )!;
+        const foodNet = Math.max(
+            0,
+            detail.netSalesMinor - order.deliveryFeeMinor,
+          ),
+          lineSales = order.items.map((item) =>
+            linesTotal
+              ? Math.floor((foodNet * item.lineTotalMinor) / linesTotal)
+              : 0,
+          );
+        let cents = foodNet - lineSales.reduce((sum, n) => sum + n, 0);
+        for (let i = 0; cents > 0 && i < lineSales.length; i++, cents--)
+          lineSales[i]!++;
+        detail.productSales = order.items.map((item, index) => ({
+          productId: item.productId,
+          productName: item.productNameSnapshot,
+          salesMinor: lineSales[index] ?? 0,
+        }));
+        for (const [index, item] of order.items.entries()) {
+          const key = item.productId ?? `unknown:${item.productNameSnapshot}`;
+          const knownCost =
+            state.financeItemCosts?.[item.id]?.unitCostMinor != null;
+          const cogs = knownCost
+            ? state.financeItemCosts![item.id]!.unitCostMinor! * item.quantity
+            : 0;
+          const sales = lineSales[index] ?? 0;
+          const agg = productMap.get(key) ?? {
+            productId: item.productId,
+            productName: item.productNameSnapshot,
+            quantity: 0,
+            salesMinor: 0,
+            cogsMinor: 0,
+            grossMarginMinor: 0,
+            unknownCostSalesMinor: 0,
+            lineCount: 0,
+          };
+          agg.quantity += item.quantity;
+          agg.salesMinor += sales;
+          agg.cogsMinor += cogs;
+          agg.lineCount++;
+          if (!knownCost) {
+            agg.unknownCostSalesMinor += sales;
+            unknownCostSalesMinor += sales;
+            const row = unknownOrders.get(order.id) ?? {
+              orderId: order.id,
+              orderNumber: order.number,
+              businessDate: orderBusinessDate(order),
+              unknownCostSalesMinor: 0,
+              lineIds: [],
+              productNames: [],
+            };
+            row.unknownCostSalesMinor += sales;
+            row.lineIds.push(item.id);
+            row.productNames.push(item.productNameSnapshot);
+            unknownOrders.set(order.id, row);
+          }
+          productMap.set(key, agg);
+        }
+      }
+      const productMargins = [...productMap.values()].map((item) => ({
+        ...item,
+        grossMarginMinor: item.salesMinor - item.cogsMinor,
+      }));
+      const channelMap = new Map<
+        string,
+        FinanceInsightsDto["channelMargins"][number]
+      >();
+      for (const order of periodOrders) {
+        const row = channelMap.get(order.type) ?? {
+          channel: order.type,
+          salesMinor: 0,
+          cogsMinor: 0,
+          deliveryCostsMinor: 0,
+          grossMarginMinor: 0,
+          orderCount: 0,
+        };
+        row.salesMinor +=
+          orderMoneyDetails.find((item) => item.orderId === order.id)
+            ?.netSalesMinor ?? 0;
+        row.orderCount++;
+        row.deliveryCostsMinor += deliveryCostForOrder(order);
+        for (const item of order.items) {
+          const cost = state.financeItemCosts?.[item.id]?.unitCostMinor;
+          if (cost != null) row.cogsMinor += cost * item.quantity;
+        }
+        channelMap.set(order.type, row);
+      }
+      const channelMargins = [...channelMap.values()].map((item) => ({
+        ...item,
+        grossMarginMinor:
+          item.salesMinor - item.cogsMinor - item.deliveryCostsMinor,
+      }));
+      const agendaBase =
+        input.to > businessDateFromOpening(now())
+          ? input.to
+          : businessDateFromOpening(now());
+      const agendaEnd = new Date(`${agendaBase}T00:00:00Z`);
+      agendaEnd.setUTCDate(agendaEnd.getUTCDate() + 60);
+      const agendaTo = agendaEnd.toISOString().slice(0, 10);
+      const dueAgenda = expenses
+        .filter(
+          (item) => !item.paidAt && !item.cancelledAt && item.dueOn <= agendaTo,
+        )
+        .map(financeExpenseDto);
+      const firstRecurring=recurring.filter((rule)=>rule.active||rule.stopMonth).map((rule)=>rule.startMonth).sort()[0];
+      const forecasts=firstRecurring?projectFinanceRecurringExpenses(recurring,expenses,`${firstRecurring}-01`,agendaTo,(id)=>state.data.users.find((user)=>user.id===id)?.fullName??null):[];
+      const agendaItems=[...dueAgenda,...forecasts].sort((a,b)=>a.dueOn.localeCompare(b.dueOn));
       const cogsMinor = costRows.reduce((sum, row) => sum + (row.cost ?? 0), 0);
       const expensesMinor = activePeriodExpenses.reduce(
         (sum, item) => sum + item.amountMinor,
@@ -5373,14 +5624,8 @@ export function createDemoApi(
         }
         return row;
       };
-      for (const order of periodOrders)
-        monthly(orderBusinessDate(order).slice(0, 7)).salesMinor +=
-          order.totalMinor +
-          (order.depositMinor ?? 0) -
-          order.payments.reduce(
-            (sum, payment) => sum + (payment.refundedMinor ?? 0),
-            0,
-          );
+      for (const detail of orderMoneyDetails)
+        monthly(detail.businessDate.slice(0, 7)).salesMinor += detail.netSalesMinor;
       for (const row of costRows) monthly(row.month).cogsMinor += row.cost ?? 0;
       for (const order of periodOrders)
         monthly(orderBusinessDate(order).slice(0, 7)).deliveryCostsMinor +=
@@ -5401,7 +5646,9 @@ export function createDemoApi(
         if (purchasesTotal > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("El total de compras excede el rango permitido.");
       }
       save();
-      return output({
+      return output(withFinanceBookResults({
+        orderMoneyDetails, productMargins, channelMargins, unknownCostSalesMinor, commercialRefundsMinor, paidAgenda,
+        unknownCostOrders: [...unknownOrders.values()], dueAgenda: agendaItems,
         from: input.from,
         to: input.to,
         salesMinor,
@@ -5440,7 +5687,34 @@ export function createDemoApi(
           a.month.localeCompare(b.month),
         ).map(({expenseReturnsMinor, netExpensesMinor, ...row}) => expenseReturnsMinor > 0
           ? {...row, expenseReturnsMinor, netExpensesMinor} : row),
-      });
+      }, state.financeBookEvents ?? []));
+    },
+
+    async getFinanceBooks(input: FinanceBooksInput): Promise<FinanceBooksDto> {
+      if(!state.data.currentUser.permissions.includes("finance.view")&&!state.data.currentUser.permissions.includes("*")) throw new Error("No tenés permiso para consultar finanzas.");
+      const financeCustomers=state.customers.map((customer)=>({...customer,outstandingMinor:customerOutstandingDebt(customer.id)}));
+      const sources=demoFinanceBookSources(state.data,state.purchases.map(projectPurchase),financeCustomers,state.movements,state.financeExpenses??[]);
+      return output(buildFinanceBooks(state.financeBookEvents??[],input,sources));
+    },
+
+    async postFinanceEntry(input: FinanceEntryInput): Promise<FinanceBookEvent> {
+      const authorizerId=requireFinanceAuthorizer(input.authorizerPin);
+      const before=JSON.stringify(state);
+      try {
+        const events=state.financeBookEvents??=[];
+        const financeCustomers=state.customers.map((customer)=>({...customer,outstandingMinor:customerOutstandingDebt(customer.id)}));
+        const sources=demoFinanceBookSources(state.data,state.purchases.map(projectPurchase),financeCustomers,state.movements,state.financeExpenses??[]);
+        if(input.kind==="month_close") sources.pnlByMonth={[input.month]:financeClosingSnapshot(await this.getFinanceReport(financeMonthRange(input.month)))};
+        const authorizer=state.data.users.find((user)=>user.id===authorizerId)??state.data.currentUser;
+        const event=validateFinanceEntry(events,input,{actorId:authorizer.id,actorName:authorizer.fullName},sources);
+        if(events.some((item)=>item.id===event.id)) return output(event);
+        applyDemoFinanceBookChange(state,event);
+        events.push(event);
+        audit(state,"FINANCE_BOOK",event.id,"FINANCE_BOOK_ENTRY",input.reason,"finance.manage");
+        if(state.audit[0])state.audit[0].authorizerName=authorizer.fullName;
+        save();
+        return output(event);
+      } catch(error){restore(JSON.parse(before) as DemoState);throw error;}
     },
 
     async createFinanceExpense(input) {
@@ -6921,22 +7195,21 @@ export function createDemoApi(
       return output(
         state.historicalSessions.map((session) => ({
           session,
-          detailAvailable:
-            session.status === "OPEN" ||
-            (session.closedAt ?? session.openedAt).slice(0, 10) >=
-              retentionCutoff(),
+          detailAvailable: true,
         })),
       );
     },
 
-    async listCashSessionHistoryPage(input?: { page?: number; pageSize?: number }): Promise<CashSessionHistoryPageDto> {
+    async listCashSessionHistoryPage(input?: { page?: number; pageSize?: number; search?: string }): Promise<CashSessionHistoryPageDto> {
       const size = input?.pageSize ?? 20;
       const wanted = input?.page ?? 1;
       const pageSize = Number.isFinite(size) ? Math.min(100, Math.max(1, Math.floor(size))) : 20;
-      const totalCount = state.historicalSessions.length;
+      const q = input?.search?.trim().replace(/^#/, "").toLowerCase();
+      const sessions = state.historicalSessions.filter(s => !q || [s.number,s.businessDate,s.openedByName,s.closedByName].some(v=>String(v??"").toLowerCase().includes(q)));
+      const totalCount = sessions.length;
       const page = Number.isFinite(wanted) ? Math.min(Math.max(1, Math.ceil(totalCount / pageSize)), Math.max(1, Math.floor(wanted))) : 1;
       const start = (page - 1) * pageSize;
-      const items = state.historicalSessions.slice(start, start + pageSize).map((session) => ({
+      const items = sessions.slice(start, start + pageSize).map((session) => ({
         id: session.id,
         number: session.number,
         businessDate: session.businessDate,
@@ -6944,7 +7217,7 @@ export function createDemoApi(
         closedAt: session.closedAt,
         openedByName: session.openedByName,
         salesTotalMinor: session.salesTotalMinor ?? 0,
-        detailAvailable: session.status === "OPEN" || (session.closedAt ?? session.openedAt).slice(0, 10) >= retentionCutoff(),
+        detailAvailable: true,
         status: session.status,
       }));
       return output({ items, page, pageSize, totalCount, hasNextPage: start + items.length < totalCount });
@@ -6958,6 +7231,18 @@ export function createDemoApi(
         throw new Error("El usuario no tiene permiso para esta operación.");
       if (!filters?.cashSessionId) throw new Error("La caja no es válida.");
       return sessionReport(state, filters);
+    },
+
+    async getShiftAudit(input) {
+      const permissions = state.data.currentUser.permissions;
+      if (!permissions.includes("reports.view") && !permissions.includes("audit.view") && !permissions.includes("*")) throw new Error("El usuario no tiene permiso para esta operación.");
+      return output(getDemoShiftAudit(state, input));
+    },
+
+    async getShiftOrderAudit(input) {
+      const permissions = state.data.currentUser.permissions;
+      if (!permissions.includes("reports.view") && !permissions.includes("audit.view") && !permissions.includes("*")) throw new Error("El usuario no tiene permiso para esta operación.");
+      return output(getDemoShiftOrderAudit(state, input));
     },
 
     async getDetailedReport(
