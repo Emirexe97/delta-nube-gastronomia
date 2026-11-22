@@ -18,3 +18,4 @@ export * from "./finance-books";
 export * from "./finance-book-sources";
 export * from "./finance-book-results";
 export * from "./finance-recovery";
+export * from "./printer-settings";

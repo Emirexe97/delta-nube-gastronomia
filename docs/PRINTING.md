@@ -58,7 +58,7 @@ deducen sus cantidades a partir del pedido actual.
 ## Perfiles configurables
 
 - perfiles independientes **Comanda de cocina** y **Cuenta del cliente**;
-- diálogo de impresión del sistema o envío directo mediante el controlador de Windows;
+- vista previa, impresión directa mediante el controlador del sistema y, en macOS, envío de texto ESC/POS a una cola específica;
 - impresora específica o predeterminada;
 - papel térmico de 58 mm o 80 mm;
 - caracteres por línea, entre una y tres copias, corte completo/parcial y líneas de avance;
@@ -87,9 +87,21 @@ Los perfiles siguen el modelo `LocalConfigurationPrinterProfileV1` del POS de
 referencia. El trabajo persistido conserva `printer_name` y `copies`, de modo
 que un cambio posterior de configuración no altera el destino auditado.
 
-## Límite del controlador actual
+## Térmica ESC/POS por USB en Mac
 
-Electron imprime mediante el subsistema gráfico de Windows. Los campos de
-cortador se conservan para el perfil térmico, pero el corte físico depende del
-driver instalado. Una salida ESC/POS/RAW futura podrá reutilizar el contrato sin
-cambiar la interfaz ni la cola.
+Si la térmica imprime códigos o sigue avanzando, apagá la impresora y cancelá
+los trabajos pendientes en el Centro de Impresión antes de reconectarla.
+Verificá que la cola USB local de la impresora figure conectada.
+
+1. Abrí **Configuración > Impresión**. En el perfil de cocina o de cuenta,
+   elegí **Térmica ESC/POS (Mac)** y seleccioná la cola USB por nombre.
+2. Para la Iridiscent POS de 80 mm, seleccioná **Térmico 80 mm** y **Parcial**
+   si usás el cortador. Aplicá la configuración a cada perfil que use esa impresora.
+3. Con la cola conectada, **Imprimir prueba** envía un ticket corto de una copia.
+   Verificá que se lean el perfil y el ancho y comprobá el corte en papel antes
+   de guardar. El envío de la prueba usa los valores en edición.
+
+En este modo las comandas, cuentas e informes se imprimen como texto ESC/POS.
+La aplicación envía los bytes a CUPS con el nombre de la cola seleccionada.
+La respuesta de CUPS confirma la recepción del trabajo. En los modos gráficos,
+el formato de papel y el corte físico dependen del controlador instalado.

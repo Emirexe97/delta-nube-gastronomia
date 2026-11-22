@@ -623,7 +623,7 @@ function PrintingSettingsCard({
           />
         </div>
         <p className="text-xs leading-5 text-slate-600">
-          La prueba confirma el envío a la impresora. Verificá que haya salido en papel.
+          La prueba envía un ticket corto de una copia. Verificá que salga legible en la impresora elegida.
         </p>
       </div>
     </Card>
@@ -797,6 +797,9 @@ function PrinterProfileEditor({
   testing: boolean;
   requireExplicitDevice?: boolean;
 }) {
+  const isMacOS = typeof navigator !== "undefined" && /^Mac/i.test(navigator.platform);
+  const supportsEscPos = isMacOS || profile.mode === "ESC_POS";
+  const needsExplicitDevice = profile.mode === "ESC_POS";
   const update = <K extends keyof PrinterProfileDto>(
     key: K,
     value: PrinterProfileDto[K],
@@ -815,7 +818,7 @@ function PrinterProfileEditor({
           variant="secondary"
           className="h-8"
           onClick={onTest}
-          disabled={testing}
+          disabled={testing || (needsExplicitDevice && !profile.deviceName.trim())}
         >
           {testing ? "Probando…" : "Imprimir prueba"}
         </Button>
@@ -829,11 +832,15 @@ function PrinterProfileEditor({
         </Field>
         <Field
           label="Modo"
-          hint={profile.mode === "SYSTEM_DIRECT"
+          hint={profile.mode === "ESC_POS"
+            ? "Seleccioná la térmica por nombre y elegí el ancho de su rollo."
+            : profile.mode === "SYSTEM_DIRECT"
             ? requireExplicitDevice
               ? "Para Modo Mozo tenés que elegir el comandero por nombre. Los pedidos desde escritorio también admiten la predeterminada."
               : "Si no elegís una impresora, se usará la predeterminada del sistema."
-            : "Podés revisar la cuenta o comanda y elegir una impresora antes de imprimir."}
+            : isMacOS
+              ? "Podés revisar la cuenta o comanda y elegir una impresora antes de imprimir. Si tu térmica usa ESC/POS, elegí “Térmica ESC/POS (Mac)” y seleccioná su impresora USB."
+              : "Podés revisar la cuenta o comanda y elegir una impresora antes de imprimir."}
         >
           <Select
             value={profile.mode}
@@ -847,9 +854,10 @@ function PrinterProfileEditor({
             <option value="SYSTEM_DIRECT">
               Impresión directa
             </option>
+            {supportsEscPos ? <option value="ESC_POS">Térmica ESC/POS (Mac)</option> : null}
           </Select>
         </Field>
-        {requireExplicitDevice && !loading && profile.deviceName && !printers.some((printer) => printer.name === profile.deviceName) ? (
+        {(requireExplicitDevice || profile.mode === "ESC_POS") && !loading && profile.deviceName && !printers.some((printer) => printer.name === profile.deviceName) ? (
           <p role="status" className="text-xs font-semibold text-amber-800 sm:col-span-2">
             La impresora seleccionada no está disponible. Conectala o elegí otro dispositivo; no se reemplazará por la predeterminada.
           </p>
@@ -862,9 +870,11 @@ function PrinterProfileEditor({
           <Select
             value={profile.deviceName}
             disabled={profile.mode === "SYSTEM_DIALOG"}
+            required={needsExplicitDevice}
             onChange={(event) => update("deviceName", event.target.value)}
           >
-            <option value="">Predeterminada del sistema</option>
+            {needsExplicitDevice ? <option value="">Elegí un dispositivo…</option> : null}
+            {!needsExplicitDevice ? <option value="">Predeterminada del sistema</option> : null}
             {profile.deviceName &&
             !printers.some((printer) => printer.name === profile.deviceName) ? (
               <option value={profile.deviceName}>

@@ -1,4 +1,4 @@
-import { driverRemuneration } from "@gastronomy/domain";
+import { driverRemuneration, isDirectKitchenPrinterConfigured } from "@gastronomy/domain";
 import { reconcileLegacyPrices } from "./legacy-product-prices";
 import { applyFinanceScheduleChange, readFinanceBookEvents, readFinanceBookSources, saveFinanceBookEvent } from "./finance-book-storage";
 import { buildFinanceBooks, validateFinanceEntry, financeClosingSnapshot, financeMonthRange, withFinanceBookResults, calculateFinanceRecovery, projectFinanceRecurringExpenses } from "@gastronomy/domain";
@@ -698,7 +698,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
     if (order && String(order.waiter_user_id) !== String(session.user_id)) throw new Error("La mesa está asignada a otro mozo.");
     if (order && String(order.cash_session_created_id) !== String(session.cash_session_id)) throw new Error("El pedido pertenece a otro turno de caja.");
     const kitchen = this.getSettings().printing.kitchen;
-    const canPrint = kitchen.mode === "SYSTEM_DIRECT" && Boolean(kitchen.deviceName?.trim());
+    const canPrint = isDirectKitchenPrinterConfigured(kitchen);
     if (!order) return { tableId: input.tableId, orderId: null, items: [], canPrint, canReprint: false, canPrintLast: false, hasPrinted: false };
     const dto = this.getOrder(String(order.id));
     if (dto.lifecycleStatus !== "CONFIRMED") throw new Error("El pedido de la mesa todavía no está confirmado en caja.");
@@ -723,7 +723,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
       }
       if (this.db.prepare("SELECT 1 FROM print_jobs WHERE order_id=? AND kind='KITCHEN_ORDER' AND status IN ('QUEUED','RECOVERING','FAILED') LIMIT 1").get(input.orderId)) throw new Error("Hay una comanda pendiente o fallida; resolvela antes de reimprimir.");
       const kitchen = this.getSettings().printing.kitchen;
-      if (kitchen.mode !== "SYSTEM_DIRECT" || !kitchen.deviceName?.trim()) throw new Error("La impresión directa de cocina no está configurada.");
+      if (!isDirectKitchenPrinterConfigured(kitchen)) throw new Error("La impresión directa de cocina no está configurada.");
       if (order.lifecycle_status !== "CONFIRMED") throw new Error("El pedido de la mesa todavía no está confirmado.");
       const current = this.getOrder(input.orderId);
       let dto = current;
@@ -830,7 +830,7 @@ export class SqliteGastronomyRepository implements GastronomyRepository {
         .run(input.requestId, session.tokenHash, input.expectedOrderId ?? null, payloadHash, JSON.stringify(lineIds), nowIso(),printMode);
       const orderId = existingOrder ? String(existingOrder.id) : this.createOrder({ idempotencyKey: input.requestId, terminalId: `waiter-session:${String(session.user_id)}`, type: "DINE_IN", tableId: input.tableId, waiterUserId: String(session.user_id) }).id;
       const kitchen = this.getSettings().printing.kitchen;
-      const canPrint = kitchen.mode === "SYSTEM_DIRECT" && Boolean(kitchen.deviceName?.trim());
+      const canPrint = isDirectKitchenPrinterConfigured(kitchen);
       if (input.printMode && input.printMode !== "NONE" && !canPrint)
         throw new Error("La impresora de cocina no está configurada. Actualizá la mesa y usá Confirmar para guardar el pedido.");
       const before = existingOrder ? this.getOrder(orderId) : null;

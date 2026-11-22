@@ -24,6 +24,7 @@ async function launch(printers: unknown[], failDirect = false) {
     ({ app: electronApp, BrowserWindow }, { available, fail }) => {
       (electronApp as any).__printCount = 0;
       (electronApp as any).__lastPrintOptions = null;
+      (electronApp as any).__printCaptures = [];
       const install = (window: any) => {
         window.webContents.getPrintersAsync = async () => available;
         window.webContents.print = (
@@ -32,6 +33,10 @@ async function launch(printers: unknown[], failDirect = false) {
         ) => {
           (electronApp as any).__lastPrintOptions = options;
           (electronApp as any).__printCount += 1;
+          (electronApp as any).__printCaptures.push({
+            options,
+            html: decodeURIComponent(window.webContents.getURL().split(",").slice(1).join(",")),
+          });
           const count = (electronApp as any).__printCount;
           callback(
             !(fail && count === 1),
@@ -196,6 +201,108 @@ test("SYSTEM_DIRECT con default válido imprime sin preview", async () => {
       ({ app: electronApp }) => (electronApp as any).__printCount,
     ),
   ).toBe(1);
+});
+
+test("Imprimir prueba usa una copia corta del perfil en edición", async () => {
+  await launch([{ name: "Mock Printer", isDefault: true }]);
+  const baseline = await page.evaluate(async () => (await window.gastronomy.bootstrap()).settings);
+  const edited = structuredClone(baseline);
+  const kinds = ["KITCHEN_ORDER", "CUSTOMER_BILL"] as const;
+  for (const kind of kinds) {
+    const kitchen = kind === "KITCHEN_ORDER";
+    const profile = kitchen ? edited.printing.kitchen : edited.printing.bill;
+    profile.mode = "SYSTEM_DIRECT";
+    profile.paperWidth = kitchen ? "58mm" : "80mm";
+    profile.copies = 3;
+    profile.feedLinesBeforeCut = 8;
+    const result = await page.evaluate(({ kind, settings }) =>
+      window.gastronomy.testPrinter({ kind, settings }), { kind, settings: edited });
+    expect(result.printed).toBe(true);
+  }
+
+  const captures = await app.evaluate(({ app }) => (app as any).__printCaptures);
+  expect(captures).toHaveLength(2);
+  for (const [index, capture] of captures.entries()) {
+    expect(capture.options.copies).toBe(1);
+    expect(capture.options.pageSize.width).toBe(index === 0 ? 58_000 : 72_000);
+    expect(capture.options.pageSize.height).toBeLessThanOrEqual(60_000);
+    expect(capture.html).toContain("PRUEBA DE IMPRESIÓN");
+    expect(capture.html).toContain(index === 0 ? "Comanda de cocina · 58 mm" : "Cuenta del cliente · 80 mm");
+  }
+  expect(await page.evaluate(async () => (await window.gastronomy.bootstrap()).settings)).toEqual(baseline);
+});
+
+test("la prueba y la comanda ESC/POS llegan como texto térmico a la cola USB elegida", async () => {
+  const deviceName = "POS80_Printer_USB";
+  await launch([{ name: deviceName, options: { "printer-make-and-model": "Local Raw Printer" } }]);
+  const orderId = await page.evaluate(async (deviceName) => {
+    const api = window.gastronomy;
+    const { products, settings } = await api.bootstrap();
+    settings.printing.kitchen = {
+      ...settings.printing.kitchen, mode: "ESC_POS", deviceName, copies: 2,
+      cutter: true, cutMode: "PARTIAL", feedLinesBeforeCut: 8,
+    };
+    await api.saveSettings(settings);
+    await api.openCashSession({ openingAmountMinor: 0 });
+    const table = await api.ensureTable({ number: 63 });
+    const order = await api.createOrder({ type: "DINE_IN", tableId: table.id });
+    const product = products.find((item) => item.code === "MUZG")!;
+    await api.addOrderItem({ orderId: order.id, productId: product.id, quantity: 2, notes: "Sin cebolla" });
+    await api.confirmOrder({ orderId: order.id });
+    return order.id;
+  }, deviceName);
+
+  await app.evaluate(({ app }) => {
+    const childProcess = process.getBuiltinModule("node:child_process");
+    const { EventEmitter } = process.getBuiltinModule("node:events");
+    const { PassThrough } = process.getBuiltinModule("node:stream");
+    const originalSpawn = childProcess.spawn;
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const captures: { args: string[]; bytes: number[] }[] = [];
+    (app as any).__escPosCaptures = captures;
+    (app as any).__restoreCups = () => {
+      childProcess.spawn = originalSpawn;
+      Object.defineProperty(process, "platform", platform);
+    };
+    childProcess.spawn = (command: string, args: string[]) => {
+      if (command !== "/usr/bin/lp") throw new Error("Proceso inesperado en la simulación");
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stderr: new PassThrough() });
+      const chunks: Buffer[] = [];
+      child.stdin.on("data", (chunk: Buffer) => chunks.push(chunk));
+      child.stdin.on("end", () => {
+        captures.push({ args, bytes: Array.from(Buffer.concat(chunks)) });
+        child.emit("close", 0);
+      });
+      return child;
+    };
+    Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+  });
+  try {
+    // Both calls use the persisted kitchen profile through the normal desktop IPC.
+    expect((await page.evaluate(() => window.gastronomy.testPrinter({ kind: "KITCHEN_ORDER" }))).printed).toBe(true);
+    const job = await page.evaluate((orderId) => window.gastronomy.printOrder({ orderId, kind: "KITCHEN_ORDER" }), orderId);
+    expect(job.status).toBe("PRINTED");
+    const { captures, graphicCalls } = await app.evaluate(({ app }) => ({
+      captures: (app as any).__escPosCaptures, graphicCalls: (app as any).__printCount,
+    }));
+    expect(graphicCalls).toBe(0);
+    expect(captures).toHaveLength(2);
+    for (const { args, bytes } of captures) {
+      expect(args.slice(0, 4)).toEqual(["-d", deviceName, "-o", "raw"]);
+      expect(bytes.slice(0, 2)).toEqual([0x1b, 0x40]);
+      expect(Buffer.from(bytes).toString("latin1")).not.toMatch(/%PDF|<!doctype|<body>/i);
+    }
+    const diagnostic = Buffer.from(captures[0].bytes);
+    expect(diagnostic.length).toBeLessThan(160);
+    expect(diagnostic.toString("latin1").match(/PRUEBA/g)).toHaveLength(1);
+    const kitchen = Buffer.from(captures[1].bytes).toString("latin1");
+    expect(kitchen.match(/sin cebolla/gi)).toHaveLength(2);
+    // In CP850, the multiplication sign following a quantity is byte 0x9e.
+    expect(kitchen).toMatch(/2\x9e\s+muzzarella grande/i);
+    expect(kitchen).toContain("MESA 63");
+  } finally {
+    await app.evaluate(({ app }) => (app as any).__restoreCups());
+  }
 });
 
 test("la pizza mitad y mitad muestra variedades una sola vez y OBS sólo contiene notas manuales", async () => {

@@ -33,6 +33,8 @@ export function assertAppSettings(settings: AppSettingsDto) {
       profile.feedLinesBeforeCut > 8
     )
       throw new Error("Las líneas antes del corte deben estar entre 0 y 8.");
+    if (profile.mode === "ESC_POS" && !profile.deviceName.trim())
+      throw new Error("Elegí la cola o dispositivo de la impresora ESC/POS.");
   }
   return settings;
 }

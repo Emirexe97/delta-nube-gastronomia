@@ -88,3 +88,23 @@ test("settings accepts absent and boolean half-and-half flag but rejects non-boo
       /mitad y mitad/,
     );
 });
+
+test("ESC/POS settings require a named device", () => {
+  assert.throws(
+    () => assertAppSettings({
+      ...valid,
+      printing: {
+        ...valid.printing,
+        kitchen: { ...valid.printing.kitchen, mode: "ESC_POS", deviceName: " " },
+      },
+    }),
+    /cola o dispositivo.*ESC\/POS/,
+  );
+  assert.equal(assertAppSettings({
+    ...valid,
+    printing: {
+      ...valid.printing,
+      kitchen: { ...valid.printing.kitchen, mode: "ESC_POS", deviceName: "Cocina" },
+    },
+  }).printing.kitchen.deviceName, "Cocina");
+});

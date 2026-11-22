@@ -16,7 +16,7 @@ import type { WaiterDeskApi, WebSiteBrandingEdit, WebSitePreviewDraft } from "@g
 import { createWaiterRelay, waiterRelayConfig, WaiterRequestError } from "./waiter-relay";
 import { handleWaiterRequest } from "./waiter-rpc";
 import { createWebCommerceSync } from "./web-commerce-sync";
-import { formatMoney } from "@gastronomy/domain";
+import { formatMoney, isDirectKitchenPrinterConfigured } from "@gastronomy/domain";
 import { SqliteGastronomyRepository } from "@gastronomy/database";
 import { printHtml } from "./printer";
 import { createPrintDiagnostics, type PrintDiagnostics } from "./print-diagnostics";
@@ -261,7 +261,7 @@ async function printOrder(
     kind === "KITCHEN_ORDER"
       ? settings.printing.kitchen
       : settings.printing.bill;
-  if (requireExplicitDevice && (profile.mode !== "SYSTEM_DIRECT" || !profile.deviceName.trim())) throw new Error("Seleccioná impresión directa y el comandero de cocina en Configuración.");
+  if (requireExplicitDevice && !isDirectKitchenPrinterConfigured(profile)) throw new Error("Seleccioná impresión directa y el comandero de cocina en Configuración.");
   return printHtml(orderTicketHtml(order, kind, settings), profile, {
     requireExplicitDevice,
     parent: mainWindow,
@@ -273,90 +273,15 @@ function printerTestHtml(
   kind: "KITCHEN_ORDER" | "CUSTOMER_BILL",
   settings: AppSettingsDto,
 ) {
-  const timestamp = new Date().toISOString();
-  const testOrder: OrderDto = {
-    id: "printer-test",
-    number: 9999,
-    type: "DELIVERY",
-    operationalStatus: "READY",
-    paymentStatus: "PAID",
-    lifecycleStatus: "CONFIRMED",
-    cashSessionCreatedId: "printer-test-cash",
-    cashSessionPaidId: "printer-test-cash",
-    tableId: null,
-    tableNumber: null,
-    customerId: "printer-test-customer",
-    customerNameSnapshot: "Cliente de prueba",
-    customerPhoneSnapshot: "11 5555-0199",
-    deliveryAddressSnapshot:
-      "Avenida Siempre Viva 742, departamento 8, timbre rojo",
-    deliveryAddressNotesSnapshot: "Tocar timbre rojo",
-    deliveryFeeMinor: 25_000,
-    promisedAt: new Date(Date.now() + 30 * 60_000).toISOString(),
-    scheduled: true,
-    waiterUserId: "printer-test-waiter",
-    waiterName: "Operador de prueba",
-    driverUserId: "printer-test-driver",
-    driverName: "Repartidor de prueba",
-    collectedByDriver: false,
-    notes:
-      "Texto largo de prueba para verificar saltos de línea y legibilidad.",
-    subtotalMinor: 186_000,
-    discountMinor: 0,
-    depositMinor: 0,
-    depositNotes: null,
-    totalMinor: 211_000,
-    paidMinor: 211_000,
-    printedAt: null,
-    printCount: 0,
-    printAttemptCount: 0,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    items: [
-      {
-        id: "printer-test-item-1",
-        productId: "printer-test-product-1",
-        productNameSnapshot: "Pizza especial grande con nombre largo",
-        quantity: 1,
-        unitPriceMinorSnapshot: 150_000,
-        discountMinorSnapshot: 0,
-        notes: "Sin cebolla; cortar en ocho porciones",
-        halves: [],
-        modifiers: [],
-        lineTotalMinor: 150_000,
-      },
-      {
-        id: "printer-test-item-2",
-        productId: "printer-test-product-2",
-        productNameSnapshot: "Empanada de jamón y queso",
-        quantity: 2,
-        unitPriceMinorSnapshot: 18_000,
-        discountMinorSnapshot: 0,
-        notes: null,
-        halves: [],
-        modifiers: [],
-        lineTotalMinor: 36_000,
-      },
-    ],
-    payments: [
-      {
-        id: "printer-test-payment",
-        methodCode: "TRANSFER",
-        methodName: "Transferencia",
-        amountMinor: 211_000,
-        receivedMinor: null,
-        reference: "PRUEBA-123",
-        createdAt: timestamp,
-        refundedMinor: 0,
-        refundableMinor: 211_000,
-        status: "ACTIVE",
-      },
-    ],
-  };
-  return orderTicketHtml(testOrder, kind, settings).replace(
-    "<body>",
-    `<body><p class="center"><strong>*** PRUEBA DE IMPRESIÓN ***</strong><br>${escapeHtml(settings.printing.terminalLabel)}</p><div class="divider"></div>`,
-  );
+  const kitchen = kind === "KITCHEN_ORDER";
+  const profile = kitchen ? settings.printing.kitchen : settings.printing.bill;
+  const narrow = profile.paperWidth === "58mm";
+  const terminal = settings.printing.terminalLabel.replace(/\s+/g, " ").trim().slice(0, narrow ? 32 : 42);
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Prueba de impresión</title>
+    <style>@page{margin:2mm}body{width:${narrow ? 54 : 68}mm;margin:0;font:13px/1.3 Arial,sans-serif;text-align:center}
+    h1{font-size:15px;margin:0}p{margin:2px 0}.terminal{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}</style>
+    </head><body><h1>PRUEBA DE IMPRESIÓN</h1><p>${kitchen ? "Comanda de cocina" : "Cuenta del cliente"} · ${narrow ? 58 : 80} mm</p>
+    <p class="terminal">${escapeHtml(terminal)}</p></body></html>`;
 }
 
 const activePrints = new Set<string>();
@@ -835,7 +760,8 @@ function registerIpcHandlers() {
   handleData("gastronomy:getWaiterDeskStatus",()=>{
     const repo=services().localRepository;
     const kitchen=repo.getSettings().printing.kitchen;
-    return {configured:waiterRelay.configured(), automaticEnrollment:!!waiterProvisioning && !!licensing?.waiterIdentity(), printerReady:kitchen.mode==="SYSTEM_DIRECT" && !!kitchen.deviceName.trim(), sessions:repo.listWaiterDevices(),connectionError:waiterRelay.connectionError()};
+    const printerReady = isDirectKitchenPrinterConfigured(kitchen) && (kitchen.mode !== "ESC_POS" || process.platform === "darwin");
+    return {configured:waiterRelay.configured(), automaticEnrollment:!!waiterProvisioning && !!licensing?.waiterIdentity(), printerReady, sessions:repo.listWaiterDevices(),connectionError:waiterRelay.connectionError()};
   });
   handleData("gastronomy:issueWaiterQr",async(_event,input:{waiterId:string})=>{
     const repo=services().localRepository;
@@ -980,7 +906,7 @@ function registerIpcHandlers() {
           : settings.printing.bill;
       const outcome = await printHtml(
         printerTestHtml(payload.kind, settings),
-        profile,
+        { ...profile, copies: 1, feedLinesBeforeCut: Math.min(2, profile.feedLinesBeforeCut) },
         {
           parent: mainWindow,
         },

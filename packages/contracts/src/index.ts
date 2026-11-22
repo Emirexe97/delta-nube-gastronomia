@@ -129,7 +129,7 @@ export type CashMovementType =
   | "CLOSING";
 export type HalfAndHalfPricingMode = "HALF_PLUS_HALF" | "MOST_EXPENSIVE";
 export type ModifierScope = "FULL_PIZZA" | "FIRST_HALF" | "SECOND_HALF";
-export type PrinterMode = "SYSTEM_DIALOG" | "SYSTEM_DIRECT";
+export type PrinterMode = "SYSTEM_DIALOG" | "SYSTEM_DIRECT" | "ESC_POS";
 export type PrinterPaperWidth = "58mm" | "80mm";
 
 export interface PrinterProfileDto {

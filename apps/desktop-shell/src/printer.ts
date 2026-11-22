@@ -8,12 +8,13 @@ import {
   type PrintTimingOutcome,
 } from "./print-timing";
 import type { PrinterProfileDto } from "@gastronomy/contracts";
-import { resolvePrinterTarget } from "./printer-routing";
+import { resolvePrinterTarget, type PrinterDevice } from "./printer-routing";
+import { printCupsRaw } from "./cups-raw";
+import { encodeEscPosTicket } from "./escpos-ticket";
 export { resolvePrinterTarget } from "./printer-routing";
 
-type PrinterInfo = { name: string; isDefault?: boolean };
 type PrintOptions = {
-  getPrinters?: () => Promise<PrinterInfo[]>;
+  getPrinters?: () => Promise<PrinterDevice[]>;
   parent?: BrowserWindow | null;
   forcePreview?: boolean;
   skipPreview?: boolean;
@@ -269,9 +270,14 @@ export async function printHtml(
         options.parent ??
         BrowserWindow.getAllWindows().find((item) => !item.isDestroyed());
       if (!owner) return [];
-      return (await owner.webContents.getPrintersAsync()) as PrinterInfo[];
+      return owner.webContents.getPrintersAsync();
     });
+  const escPos = profile.mode === "ESC_POS";
+  if (escPos && process.platform !== "darwin") {
+    throw new Error("El modo térmico ESC/POS de este perfil requiere macOS. Elegí otro modo en Configuración > Impresión.");
+  }
   if (options.forcePreview) {
+    if (escPos) throw new Error("La vista previa gráfica requiere el modo Vista previa.");
     return showPreview(html, profile, options.parent);
   }
   if (profile.mode === "SYSTEM_DIALOG") {
@@ -279,23 +285,25 @@ export async function printHtml(
       ? dispatchWithoutPreview(html, profile, undefined, options.onTiming)
       : showPreview(html, profile, options.parent);
   }
+  if (escPos && !profile.deviceName.trim()) {
+    throw new Error("Seleccioná la impresora térmica por nombre para usar ESC/POS.");
+  }
   if (options.requireExplicitDevice && !profile.deviceName.trim()) {
     throw new Error("Seleccioná una impresora específica para la comanda antes de usar impresión directa.");
   }
-  let target: string | null = null;
+  let printers: PrinterDevice[] = [];
   try {
-    const printers = await measurePrintStage(
+    printers = await measurePrintStage(
       "getPrinters",
       options.onTiming,
       getPrinters,
     );
-    target = resolvePrinterTarget(profile, printers, options.requireExplicitDevice);
   } catch (error) {
-    if (options.requireExplicitDevice) {
+    if (escPos || options.requireExplicitDevice) {
       throw new Error(`No se pudo consultar la lista de impresoras. Verificá la conexión del dispositivo e intentá nuevamente${error instanceof Error && error.message ? ` (${error.message})` : ""}.`);
     }
-    target = null;
   }
+  const target = resolvePrinterTarget(profile, printers, options.requireExplicitDevice);
   if (!target) {
     if (options.requireExplicitDevice) {
       throw new Error(profile.deviceName
@@ -332,6 +340,27 @@ export async function printHtml(
         `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
       ),
     );
+    if (escPos) {
+      const ticket = await measurePrintStage("layout", options.onTiming, async () => {
+        // Preserve the same visible fields as the graphical receipt. Separate
+        // CSS grid/flex columns explicitly for the printer's fixed-width font.
+        const text: string = await window.webContents.executeJavaScript(String.raw`(() => {
+          const rows = document.querySelectorAll(".row, .columns, .meta-line, .item-main, .product, .scheduled-datetime");
+          for (const row of Array.from(rows).reverse()) {
+            const display = getComputedStyle(row).display;
+            if (display !== "grid" && display !== "flex") continue;
+            const cells = Array.from(row.children, cell => cell.innerText.trim().replace(/\s+/g, " "));
+            row.textContent = cells.filter(Boolean).join(display === "grid" ? "\t" : " ");
+            row.style.display = "block";
+            row.style.whiteSpace = "pre-wrap";
+          }
+          return document.body.innerText;
+        })()`);
+        return encodeEscPosTicket(text, profile);
+      });
+      await measurePrintStage("nativeprint", options.onTiming, () => printCupsRaw(target, ticket));
+      return "PRINTED";
+    }
     const height = await measurePrintStage("layout", options.onTiming, () =>
       contentHeightMicrons(window.webContents),
     );
