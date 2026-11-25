@@ -233,6 +233,15 @@ test("legacy extras without live ids fail closed", () => {
 
 test("refuses half-and-half when disabled and re-resolves current component identities", () => {
   const f = fixture();
+  const data: typeof f.data = {
+    ...f.data,
+    products: [f.data.products[0]!, { ...f.data.products[0]!, id: "p2" }],
+    categories: f.data.categories.map((category) => ({
+      ...category,
+      halfAndHalfGroups: [{ id: "pizza", name: "Pizza" }],
+      defaultHalfAndHalfGroupId: "pizza",
+    })),
+  };
   const source = {
     ...f.source,
     items: [
@@ -246,7 +255,7 @@ test("refuses half-and-half when disabled and re-resolves current component iden
             position: "FIRST",
           },
           {
-            productId: "p1",
+            productId: "p2",
             nameSnapshot: "Viejo",
             priceMinorSnapshot: 1,
             position: "SECOND",
@@ -260,14 +269,27 @@ test("refuses half-and-half when disabled and re-resolves current component iden
       planRepeatOrder(
         source,
         f.customer,
-        { ...f.data, settings: { halfAndHalfEnabled: false } } as typeof f.data,
+        { ...data, settings: { halfAndHalfEnabled: false } } as typeof f.data,
         f.input,
       ),
-    /deshabilitadas/,
+    /mitad y mitad está deshabilitada/,
   );
-  assert.equal(
-    planRepeatOrder(source, f.customer, f.data, f.input).lines[0]?.item.kind,
-    "HALF",
+  assert.deepEqual(
+    planRepeatOrder(source, f.customer, data, f.input).lines[0]?.item,
+    {
+      kind: "HALF",
+      input: { firstProductId: "p1", secondProductId: "p2", quantity: 2, notes: "sin cebolla" },
+    },
+  );
+  assert.throws(
+    () =>
+      planRepeatOrder(
+        source,
+        f.customer,
+        { ...data, categories: f.data.categories },
+        f.input,
+      ),
+    /ya no son compatibles/,
   );
 });
 

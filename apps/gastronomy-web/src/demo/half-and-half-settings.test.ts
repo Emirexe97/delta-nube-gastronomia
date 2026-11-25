@@ -69,7 +69,7 @@ describe("configuración de pizzas mitad y mitad en demo", () => {
         firstProductId: pizzas[0]!.id,
         secondProductId: pizzas[1]!.id,
       }),
-    ).rejects.toThrow(/deshabilitadas/);
+    ).rejects.toThrow(/mitad y mitad está deshabilitada/);
     expect(await api.getOrder({ orderId: order.id })).toEqual(before);
   });
 
