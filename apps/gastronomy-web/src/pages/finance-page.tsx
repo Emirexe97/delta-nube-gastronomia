@@ -62,6 +62,9 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
   const [agendaBucket, setAgendaBucket] = useState<DueBucket>("all");
   const [agendaSearch, setAgendaSearch] = useState("");
   const [agendaCategory, setAgendaCategory] = useState("all");
+  const [agendaLimit, setAgendaLimit] = useState(100);
+  const [productMarginLimit, setProductMarginLimit] = useState(100);
+  const [expenseLimit, setExpenseLimit] = useState(100);
   const [orderSearch, setOrderSearch] = useState("");
   const [orderLimit, setOrderLimit] = useState(25);
   const [unknownCostLimit, setUnknownCostLimit] = useState(25);
@@ -161,6 +164,15 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
     });
     return () => { current = false; };
   }, [from, to, reload, section]);
+
+  useEffect(() => {
+    setAgendaLimit(100);
+  }, [agendaBucket, agendaCategory, agendaSearch, from, to]);
+
+  useEffect(() => {
+    setProductMarginLimit(100);
+    setExpenseLimit(100);
+  }, [from, to]);
 
   const methods = data.paymentMethods.filter(
     (item) => item.active && item.code !== "ACCOUNT",
@@ -799,7 +811,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                 </div>
               </div>
               <div className="mt-3 space-y-2">
-                {visibleAgendaItems.map((item) => (
+                {visibleAgendaItems.slice(0, agendaLimit).map((item) => (
                   <article key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-xs">
                     <div><b>{item.title}</b>{item.forecast ? <Badge tone="slate">Programado</Badge> : null}<p className="text-slate-600">{item.category}{item.employeeName ? ` · ${item.employeeName}` : ""} · gasto {item.incurredOn} · {agendaBucket === "paid" ? `pagado ${item.paidBusinessDate ?? item.paidAt?.slice(0, 10) ?? "sin fecha"}` : `vence ${item.dueOn}`}</p></div>
                     <div className="flex flex-wrap items-center gap-2"><b>{formatMoney(item.amountMinor)}</b>
@@ -815,6 +827,20 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                 ))}
                 {!visibleAgendaItems.length ? <p className="text-xs text-slate-500">{agendaBucket === "paid" ? "No hay gastos pagados en el período." : "No hay gastos pendientes que coincidan con los filtros."}</p> : null}
               </div>
+              {visibleAgendaItems.length > agendaLimit ? (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-slate-600">
+                    Mostrando {agendaLimit} de {visibleAgendaItems.length} vencimientos
+                  </span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => setAgendaLimit((limit) => limit + 100)}
+                  >
+                    Mostrar más vencimientos
+                  </Button>
+                </div>
+              ) : null}
             </Card>
           ) : null}
           {section !== "expenses" && <>
@@ -994,7 +1020,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
               <h2 className="text-sm font-extrabold">Margen estimado por producto y canal</h2>
               <p className="mt-1 text-xs text-slate-500">Producto: importe de las líneas vendidas, sin el cargo de envío cobrado al cliente; descuenta costo histórico y comisión de cobro asignada. Canal: incluye el ingreso del canal y descuenta mercadería, costo de reparto y comisión asignada. Las dos vistas agrupan la misma venta desde dimensiones distintas.</p>
               <div className="mt-3 grid gap-4 lg:grid-cols-2">
-                <div><h3 className="mb-2 text-xs font-bold">Productos</h3><div className="max-h-80 space-y-2 overflow-auto">{report.productMargins.map((item) => <div key={`${item.productId ?? "deleted"}-${item.productName}`} className="flex justify-between gap-3 border-b pb-2 text-xs"><span>{item.productName} · {item.quantity} uds. · ventas {formatMoney(item.salesMinor)} · costo {formatMoney(item.cogsMinor)}{item.unknownCostSalesMinor ? ` · ${formatMoney(item.unknownCostSalesMinor)} sin costo` : ""}</span><b>{formatMoney(item.grossMarginMinor)}{item.salesMinor ? ` · ${Math.round(100 * item.grossMarginMinor / item.salesMinor)}%` : " · sin base"}</b></div>)}</div></div>
+                <div><h3 className="mb-2 text-xs font-bold">Productos</h3><div className="max-h-80 space-y-2 overflow-auto">{report.productMargins.slice(0, productMarginLimit).map((item) => <div key={`${item.productId ?? "deleted"}-${item.productName}`} className="flex justify-between gap-3 border-b pb-2 text-xs"><span>{item.productName} · {item.quantity} uds. · ventas {formatMoney(item.salesMinor)} · costo {formatMoney(item.cogsMinor)}{item.unknownCostSalesMinor ? ` · ${formatMoney(item.unknownCostSalesMinor)} sin costo` : ""}</span><b>{formatMoney(item.grossMarginMinor)}{item.salesMinor ? ` · ${Math.round(100 * item.grossMarginMinor / item.salesMinor)}%` : " · sin base"}</b></div>)}</div>{report.productMargins.length > productMarginLimit ? <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-slate-600">Mostrando {productMarginLimit} de {report.productMargins.length} productos</span><Button type="button" variant="secondary" onClick={() => setProductMarginLimit((limit) => limit + 100)}>Mostrar más productos</Button></div> : null}</div>
                 <div><h3 className="mb-2 text-xs font-bold">Canales</h3><div className="space-y-2">{report.channelMargins.map((item) => <div key={item.channel} className="flex justify-between gap-3 border-b pb-2 text-xs"><span>{typeLabels[item.channel as keyof typeof typeLabels] ?? item.channel} · {item.orderCount} pedidos · ventas {formatMoney(item.salesMinor)} · mercadería y reparto {formatMoney(item.cogsMinor + item.deliveryCostsMinor)}</span><b>{formatMoney(item.grossMarginMinor)}{item.salesMinor ? ` · ${Math.round(100 * item.grossMarginMinor / item.salesMinor)}%` : " · sin base"}</b></div>)}</div></div>
               </div>
             </Card>
@@ -1238,7 +1264,7 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
               </div>
               <div className="mt-3 max-h-[550px] space-y-2 overflow-auto">
                 {report.expenses.length ? (
-                  report.expenses.map((item: FinanceExpenseDto) => (
+                  report.expenses.slice(0, expenseLimit).map((item: FinanceExpenseDto) => (
                     <article
                       key={item.id}
                       className="rounded-xl border border-slate-200 p-3 text-xs"
@@ -1459,6 +1485,20 @@ export function FinancePage({ data }: { data: BootstrapDto }) {
                   </p>
                 )}
               </div>
+              {report.expenses.length > expenseLimit ? (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-slate-600">
+                    Mostrando {expenseLimit} de {report.expenses.length} gastos
+                  </span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => setExpenseLimit((limit) => limit + 100)}
+                  >
+                    Mostrar más gastos
+                  </Button>
+                </div>
+              ) : null}
             </Card>
           </section>
 

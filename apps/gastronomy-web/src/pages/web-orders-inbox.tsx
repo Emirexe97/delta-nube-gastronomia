@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type {
   BootstrapDto,
   ProductDto,
@@ -9,7 +9,7 @@ import { Badge, Button, Card, Input, Textarea } from "@gastronomy/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { bootstrapKey } from "../api";
 import { orderPrintCoordinator } from "../order-print";
-import { humanError } from "../lib";
+import { humanError, normalizeSearch } from "../lib";
 import {
   currentPosUnitPrice as itemPrice,
   hasCurrentPosPrice,
@@ -17,6 +17,7 @@ import {
   webDraftTotal,
 } from "./web-order-ui";
 
+const WEB_ORDER_PRODUCT_OPTION_LIMIT = 100;
 const money = (value: number) =>
   (value / 100).toLocaleString("es-AR", { style: "currency", currency: "ARS" });
 function draftFrom(entry: WebInboxEntry): WebOrderDraft {
@@ -25,6 +26,92 @@ function draftFrom(entry: WebInboxEntry): WebOrderDraft {
     items: entry.draft.items.map((item) => ({ ...item })),
   };
 }
+
+type IndexedWebProduct = {
+  product: ProductDto;
+  searchText: string;
+};
+
+type WebDraftItem = WebOrderDraft["items"][number];
+type WebOriginalItem = WebInboxEntry["original"]["submission"]["items"][number];
+
+const WebOrderDraftItemRow = memo(function WebOrderDraftItemRow({
+  index,
+  item,
+  originalItem,
+  filteredProducts,
+  filteredProductIds,
+  activeProductsById,
+  onUpdateItem,
+  onRemoveItem,
+}: {
+  index: number;
+  item: WebDraftItem;
+  originalItem: WebOriginalItem | undefined;
+  filteredProducts: readonly IndexedWebProduct[];
+  filteredProductIds: ReadonlySet<string>;
+  activeProductsById: ReadonlyMap<string, IndexedWebProduct>;
+  onUpdateItem: (index: number, patch: Partial<WebDraftItem>) => void;
+  onRemoveItem: (index: number) => void;
+}) {
+  const selectOptions = useMemo(() => {
+    const selected =
+      item.productRef && !filteredProductIds.has(item.productRef)
+        ? activeProductsById.get(item.productRef)
+        : undefined;
+    const list = selected ? [selected, ...filteredProducts] : filteredProducts;
+    return list.map(({ product }) => (
+      <option key={product.id} value={product.id}>
+        {product.name}
+      </option>
+    ));
+  }, [filteredProducts, filteredProductIds, activeProductsById, item.productRef]);
+
+  return (
+    <div className="grid gap-2 rounded-lg border p-2 sm:grid-cols-[minmax(0,1fr)_84px_minmax(0,1fr)_minmax(120px,0.8fr)_auto]">
+      <span className="text-xs">
+        {originalItem?.name ?? "Producto recibido"}
+        <small className="block text-slate-500">
+          {originalItem?.quantity ?? item.quantity} × precio web{" "}
+          {money(originalItem?.unitPriceMinor ?? 0)}
+        </small>
+      </span>
+      <Input
+        aria-label={`Cantidad artículo ${index + 1}`}
+        type="number"
+        min="1"
+        value={item.quantity}
+        onChange={(e) =>
+          onUpdateItem(index, {
+            quantity: Math.max(1, Number(e.target.value) || 1),
+          })
+        }
+      />
+      <select
+        aria-label={`Producto POS para artículo ${index + 1}`}
+        className="rounded-lg border px-2 text-xs"
+        value={item.productRef}
+        onChange={(e) => onUpdateItem(index, { productRef: e.target.value })}
+      >
+        <option value="">Seleccionar producto…</option>
+        {selectOptions}
+      </select>
+      <Input
+        aria-label={`Nota artículo ${index + 1}`}
+        placeholder="Nota"
+        value={item.notes}
+        onChange={(e) => onUpdateItem(index, { notes: e.target.value })}
+      />
+      <Button
+        variant="secondary"
+        aria-label={`Quitar artículo ${index + 1}`}
+        onClick={() => onRemoveItem(index)}
+      >
+        Quitar
+      </Button>
+    </div>
+  );
+});
 
 export function WebOrdersInbox({
   data,
@@ -36,6 +123,7 @@ export function WebOrdersInbox({
   const [entries, setEntries] = useState<WebInboxEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<WebOrderDraft | null>(null);
+  const [productFilter, setProductFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -95,7 +183,71 @@ export function WebOrdersInbox({
     entries.find((entry) => entry.original.id === selectedId) ?? null;
   useEffect(() => {
     setDraft(selected ? draftFrom(selected) : null);
+    setProductFilter("");
   }, [selectedId]);
+  const activeProducts = useMemo<IndexedWebProduct[]>(
+    () =>
+      data.products
+        .filter((product) => product.active)
+        .map((product) => ({
+          product,
+          searchText: normalizeSearch(`${product.name} ${product.code ?? ""}`),
+        })),
+    [data.products],
+  );
+  const activeProductsById = useMemo(
+    () => new Map(activeProducts.map((entry) => [entry.product.id, entry])),
+    [activeProducts],
+  );
+  const needsProductFilter =
+    activeProducts.length > WEB_ORDER_PRODUCT_OPTION_LIMIT;
+  const filteredActiveProducts = useMemo(() => {
+    if (!needsProductFilter) return activeProducts;
+    const query = normalizeSearch(productFilter);
+    const matching = query
+      ? activeProducts.filter((entry) => entry.searchText.includes(query))
+      : activeProducts;
+    return matching.slice(0, WEB_ORDER_PRODUCT_OPTION_LIMIT);
+  }, [activeProducts, needsProductFilter, productFilter]);
+  const filteredActiveProductIds = useMemo(
+    () => new Set(filteredActiveProducts.map((entry) => entry.product.id)),
+    [filteredActiveProducts],
+  );
+  const addProductOptions = useMemo(
+    () =>
+      filteredActiveProducts.map(({ product }) => (
+        <option key={product.id} value={product.id}>
+          {product.name}
+        </option>
+      )),
+    [filteredActiveProducts],
+  );
+  const updateDraftItem = useCallback(
+    (index: number, patch: Partial<WebDraftItem>) =>
+      setDraft((current) =>
+        current
+          ? {
+              ...current,
+              items: current.items.map((row, i) =>
+                i === index ? { ...row, ...patch } : row,
+              ),
+            }
+          : current,
+      ),
+    [],
+  );
+  const removeDraftItem = useCallback(
+    (index: number) =>
+      setDraft((current) =>
+        current
+          ? {
+              ...current,
+              items: current.items.filter((_, i) => i !== index),
+            }
+          : current,
+      ),
+    [],
+  );
   const pendingCount = entries.filter(
     (entry) => entry.status === "PENDING",
   ).length;
@@ -455,96 +607,33 @@ export function WebOrdersInbox({
               <legend className="font-bold">
                 Productos · referencia original y producto POS
               </legend>
-              {draft.items.map((item, index) => (
-                <div
-                  key={`${selected.original.id}-${index}`}
-                  className="grid gap-2 rounded-lg border p-2 sm:grid-cols-[minmax(0,1fr)_84px_minmax(0,1fr)_minmax(120px,0.8fr)_auto]"
-                >
-                  <span className="text-xs">
-                    {selected.original.submission.items[index]?.name ??
-                      "Producto recibido"}
-                    <small className="block text-slate-500">
-                      {selected.original.submission.items[index]?.quantity ??
-                        item.quantity}{" "}
-                      × precio web{" "}
-                      {money(
-                        selected.original.submission.items[index]
-                          ?.unitPriceMinor ?? 0,
-                      )}
-                    </small>
+              {needsProductFilter ? (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Input
+                    aria-label="Buscar producto POS"
+                    placeholder="Buscar producto POS por nombre o código…"
+                    value={productFilter}
+                    onChange={(e) => setProductFilter(e.target.value)}
+                    className="h-8 max-w-xs text-xs"
+                  />
+                  <span className="text-xs text-slate-500">
+                    Mostrando hasta {WEB_ORDER_PRODUCT_OPTION_LIMIT} de{" "}
+                    {activeProducts.length} productos activos
                   </span>
-                  <Input
-                    aria-label={`Cantidad artículo ${index + 1}`}
-                    type="number"
-                    min="1"
-                    value={item.quantity}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        items: draft.items.map((row, i) =>
-                          i === index
-                            ? {
-                                ...row,
-                                quantity: Math.max(
-                                  1,
-                                  Number(e.target.value) || 1,
-                                ),
-                              }
-                            : row,
-                        ),
-                      })
-                    }
-                  />
-                  <select
-                    aria-label={`Producto POS para artículo ${index + 1}`}
-                    className="rounded-lg border px-2 text-xs"
-                    value={item.productRef}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        items: draft.items.map((row, i) =>
-                          i === index
-                            ? { ...row, productRef: e.target.value }
-                            : row,
-                        ),
-                      })
-                    }
-                  >
-                    <option value="">Seleccionar producto…</option>
-                    {data.products
-                      .filter((product) => product.active)
-                      .map((product) => (
-                        <option key={product.id} value={product.id}>
-                          {product.name}
-                        </option>
-                      ))}
-                  </select>
-                  <Input
-                    aria-label={`Nota artículo ${index + 1}`}
-                    placeholder="Nota"
-                    value={item.notes}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        items: draft.items.map((row, i) =>
-                          i === index ? { ...row, notes: e.target.value } : row,
-                        ),
-                      })
-                    }
-                  />
-                  <Button
-                    variant="secondary"
-                    aria-label={`Quitar artículo ${index + 1}`}
-                    onClick={() =>
-                      setDraft({
-                        ...draft,
-                        items: draft.items.filter((_, i) => i !== index),
-                      })
-                    }
-                  >
-                    Quitar
-                  </Button>
                 </div>
+              ) : null}
+              {draft.items.map((item, index) => (
+                <WebOrderDraftItemRow
+                  key={`${selected.original.id}-${index}`}
+                  index={index}
+                  item={item}
+                  originalItem={selected.original.submission.items[index]}
+                  filteredProducts={filteredActiveProducts}
+                  filteredProductIds={filteredActiveProductIds}
+                  activeProductsById={activeProductsById}
+                  onUpdateItem={updateDraftItem}
+                  onRemoveItem={removeDraftItem}
+                />
               ))}
               <label className="text-xs font-bold">
                 Agregar producto POS
@@ -568,13 +657,7 @@ export function WebOrdersInbox({
                   }}
                 >
                   <option value="">Seleccionar…</option>
-                  {data.products
-                    .filter((product) => product.active)
-                    .map((product) => (
-                      <option key={product.id} value={product.id}>
-                        {product.name}
-                      </option>
-                    ))}
+                  {addProductOptions}
                 </select>
               </label>
             </fieldset>

@@ -2,10 +2,11 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
   type UseMutationOptions,
 } from "@tanstack/react-query";
 import { useRef } from "react";
-import type { BootstrapDto, OrderDto } from "@gastronomy/contracts";
+import type { BootstrapDto, DeliveryProjectionDto, OrderDto } from "@gastronomy/contracts";
 import { bootstrapKey, updateDraftOrderCache } from "./order-entry-cache";
 import { applySecondRoundOrderCache } from "./order-round-cache";
 import { applyDeliveryProjection, type DeliveryAction } from "./delivery-operation-cache";
@@ -38,6 +39,72 @@ export function useBootstrap() {
   });
 }
 
+/** Reconcile a confirmed DINE_IN payment that keeps the table open (tables row unchanged). */
+function applyDineInPaymentProjection(
+  client: QueryClient,
+  before: BootstrapDto,
+  old: OrderDto,
+  saved: OrderDto,
+  delta: DeliveryProjectionDto,
+): boolean {
+  const state = client.getQueryState<BootstrapDto>(bootstrapKey);
+  const cashId = before.cashSession?.id;
+  const paymentChanged =
+    old.paymentStatus !== saved.paymentStatus ||
+    old.paidMinor !== saved.paidMinor;
+  const statusChanged = old.operationalStatus !== saved.operationalStatus;
+  if (
+    state?.data !== before ||
+    state.isInvalidated ||
+    state.fetchStatus !== "idle" ||
+    old.type !== "DINE_IN" ||
+    old.lifecycleStatus !== "CONFIRMED" ||
+    old.version === undefined ||
+    saved.id !== old.id ||
+    saved.type !== "DINE_IN" ||
+    saved.lifecycleStatus !== "CONFIRMED" ||
+    saved.version === undefined ||
+    saved.version !== old.version + 1 ||
+    !paymentChanged ||
+    statusChanged ||
+    saved.operationalStatus === "DELIVERED" ||
+    saved.operationalStatus === "CANCELLED" ||
+    saved.tableId !== old.tableId ||
+    saved.totalMinor !== old.totalMinor ||
+    saved.waiterUserId !== old.waiterUserId ||
+    saved.customerId !== old.customerId ||
+    (old.tableId != null &&
+      !before.tables.some(
+        (table) =>
+          table.id === old.tableId &&
+          table.currentOrderId === old.id &&
+          table.currentTotalMinor === saved.totalMinor,
+      )) ||
+    delta.order.id !== old.id ||
+    JSON.stringify(saved) !== JSON.stringify(delta.order) ||
+    !cashId ||
+    before.cashSession?.status !== "OPEN" ||
+    delta.openCashSessionId !== cashId ||
+    delta.cashSessionId !== cashId ||
+    (old.cashSessionPaidId ?? old.cashSessionCreatedId) !== cashId ||
+    saved.cashSessionPaidId !== cashId ||
+    delta.financials?.cashSession.id !== cashId
+  ) {
+    return false;
+  }
+  const index = before.orders.indexOf(old);
+  if (index < 0) return false;
+  const orders = before.orders.slice();
+  orders[index] = saved;
+  client.setQueryData<BootstrapDto>(bootstrapKey, {
+    ...before,
+    orders,
+    cashSession: delta.financials.cashSession,
+    dashboard: delta.financials.dashboard,
+  });
+  return true;
+}
+
 export function useOrderDispatchMutation<T extends { orderId: string }>(
   mutationFn: (variables: T) => Promise<OrderDto>,
   action: DeliveryAction | "payment" | null,
@@ -65,14 +132,17 @@ export function useOrderDispatchMutation<T extends { orderId: string }>(
         const delta = await window.gastronomy.getDeliveryProjection({ orderId: old.id, includeFinancials: true });
         const operation = action === "state" ? "deliver" : action === "payment" ? "payment" : "complete";
         if (!applyTakeawayFinanceProjection(client, before, old, saved, delta, operation)) return false;
+      } else if (old.type === "DINE_IN" && action === "payment") {
+        const delta = await window.gastronomy.getDeliveryProjection({ orderId: old.id, includeFinancials: true });
+        if (!applyDineInPaymentProjection(client, before, old, saved, delta)) return false;
       } else if (old.type === "DELIVERY" && action !== "payment") {
         const delta = await window.gastronomy.getDeliveryProjection({
           orderId: old.id, previousDriverId: old.driverUserId, includeFinancials: action === "complete" || handoff,
         });
         if (!applyDeliveryProjection(client, before, old, saved, delta, action)) return false;
       } else return false;
-      // No delivery ledger/history changed for a pickup order.
-      if (old.type === "TAKEAWAY")
+      // No delivery ledger/history changed for a pickup or dine-in payment.
+      if (old.type === "TAKEAWAY" || old.type === "DINE_IN")
         await client.invalidateQueries({ queryKey: [...bootstrapKey, "historical-editor", old.id], exact: true });
       else
         await client.invalidateQueries({ queryKey: bootstrapKey, predicate: query => query.queryKey.length > 1 });

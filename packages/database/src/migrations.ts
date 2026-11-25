@@ -1340,4 +1340,66 @@ BEGIN UPDATE web_catalog_revision SET revision = revision + 1 WHERE id = 1; END;
         CHECK (driver_remuneration_minor IS NULL OR driver_remuneration_minor >= 0);
     `,
   },
+  {
+    version: 59,
+    name: "high_volume_low_end_pos_indexes",
+    sql: `
+      CREATE INDEX IF NOT EXISTS orders_cash_paid_idx ON orders(cash_session_paid_id);
+      CREATE INDEX IF NOT EXISTS order_item_modifiers_item_idx ON order_item_modifiers(order_item_id);
+      CREATE INDEX IF NOT EXISTS order_item_halves_item_idx ON order_item_halves(order_item_id);
+      CREATE INDEX IF NOT EXISTS order_item_halves_product_idx ON order_item_halves(product_id);
+      CREATE INDEX IF NOT EXISTS order_items_product_idx ON order_items(product_id);
+      CREATE INDEX IF NOT EXISTS purchase_items_product_purchase_idx ON purchase_items(product_id, purchase_id);
+      CREATE INDEX IF NOT EXISTS cash_movements_order_idx ON cash_movements(order_id) WHERE order_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS cash_movements_change_session_idx ON cash_movements(cash_session_id) WHERE type = 'REFUND' AND reason LIKE 'Vuelto cobro pedido #%';
+      CREATE INDEX IF NOT EXISTS finance_expenses_paid_due_idx ON finance_expenses(paid_at, due_on);
+      CREATE INDEX IF NOT EXISTS audit_log_timestamp_idx ON audit_log(timestamp DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS audit_log_action_idx ON audit_log(action);
+      CREATE INDEX IF NOT EXISTS customer_account_receipts_session_idx ON customer_account_receipts(cash_session_id) WHERE cash_session_id IS NOT NULL;
+    `,
+  },
+  {
+    version: 60,
+    name: "waiter_menu_revision_counter",
+    sql: `
+      CREATE TABLE IF NOT EXISTS waiter_menu_revision (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        revision INTEGER NOT NULL DEFAULT 1
+      );
+      INSERT OR IGNORE INTO waiter_menu_revision(id, revision) VALUES (1, 1);
+
+      ${[
+        "products",
+        "categories",
+        "product_prices",
+        "price_lists",
+        "price_books",
+        "price_book_assignments",
+        "product_price_book_bases",
+        "product_price_book_overrides",
+        "modifiers",
+        "modifier_groups",
+        "settings",
+      ]
+        .flatMap((table) => [
+          `CREATE TRIGGER IF NOT EXISTS waiter_menu_revision_${table}_insert AFTER INSERT ON ${table} BEGIN UPDATE waiter_menu_revision SET revision = revision + 1 WHERE id = 1; END;`,
+          `CREATE TRIGGER IF NOT EXISTS waiter_menu_revision_${table}_update AFTER UPDATE ON ${table} BEGIN UPDATE waiter_menu_revision SET revision = revision + 1 WHERE id = 1; END;`,
+          `CREATE TRIGGER IF NOT EXISTS waiter_menu_revision_${table}_delete AFTER DELETE ON ${table} BEGIN UPDATE waiter_menu_revision SET revision = revision + 1 WHERE id = 1; END;`,
+        ])
+        .join("\n      ")}
+    `,
+  },
+  {
+    version: 61,
+    name: "customer_search_columns_and_allocations_index",
+    sql: `
+      ALTER TABLE customers ADD COLUMN name_search TEXT NOT NULL DEFAULT '';
+      ALTER TABLE customers ADD COLUMN notes_search TEXT NOT NULL DEFAULT '';
+      ALTER TABLE customer_addresses ADD COLUMN address_search TEXT NOT NULL DEFAULT '';
+      ALTER TABLE customer_addresses ADD COLUMN notes_search TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS customers_active_search_idx ON customers(active, name_search);
+      CREATE INDEX IF NOT EXISTS customer_addresses_customer_search_idx ON customer_addresses(customer_id, address_search, notes_search);
+      CREATE INDEX IF NOT EXISTS customer_account_allocations_order_idx ON customer_account_allocations(order_id);
+    `,
+  },
 ];

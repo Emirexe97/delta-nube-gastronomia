@@ -13,15 +13,20 @@ export function CatalogImportModal({ open, onClose, categories, products }: { op
   const [fileLoading, setFileLoading] = useState(false);
   const [status, setStatus] = useState("");
   const [batch, setBatch] = useState<Batch | null>(null);
+  const [visibleCount, setVisibleCount] = useState(100);
   const busy = useRef(false);
   const fileSequence = useRef(0);
   const succeeded = useRef(false);
   const preview = useMemo(() => parseCatalogCsv(text, categories, products), [text, categories, products]);
-  const usable = preview.rows.filter((r) => r.data).length;
+  const usable = useMemo(() => preview.rows.filter((r) => r.data).length, [preview.rows]);
+  const visibleRows = useMemo(
+    () => (preview.rows.length > 100 ? preview.rows.slice(0, visibleCount) : preview.rows),
+    [preview.rows, visibleCount],
+  );
   const mutation = useApiMutation(
     (input: Batch) => window.gastronomy.importProducts(input),
     {
-      onSuccess: (created) => { succeeded.current = true; setStatus(`Se crearon ${created.length} productos.`); setText(""); setBatch(null); setError(""); },
+      onSuccess: (created) => { succeeded.current = true; setStatus(`Se crearon ${created.length} productos.`); setText(""); setBatch(null); setError(""); setVisibleCount(100); },
       onError: (e) => { succeeded.current = false; setError(humanError(e)); },
       onSettled: () => { busy.current = false; },
     },
@@ -33,7 +38,7 @@ export function CatalogImportModal({ open, onClose, categories, products }: { op
   };
   const discardBatch = () => {
     if (!window.confirm("¿Descartar este lote? Si se perdió la respuesta, los productos pueden estar cargados. Primero consultá el catálogo. Un nuevo lote con los mismos códigos será rechazado; no cambies los códigos para repetir una importación ya realizada.")) return;
-    setBatch(null); setText(""); setError(""); setFileError(""); setStatus("");
+    setBatch(null); setText(""); setError(""); setFileError(""); setStatus(""); setVisibleCount(100);
   };
   const download = () => {
     const url = URL.createObjectURL(new Blob([CSV_TEMPLATE], { type: "text/csv;charset=utf-8" }));
@@ -50,7 +55,7 @@ export function CatalogImportModal({ open, onClose, categories, products }: { op
         <input type="file" accept=".csv,text/csv" disabled={mutation.isPending || fileLoading || Boolean(batch)} onChange={async (e) => {
           const file = e.target.files?.[0]; e.target.value = ""; if (!file) return;
           const sequence = ++fileSequence.current;
-          setFileLoading(true); setText(""); setFileError(""); setError(""); setStatus(""); setBatch(null);
+          setFileLoading(true); setText(""); setFileError(""); setError(""); setStatus(""); setBatch(null); setVisibleCount(100);
           if (file.size > MAX_CSV_BYTES) { setFileError("El archivo supera el máximo de 1 MiB."); setFileLoading(false); return; }
           try { const contents = decodeCatalogCsvBytes(await file.arrayBuffer()); if (sequence === fileSequence.current) setText(contents); }
           catch { if (sequence === fileSequence.current) setFileError("No se pudo leer el archivo. Guardalo como CSV UTF-8 y volvé a intentarlo."); }
@@ -65,9 +70,15 @@ export function CatalogImportModal({ open, onClose, categories, products }: { op
         {preview.errors.length > 0 && <ul className="text-sm text-rose-700">{preview.errors.map((e) => <li key={e}>{e}</li>)}</ul>}
         <div className="max-h-64 overflow-auto rounded-lg border border-slate-200" role="region" aria-label="Vista previa CSV" tabIndex={0}>
           <table className="min-w-full text-left text-xs"><thead className="sticky top-0 bg-slate-100"><tr>{["Fila", "Código", "Nombre", "Categoría", "Precio", "Estado"].map((h) => <th key={h} className="p-2">{h}</th>)}</tr></thead>
-            <tbody>{preview.rows.map((r) => <tr key={r.line} className="border-t"><td className="p-2">{r.line}</td>{r.values.map((v, i) => <td key={i} className="p-2">{v}</td>)}<td className="p-2">{r.errors.length ? <span className="text-rose-700">{r.errors.join(" ")}</span> : "Lista para importar"}</td></tr>)}</tbody>
+            <tbody>{visibleRows.map((r) => <tr key={r.line} className="border-t"><td className="p-2">{r.line}</td>{r.values.map((v, i) => <td key={i} className="p-2">{v}</td>)}<td className="p-2">{r.errors.length ? <span className="text-rose-700">{r.errors.join(" ")}</span> : "Lista para importar"}</td></tr>)}</tbody>
           </table>
         </div>
+        {preview.rows.length > visibleRows.length && (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+            <span>Mostrando {visibleRows.length} de {preview.rows.length} filas</span>
+            <Button type="button" variant="secondary" onClick={() => setVisibleCount((count) => count + 200)}>Mostrar más filas</Button>
+          </div>
+        )}
       </>}
       {batch && error && <><p role="alert" className="rounded bg-rose-50 p-2 text-sm text-rose-800">{error} No cambies el lote: reintentá con la misma clave. Si la respuesta se perdió, consultá el catálogo para confirmar si ya se crearon productos.</p><Button type="button" variant="secondary" disabled={mutation.isPending} onClick={discardBatch}>Descartar lote y elegir otro archivo…</Button></>}
       {error && !batch && <p role="alert" className="text-sm text-rose-700">{error}</p>}

@@ -46,32 +46,65 @@ export function PriceBookProductsEditor({
   const [requestedPage, setPage] = useState(0);
   const pageSize = 8;
   const query = normalizeSearch(search.trim());
-  const overrideCount = products.filter((product) =>
-    overrides[product.id] !== undefined
-      ? overrides[product.id] !== null
-      : product.priceBook?.overrides[book.id] !== undefined,
-  ).length;
-  const filtered = useMemo(
+  const searchableProducts = useMemo(
     () =>
-      products.filter((product) => {
-        const haystack = normalizeSearch(
+      products.map((product) => ({
+        product,
+        searchText: normalizeSearch(
           `${product.name} ${product.code ?? ""} ${product.categoryName} ${product.active ? "activo" : "inactivo"} ${product.parentProductId ? "variante" : "producto"}`,
-        );
-        const pending = overrides[product.id];
-        const own =
-          pending !== undefined
-            ? pending !== null
-            : product.priceBook?.overrides[book.id] !== undefined;
-        return haystack.includes(query) && (!onlyOverrides || own);
-      }),
-    [products, query, onlyOverrides, overrides, book.id],
+        ),
+      })),
+    [products],
   );
+  const queryMatchedProducts = useMemo(() => {
+    if (!query) return products;
+    const matched: ProductDto[] = [];
+    for (const item of searchableProducts) {
+      if (item.searchText.includes(query)) matched.push(item.product);
+    }
+    return matched;
+  }, [products, searchableProducts, query]);
+  const { baseOverrideIds, productIds } = useMemo(() => {
+    const baseIds = new Set<string>();
+    const allIds = new Set<string>();
+    for (const product of products) {
+      allIds.add(product.id);
+      if (product.priceBook?.overrides[book.id] !== undefined) {
+        baseIds.add(product.id);
+      }
+    }
+    return { baseOverrideIds: baseIds, productIds: allIds };
+  }, [products, book.id]);
+  const overrideCount = useMemo(() => {
+    let count = baseOverrideIds.size;
+    for (const [productId, pending] of Object.entries(overrides)) {
+      if (pending === undefined || !productIds.has(productId)) continue;
+      const hadBase = baseOverrideIds.has(productId);
+      if (pending !== null && !hadBase) count += 1;
+      else if (pending === null && hadBase) count -= 1;
+    }
+    return count;
+  }, [baseOverrideIds, productIds, overrides]);
+  const overrideFiltered = useMemo(() => {
+    if (!onlyOverrides) return null;
+    return queryMatchedProducts.filter((product) => {
+      const pending = overrides[product.id];
+      return pending !== undefined
+        ? pending !== null
+        : product.priceBook?.overrides[book.id] !== undefined;
+    });
+  }, [onlyOverrides, queryMatchedProducts, overrides, book.id]);
+  const filtered = overrideFiltered ?? queryMatchedProducts;
   const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const page = Math.min(requestedPage, pages - 1);
   const shown = filtered.slice(page * pageSize, (page + 1) * pageSize);
-  const invalidCount = Object.values(overrides).filter(
-    (value) => value !== null && parsePriceInput(value) == null,
-  ).length;
+  const invalidCount = useMemo(
+    () =>
+      Object.values(overrides).filter(
+        (value) => value !== null && parsePriceInput(value) == null,
+      ).length,
+    [overrides],
+  );
 
   return (
     <div className="grid gap-3">

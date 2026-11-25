@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type {
   IngredientDto,
@@ -8,7 +8,12 @@ import type {
 import { calculateIngredientRecipeCost } from "@gastronomy/domain";
 import { Button, Card, Field, Input, Select } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
-import { formatMoney, humanError, parseMoneyInput } from "../lib";
+import {
+  formatMoney,
+  humanError,
+  normalizeSearch,
+  parseMoneyInput,
+} from "../lib";
 import {
   defaultRecipeUnit,
   ingredientQuantityInput,
@@ -16,6 +21,8 @@ import {
   parseIngredientQuantity,
   type IngredientDisplayUnit,
 } from "../ingredient-quantities";
+
+const INGREDIENT_OPTION_LIMIT = 100;
 
 type DraftRow = {
   ingredientId: string;
@@ -25,6 +32,108 @@ type DraftRow = {
 const toMicros = parseIngredientQuantity;
 const fromMicros = ingredientQuantityInput;
 
+const RecipeIngredientRow = memo(function RecipeIngredientRow({
+  index,
+  row,
+  ingredient,
+  filteredIngredients,
+  filteredIngredientIds,
+  onChangeIngredient,
+  onChangeAmount,
+  onChangeUnit,
+  onRemove,
+}: {
+  index: number;
+  row: DraftRow;
+  ingredient: IngredientDto | undefined;
+  filteredIngredients: readonly IngredientDto[];
+  filteredIngredientIds: ReadonlySet<string>;
+  onChangeIngredient: (index: number, id: string) => void;
+  onChangeAmount: (index: number, amount: string) => void;
+  onChangeUnit: (index: number, unit: DraftRow["unit"]) => void;
+  onRemove: (index: number) => void;
+}) {
+  const selectOptions = useMemo(() => {
+    const list =
+      ingredient && !filteredIngredientIds.has(ingredient.id)
+        ? [ingredient, ...filteredIngredients]
+        : filteredIngredients;
+    return list.map((item) => (
+      <option key={item.id} value={item.id}>
+        {item.name} · {item.presentation}
+      </option>
+    ));
+  }, [filteredIngredients, filteredIngredientIds, ingredient]);
+
+  const qty = toMicros(row.amount, row.unit);
+  const contribution =
+    ingredient && qty
+      ? (() => {
+          try {
+            return calculateIngredientRecipeCost(
+              [{ ingredientId: ingredient.id, quantityMicros: qty }],
+              [ingredient],
+            );
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_minmax(5rem,.7fr)_5rem_auto] items-end gap-2">
+      <Field label={`Ingrediente ${index + 1}`}>
+        <Select
+          aria-label={`Ingrediente ${index + 1}`}
+          value={row.ingredientId}
+          onChange={(e) => onChangeIngredient(index, e.target.value)}
+        >
+          <option value="">Elegir…</option>
+          {selectOptions}
+        </Select>
+      </Field>
+      <Field label={`Cantidad ${index + 1}`}>
+        <Input
+          aria-label={`Cantidad ${index + 1}`}
+          inputMode="decimal"
+          value={row.amount}
+          onChange={(e) => onChangeAmount(index, e.target.value)}
+        />
+      </Field>
+      <Field label={`Unidad ${index + 1}`}>
+        <Select
+          aria-label={`Unidad ${index + 1}`}
+          value={row.unit}
+          onChange={(e) =>
+            onChangeUnit(index, e.target.value as DraftRow["unit"])
+          }
+        >
+          {ingredientUnitOptions(ingredient?.baseUnit ?? "KG").map(
+            ({ value, label }) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ),
+          )}
+        </Select>
+      </Field>
+      <Button
+        type="button"
+        variant="ghost"
+        aria-label={`Quitar ingrediente ${index + 1}`}
+        onClick={() => onRemove(index)}
+      >
+        Quitar
+      </Button>
+      {contribution !== null && (
+        <span className="col-span-full text-right text-xs text-slate-500">
+          Aporta {formatMoney(contribution)}
+        </span>
+      )}
+    </div>
+  );
+});
+
 export function ProductCostEditor({
   product,
   onSaved,
@@ -33,6 +142,7 @@ export function ProductCostEditor({
   onSaved(): void;
 }) {
   const [ingredients, setIngredients] = useState<IngredientDto[]>([]);
+  const [ingredientFilter, setIngredientFilter] = useState("");
   const [enabled, setEnabled] = useState(false);
   const [rows, setRows] = useState<DraftRow[]>([]);
   const [manual, setManual] = useState("");
@@ -59,6 +169,7 @@ export function ProductCostEditor({
       ]);
       if (currentRequest !== requestId.current) return;
       setIngredients(available);
+      setIngredientFilter("");
       setEnabled(config.recipeEnabled);
       const manualValue =
         config.manualUnitCostMinor == null
@@ -92,6 +203,36 @@ export function ProductCostEditor({
     }; /* product identity owns this draft lifecycle */
   }, [product.id]);
 
+  const indexedIngredients = useMemo(
+    () =>
+      ingredients.map((ingredient) => ({
+        ingredient,
+        searchText: normalizeSearch(
+          `${ingredient.name} ${ingredient.presentation}`,
+        ),
+      })),
+    [ingredients],
+  );
+  const ingredientsById = useMemo(
+    () => new Map(ingredients.map((item) => [item.id, item])),
+    [ingredients],
+  );
+  const needsIngredientFilter = ingredients.length > INGREDIENT_OPTION_LIMIT;
+  const filteredIngredients = useMemo(() => {
+    if (!needsIngredientFilter) return ingredients;
+    const query = normalizeSearch(ingredientFilter);
+    const matching = query
+      ? indexedIngredients
+          .filter((entry) => entry.searchText.includes(query))
+          .map((entry) => entry.ingredient)
+      : ingredients;
+    return matching.slice(0, INGREDIENT_OPTION_LIMIT);
+  }, [ingredients, indexedIngredients, needsIngredientFilter, ingredientFilter]);
+  const filteredIngredientIds = useMemo(
+    () => new Set(filteredIngredients.map((item) => item.id)),
+    [filteredIngredients],
+  );
+
   const recipeItems = useMemo(
     () =>
       rows.map((row) => ({
@@ -117,25 +258,52 @@ export function ProductCostEditor({
   const invalid =
     (manual.trim() !== "" && manualCost === null) ||
     (enabled && preview === null);
-  const changeIngredient = (index: number, id: string) =>
-    setRows((old) =>
-      old.map((row, i) => {
-        if (i !== index) return row;
-        const ing = ingredients.find((candidate) => candidate.id === id);
-        const unit = ing ? defaultRecipeUnit(ing.baseUnit) : row.unit;
-        const previous = ingredients.find(
-          (candidate) => candidate.id === row.ingredientId,
-        );
-        return {
-          ingredientId: id,
-          amount:
-            previous?.baseUnit === ing?.baseUnit && row.amount
-              ? fromMicros(toMicros(row.amount, row.unit) ?? 0, unit)
-              : "",
-          unit,
-        };
-      }),
-    );
+  const changeIngredient = useCallback(
+    (index: number, id: string) =>
+      setRows((old) =>
+        old.map((row, i) => {
+          if (i !== index) return row;
+          const ing = ingredientsById.get(id);
+          const unit = ing ? defaultRecipeUnit(ing.baseUnit) : row.unit;
+          const previous = ingredientsById.get(row.ingredientId);
+          return {
+            ingredientId: id,
+            amount:
+              previous?.baseUnit === ing?.baseUnit && row.amount
+                ? fromMicros(toMicros(row.amount, row.unit) ?? 0, unit)
+                : "",
+            unit,
+          };
+        }),
+      ),
+    [ingredientsById],
+  );
+  const changeAmount = useCallback(
+    (index: number, amount: string) =>
+      setRows((old) =>
+        old.map((r, i) => (i === index ? { ...r, amount } : r)),
+      ),
+    [],
+  );
+  const changeUnit = useCallback(
+    (index: number, unit: DraftRow["unit"]) =>
+      setRows((old) =>
+        old.map((r, i) => {
+          if (i !== index) return r;
+          const micros = toMicros(r.amount, r.unit);
+          return {
+            ...r,
+            unit,
+            amount: micros ? fromMicros(micros, unit) : r.amount,
+          };
+        }),
+      ),
+    [],
+  );
+  const removeRow = useCallback(
+    (index: number) => setRows((old) => old.filter((_, i) => i !== index)),
+    [],
+  );
   const save = () => {
     if (loading || invalid || mutation.isPending) return;
     mutation.mutate({
@@ -211,109 +379,35 @@ export function ProductCostEditor({
                     para armar la receta.
                   </p>
                 )}
-                {rows.map((row, index) => {
-                  const ing = ingredients.find(
-                    (candidate) => candidate.id === row.ingredientId,
-                  );
-                  const qty = toMicros(row.amount, row.unit);
-                  const contribution =
-                    ing && qty
-                      ? (() => {
-                          try {
-                            return calculateIngredientRecipeCost(
-                              [{ ingredientId: ing.id, quantityMicros: qty }],
-                              [ing],
-                            );
-                          } catch {
-                            return null;
-                          }
-                        })()
-                      : null;
-                  return (
-                    <div
-                      key={index}
-                      className="grid grid-cols-[minmax(0,1fr)_minmax(5rem,.7fr)_5rem_auto] items-end gap-2"
-                    >
-                      <Field label={`Ingrediente ${index + 1}`}>
-                        <Select
-                          aria-label={`Ingrediente ${index + 1}`}
-                          value={row.ingredientId}
-                          onChange={(e) =>
-                            changeIngredient(index, e.target.value)
-                          }
-                        >
-                          <option value="">Elegir…</option>
-                          {ingredients.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.name} · {item.presentation}
-                            </option>
-                          ))}
-                        </Select>
-                      </Field>
-                      <Field label={`Cantidad ${index + 1}`}>
-                        <Input
-                          aria-label={`Cantidad ${index + 1}`}
-                          inputMode="decimal"
-                          value={row.amount}
-                          onChange={(e) =>
-                            setRows((old) =>
-                              old.map((r, i) =>
-                                i === index
-                                  ? { ...r, amount: e.target.value }
-                                  : r,
-                              ),
-                            )
-                          }
-                        />
-                      </Field>
-                      <Field label={`Unidad ${index + 1}`}>
-                        <Select
-                          aria-label={`Unidad ${index + 1}`}
-                          value={row.unit}
-                          onChange={(e) =>
-                            setRows((old) =>
-                              old.map((r, i) => {
-                                if (i !== index) return r;
-                                const unit = e.target.value as DraftRow["unit"];
-                                const micros = toMicros(r.amount, r.unit);
-                                return {
-                                  ...r,
-                                  unit,
-                                  amount: micros
-                                    ? fromMicros(micros, unit)
-                                    : r.amount,
-                                };
-                              }),
-                            )
-                          }
-                        >
-                          {ingredientUnitOptions(ing?.baseUnit ?? "KG").map(
-                            ({ value, label }) => (
-                              <option key={value} value={value}>
-                                {label}
-                              </option>
-                            ),
-                          )}
-                        </Select>
-                      </Field>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        aria-label={`Quitar ingrediente ${index + 1}`}
-                        onClick={() =>
-                          setRows((old) => old.filter((_, i) => i !== index))
-                        }
-                      >
-                        Quitar
-                      </Button>
-                      {contribution !== null && (
-                        <span className="col-span-full text-right text-xs text-slate-500">
-                          Aporta {formatMoney(contribution)}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
+                {needsIngredientFilter && (
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <Input
+                      aria-label="Buscar ingrediente"
+                      placeholder="Buscar ingrediente por nombre o presentación…"
+                      value={ingredientFilter}
+                      onChange={(e) => setIngredientFilter(e.target.value)}
+                      className="h-9 max-w-sm"
+                    />
+                    <span className="text-xs text-slate-500">
+                      Mostrando hasta {INGREDIENT_OPTION_LIMIT} de{" "}
+                      {ingredients.length} ingredientes
+                    </span>
+                  </div>
+                )}
+                {rows.map((row, index) => (
+                  <RecipeIngredientRow
+                    key={index}
+                    index={index}
+                    row={row}
+                    ingredient={ingredientsById.get(row.ingredientId)}
+                    filteredIngredients={filteredIngredients}
+                    filteredIngredientIds={filteredIngredientIds}
+                    onChangeIngredient={changeIngredient}
+                    onChangeAmount={changeAmount}
+                    onChangeUnit={changeUnit}
+                    onRemove={removeRow}
+                  />
+                ))}
                 <Button
                   type="button"
                   variant="secondary"

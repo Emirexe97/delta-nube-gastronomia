@@ -48,9 +48,16 @@ let repository: SqliteGastronomyRepository | null = null;
 let application: GastronomyApplication | null = null;
 let databasePath = "";
 let backgroundE2e = false;
+const LICENSE_POLL_BASE_MS = 60_000;
+const LICENSE_POLL_ACTIVE_MS = 15 * 60_000;
+const LICENSE_POLL_MAX_BACKOFF_MS = 15 * 60_000;
+const LICENSE_POLL_JITTER_MS = 5_000;
 let licensing: DesktopLicensing | null = null;
 let licensingTimer: ReturnType<typeof setInterval> | null = null;
 let licensingPollInFlight = false;
+let lastLicensePollAt = 0;
+let nextLicensePollAt = 0;
+let licenseOfflineFailures = 0;
 const operationGate = new UpdateInstallGate();
 const electronSafeStorage = { isAvailable: () => safeStorage.isEncryptionAvailable(), encryptString: (value: string) => safeStorage.encryptString(value), decryptString: (value: Buffer) => safeStorage.decryptString(value) };
 function createDesktopLicensing(options: Omit<ConstructorParameters<typeof DesktopLicensing>[0], "safeStorage">) {
@@ -78,6 +85,7 @@ const webCommerce = createWebCommerceSync({
   getInstallationId: () => webInstallationId,
   env: webCommerceEnv,
   isEnabled: () => !hostedPilotMode,
+  stateFilePath: join(app.getPath("userData"), "web-commerce-sync-state.json"),
 });
 const waiterRelay = createWaiterRelay({
   config: currentWaiterConfig,
@@ -128,11 +136,52 @@ function printTiming() {
 nativeUpdater.on("before-quit-for-update", () => { updateQuitRequested = true; });
 async function pollLicensing() {
   if (!licensing || licensingPollInFlight) return;
+  const now = Date.now();
+  if (lastLicensePollAt !== 0 && now < nextLicensePollAt) {
+    const webPending =
+      licenseOfflineFailures === 0 &&
+      (webSite?.status().state === "PENDING" ||
+        Boolean(webSite?.hasPendingSignup()));
+    if (!webPending) return;
+  }
   let release: (() => void) | undefined;
   try { release = operationGate.enterOperation(); } catch { return; }
   licensingPollInFlight = true;
-  try { await licensing.refresh(); } catch { /* retain the last locally verified lease */ }
-  finally { licensingPollInFlight = false; release(); }
+  let offline = false;
+  let status: Awaited<ReturnType<DesktopLicensing["refresh"]>> | undefined;
+  try {
+    status = await licensing.refresh();
+    offline = status.message.includes("No se pudo conectar");
+  } catch {
+    offline = true;
+    /* retain the last locally verified lease */
+  } finally {
+    lastLicensePollAt = Date.now();
+    if (offline) {
+      licenseOfflineFailures += 1;
+      const backoffMs = Math.min(
+        LICENSE_POLL_BASE_MS * 2 ** (licenseOfflineFailures - 1),
+        LICENSE_POLL_MAX_BACKOFF_MS,
+      );
+      nextLicensePollAt = lastLicensePollAt + backoffMs - LICENSE_POLL_JITTER_MS;
+    } else {
+      licenseOfflineFailures = 0;
+      const webPending =
+        webSite?.status().state === "PENDING" ||
+        Boolean(webSite?.hasPendingSignup());
+      const canSpaceOut =
+        status?.state === "ACTIVE" &&
+        !status.verificationOverdue &&
+        status.enrollment?.status !== "PENDING" &&
+        !webPending;
+      nextLicensePollAt =
+        lastLicensePollAt +
+        (canSpaceOut ? LICENSE_POLL_ACTIVE_MS : LICENSE_POLL_BASE_MS) -
+        LICENSE_POLL_JITTER_MS;
+    }
+    licensingPollInFlight = false;
+    release();
+  }
 }
 async function pollWebSiteProvisioning() {
   if (!licensing || !webSite || repository?.isInitialAdminPinSetupRequired()) return;
@@ -328,6 +377,38 @@ async function executePrintJob(
   } finally { activePrints.delete(jobId); }
 }
 
+function currentUserHasPermission(
+  localRepository: SqliteGastronomyRepository,
+  permissionCode: string,
+): boolean {
+  const userExists = localRepository.db
+    .prepare(
+      `SELECT 1 FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ? LIMIT 1`,
+    )
+    .get("user-admin");
+  if (!userExists) throw new Error("No existe el usuario operativo.");
+  return Boolean(
+    localRepository.db
+      .prepare(
+        `SELECT 1 FROM role_permissions rp
+         JOIN users u ON u.role_id = rp.role_id
+         WHERE u.id = ? AND rp.permission_code = ?
+         LIMIT 1`,
+      )
+      .get("user-admin", permissionCode),
+  );
+}
+
+function isCashSessionOpen(
+  localRepository: SqliteGastronomyRepository,
+): boolean {
+  return Boolean(
+    localRepository.db
+      .prepare("SELECT 1 FROM cash_sessions WHERE status = 'OPEN' LIMIT 1")
+      .get(),
+  );
+}
+
 function registerIpcHandlers() {
   const pinSetupAllowedChannels = new Set([
     "gastronomy:isInitialAdminPinSetupRequired", "gastronomy:setInitialAdminPin",
@@ -516,7 +597,7 @@ function registerIpcHandlers() {
   // Updates remain available with an expired license (e.g. to recover a licensing bug).
   ipcMain.handle("gastronomy:getAppUpdateStatus", () => updater!.getStatus());
   handleOperation("gastronomy:checkAppUpdate", () => {
-    if (!services().appService.bootstrap().currentUser.permissions.includes("settings.manage"))
+    if (!currentUserHasPermission(services().localRepository, "settings.manage"))
       throw new Error("No tenés permiso para buscar actualizaciones.");
     return updater!.check();
   });
@@ -524,12 +605,12 @@ function registerIpcHandlers() {
     updater: updater!,
     gate: operationGate,
     readState: () => {
-      if (services().localRepository.isInitialAdminPinSetupRequired())
+      const { localRepository } = services();
+      if (localRepository.isInitialAdminPinSetupRequired())
         throw new Error("Configurá el PIN inicial del administrador antes de continuar.");
-      const state = services().appService.bootstrap();
       return {
-        permitted: state.currentUser.permissions.includes("settings.manage"),
-        cashOpen: state.cashSession?.status === "OPEN",
+        permitted: currentUserHasPermission(localRepository, "settings.manage"),
+        cashOpen: isCashSessionOpen(localRepository),
       };
     },
     confirm: async (version) => {
@@ -665,7 +746,7 @@ function registerIpcHandlers() {
     const signup = input.webSite;
     const web = signup && typeof signup.slug === "string" && typeof signup.whatsappNumber === "string" ? { slug: signup.slug, whatsappNumber: signup.whatsappNumber } : undefined;
     return (async () => {
-      if (web && (await licensing!.getStatus()).canOperate && !services().appService.bootstrap().currentUser.permissions.includes("settings.manage")) throw new Error("No tenés permiso para configurar la tienda web.");
+      if (web && (await licensing!.getStatus()).canOperate && !currentUserHasPermission(services().localRepository, "settings.manage")) throw new Error("No tenés permiso para configurar la tienda web.");
       return licensing!.requestLicenseAccess({ businessName, ...(web ? { webSite: web } : {}) });
     })();
   });
@@ -676,7 +757,7 @@ function registerIpcHandlers() {
     return website;
   });
   handleOperation("gastronomy:shareWebSite", async (_event, action: WebSiteShareAction) => {
-    if (!services().appService.bootstrap().currentUser.permissions.includes("settings.manage")) throw new Error("No tenés permiso para compartir la tienda web.");
+    if (!currentUserHasPermission(services().localRepository, "settings.manage")) throw new Error("No tenés permiso para compartir la tienda web.");
     return performWebSiteShare(action, {
       // Sharing an already-provisioned public URL needs no online request.
       getStatus: () => webSite!.status(),
@@ -692,7 +773,7 @@ function registerIpcHandlers() {
   handleOperation("gastronomy:registerWebSite", async (_event, input: { slug?: unknown; whatsappNumber?: unknown }) => {
     const status = await licensing!.getStatus();
     if (!status.canOperate) throw new Error(status.message);
-    if (!services().appService.bootstrap().currentUser.permissions.includes("settings.manage")) throw new Error("No tenés permiso para configurar la tienda web.");
+    if (!currentUserHasPermission(services().localRepository, "settings.manage")) throw new Error("No tenés permiso para configurar la tienda web.");
     if (typeof input?.slug !== "string" || typeof input?.whatsappNumber !== "string") throw new Error("Completá el enlace y WhatsApp de la tienda.");
     return licensing!.registerWebSite({ slug: input.slug, whatsappNumber: input.whatsappNumber });
   });
@@ -898,8 +979,8 @@ function registerIpcHandlers() {
         settings?: AppSettingsDto;
       },
     ) => {
-      const { appService } = services();
-      const settings = payload.settings ?? appService.bootstrap().settings;
+      const { localRepository } = services();
+      const settings = payload.settings ?? localRepository.getSettings();
       const profile =
         payload.kind === "KITCHEN_ORDER"
           ? settings.printing.kitchen
@@ -980,7 +1061,9 @@ function registerIpcHandlers() {
       // Validate only after acquiring the restore gate and before showing the
       // picker, so neither a concurrent cash-open nor an unauthorized chooser
       // can race into a database replacement.
-      localRepository.authorizeBackupRestore(pin);
+      await localRepository.withPreparedUserPins({ authorizerPin: pin }, () =>
+        localRepository.authorizeBackupRestore(pin),
+      );
       const selection = await dialog.showOpenDialog(mainWindow!, {
         title: "Restaurar copia de seguridad",
         properties: ["openFile"],

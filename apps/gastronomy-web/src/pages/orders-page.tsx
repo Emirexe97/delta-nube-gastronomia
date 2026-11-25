@@ -235,7 +235,12 @@ export function OrdersPage({ data }: { data: BootstrapDto }) {
                 : "bg-slate-100 text-slate-700",
             )}
           >
-            Pedidos web <WebOrdersInboxCount data={data} active={active} />
+            Pedidos web{" "}
+            <WebOrdersInboxCount
+              data={data}
+              active={active}
+              paused={ordersTab === "WEB"}
+            />
           </button>
         </div>
         {ordersTab === "WEB" ? (
@@ -685,14 +690,18 @@ function VirtualOrderRow({
 function WebOrdersInboxCount({
   data,
   active,
+  paused = false,
 }: {
   data: BootstrapDto;
   active: boolean;
+  paused?: boolean;
 }) {
+  const workspaceActive = useWorkspaceActive();
   const [count, setCount] = useState(0);
   const allowed = data.currentUser.permissions.includes("orders.edit");
+  const shouldPoll = allowed && active && workspaceActive && !paused;
   useEffect(() => {
-    if (!allowed || !active) return;
+    if (!shouldPoll) return;
     let live = true;
     const refresh = () =>
       window.gastronomy
@@ -710,7 +719,7 @@ function WebOrdersInboxCount({
       live = false;
       window.clearInterval(timer);
     };
-  }, [allowed, active]);
+  }, [shouldPoll]);
   return (
     <span
       className="ml-1 rounded-full bg-white/20 px-1.5 py-0.5"

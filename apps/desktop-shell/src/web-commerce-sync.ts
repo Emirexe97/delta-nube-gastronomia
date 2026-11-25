@@ -1,10 +1,20 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
   WebOrdersClient,
   type WebCatalogSnapshot,
   type WebOrderRecord,
 } from "@gastronomy/web-orders";
 import type { WebSyncStatus } from "@gastronomy/contracts";
+
+type PersistedWebSyncState = {
+  url: string;
+  storeId: string;
+  revision: number | string;
+  hash: string;
+  lastSyncedAt: string | null;
+};
 
 const PAGE_SIZE = 50;
 const MAX_PAGES_PER_TICK = 5;
@@ -33,6 +43,7 @@ export interface WebCommerceSyncOptions {
     installationId?: string,
   ) => WebOrdersClient;
   now?: () => number;
+  stateFilePath?: string;
 }
 
 /** Main-process worker only. Call run from the main process scheduler; no timers are created here. */
@@ -51,6 +62,26 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
   let publishedStore: string | null = null;
   let catalogGeneration = 0;
   let catalogDirty = true;
+  let persistedStateLoaded = false;
+  let invalidatedInSession = false;
+  let stateFileChain: Promise<void> = Promise.resolve();
+
+  const persistState = (state: PersistedWebSyncState): Promise<void> => {
+    const filePath = options.stateFilePath;
+    if (!filePath) return Promise.resolve();
+    const write = async () => {
+      try {
+        await mkdir(dirname(filePath), { recursive: true });
+        const tmp = `${filePath}.${randomUUID()}.tmp`;
+        await writeFile(tmp, JSON.stringify(state), "utf8");
+        await rename(tmp, filePath);
+      } catch {
+        // Ignore disk persistence errors silently; restart will republish safely.
+      }
+    };
+    stateFileChain = stateFileChain.then(write, write);
+    return stateFileChain;
+  };
 
   const config = () => ({
     url: env.GASTRONOMY_WEB_ORDERS_URL?.trim() ?? "",
@@ -132,6 +163,39 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
       const generation = catalogGeneration;
       try {
         const revision = repository.getWebCommerceCatalogRevision();
+        if (options.stateFilePath && !persistedStateLoaded) {
+          persistedStateLoaded = true;
+          if (!invalidatedInSession) {
+            try {
+              const raw = await readFile(options.stateFilePath, "utf8");
+              const parsed = JSON.parse(raw) as Partial<PersistedWebSyncState>;
+              if (
+                !invalidatedInSession &&
+                generation === catalogGeneration &&
+                parsed &&
+                typeof parsed === "object" &&
+                parsed.url === url &&
+                parsed.storeId === storeId &&
+                typeof parsed.hash === "string" &&
+                parsed.hash.length > 0 &&
+                (typeof parsed.revision === "number" ||
+                  typeof parsed.revision === "string") &&
+                parsed.revision === revision
+              ) {
+                publishedCatalogRevision = revision;
+                lastCatalogHash = parsed.hash;
+                publishedStore = storeId;
+                publishedRepository = repository;
+                catalogDirty = false;
+                if (typeof parsed.lastSyncedAt === "string") {
+                  lastSuccessAt = parsed.lastSyncedAt;
+                }
+              }
+            } catch {
+              // Missing or unreadable state file simply falls back to normal publishing.
+            }
+          }
+        }
         if (
           catalogDirty ||
           publishedStore !== storeId ||
@@ -164,6 +228,13 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
             publishedStore = storeId;
             publishedRepository = repository;
             catalogDirty = false;
+            await persistState({
+              url,
+              storeId,
+              revision,
+              hash,
+              lastSyncedAt: new Date(now()).toISOString(),
+            });
           } else {
             catalogDirty = true;
           }
@@ -249,11 +320,18 @@ export function createWebCommerceSync(options: WebCommerceSyncOptions) {
     },
     invalidate(): void {
       catalogGeneration++;
+      invalidatedInSession = true;
+      persistedStateLoaded = true;
       publishedCatalogRevision = null;
       publishedRepository = null;
       lastCatalogHash = null;
       publishedStore = null;
       catalogDirty = true;
+      const filePath = options.stateFilePath;
+      if (filePath) {
+        const removeFile = () => rm(filePath, { force: true }).catch(() => {});
+        stateFileChain = stateFileChain.then(removeFile, removeFile);
+      }
     },
   };
 }

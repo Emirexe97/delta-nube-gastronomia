@@ -1,6 +1,18 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useSearchParams } from "react-router-dom";
-import type { BootstrapDto, PurchaseDto } from "@gastronomy/contracts";
+import type {
+  BootstrapDto,
+  ProductDto,
+  PurchaseDto,
+} from "@gastronomy/contracts";
 import { Package, Plus, Receipt, Trash, Wallet } from "@phosphor-icons/react";
 import {
   Badge,
@@ -15,9 +27,121 @@ import { useApiMutation } from "../api";
 import {
   formatMoney,
   humanError,
+  normalizeSearch,
   parseMoneyInput,
   parseStockInput,
 } from "../lib";
+
+const PRODUCT_OPTION_LIMIT = 100;
+const HISTORY_PAGE_SIZE = 50;
+const purchaseDateTimeFormatter = new Intl.DateTimeFormat("es-AR", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const purchaseDateFormatter = new Intl.DateTimeFormat("es-AR");
+
+type IndexedProduct = {
+  product: ProductDto;
+  searchText: string;
+};
+
+type PurchaseDraftLine = {
+  productId: string;
+  quantity: string;
+  cost: string;
+};
+
+function buildSelectProducts(
+  filtered: readonly IndexedProduct[],
+  filteredIds: ReadonlySet<string>,
+  byId: ReadonlyMap<string, IndexedProduct>,
+  selectedId: string,
+): readonly IndexedProduct[] {
+  if (!selectedId || filteredIds.has(selectedId)) return filtered;
+  const selected = byId.get(selectedId);
+  return selected ? [selected, ...filtered] : filtered;
+}
+
+const PurchaseLineRow = memo(function PurchaseLineRow({
+  index,
+  line,
+  canRemove,
+  filteredProducts,
+  filteredProductIds,
+  eligibleProductsById,
+  onUpdate,
+  onRemove,
+}: {
+  index: number;
+  line: PurchaseDraftLine;
+  canRemove: boolean;
+  filteredProducts: readonly IndexedProduct[];
+  filteredProductIds: ReadonlySet<string>;
+  eligibleProductsById: ReadonlyMap<string, IndexedProduct>;
+  onUpdate: (
+    index: number,
+    field: keyof PurchaseDraftLine,
+    value: string,
+  ) => void;
+  onRemove: (index: number) => void;
+}) {
+  const selectOptions = useMemo(
+    () =>
+      buildSelectProducts(
+        filteredProducts,
+        filteredProductIds,
+        eligibleProductsById,
+        line.productId,
+      ).map(({ product }) => (
+        <option key={product.id} value={product.id}>
+          {product.name}
+        </option>
+      )),
+    [filteredProducts, filteredProductIds, eligibleProductsById, line.productId],
+  );
+
+  return (
+    <div className="grid items-end gap-2 sm:grid-cols-[minmax(180px,1fr)_120px_130px_40px]">
+      <Field label={index === 0 ? "Producto" : ""}>
+        <Select
+          value={line.productId}
+          onChange={(e) => onUpdate(index, "productId", e.target.value)}
+        >
+          <option value="">Seleccionar…</option>
+          {selectOptions}
+        </Select>
+      </Field>
+      <Field label={index === 0 ? "Cantidad" : ""}>
+        <Input
+          inputMode="decimal"
+          value={line.quantity}
+          onChange={(e) => onUpdate(index, "quantity", e.target.value)}
+          placeholder="0"
+        />
+      </Field>
+      <Field label={index === 0 ? "Costo unit." : ""}>
+        <Input
+          inputMode="decimal"
+          value={line.cost}
+          onChange={(e) => onUpdate(index, "cost", e.target.value)}
+          placeholder="$0"
+        />
+      </Field>
+      <button
+        type="button"
+        className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
+        onClick={() => onRemove(index)}
+        disabled={!canRemove}
+        aria-label="Quitar línea"
+      >
+        <Trash size={16} />
+      </button>
+    </div>
+  );
+});
 
 export function PurchasesPage({ data }: { data: BootstrapDto }) {
   const canCorrectPurchases =
@@ -57,23 +181,38 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
   const [notes, setNotes] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [lines, setLines] = useState([
+  const [lines, setLines] = useState<PurchaseDraftLine[]>([
     { productId: "", quantity: "", cost: "" },
   ]);
+  const [productFilter, setProductFilter] = useState("");
   const [history, setHistory] = useState<PurchaseDto[]>([]);
+  const [visibleHistoryLimit, setVisibleHistoryLimit] =
+    useState(HISTORY_PAGE_SIZE);
   const [params] = useSearchParams();
   const linkedPurchase = params.get("ver");
   const linkedRow = useRef<HTMLDivElement>(null);
+  const linkedIndex = linkedPurchase
+    ? history.findIndex((p) => p.id === linkedPurchase)
+    : -1;
+  const effectiveHistoryLimit =
+    linkedIndex >= visibleHistoryLimit
+      ? linkedIndex + 1
+      : visibleHistoryLimit;
+  const visibleHistory = useMemo(
+    () => history.slice(0, effectiveHistoryLimit),
+    [history, effectiveHistoryLimit],
+  );
   useEffect(() => {
     if (linkedPurchase && linkedRow.current) {
       linkedRow.current.scrollIntoView({ block: "center" });
       linkedRow.current.focus({ preventScroll: true });
     }
-  }, [linkedPurchase, history]);
+  }, [linkedPurchase, visibleHistory]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [documentAction, setDocumentAction] = useState<{ purchase: PurchaseDto; itemId?: string } | null>(null);
   const [documentActionProductId, setDocumentActionProductId] = useState("");
+  const [documentActionProductFilter, setDocumentActionProductFilter] = useState("");
   const [documentActionReason, setDocumentActionReason] = useState("");
   const [documentActionPin, setDocumentActionPin] = useState("");
   const [documentActionError, setDocumentActionError] = useState<string | null>(null);
@@ -81,6 +220,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
   const documentActionReceipt = useRef<{ fingerprint: string; key: string } | null>(null);
   const openDocumentAction = (purchase: PurchaseDto, itemId?: string) => {
     setDocumentAction({ purchase, itemId }); setDocumentActionProductId("");
+    setDocumentActionProductFilter("");
     setDocumentActionReason(""); setDocumentActionPin(""); setDocumentActionError(null); documentActionReceipt.current = null;
   };
   const submitDocumentAction = async (event: FormEvent) => {
@@ -129,6 +269,73 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
     };
   }, []);
 
+  const activeProducts = useMemo<IndexedProduct[]>(
+    () =>
+      data.products
+        .filter((p) => p.active)
+        .map((product) => ({
+          product,
+          searchText: normalizeSearch(`${product.name} ${product.code ?? ""}`),
+        })),
+    [data.products],
+  );
+  const activeProductsById = useMemo(
+    () => new Map(activeProducts.map((entry) => [entry.product.id, entry])),
+    [activeProducts],
+  );
+  const eligibleProducts = useMemo(
+    () => activeProducts.filter((entry) => !entry.product.comboDefinition),
+    [activeProducts],
+  );
+  const eligibleProductsById = useMemo(
+    () => new Map(eligibleProducts.map((entry) => [entry.product.id, entry])),
+    [eligibleProducts],
+  );
+  const needsProductFilter = eligibleProducts.length > PRODUCT_OPTION_LIMIT;
+  const filteredEligibleProducts = useMemo(() => {
+    if (!needsProductFilter) return eligibleProducts;
+    const query = normalizeSearch(productFilter);
+    const matching = query
+      ? eligibleProducts.filter((entry) => entry.searchText.includes(query))
+      : eligibleProducts;
+    return matching.slice(0, PRODUCT_OPTION_LIMIT);
+  }, [eligibleProducts, needsProductFilter, productFilter]);
+  const filteredEligibleProductIds = useMemo(
+    () => new Set(filteredEligibleProducts.map((entry) => entry.product.id)),
+    [filteredEligibleProducts],
+  );
+
+  const needsDocumentActionFilter =
+    activeProducts.length > PRODUCT_OPTION_LIMIT;
+  const filteredDocumentActionProducts = useMemo(() => {
+    if (!needsDocumentActionFilter) return activeProducts;
+    const query = normalizeSearch(documentActionProductFilter);
+    const matching = query
+      ? activeProducts.filter((entry) => entry.searchText.includes(query))
+      : activeProducts;
+    return matching.slice(0, PRODUCT_OPTION_LIMIT);
+  }, [activeProducts, needsDocumentActionFilter, documentActionProductFilter]);
+  const filteredDocumentActionProductIds = useMemo(
+    () =>
+      new Set(filteredDocumentActionProducts.map((entry) => entry.product.id)),
+    [filteredDocumentActionProducts],
+  );
+  const documentActionSelectProducts = useMemo(
+    () =>
+      buildSelectProducts(
+        filteredDocumentActionProducts,
+        filteredDocumentActionProductIds,
+        activeProductsById,
+        documentActionProductId,
+      ),
+    [
+      filteredDocumentActionProducts,
+      filteredDocumentActionProductIds,
+      activeProductsById,
+      documentActionProductId,
+    ],
+  );
+
   const mutation = useApiMutation(
     (input: Parameters<typeof window.gastronomy.createPurchase>[0]) =>
       window.gastronomy.createPurchase(input),
@@ -139,6 +346,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
         setInvoice("");
         setNotes("");
         setLines([{ productId: "", quantity: "", cost: "" }]);
+        setProductFilter("");
         setPin("");
         setHistory((current) => [
           purchase,
@@ -159,8 +367,16 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
     0,
   );
 
-  const update = (i: number, k: string, v: string) =>
-    setLines((ls) => ls.map((l, n) => (n === i ? { ...l, [k]: v } : l)));
+  const updateLine = useCallback(
+    (i: number, k: keyof PurchaseDraftLine, v: string) =>
+      setLines((ls) => ls.map((l, n) => (n === i ? { ...l, [k]: v } : l))),
+    [],
+  );
+  const removeLine = useCallback(
+    (i: number) =>
+      setLines((ls) => (ls.length > 1 ? ls.filter((_, n) => n !== i) : ls)),
+    [],
+  );
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -396,9 +612,13 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
         p.createdAt > costing.createdAt &&
         p.items.some((i) => i.productId === costItem.productId),
     );
-  const historyTotal = history.reduce(
-    (s, p) => s + (p.cancelledAt ? 0 : p.effectiveTotalMinor ?? p.totalMinor),
-    0,
+  const historyTotal = useMemo(
+    () =>
+      history.reduce(
+        (s, p) => s + (p.cancelledAt ? 0 : p.effectiveTotalMinor ?? p.totalMinor),
+        0,
+      ),
+    [history],
   );
 
   const quantityItem = quantityCorrection?.items.find(
@@ -601,7 +821,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
-            {history.map((p) => (
+            {visibleHistory.map((p) => (
               <div
                 key={p.id}
                 ref={p.id === linkedPurchase ? linkedRow : undefined}
@@ -625,13 +845,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
                     )}
                   </div>
                   <p className="text-xs text-slate-500">
-                    {new Intl.DateTimeFormat("es-AR", {
-                      day: "2-digit",
-                      month: "2-digit",
-                      year: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    }).format(new Date(p.createdAt))}{" "}
+                    {purchaseDateTimeFormatter.format(new Date(p.createdAt))}{" "}
                     · Registrado por{" "}
                     <span className="font-medium text-slate-700">
                       {p.createdByUserName}
@@ -731,6 +945,26 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
                 </div>
               </div>
             ))}
+            {history.length > visibleHistory.length && (
+              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 sm:px-5">
+                <span className="text-xs text-slate-600">
+                  Mostrando {visibleHistory.length} de {history.length} ingresos
+                </span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    setVisibleHistoryLimit(
+                      (current) =>
+                        Math.max(current, effectiveHistoryLimit) +
+                        HISTORY_PAGE_SIZE,
+                    )
+                  }
+                >
+                  Mostrar más ingresos
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -751,7 +985,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
           {costing && (
             <p className="text-sm text-slate-700">
               {costing.supplierName} · Ingreso original:{" "}
-              {new Intl.DateTimeFormat("es-AR").format(
+              {purchaseDateFormatter.format(
                 new Date(costing.createdAt),
               )}{" "}
               · Registrado por {costing.createdByUserName}
@@ -879,7 +1113,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
           {quantityCorrection && (
             <p className="text-sm text-slate-700">
               {quantityCorrection.supplierName} · Ingreso original:{" "}
-              {new Intl.DateTimeFormat("es-AR").format(
+              {purchaseDateFormatter.format(
                 new Date(quantityCorrection.createdAt),
               )}{" "}
               · Registrado por {quantityCorrection.createdByUserName}
@@ -999,7 +1233,7 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
               <p>
                 Ingreso original:{" "}
-                {new Intl.DateTimeFormat("es-AR").format(
+                {purchaseDateFormatter.format(
                   new Date(correcting.createdAt),
                 )}{" "}
                 · Registrado por {correcting.createdByUserName}
@@ -1130,56 +1364,33 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
               Líneas del comprobante
             </label>
             <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/50 p-3">
-              {lines.map((l, i) => (
-                <div
-                  key={i}
-                  className="grid items-end gap-2 sm:grid-cols-[minmax(180px,1fr)_120px_130px_40px]"
-                >
-                  <Field label={i === 0 ? "Producto" : ""}>
-                    <Select
-                      value={l.productId}
-                      onChange={(e) => update(i, "productId", e.target.value)}
-                    >
-                      <option value="">Seleccionar…</option>
-                      {data.products
-                        .filter((p) => p.active && !p.comboDefinition)
-                        .map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                    </Select>
-                  </Field>
-                  <Field label={i === 0 ? "Cantidad" : ""}>
-                    <Input
-                      inputMode="decimal"
-                      value={l.quantity}
-                      onChange={(e) => update(i, "quantity", e.target.value)}
-                      placeholder="0"
-                    />
-                  </Field>
-                  <Field label={i === 0 ? "Costo unit." : ""}>
-                    <Input
-                      inputMode="decimal"
-                      value={l.cost}
-                      onChange={(e) => update(i, "cost", e.target.value)}
-                      placeholder="$0"
-                    />
-                  </Field>
-                  <button
-                    type="button"
-                    className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
-                    onClick={() =>
-                      setLines((ls) =>
-                        ls.length > 1 ? ls.filter((_, n) => n !== i) : ls,
-                      )
-                    }
-                    disabled={lines.length === 1}
-                    aria-label="Quitar línea"
-                  >
-                    <Trash size={16} />
-                  </button>
+              {needsProductFilter && (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Input
+                    aria-label="Filtrar producto del ingreso"
+                    placeholder="Buscar producto por nombre o código…"
+                    value={productFilter}
+                    onChange={(e) => setProductFilter(e.target.value)}
+                    className="h-9 max-w-sm"
+                  />
+                  <span className="text-xs text-slate-600">
+                    Mostrando hasta {PRODUCT_OPTION_LIMIT} de{" "}
+                    {eligibleProducts.length} productos
+                  </span>
                 </div>
+              )}
+              {lines.map((l, i) => (
+                <PurchaseLineRow
+                  key={i}
+                  index={i}
+                  line={l}
+                  canRemove={lines.length > 1}
+                  filteredProducts={filteredEligibleProducts}
+                  filteredProductIds={filteredEligibleProductIds}
+                  eligibleProductsById={eligibleProductsById}
+                  onUpdate={updateLine}
+                  onRemove={removeLine}
+                />
               ))}
               <div className="pt-1">
                 <Button
@@ -1260,12 +1471,42 @@ export function PurchasesPage({ data }: { data: BootstrapDto }) {
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
             <strong>Vista previa:</strong> {documentAction.itemId ? "Se conservará el producto original; sólo cambiará el producto vigente para referencias futuras válidas." : `El importe vigente ${formatMoney(documentAction.purchase.effectiveTotalMinor ?? documentAction.purchase.totalMinor)} dejará de contarse como compra. Existencias, ventas, costo de ventas y caja permanecen intactos.`}
           </div>
-          {documentAction.itemId && <Field label="Producto vigente">
-            <Select value={documentActionProductId} onChange={(event) => setDocumentActionProductId(event.target.value)}>
-              <option value="">Elegir producto…</option>
-              {data.products.filter((product) => product.active).map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
-            </Select>
-          </Field>}
+          {documentAction.itemId && (
+            <>
+              {needsDocumentActionFilter && (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Input
+                    aria-label="Buscar producto vigente"
+                    placeholder="Buscar producto por nombre o código…"
+                    value={documentActionProductFilter}
+                    onChange={(event) =>
+                      setDocumentActionProductFilter(event.target.value)
+                    }
+                    className="h-9 max-w-sm"
+                  />
+                  <span className="text-xs text-slate-600">
+                    Mostrando hasta {PRODUCT_OPTION_LIMIT} de{" "}
+                    {activeProducts.length} productos
+                  </span>
+                </div>
+              )}
+              <Field label="Producto vigente">
+                <Select
+                  value={documentActionProductId}
+                  onChange={(event) =>
+                    setDocumentActionProductId(event.target.value)
+                  }
+                >
+                  <option value="">Elegir producto…</option>
+                  {documentActionSelectProducts.map(({ product }) => (
+                    <option key={product.id} value={product.id}>
+                      {product.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </>
+          )}
           <Field label="Motivo" hint="Quedará registrado en el historial de auditoría.">
             <Input value={documentActionReason} maxLength={500} onChange={(event) => setDocumentActionReason(event.target.value)} />
           </Field>

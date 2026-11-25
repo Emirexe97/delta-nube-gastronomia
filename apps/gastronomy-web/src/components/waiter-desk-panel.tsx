@@ -4,13 +4,19 @@ import { Button, Card, Field, HelpTip, Select } from "@gastronomy/ui";
 import type { BootstrapDto } from "@gastronomy/contracts";
 import { humanError } from "../lib";
 
-export function WaiterDeskPanel({ data }: { data: BootstrapDto }) {
+export function WaiterDeskPanel({
+  data,
+  active = true,
+}: {
+  data: BootstrapDto;
+  active?: boolean;
+}) {
   const allowed = data.currentUser.permissions.includes("settings.manage");
   const status = useQuery({
     queryKey: ["waiter-desk", data.currentUser.id],
     queryFn: () => window.gastronomy.getWaiterDeskStatus(),
-    enabled: allowed,
-    refetchInterval: 5000,
+    enabled: allowed && active,
+    refetchInterval: active ? 5_000 : false,
     retry: false,
   });
   const waiters = data.users.filter((u) => u.active && u.roleCode === "WAITER");

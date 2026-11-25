@@ -27,6 +27,42 @@ export type PrintOutcome = "PRINTED" | "SKIPPED";
 
 const previewWindows = new Set<BrowserWindow>();
 const previewPreload = join(__dirname, "print-preview-preload.js");
+const LOAD_URL_TIMEOUT_MS = 15_000;
+const LAYOUT_TIMEOUT_MS = 10_000;
+const SILENT_PRINT_TIMEOUT_MS = 30_000;
+
+let silentPrintQueue: Promise<void> = Promise.resolve();
+
+/** Serialize hidden direct-print windows FIFO (concurrency 1) so bursts cannot spawn multiple Chromium renderers at once. */
+function runSerializedSilentPrint<T>(task: () => Promise<T>): Promise<T> {
+  const run = silentPrintQueue.then(task, task);
+  silentPrintQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  errorMessage: string,
+): Promise<T> {
+  // Suppress late rejections if the timed-out promise settles after window.destroy().
+  void promise.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(errorMessage)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function backgroundE2e() {
   return isBackgroundTest({
     flag: process.env.GASTRONOMY_E2E_BACKGROUND,
@@ -51,10 +87,14 @@ function printSettings(profile: PrinterProfileDto, height = 297_000) {
 
 async function contentHeightMicrons(contents: Electron.WebContents) {
   const heightPx = Number(
-    await contents.executeJavaScript(`(() => {
-      const ticket = document.querySelector("#print-preview-ticket") ?? document.body;
-      return Math.ceil(ticket.getBoundingClientRect().height);
-    })()`),
+    await withTimeout(
+      contents.executeJavaScript(`(() => {
+        const ticket = document.querySelector("#print-preview-ticket") ?? document.body;
+        return Math.ceil(ticket.getBoundingClientRect().height);
+      })()`),
+      LAYOUT_TIMEOUT_MS,
+      "Tiempo de espera agotado al medir el alto del comprobante.",
+    ),
   );
   const measured = Math.ceil((heightPx * 25_400) / 96) + 4_000;
   return Math.max(40_000, Math.min(500_000, measured));
@@ -65,10 +105,25 @@ function nativePrint(
   settings: Electron.WebContentsPrintOptions,
   observer?: PrintTimingObserver,
 ): Promise<{ success: boolean; reason?: string }> {
-  return measurePrintStage("nativeprint", observer, () =>
-    new Promise((resolve) => {
-      contents.print(settings, (success, reason) => resolve({ success, reason }));
-    }),
+  return measurePrintStage(
+    "nativeprint",
+    observer,
+    () => {
+      const job = new Promise<{ success: boolean; reason?: string }>(
+        (resolve) => {
+          contents.print(settings, (success, reason) =>
+            resolve({ success, reason }),
+          );
+        },
+      );
+      return settings.silent === true
+        ? withTimeout(
+            job,
+            SILENT_PRINT_TIMEOUT_MS,
+            "Tiempo de espera agotado al imprimir sin intervención.",
+          )
+        : job;
+    },
     (result): PrintTimingOutcome => (result.success ? "success" : "error"),
   );
 }
@@ -188,8 +243,12 @@ async function showPreview(
   // A rejection can happen while loadURL is still pending; mark it observed immediately.
   void result.catch(() => undefined);
   try {
-    await window.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(previewDocument(html, profile, initialMessage))}`,
+    await withTimeout(
+      window.loadURL(
+        `data:text/html;charset=utf-8,${encodeURIComponent(previewDocument(html, profile, initialMessage))}`,
+      ),
+      LOAD_URL_TIMEOUT_MS,
+      "Tiempo de espera agotado al cargar la vista previa de impresión.",
     );
     if (!window.isDestroyed() && !backgroundE2e()) window.show();
   } catch (error) {
@@ -232,8 +291,12 @@ async function dispatchWithoutPreview(
   });
   try {
     await measurePrintStage("loadURL", onTiming, () =>
-      window.loadURL(
-        `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+      withTimeout(
+        window.loadURL(
+          `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+        ),
+        LOAD_URL_TIMEOUT_MS,
+        "Tiempo de espera agotado al cargar el comprobante para imprimir.",
       ),
     );
     const height = await measurePrintStage("layout", onTiming, () =>
@@ -325,59 +388,69 @@ export async function printHtml(
         );
   }
 
-  const window = new BrowserWindow({
-    show: false,
-    webPreferences: {
-      backgroundThrottling: backgroundE2e() ? false : undefined,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  try {
-    await measurePrintStage("loadURL", options.onTiming, () =>
-      window.loadURL(
-        `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
-      ),
-    );
-    if (escPos) {
-      const ticket = await measurePrintStage("layout", options.onTiming, async () => {
-        // Preserve the same visible fields as the graphical receipt. Separate
-        // CSS grid/flex columns explicitly for the printer's fixed-width font.
-        const text: string = await window.webContents.executeJavaScript(String.raw`(() => {
-          const rows = document.querySelectorAll(".row, .columns, .meta-line, .item-main, .product, .scheduled-datetime");
-          for (const row of Array.from(rows).reverse()) {
-            const display = getComputedStyle(row).display;
-            if (display !== "grid" && display !== "flex") continue;
-            const cells = Array.from(row.children, cell => cell.innerText.trim().replace(/\s+/g, " "));
-            row.textContent = cells.filter(Boolean).join(display === "grid" ? "\t" : " ");
-            row.style.display = "block";
-            row.style.whiteSpace = "pre-wrap";
-          }
-          return document.body.innerText;
-        })()`);
-        return encodeEscPosTicket(text, profile);
-      });
-      await measurePrintStage("nativeprint", options.onTiming, () => printCupsRaw(target, ticket));
-      return "PRINTED";
+  return runSerializedSilentPrint<PrintOutcome>(async () => {
+    const window = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        backgroundThrottling: backgroundE2e() ? false : undefined,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    try {
+      await measurePrintStage("loadURL", options.onTiming, () =>
+        withTimeout(
+          window.loadURL(
+            `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+          ),
+          LOAD_URL_TIMEOUT_MS,
+          "Tiempo de espera agotado al cargar el comprobante para imprimir.",
+        ),
+      );
+      if (escPos) {
+        const ticket = await measurePrintStage("layout", options.onTiming, async () => {
+          // Preserve the same visible fields as the graphical receipt. Separate
+          // CSS grid/flex columns explicitly for the printer's fixed-width font.
+          const text: string = await withTimeout(
+            window.webContents.executeJavaScript(String.raw`(() => {
+              const rows = document.querySelectorAll(".row, .columns, .meta-line, .item-main, .product, .scheduled-datetime");
+              for (const row of Array.from(rows).reverse()) {
+                const display = getComputedStyle(row).display;
+                if (display !== "grid" && display !== "flex") continue;
+                const cells = Array.from(row.children, cell => cell.innerText.trim().replace(/\s+/g, " "));
+                row.textContent = cells.filter(Boolean).join(display === "grid" ? "\t" : " ");
+                row.style.display = "block";
+                row.style.whiteSpace = "pre-wrap";
+              }
+              return document.body.innerText;
+            })()`),
+            LAYOUT_TIMEOUT_MS,
+            "Tiempo de espera agotado al preparar el ticket térmico.",
+          );
+          return encodeEscPosTicket(text, profile);
+        });
+        await measurePrintStage("nativeprint", options.onTiming, () => printCupsRaw(target, ticket));
+        return "PRINTED";
+      }
+      const height = await measurePrintStage("layout", options.onTiming, () =>
+        contentHeightMicrons(window.webContents),
+      );
+      const result = await nativePrint(
+        window.webContents,
+        { ...printSettings(profile, height), silent: true, deviceName: target },
+        options.onTiming,
+      );
+      if (!result.success) throw new Error(result.reason || "Falló la impresión directa.");
+    } catch (error) {
+      throw error instanceof Error
+        ? error
+        : new Error(
+            "Falló la impresión directa; revise la impresora y reintente.",
+          );
+    } finally {
+      if (!window.isDestroyed()) window.destroy();
     }
-    const height = await measurePrintStage("layout", options.onTiming, () =>
-      contentHeightMicrons(window.webContents),
-    );
-    const result = await nativePrint(
-      window.webContents,
-      { ...printSettings(profile, height), silent: true, deviceName: target },
-      options.onTiming,
-    );
-    if (!result.success) throw new Error(result.reason || "Falló la impresión directa.");
-  } catch (error) {
-    throw error instanceof Error
-      ? error
-      : new Error(
-          "Falló la impresión directa; revise la impresora y reintente.",
-        );
-  } finally {
-    if (!window.isDestroyed()) window.destroy();
-  }
-  return "PRINTED";
+    return "PRINTED";
+  });
 }

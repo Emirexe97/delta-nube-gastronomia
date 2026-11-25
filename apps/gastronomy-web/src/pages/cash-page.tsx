@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   BootstrapDto,
@@ -43,10 +43,8 @@ import {
   formatMoney,
   moneyInputValue,
   humanError,
-  paidOrdersForSession,
   paymentText,
   parseMoneyInput,
-  salesByChannel,
   statusLabels,
   typeLabels,
 } from "../lib";
@@ -63,47 +61,97 @@ export function CashPage({ data }: { data: BootstrapDto }) {
   );
   const [activeTab, setActiveTab] = useState<"current" | "sales" | "movements" | "history">("current");
   const [salesPage, setSalesPage] = useState(1);
+  const [movementsLimit, setMovementsLimit] = useState(100);
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditSessionId, setAuditSessionId] = useState<string | null>(null);
   const session = data.cashSession;
-  const manualMovements = (session?.movements ?? []).filter(
-    (m) => m.type !== "SALE",
+  useEffect(() => {
+    setMovementsLimit(100);
+  }, [session?.id]);
+  const manualMovements = useMemo(
+    () => (session?.movements ?? []).filter((m) => m.type !== "SALE"),
+    [session?.movements],
   );
-  const paidOrders = paidOrdersForSession(data.orders, session);
+  const paidOrders = useMemo(() => {
+    const filtered = data.orders.filter(
+      (order) =>
+        order.lifecycleStatus === "CONFIRMED" &&
+        order.operationalStatus !== "CANCELLED" &&
+        order.paidMinor > 0 &&
+        (!session || order.cashSessionPaidId === session.id),
+    );
+    return filtered
+      .map((order) => ({ order, updatedAtMs: Date.parse(order.updatedAt) }))
+      .sort((a, b) => b.updatedAtMs - a.updatedAtMs)
+      .map((entry) => entry.order);
+  }, [data.orders, session]);
   const salesPages = Math.max(1, Math.ceil(paidOrders.length / 20));
   const visibleSalesPage = Math.min(salesPage, salesPages);
-  const channelTotals = salesByChannel(paidOrders);
-  const paymentTotals = paidOrders
-    .flatMap((o) => o.payments)
-    .filter((p) => p.status !== "REFUNDED")
-    .reduce<Map<string, { name: string; amountMinor: number }>>((map, p) => {
-      const item = map.get(p.methodCode) ?? {
-        name: p.methodName || p.methodCode,
-        amountMinor: 0,
-      };
-      item.amountMinor += p.amountMinor - p.refundedMinor;
-      map.set(p.methodCode, item);
-      return map;
-    }, new Map());
-  const pendingDeliveryLedger = data.deliveryLedger.filter(
-    (row) =>
-      row.cashSessionId === session?.id &&
-      row.status === "PENDING" &&
-      row.amountDueMinor > row.settledAmountMinor,
+  const channelTotals = useMemo(() => {
+    const totals = { DINE_IN: 0, TAKEAWAY: 0, DELIVERY: 0 };
+    for (const order of paidOrders) {
+      totals[order.type] += order.paidMinor;
+    }
+    return totals;
+  }, [paidOrders]);
+  const paymentTotals = useMemo(() => {
+    const map = new Map<string, { name: string; amountMinor: number }>();
+    for (const order of paidOrders) {
+      for (const payment of order.payments) {
+        if (payment.status === "REFUNDED") continue;
+        const net = payment.amountMinor - payment.refundedMinor;
+        const item = map.get(payment.methodCode);
+        if (item) {
+          item.amountMinor += net;
+        } else {
+          map.set(payment.methodCode, {
+            name: payment.methodName || payment.methodCode,
+            amountMinor: net,
+          });
+        }
+      }
+    }
+    return map;
+  }, [paidOrders]);
+  const {
+    pendingDeliveryLedger,
+    pendingDriverOwesMinor,
+    pendingBusinessOwesMinor,
+  } = useMemo(() => {
+    const pending: typeof data.deliveryLedger = [];
+    let driverOwes = 0;
+    let businessOwes = 0;
+    for (const row of data.deliveryLedger) {
+      if (
+        row.cashSessionId === session?.id &&
+        row.status === "PENDING" &&
+        row.amountDueMinor > row.settledAmountMinor
+      ) {
+        pending.push(row);
+        const remaining = row.amountDueMinor - row.settledAmountMinor;
+        if (row.direction === "DRIVER_OWES_BUSINESS") {
+          driverOwes += remaining;
+        } else if (row.direction === "BUSINESS_OWES_DRIVER") {
+          businessOwes += remaining;
+        }
+      }
+    }
+    return {
+      pendingDeliveryLedger: pending,
+      pendingDriverOwesMinor: driverOwes,
+      pendingBusinessOwesMinor: businessOwes,
+    };
+  }, [data.deliveryLedger, session?.id]);
+  const pendingOrderCount = useMemo(
+    () => countPendingCashOrders(data.orders, session?.id),
+    [data.orders, session?.id],
   );
-  const pendingOrderCount = countPendingCashOrders(data.orders, session?.id);
-  const pendingDriverOwesMinor = pendingDeliveryLedger
-    .filter((row) => row.direction === "DRIVER_OWES_BUSINESS")
-    .reduce((sum, row) => sum + row.amountDueMinor - row.settledAmountMinor, 0);
-  const pendingBusinessOwesMinor = pendingDeliveryLedger
-    .filter((row) => row.direction === "BUSINESS_OWES_DRIVER")
-    .reduce((sum, row) => sum + row.amountDueMinor - row.settledAmountMinor, 0);
   return (
     <div className="panel-enter mx-auto max-w-[1200px] space-y-4">
       <div>
         <h2 className="text-lg font-extrabold">Caja y día comercial</h2>
       </div>
-      <nav aria-label="Secciones de caja" className="sticky top-0 z-10 -mx-1 flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/95 p-1 shadow-sm backdrop-blur">
+      <nav aria-label="Secciones de caja" className="sticky top-0 z-10 -mx-1 flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-white/95 p-1 shadow-sm">
         {([['current', 'Turno actual'], ['sales', 'Ventas'], ['movements', 'Movimientos'], ['history', 'Historial']] as const).map(([value, label]) => (
           <button key={value} type="button" aria-current={activeTab === value ? "page" : undefined} onClick={() => setActiveTab(value)} className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition ${activeTab === value ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
             {label}
@@ -267,6 +315,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
               </p>
             </div>
             {manualMovements.length ? (
+              <>
               <div className="max-h-[52vh] overflow-auto">
                 <table className="dn-table min-w-[640px]">
                   <thead>
@@ -280,7 +329,7 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {manualMovements.map((movement) => {
+                    {manualMovements.slice(0, movementsLimit).map((movement) => {
                       const isReversal = Boolean(movement.referenceId);
                       const isReversed = Boolean(movement.reversedById);
                       const isIncome =
@@ -348,6 +397,21 @@ export function CashPage({ data }: { data: BootstrapDto }) {
                   </tbody>
                 </table>
               </div>
+              {manualMovements.length > movementsLimit ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-3">
+                  <span className="text-xs text-slate-600">
+                    Mostrando {movementsLimit} de {manualMovements.length} movimientos
+                  </span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => setMovementsLimit((limit) => limit + 100)}
+                  >
+                    Mostrar más movimientos
+                  </Button>
+                </div>
+              ) : null}
+            </>
             ) : (
               <p className="p-8 text-center text-sm text-slate-500">
                 No hay movimientos manuales en este turno.

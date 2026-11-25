@@ -302,6 +302,29 @@ export function TableFloorPlan({
     pan: Position;
     center: Position;
   } | null>(null);
+  const pointerMoveRafRef = useRef<number | null>(null);
+  const pendingPointerMoveRef = useRef<(() => void) | null>(null);
+
+  const cancelPendingPointerMove = () => {
+    if (pointerMoveRafRef.current !== null) {
+      window.cancelAnimationFrame(pointerMoveRafRef.current);
+      pointerMoveRafRef.current = null;
+    }
+    pendingPointerMoveRef.current = null;
+  };
+
+  const schedulePointerMove = (apply: () => void) => {
+    pendingPointerMoveRef.current = apply;
+    if (pointerMoveRafRef.current !== null) return;
+    pointerMoveRafRef.current = window.requestAnimationFrame(() => {
+      pointerMoveRafRef.current = null;
+      const run = pendingPointerMoveRef.current;
+      pendingPointerMoveRef.current = null;
+      run?.();
+    });
+  };
+
+  useEffect(() => cancelPendingPointerMove, []);
 
   const clampPan = (
     panX: number,
@@ -544,26 +567,48 @@ export function TableFloorPlan({
 
   const onViewportPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!panDrag) return;
-    const bounds = viewportRef.current?.getBoundingClientRect();
-    if (!bounds) return;
-    const dx = event.clientX - panDrag.startX;
-    const dy = event.clientY - panDrag.startY;
-    setView((current) => ({
-      ...current,
-      pan: clampPan(
-        panDrag.initialPanX + dx,
-        panDrag.initialPanY + dy,
-        current.zoom,
-        bounds.width,
-        bounds.height,
-      ),
-    }));
+    const clientX = event.clientX;
+    const clientY = event.clientY;
+    const activePanDrag = panDrag;
+    schedulePointerMove(() => {
+      const bounds = viewportRef.current?.getBoundingClientRect();
+      if (!bounds) return;
+      const dx = clientX - activePanDrag.startX;
+      const dy = clientY - activePanDrag.startY;
+      setView((current) => ({
+        ...current,
+        pan: clampPan(
+          activePanDrag.initialPanX + dx,
+          activePanDrag.initialPanY + dy,
+          current.zoom,
+          bounds.width,
+          bounds.height,
+        ),
+      }));
+    });
   };
 
   const onViewportPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!panDrag) return;
-    const dx = Math.abs(event.clientX - panDrag.startX);
-    const dy = Math.abs(event.clientY - panDrag.startY);
+    cancelPendingPointerMove();
+    const rawDx = event.clientX - panDrag.startX;
+    const rawDy = event.clientY - panDrag.startY;
+    const bounds = viewportRef.current?.getBoundingClientRect();
+    if (bounds && (rawDx !== 0 || rawDy !== 0)) {
+      const activePanDrag = panDrag;
+      setView((current) => ({
+        ...current,
+        pan: clampPan(
+          activePanDrag.initialPanX + rawDx,
+          activePanDrag.initialPanY + rawDy,
+          current.zoom,
+          bounds.width,
+          bounds.height,
+        ),
+      }));
+    }
+    const dx = Math.abs(rawDx);
+    const dy = Math.abs(rawDy);
     setPanDrag(null);
     if (dx < 3 && dy < 3 && editing) {
       setSelectedTableId(null);
@@ -624,9 +669,20 @@ export function TableFloorPlan({
     );
   }, [selectedShape]);
 
-  const sectorTables = tables
-    .filter((table) => table.sectorId === activeSectorId)
-    .sort((left, right) => left.number - right.number);
+  const sectorTableCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const table of tables) {
+      counts.set(table.sectorId, (counts.get(table.sectorId) ?? 0) + 1);
+    }
+    return counts;
+  }, [tables]);
+  const sectorTables = useMemo(
+    () =>
+      tables
+        .filter((table) => table.sectorId === activeSectorId)
+        .sort((left, right) => left.number - right.number),
+    [tables, activeSectorId],
+  );
   // Filtering the rendered tables keeps geometry, fit and editing data intact.
   const visibleSectorTables =
     onlyOccupied && !editing
@@ -1114,6 +1170,7 @@ export function TableFloorPlan({
   ) => {
     event.preventDefault();
     event.stopPropagation();
+    cancelPendingPointerMove();
     setDrag(null);
     setShapeDrag(null);
     setResize({ target, id, handle, startRect: rect });
@@ -1128,7 +1185,12 @@ export function TableFloorPlan({
     if (!resize || resize.target !== target || resize.id !== id) return;
     event.preventDefault();
     event.stopPropagation();
-    applyResize(resize, resizedRect(resize, event.clientX, event.clientY));
+    const clientX = event.clientX;
+    const clientY = event.clientY;
+    const activeResize = resize;
+    schedulePointerMove(() => {
+      applyResize(activeResize, resizedRect(activeResize, clientX, clientY));
+    });
   };
 
   const finishResize = (
@@ -1139,6 +1201,7 @@ export function TableFloorPlan({
     if (!resize || resize.target !== target || resize.id !== id) return;
     event.preventDefault();
     event.stopPropagation();
+    cancelPendingPointerMove();
     const next = resizedRect(resize, event.clientX, event.clientY);
     applyResize(resize, next);
     setResize(null);
@@ -1261,13 +1324,16 @@ export function TableFloorPlan({
     }
   };
 
-  const hasOverlappingTables = sectorTables.some((table, index) =>
-    sectorTables
-      .slice(index + 1)
-      .some((other) =>
-        rectsOverlap(currentTableRect(table), currentTableRect(other), 0),
-      ),
-  );
+  const hasOverlappingTables = useMemo(() => {
+    const rects = sectorTables.map(currentTableRect);
+    for (let i = 0; i < rects.length; i += 1) {
+      const rectA = rects[i]!;
+      for (let j = i + 1; j < rects.length; j += 1) {
+        if (rectsOverlap(rectA, rects[j]!, 0)) return true;
+      }
+    }
+    return false;
+  }, [sectorTables, positions, selectedTableId, draft]);
 
   return (
     <div className="space-y-3">
@@ -1279,9 +1345,7 @@ export function TableFloorPlan({
             aria-label="Sectores del salón"
           >
             {sectors.map((sector) => {
-              const count = tables.filter(
-                (table) => table.sectorId === sector.id,
-              ).length;
+              const count = sectorTableCounts.get(sector.id) ?? 0;
               return (
                 <button
                   key={sector.id}
@@ -1522,7 +1586,10 @@ export function TableFloorPlan({
             onPointerDown={onViewportPointerDown}
             onPointerMove={onViewportPointerMove}
             onPointerUp={onViewportPointerUp}
-            onPointerCancel={() => setPanDrag(null)}
+            onPointerCancel={() => {
+              cancelPendingPointerMove();
+              setPanDrag(null);
+            }}
             className={`relative min-h-[420px] overflow-hidden bg-slate-200/70 sm:min-h-[480px] lg:min-h-[540px] select-none touch-none ${panDrag ? "cursor-grabbing" : drawKind ? "cursor-crosshair" : "cursor-grab"}`}
           >
             <div
@@ -1717,6 +1784,9 @@ export function TableFloorPlan({
                     </span>
                   </>
                 );
+                const isDraggingShape =
+                  shapeDrag?.shapeId === shape.id ||
+                  (resize?.target === "SHAPE" && resize.id === shape.id);
                 return (
                   <div
                     key={shape.id}
@@ -1736,6 +1806,7 @@ export function TableFloorPlan({
                         if (!editing || drawKind) return;
                         event.preventDefault();
                         event.stopPropagation();
+                        cancelPendingPointerMove();
                         const bounds =
                           canvasRef.current?.getBoundingClientRect();
                         if (!bounds) return;
@@ -1756,20 +1827,26 @@ export function TableFloorPlan({
                       }}
                       onPointerMove={(event) => {
                         if (shapeDrag?.shapeId !== shape.id) return;
-                        const next = shapePositionFromPointer(
-                          appearance,
-                          event.clientX,
-                          event.clientY,
-                          shapeDrag.offsetX,
-                          shapeDrag.offsetY,
-                        );
-                        setShapePositions((current) => ({
-                          ...current,
-                          [shape.id]: next,
-                        }));
+                        const clientX = event.clientX;
+                        const clientY = event.clientY;
+                        const activeShapeDrag = shapeDrag;
+                        schedulePointerMove(() => {
+                          const next = shapePositionFromPointer(
+                            appearance,
+                            clientX,
+                            clientY,
+                            activeShapeDrag.offsetX,
+                            activeShapeDrag.offsetY,
+                          );
+                          setShapePositions((current) => ({
+                            ...current,
+                            [shape.id]: next,
+                          }));
+                        });
                       }}
                       onPointerUp={(event) => {
                         if (shapeDrag?.shapeId !== shape.id) return;
+                        cancelPendingPointerMove();
                         const next = shapePositionFromPointer(
                           appearance,
                           event.clientX,
@@ -1788,8 +1865,11 @@ export function TableFloorPlan({
                           selected && shapeDraft ? shapeDraft : undefined,
                         );
                       }}
-                      onPointerCancel={() => setShapeDrag(null)}
-                      className={`absolute inset-0 grid place-items-center px-2 text-center text-xs font-bold shadow-sm outline-none transition focus:ring-4 focus:ring-brand-200 ${isVector ? "border-0 bg-transparent text-slate-800" : "border-2 border-black/15"} ${appearance.kind === "ELLIPSE" ? "rounded-full" : "rounded-lg"} ${editing ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${selected ? "ring-4 ring-amber-300" : ""}`}
+                      onPointerCancel={() => {
+                        cancelPendingPointerMove();
+                        setShapeDrag(null);
+                      }}
+                      className={`absolute inset-0 grid place-items-center px-2 text-center text-xs font-bold shadow-sm outline-none ${isDraggingShape ? "" : "transition "}focus:ring-4 focus:ring-brand-200 ${isVector ? "border-0 bg-transparent text-slate-800" : "border-2 border-black/15"} ${appearance.kind === "ELLIPSE" ? "rounded-full" : "rounded-lg"} ${editing ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${selected ? "ring-4 ring-amber-300" : ""}`}
                       style={
                         isVector
                           ? { color: appearance.strokeColor }
@@ -1839,6 +1919,7 @@ export function TableFloorPlan({
                             onPointerDown={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
+                              cancelPendingPointerMove();
                               setNodeDrag({ shapeId: shape.id, nodeIndex });
                               event.currentTarget.setPointerCapture(
                                 event.pointerId,
@@ -1850,13 +1931,17 @@ export function TableFloorPlan({
                                 nodeDrag.nodeIndex !== nodeIndex
                               )
                                 return;
-                              updateShapeNode(
-                                shape,
-                                nodeIndex,
-                                event.clientX,
-                                event.clientY,
-                                false,
-                              );
+                              const clientX = event.clientX;
+                              const clientY = event.clientY;
+                              schedulePointerMove(() => {
+                                updateShapeNode(
+                                  shape,
+                                  nodeIndex,
+                                  clientX,
+                                  clientY,
+                                  false,
+                                );
+                              });
                             }}
                             onPointerUp={(event) => {
                               if (
@@ -1864,6 +1949,7 @@ export function TableFloorPlan({
                                 nodeDrag.nodeIndex !== nodeIndex
                               )
                                 return;
+                              cancelPendingPointerMove();
                               updateShapeNode(
                                 shape,
                                 nodeIndex,
@@ -1873,7 +1959,10 @@ export function TableFloorPlan({
                               );
                               setNodeDrag(null);
                             }}
-                            onPointerCancel={() => setNodeDrag(null)}
+                            onPointerCancel={() => {
+                              cancelPendingPointerMove();
+                              setNodeDrag(null);
+                            }}
                           />
                         ))
                       : null}
@@ -1892,6 +1981,9 @@ export function TableFloorPlan({
                 const height =
                   selected && draft ? draft.layoutHeight : table.layoutHeight;
                 const compact = zoom < 0.8;
+                const isDraggingTable =
+                  drag?.tableId === table.id ||
+                  (resize?.target === "TABLE" && resize.id === table.id);
                 return (
                   <div
                     key={table.id}
@@ -1919,6 +2011,7 @@ export function TableFloorPlan({
                         if (!editing || drawKind) return;
                         event.preventDefault();
                         event.stopPropagation();
+                        cancelPendingPointerMove();
                         const bounds =
                           canvasRef.current?.getBoundingClientRect();
                         if (!bounds) return;
@@ -1939,24 +2032,31 @@ export function TableFloorPlan({
                       }}
                       onPointerMove={(event) => {
                         if (!editing || drag?.tableId !== table.id) return;
-                        const next = positionFromPointer(
-                          {
-                            ...table,
-                            layoutWidth: width,
-                            layoutHeight: height,
-                          },
-                          event.clientX,
-                          event.clientY,
-                          drag.offsetX,
-                          drag.offsetY,
-                        );
-                        setPositions((current) => ({
-                          ...current,
-                          [table.id]: next,
-                        }));
+                        const clientX = event.clientX;
+                        const clientY = event.clientY;
+                        const activeDrag = drag;
+                        const tableForDrag = {
+                          ...table,
+                          layoutWidth: width,
+                          layoutHeight: height,
+                        };
+                        schedulePointerMove(() => {
+                          const next = positionFromPointer(
+                            tableForDrag,
+                            clientX,
+                            clientY,
+                            activeDrag.offsetX,
+                            activeDrag.offsetY,
+                          );
+                          setPositions((current) => ({
+                            ...current,
+                            [table.id]: next,
+                          }));
+                        });
                       }}
                       onPointerUp={(event) => {
                         if (!editing || drag?.tableId !== table.id) return;
+                        cancelPendingPointerMove();
                         const next = positionFromPointer(
                           {
                             ...table,
@@ -1975,7 +2075,10 @@ export function TableFloorPlan({
                         setDrag(null);
                         persistPosition(table, next);
                       }}
-                      onPointerCancel={() => setDrag(null)}
+                      onPointerCancel={() => {
+                        cancelPendingPointerMove();
+                        setDrag(null);
+                      }}
                       onKeyDown={(event) => {
                         if (
                           !editing ||
@@ -2017,7 +2120,7 @@ export function TableFloorPlan({
                         }));
                         persistPosition(table, next);
                       }}
-                      className={`absolute inset-0 grid place-items-center overflow-hidden border-2 px-1 text-center shadow-sm transition focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-xl" : "rounded-lg"} ${occupied ? "border-brand-500 bg-brand-700 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:shadow-md"}`}
+                      className={`absolute inset-0 grid place-items-center overflow-hidden border-2 px-1 text-center shadow-sm ${isDraggingTable ? "" : "transition "}focus:outline-none focus:ring-4 focus:ring-brand-200 disabled:cursor-not-allowed disabled:opacity-60 ${table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-xl" : "rounded-lg"} ${occupied ? "border-brand-500 bg-brand-700 text-white" : "border-emerald-400 bg-white text-slate-700"} ${selected ? "ring-4 ring-amber-300" : ""} ${editing ? "cursor-grab select-none active:cursor-grabbing" : "hover:shadow-md"}`}
                       style={{ touchAction: "none" }}
                     >
                       <span className="min-w-0 max-h-full max-w-full overflow-hidden">

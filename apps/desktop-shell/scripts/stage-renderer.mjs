@@ -8,4 +8,7 @@ const target = resolve(root, "renderer");
 
 await rm(target, { recursive: true, force: true });
 await mkdir(target, { recursive: true });
-await cp(source, target, { recursive: true });
+await cp(source, target, {
+  recursive: true,
+  filter: (src) => !src.endsWith(".map"),
+});

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   cashClosingTotals,
@@ -153,14 +153,22 @@ export function CashSessionReportModal({
 }) {
   const [filters, setFilters] = useState<FilterState>(empty);
   const [applied, setApplied] = useState<FilterState>(empty);
+  const [ordersLimit, setOrdersLimit] = useState(100);
+  const [movementsLimit, setMovementsLimit] = useState(100);
   const [printMessage, setPrintMessage] = useState<string | null>(null);
   const [printModalOpen, setPrintModalOpen] = useState(false);
   useEffect(() => {
     setFilters(empty);
     setApplied(empty);
+    setOrdersLimit(100);
+    setMovementsLimit(100);
     setPrintMessage(null);
     setPrintModalOpen(false);
   }, [sessionId, open]);
+  useEffect(() => {
+    setOrdersLimit(100);
+    setMovementsLimit(100);
+  }, [applied]);
   const report = useQuery({
     queryKey: ["cash-session-report", sessionId, applied],
     enabled: open && Boolean(sessionId),
@@ -201,36 +209,74 @@ export function CashSessionReportModal({
     : undefined;
   const change = (key: keyof FilterState, value: string) =>
     setFilters((prev) => ({ ...prev, [key]: value }));
+  const nonProductOptions = useMemo(() => {
+    if (!data) {
+      return {
+        tableId: [],
+        waiterUserId: [],
+        categoryName: [],
+        orderType: [],
+        paymentMethodCode: [],
+        operationalStatus: [],
+      };
+    }
+    return {
+      tableId: data.byTable.map((x) => ({
+        value: x.tableId ?? "",
+        label: x.name,
+      })),
+      waiterUserId: data.byWaiter.map((x) => ({
+        value: x.waiterUserId ?? "",
+        label: x.name,
+      })),
+      categoryName: data.byCategory.map((x) => ({
+        value: x.name,
+        label: x.name,
+      })),
+      orderType: data.byType.map((x) => ({
+        value: x.type,
+        label: typeLabels[x.type],
+      })),
+      paymentMethodCode: data.byPaymentMethod.map((x) => ({
+        value: x.code,
+        label: x.name,
+      })),
+      operationalStatus: [],
+    };
+  }, [data]);
+  const productOptions = useMemo(() => {
+    if (!data) return [];
+    const allProductOptions = data.byProduct.map((x) => ({
+      value: x.productId ?? "",
+      label: x.name,
+    }));
+    if (allProductOptions.length <= 150) return allProductOptions;
+    const orderProductIds = new Set<string>();
+    for (const order of data.orders) {
+      for (const item of order.items) {
+        if (item.productId) orderProductIds.add(item.productId);
+      }
+    }
+    const inOrders = allProductOptions.filter(
+      (option) => option.value && orderProductIds.has(option.value),
+    );
+    const source = inOrders.length > 0 ? inOrders : allProductOptions;
+    const capped = source.slice(0, 120);
+    if (
+      filters.productId &&
+      !capped.some((option) => option.value === filters.productId)
+    ) {
+      const selected = allProductOptions.find(
+        (option) => option.value === filters.productId,
+      );
+      if (selected) {
+        return [selected, ...capped.slice(0, 119)];
+      }
+    }
+    return capped;
+  }, [data, filters.productId]);
   const options = (key: keyof FilterState) =>
-    data
-      ? {
-          tableId: data.byTable.map((x) => ({
-            value: x.tableId ?? "",
-            label: x.name,
-          })),
-          waiterUserId: data.byWaiter.map((x) => ({
-            value: x.waiterUserId ?? "",
-            label: x.name,
-          })),
-          productId: data.byProduct.map((x) => ({
-            value: x.productId ?? "",
-            label: x.name,
-          })),
-          categoryName: data.byCategory.map((x) => ({
-            value: x.name,
-            label: x.name,
-          })),
-          orderType: data.byType.map((x) => ({
-            value: x.type,
-            label: typeLabels[x.type],
-          })),
-          paymentMethodCode: data.byPaymentMethod.map((x) => ({
-            value: x.code,
-            label: x.name,
-          })),
-          operationalStatus: [],
-        }[key]
-      : [];
+    key === "productId" ? productOptions : nonProductOptions[key];
   return (
     <Modal
       open={open}
@@ -467,7 +513,7 @@ export function CashSessionReportModal({
                         </tr>
                       </thead>
                       <tbody>
-                        {data.orders.map((o) => (
+                        {data.orders.slice(0, ordersLimit).map((o) => (
                           <tr key={o.id}>
                             <td>#{o.number}</td>
                             <td>{o.tableNumber ?? "—"}</td>
@@ -486,6 +532,20 @@ export function CashSessionReportModal({
                       </tbody>
                     </table>
                   </div>
+                  {data.orders.length > ordersLimit ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs text-slate-600">
+                        Mostrando {ordersLimit} de {data.orders.length} pedidos
+                      </span>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => setOrdersLimit((limit) => limit + 100)}
+                      >
+                        Mostrar más pedidos
+                      </Button>
+                    </div>
+                  ) : null}
                   <div
                     role="region"
                     aria-label="Movimientos del turno"
@@ -503,7 +563,7 @@ export function CashSessionReportModal({
                         </tr>
                       </thead>
                       <tbody>
-                        {data.movements.map((m) => (
+                        {data.movements.slice(0, movementsLimit).map((m) => (
                           <tr key={m.id}>
                             <td>{m.type}</td>
                             <td>{m.reason ?? "—"}</td>
@@ -527,6 +587,20 @@ export function CashSessionReportModal({
                       </tbody>
                     </table>
                   </div>
+                  {data.movements.length > movementsLimit ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs text-slate-600">
+                        Mostrando {movementsLimit} de {data.movements.length} movimientos
+                      </span>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => setMovementsLimit((limit) => limit + 100)}
+                      >
+                        Mostrar más movimientos
+                      </Button>
+                    </div>
+                  ) : null}
                 </>
               ) : (
                 <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
@@ -578,32 +652,42 @@ export function CashSessionReportModal({
 }
 
 function Aggregates({ data }: { data: CashSessionReportDto }) {
-  const standardGroups = [
-    [
-      "Por producto",
-      data.byProduct.map((x) => `${x.name}: ${formatMoney(x.amountMinor)}`),
-    ],
-    [
-      "Por categoría",
-      data.byCategory.map((x) => `${x.name}: ${formatMoney(x.amountMinor)}`),
-    ],
-    [
-      "Por mesa",
-      data.byTable.map((x) => `${x.name}: ${formatMoney(x.amountMinor)}`),
-    ],
-    [
-      "Por tipo",
-      data.byType.map(
-        (x) => `${typeLabels[x.type]}: ${formatMoney(x.amountMinor)}`,
-      ),
-    ],
-    [
-      "Por medio de pago",
-      data.byPaymentMethod.map(
-        (x) => `${x.name}: ${formatMoney(x.amountMinor)}`,
-      ),
-    ],
-  ] as const;
+  const [productLimit, setProductLimit] = useState(100);
+  useEffect(() => {
+    setProductLimit(100);
+  }, [data]);
+  const standardGroups = useMemo(
+    () =>
+      [
+        [
+          "Por producto",
+          data.byProduct
+            .slice(0, productLimit)
+            .map((x) => `${x.name}: ${formatMoney(x.amountMinor)}`),
+        ],
+        [
+          "Por categoría",
+          data.byCategory.map((x) => `${x.name}: ${formatMoney(x.amountMinor)}`),
+        ],
+        [
+          "Por mesa",
+          data.byTable.map((x) => `${x.name}: ${formatMoney(x.amountMinor)}`),
+        ],
+        [
+          "Por tipo",
+          data.byType.map(
+            (x) => `${typeLabels[x.type]}: ${formatMoney(x.amountMinor)}`,
+          ),
+        ],
+        [
+          "Por medio de pago",
+          data.byPaymentMethod.map(
+            (x) => `${x.name}: ${formatMoney(x.amountMinor)}`,
+          ),
+        ],
+      ] as const,
+    [data, productLimit],
+  );
   return (
     <div className="grid min-h-0 min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3">
       {standardGroups.map(([label, values]) => (
@@ -613,18 +697,34 @@ function Aggregates({ data }: { data: CashSessionReportDto }) {
         >
           <p className="text-xs font-bold uppercase text-slate-600">{label}</p>
           {values.length ? (
-            <div
-              role="region"
-              aria-label={`Resumen ${label}`}
-              className="mt-1 max-h-48 min-h-0 overflow-auto break-words"
-              tabIndex={0}
-            >
-              {values.map((v) => (
-                <p key={v} className="mt-1 text-xs">
-                  {v}
-                </p>
-              ))}
-            </div>
+            <>
+              <div
+                role="region"
+                aria-label={`Resumen ${label}`}
+                className="mt-1 max-h-48 min-h-0 overflow-auto break-words"
+                tabIndex={0}
+              >
+                {values.map((v, index) => (
+                  <p key={`${v}-${index}`} className="mt-1 text-xs">
+                    {v}
+                  </p>
+                ))}
+              </div>
+              {label === "Por producto" && data.byProduct.length > productLimit ? (
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-slate-600">
+                    Mostrando {productLimit} de {data.byProduct.length}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => setProductLimit((limit) => limit + 100)}
+                  >
+                    Mostrar más productos
+                  </Button>
+                </div>
+              ) : null}
+            </>
           ) : (
             <p className="mt-1 text-xs text-slate-600">Sin datos</p>
           )}

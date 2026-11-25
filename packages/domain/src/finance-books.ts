@@ -114,8 +114,47 @@ export function validateFinanceEntry(
     { from: "0001-01-01", to: "9999-12-31" },
     sources,
   );
+  const eventsById = new Map<string, FinanceBookEvent>();
+  for (const event of events) {
+    if (!eventsById.has(event.id)) eventsById.set(event.id, event);
+  }
+  const purchasesById = new Map<
+    string,
+    FinanceBookSources["purchases"][number]
+  >();
+  for (const p of sources.purchases) {
+    if (!purchasesById.has(p.id)) purchasesById.set(p.id, p);
+  }
+  const posPaymentsById = new Map<
+    string,
+    FinanceBookSources["posPayments"][number]
+  >();
+  const posPaymentOrderIds = new Set<string>();
+  for (const p of sources.posPayments) {
+    if (!posPaymentsById.has(p.id)) posPaymentsById.set(p.id, p);
+    posPaymentOrderIds.add(p.orderId);
+  }
+  const adjustmentTargetKeys = new Set<string>();
+  if (sources.adjustmentTargets) {
+    for (const ref of sources.adjustmentTargets) {
+      adjustmentTargetKeys.add(`${ref.type}\0${ref.id}`);
+    }
+  }
+  const theoreticalByItemId = new Map<
+    string,
+    FinanceBookSources["theoreticalInventory"][number]
+  >();
+  for (const t of sources.theoreticalInventory) {
+    if (!theoreticalByItemId.has(t.itemId)) theoreticalByItemId.set(t.itemId, t);
+  }
+  const bookAccountsById = new Map(book.accounts.map((a) => [a.id, a]));
+  const bookObligationsById = new Map(book.obligations.map((o) => [o.id, o]));
+  const bookObligationPurchaseIds = new Set(
+    book.obligations.map((o) => o.purchaseRef.id),
+  );
+  const bookSettlementsById = new Map(book.settlements.map((s) => [s.id, s]));
   const account = (id: string) => {
-    const found = book.accounts.find((a) => a.id === id);
+    const found = bookAccountsById.get(id);
     if (!found) throw new Error("La cuenta seleccionada no existe.");
     return found;
   };
@@ -126,7 +165,7 @@ export function validateFinanceEntry(
       !validAmount(input.account.openingBalanceMinor)
     )
       throw new Error("Revisá los datos de la cuenta y su saldo inicial.");
-    if (book.accounts.some((a) => a.id === input.account.id))
+    if (bookAccountsById.has(input.account.id))
       throw new Error("La cuenta ya existe.");
   } else if (input.kind === "transfer") {
     if (input.fromAccountId === input.toAccountId)
@@ -155,12 +194,11 @@ export function validateFinanceEntry(
         "La obligación debe vincularse a una compra válida y tener un importe mayor a cero.",
       );
     if (
-      book.obligations.some(
-        (x) => x.id === o.id || x.purchaseRef.id === o.purchaseRef.id,
-      )
+      bookObligationsById.has(o.id) ||
+      bookObligationPurchaseIds.has(o.purchaseRef.id)
     )
       throw new Error("La compra ya tiene una obligación registrada.");
-    const purchase = sources.purchases.find((p) => p.id === o.purchaseRef.id);
+    const purchase = purchasesById.get(o.purchaseRef.id);
     if (
       !purchase ||
       purchase.status !== "confirmed" ||
@@ -175,7 +213,7 @@ export function validateFinanceEntry(
         "La compra cambió o no está confirmada. Actualizá los datos antes de crear la obligación.",
       );
   } else if (input.kind === "obligation_payment") {
-    const o = book.obligations.find((x) => x.id === input.obligationId);
+    const o = bookObligationsById.get(input.obligationId);
     const a = account(input.accountId);
     if (
       !o ||
@@ -185,7 +223,7 @@ export function validateFinanceEntry(
       throw new Error(
         "El pago debe ser positivo y no superar la deuda pendiente.",
       );
-    const purchase = sources.purchases.find((p) => p.id === o.purchaseRef.id);
+    const purchase = purchasesById.get(o.purchaseRef.id);
     const currentOutstanding =
       purchase?.status === "confirmed"
         ? Math.max(0, purchase.totalMinor - o.paidMinor)
@@ -230,12 +268,10 @@ export function validateFinanceEntry(
         "El lote debe tener bruto, deducciones y neto esperado coherentes.",
       );
     account(s.accountId);
-    if (book.settlements.some((x) => x.id === s.id))
+    if (bookSettlementsById.has(s.id))
       throw new Error("El lote ya existe.");
     const used = new Set(book.settlements.flatMap((x) => x.paymentIds));
-    const payments = s.paymentIds.map((id) =>
-      sources.posPayments.find((p) => p.id === id),
-    );
+    const payments = s.paymentIds.map((id) => posPaymentsById.get(id));
     if (
       payments.some(
         (p, idx) =>
@@ -257,7 +293,7 @@ export function validateFinanceEntry(
         "El bruto del lote debe coincidir con los cobros seleccionados.",
       );
   } else if (input.kind === "settlement_credit") {
-    const s = book.settlements.find((x) => x.id === input.settlementId);
+    const s = bookSettlementsById.get(input.settlementId);
     account(input.accountId);
     if (!s || s.status !== "expected" || !validAmount(input.actualNetMinor))
       throw new Error(
@@ -268,7 +304,7 @@ export function validateFinanceEntry(
         "La cuenta debe coincidir con la cuenta de acreditación del lote.",
       );
   } else if (input.kind === "settlement_reconcile") {
-    const s = book.settlements.find((x) => x.id === input.settlementId);
+    const s = bookSettlementsById.get(input.settlementId);
     if (!s || s.status !== "credited")
       throw new Error("Acreditá el lote antes de conciliarlo.");
   } else if (input.kind === "inventory_count") {
@@ -283,9 +319,7 @@ export function validateFinanceEntry(
     if (
       !input.count.items.length ||
       input.count.items.some((i) => {
-        const t = sources.theoreticalInventory.find(
-          (x) => x.itemId === i.itemId,
-        );
+        const t = theoreticalByItemId.get(i.itemId);
         return (
           !t ||
           i.theoreticalQuantity !== t.quantity ||
@@ -301,25 +335,30 @@ export function validateFinanceEntry(
       throw new Error(
         "El consumo teórico cambió o las cantidades reales/de merma no son válidas. Actualizá el conteo.",
       );
+    const inputDay = normalizedDay(input.date);
+    const latestPreviousByItemId = new Map<
+      string,
+      {
+        date: string;
+        row: FinanceInventoryCountDto["items"][number];
+      }
+    >();
+    for (const event of events) {
+      if (event.input.kind !== "inventory_count") continue;
+      const eventDate = normalizedDay(event.input.date);
+      if (eventDate >= inputDay) continue;
+      for (const row of event.input.count.items) {
+        const current = latestPreviousByItemId.get(row.itemId);
+        if (!current || eventDate.localeCompare(current.date) > 0) {
+          latestPreviousByItemId.set(row.itemId, { date: eventDate, row });
+        }
+      }
+    }
     normalizedCount = {
       ...input.count,
       items: input.count.items.map((item) => {
-        const source = sources.theoreticalInventory.find(
-          (row) => row.itemId === item.itemId,
-        )!;
-        const previous = events
-          .flatMap((event) =>
-            event.input.kind === "inventory_count"
-              ? event.input.count.items
-                  .filter((row) => row.itemId === item.itemId)
-                  .map((row) => ({
-                    date: normalizedDay(event.input.date),
-                    row,
-                  }))
-              : [],
-          )
-          .filter((record) => record.date < normalizedDay(input.date))
-          .sort((a, b) => b.date.localeCompare(a.date))[0]?.row;
+        const source = theoreticalByItemId.get(item.itemId)!;
+        const previous = latestPreviousByItemId.get(item.itemId)?.row;
         const receivedQuantity = source.receivedQuantity;
         if (
           !previous ||
@@ -355,16 +394,14 @@ export function validateFinanceEntry(
     if (input.accountId) account(input.accountId);
     const knownTarget =
       input.targetRef.type === "purchase"
-        ? sources.purchases.some((p) => p.id === input.targetRef.id)
+        ? purchasesById.has(input.targetRef.id)
         : input.targetRef.type === "pos_payment"
-          ? sources.posPayments.some((p) => p.id === input.targetRef.id)
+          ? posPaymentsById.has(input.targetRef.id)
           : input.targetRef.type === "pos_order"
-            ? sources.posPayments.some((p) => p.orderId === input.targetRef.id)
-            : (sources.adjustmentTargets?.some(
-                (ref) =>
-                  ref.type === input.targetRef.type &&
-                  ref.id === input.targetRef.id,
-              ) ?? false);
+            ? posPaymentOrderIds.has(input.targetRef.id)
+            : adjustmentTargetKeys.has(
+                `${input.targetRef.type}\0${input.targetRef.id}`,
+              );
     if (!knownTarget)
       throw new Error(
         "El registro de origen del ajuste ya no existe o no está disponible.",
@@ -446,7 +483,7 @@ export function validateFinanceEntry(
         "El importe de la regla cambió. Actualizá la información.",
       );
   } else if (input.kind === "reverse") {
-    const target = events.find((e) => e.id === input.targetEventId);
+    const target = eventsById.get(input.targetEventId);
     if (
       !target ||
       ![
@@ -468,17 +505,13 @@ export function validateFinanceEntry(
       );
     const targetInput = target.input;
     if (targetInput.kind === "obligation") {
-      const obligation = book.obligations.find(
-        (o) => o.id === targetInput.obligation.id,
-      );
+      const obligation = bookObligationsById.get(targetInput.obligation.id);
       if (obligation?.payments.length)
         throw new Error(
           "No se puede desvincular una compra mientras tenga pagos vigentes.",
         );
     } else if (targetInput.kind === "settlement_expected") {
-      const settlement = book.settlements.find(
-        (s) => s.id === targetInput.settlement.id,
-      );
+      const settlement = bookSettlementsById.get(targetInput.settlement.id);
       if (!settlement || settlement.status !== "expected")
         throw new Error(
           "No se puede revertir el lote después de acreditar o conciliar dinero.",
@@ -536,9 +569,7 @@ export function validateFinanceEntry(
     reason,
   };
   if (input.kind === "obligation") {
-    const purchase = sources.purchases.find(
-      (p) => p.id === input.obligation.purchaseRef.id,
-    )!;
+    const purchase = purchasesById.get(input.obligation.purchaseRef.id)!;
     Object.assign(safeInput, {
       obligation: {
         ...input.obligation,
@@ -576,7 +607,7 @@ export function validateFinanceEntry(
       ? Object.fromEntries(
           input.settlement.paymentIds.map((id) => [
             id,
-            sources.posPayments.find((p) => p.id === id)!.amountMinor,
+            posPaymentsById.get(id)!.amountMinor,
           ]),
         )
       : undefined;
@@ -623,11 +654,46 @@ export function buildFinanceBooks(
     adjustments: FinanceBooksDto["adjustments"] = [],
     monthlyClosures: FinanceBooksDto["monthlyClosures"] = [];
   const unique = new Set<string>();
-  const reversedEventIds = new Set(
-    events.flatMap((event) =>
-      event.input.kind === "reverse" ? [event.input.targetEventId] : [],
-    ),
-  );
+  const reversedEventIds = new Set<string>();
+  const eventsById = new Map<string, FinanceBookEvent>();
+  for (const event of events) {
+    if (!eventsById.has(event.id)) eventsById.set(event.id, event);
+    if (event.input.kind === "reverse")
+      reversedEventIds.add(event.input.targetEventId);
+  }
+  const purchasesById = new Map<
+    string,
+    FinanceBookSources["purchases"][number]
+  >();
+  const posPaymentsById = new Map<
+    string,
+    FinanceBookSources["posPayments"][number]
+  >();
+  const adjustmentTargetsByType = new Map<
+    string,
+    Map<
+      string,
+      NonNullable<FinanceBookSources["adjustmentTargets"]>[number]
+    >
+  >();
+  if (sources) {
+    for (const p of sources.purchases) {
+      if (!purchasesById.has(p.id)) purchasesById.set(p.id, p);
+    }
+    for (const p of sources.posPayments) {
+      if (!posPaymentsById.has(p.id)) posPaymentsById.set(p.id, p);
+    }
+    if (sources.adjustmentTargets) {
+      for (const target of sources.adjustmentTargets) {
+        let byId = adjustmentTargetsByType.get(target.type);
+        if (!byId) {
+          byId = new Map();
+          adjustmentTargetsByType.set(target.type, byId);
+        }
+        if (!byId.has(target.id)) byId.set(target.id, target);
+      }
+    }
+  }
   for (const event of events) {
     if (unique.has(event.idempotencyKey)) continue;
     unique.add(event.idempotencyKey);
@@ -705,7 +771,7 @@ export function buildFinanceBooks(
       const a = i.accountId && accounts.get(i.accountId);
       if (a) a.balanceMinor = money(a.balanceMinor + i.amountMinor);
     } else if (i.kind === "reverse") {
-      const target = events.find((e) => e.id === i.targetEventId)?.input;
+      const target = eventsById.get(i.targetEventId)?.input;
       if (target?.kind === "transfer") {
         const f = accounts.get(target.fromAccountId),
           t = accounts.get(target.toAccountId);
@@ -778,9 +844,7 @@ export function buildFinanceBooks(
   const inRange = (date: string) =>
     normalizedDay(date) >= range.from && normalizedDay(date) <= range.to;
   const reconciledObligations = [...obligations.values()].map((o) => {
-    const p = sources?.purchases.find(
-      (purchase) => purchase.id === o.purchaseRef.id,
-    );
+    const p = purchasesById.get(o.purchaseRef.id);
     const currentAmount = p?.status === "confirmed" ? p.totalMinor : 0;
     const currentOutstanding = Math.max(0, currentAmount - o.paidMinor);
     const creditBalanceMinor = Math.max(0, o.paidMinor - currentAmount);
@@ -805,16 +869,19 @@ export function buildFinanceBooks(
     posPayments: [],
     theoreticalInventory: [],
   };
-  const usedPaymentIds = new Set(
-    [...settlements.values()].flatMap((settlement) => settlement.paymentIds),
-  );
+  const usedPaymentIds = new Set<string>();
+  for (const settlement of settlements.values()) {
+    for (const paymentId of settlement.paymentIds) usedPaymentIds.add(paymentId);
+  }
+  const linkedPurchaseIds = new Set<string>();
+  for (const obligation of obligations.values()) {
+    linkedPurchaseIds.add(obligation.purchaseRef.id);
+  }
   const returnedSources: FinanceBookSources = {
     ...emptySources,
     purchases: emptySources.purchases.map((purchase) => ({
       ...purchase,
-      alreadyLinked: [...obligations.values()].some(
-        (o) => o.purchaseRef.id === purchase.id,
-      ),
+      alreadyLinked: linkedPurchaseIds.has(purchase.id),
     })),
     posPayments: emptySources.posPayments.map((payment) => ({
       ...payment,
@@ -825,17 +892,15 @@ export function buildFinanceBooks(
     const closureAdjustments = adjustments.filter((adjustment) => {
       const purchase =
         adjustment.targetRef.type === "purchase"
-          ? sources?.purchases.find((p) => p.id === adjustment.targetRef.id)
+          ? purchasesById.get(adjustment.targetRef.id)
           : undefined;
       const payment =
         adjustment.targetRef.type === "pos_payment"
-          ? sources?.posPayments.find((p) => p.id === adjustment.targetRef.id)
+          ? posPaymentsById.get(adjustment.targetRef.id)
           : undefined;
-      const otherTarget = sources?.adjustmentTargets?.find(
-        (target) =>
-          target.type === adjustment.targetRef.type &&
-          target.id === adjustment.targetRef.id,
-      );
+      const otherTarget = adjustmentTargetsByType
+        .get(adjustment.targetRef.type)
+        ?.get(adjustment.targetRef.id);
       return (
         adjustment.occurredAt.startsWith(closure.month) ||
         purchase?.occurredAt.startsWith(closure.month) === true ||

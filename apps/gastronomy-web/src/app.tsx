@@ -389,6 +389,15 @@ export function App() {
     bootstrap.data?.currentUser.permissions,
     bootstrap.data?.settings.modules,
   ]);
+  const assistantMenuKey = useMemo(() => {
+    const user = bootstrap.data?.currentUser;
+    return `${location.pathname}\0${user?.id ?? ""}\0${user?.permissions.join(",") ?? ""}\0${bootstrap.data?.cashSession?.id ?? ""}`;
+  }, [
+    location.pathname,
+    bootstrap.data?.currentUser.id,
+    bootstrap.data?.currentUser.permissions,
+    bootstrap.data?.cashSession?.id,
+  ]);
   const groups = [...new Set(visibleNavigation.map((item) => item.group))];
   const current = navigation.find((item) =>
     location.pathname.startsWith(item.to),
@@ -572,12 +581,7 @@ export function App() {
               <HeaderClock />
             </div>
             <PosAssistantMenu
-              key={JSON.stringify([
-                location.pathname,
-                bootstrap.data.currentUser.id,
-                bootstrap.data.currentUser.permissions,
-                bootstrap.data.cashSession?.id,
-              ])}
+              key={assistantMenuKey}
               data={bootstrap.data}
             />
             {bootstrap.data.cashSession ? (

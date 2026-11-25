@@ -66,6 +66,18 @@ export function useWorkspaceActive() {
   return React.useContext(WorkspaceContext)?.active ?? true;
 }
 
+const PreservedWorkspaceContent = React.memo(
+  function PreservedWorkspaceContent({
+    children,
+  }: {
+    active: boolean;
+    children: React.ReactNode;
+  }) {
+    return <>{children}</>;
+  },
+  (prev, next) => !prev.active && !next.active,
+);
+
 /** Keep both the page and its portalled dialogs alive while another section is active. */
 export function PreservedWorkspace({
   active,
@@ -90,7 +102,9 @@ export function PreservedWorkspace({
         data-preserved-workspace="true"
         data-workspace-active={String(active)}
       >
-        {children}
+        <PreservedWorkspaceContent active={active}>
+          {children}
+        </PreservedWorkspaceContent>
         <div ref={setPortalRoot} />
       </div>
     </WorkspaceContext.Provider>
@@ -624,7 +638,7 @@ export function Modal({
         zIndex: 100 + depth * 10,
         ...(workspace ? { left: "var(--app-navigation-width, 0px)" } : {}),
       }}
-      className="fixed inset-0 flex items-stretch justify-center overflow-hidden bg-slate-950/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
+      className="fixed inset-0 flex items-stretch justify-center overflow-hidden bg-slate-950/45 p-0 sm:items-center sm:p-4"
     >
       <section
         ref={dialogRef}

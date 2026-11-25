@@ -483,7 +483,7 @@ export function SettingsPage({ data }: { data: BootstrapDto }) {
       {visitedSections.has("settings-license") ? <LicensePanel /> : null}
       </div>
       <div id="panel-settings-waiter" role="tabpanel" aria-labelledby="tab-settings-waiter" hidden={activeSection !== "settings-waiter"}>
-      {visitedSections.has("settings-waiter") ? <WaiterDeskPanel data={data} /> : null}
+      {visitedSections.has("settings-waiter") ? <WaiterDeskPanel data={data} active={activeSection === "settings-waiter"} /> : null}
       </div>
       <div id="panel-settings-website" role="tabpanel" aria-labelledby="tab-settings-website" hidden={activeSection !== "settings-website"}>
       {visitedSections.has("settings-website") ? <WebSitePanel products={data.products} /> : null}

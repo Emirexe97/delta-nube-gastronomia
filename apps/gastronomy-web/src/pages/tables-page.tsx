@@ -4,8 +4,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import type {
   BootstrapDto,
   OrderDto,
+  ProductDto,
   RestaurantTableDto,
 } from "@gastronomy/contracts";
+
+const EMPTY_ACTIVE_PRODUCTS: ProductDto[] = [];
 import {
   CheckCircle,
   Clock,
@@ -783,17 +786,19 @@ function QuickEntry({
     onOpenFullOrder(orderId, order ?? undefined);
   };
 
-  const activeProducts = useMemo(
+  const sortedActiveProducts = useMemo(
     () =>
-      step !== "ITEM" ? [] : data.products
+      data.products
         .filter((product) => product.active)
         .sort((left, right) =>
           left.name.localeCompare(right.name, "es-AR", {
             sensitivity: "base",
           }),
         ),
-    [data.products, step],
+    [data.products],
   );
+  const activeProducts =
+    step !== "ITEM" ? EMPTY_ACTIVE_PRODUCTS : sortedActiveProducts;
   const eligibleWaiters = useMemo(
     () =>
       data.users
@@ -815,6 +820,65 @@ function QuickEntry({
       .replace(/[\u0300-\u036f]/g, "")
       .trim()
       .toLocaleLowerCase("es-AR");
+  const searchableActiveProducts = useMemo(
+    () =>
+      sortedActiveProducts.map((product) => ({
+        product,
+        name: normalizeSearch(product.name),
+        code: normalizeSearch(product.code ?? ""),
+        id: normalizeSearch(product.id),
+      })),
+    [sortedActiveProducts],
+  );
+  const quickCodeOptions = useMemo(() => {
+    if (step !== "ITEM" || sortedActiveProducts.length === 0) return [];
+    if (sortedActiveProducts.length <= 100) {
+      return sortedActiveProducts.flatMap((product) => [
+        ...(product.code
+          ? [
+              {
+                key: `${product.id}-code`,
+                value: product.code,
+                label: product.name,
+              },
+            ]
+          : []),
+        {
+          key: `${product.id}-id`,
+          value: product.id,
+          label: product.name,
+        },
+      ]);
+    }
+    const codeQuery = normalizeSearch(productCode);
+    const options: Array<{ key: string; value: string; label: string }> = [];
+    for (const entry of searchableActiveProducts) {
+      if (options.length >= 80) break;
+      if (
+        codeQuery &&
+        !entry.code.includes(codeQuery) &&
+        !entry.id.includes(codeQuery) &&
+        !entry.name.includes(codeQuery)
+      ) {
+        continue;
+      }
+      const { product } = entry;
+      if (product.code) {
+        options.push({
+          key: `${product.id}-code`,
+          value: product.code,
+          label: product.name,
+        });
+        if (options.length >= 80) break;
+      }
+      options.push({
+        key: `${product.id}-id`,
+        value: product.id,
+        label: product.name,
+      });
+    }
+    return options;
+  }, [step, sortedActiveProducts, searchableActiveProducts, productCode]);
   const debouncedProductName = useDebouncedValue(productName);
   const productSearchPending = productName !== debouncedProductName;
   const productSuggestions = useMemo(() => {
@@ -1592,21 +1656,11 @@ function QuickEntry({
                     autoComplete="off"
                   />
                   <datalist id="quick-product-codes">
-                    {activeProducts.flatMap((product) => [
-                      ...(product.code
-                        ? [
-                            <option
-                              key={`${product.id}-code`}
-                              value={product.code}
-                            >
-                              {product.name}
-                            </option>,
-                          ]
-                        : []),
-                      <option key={`${product.id}-id`} value={product.id}>
-                        {product.name}
-                      </option>,
-                    ])}
+                    {quickCodeOptions.map((option) => (
+                      <option key={option.key} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </datalist>
                 </Field>
                 <div className="grid gap-1.5 text-[12px] font-semibold text-slate-600 sm:col-span-2 lg:col-span-4">

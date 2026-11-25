@@ -13,7 +13,12 @@ export function populateRepeatedOrder(
     page: 1,
     pageSize: 1,
   }).customer;
-  const plan = planRepeatOrder(source, customer, repo.bootstrap(), input);
+  const plan = planRepeatOrder(
+    source,
+    customer,
+    repo.bootstrap({ deliveryScope: "OPERATIONAL" }),
+    input,
+  );
   let order = repo.createOrder(plan.order);
   for (const line of plan.lines) {
     const previous = order;

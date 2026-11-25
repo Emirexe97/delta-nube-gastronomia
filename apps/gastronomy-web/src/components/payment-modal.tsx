@@ -144,9 +144,11 @@ export function PaymentModal({
     },
     order.type === "TAKEAWAY"
       ? (completeOnPay ? "complete" : "payment")
-      : completeOnPay && order.type === "DELIVERY"
+      : order.type === "DELIVERY" && completeOnPay
         ? "complete"
-        : null,
+        : order.type === "DINE_IN" && !completeOnPay
+          ? "payment"
+          : null,
     {
       onSuccess: () => onClose(),
       onError: (value) => {

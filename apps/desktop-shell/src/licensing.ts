@@ -564,8 +564,22 @@ export class DesktopLicensing {
       const signature = signDeviceProof({ purpose: "lease", challengeId: challenge.challengeId, nonce: challenge.nonce, installationId: this.state.installationId, keyFingerprint }, this.identityPrivateKey!);
       const result = await this.postEnrollment("/v2/devices/lease", { installationId: this.state.installationId, publicKey: this.identity!.publicKey, challengeId: challenge.challengeId, signature });
       this.validateRequest(result, keyFingerprint);
-      this.enrollment = { requestId: result.request.id, status: result.request.status, keyFingerprint, ...(this.enrollment.businessName ? { businessName: this.enrollment.businessName } : {}) };
-      this.identity!.enrollment = this.enrollment; await this.persistIdentity();
+      const nextEnrollment: NonNullable<LicenseStatusDto["enrollment"]> = {
+        requestId: result.request.id,
+        status: result.request.status,
+        keyFingerprint,
+        ...(this.enrollment.businessName ? { businessName: this.enrollment.businessName } : {}),
+      };
+      const prevEnrollment = this.identity!.enrollment;
+      const enrollmentChanged =
+        !prevEnrollment ||
+        prevEnrollment.requestId !== nextEnrollment.requestId ||
+        prevEnrollment.status !== nextEnrollment.status ||
+        prevEnrollment.keyFingerprint !== nextEnrollment.keyFingerprint ||
+        prevEnrollment.businessName !== nextEnrollment.businessName;
+      this.enrollment = nextEnrollment;
+      this.identity!.enrollment = nextEnrollment;
+      if (enrollmentChanged) await this.persistIdentity();
       if (result.request.status === "APPROVED" && typeof result.token === "string") await this.acceptToken(result.token);
       else if (result.token !== undefined) throw new ResponseProblem("invalid");
       if (typeof result.webSiteTicket === "string") await this.acceptWebSiteTicket(result.webSiteTicket);
@@ -668,6 +682,16 @@ export class DesktopLicensing {
       try {
         result = JSON.parse(raw) as { token?: unknown };
       } catch {
+        const contentType = (
+          response.headers.get("content-type") ?? ""
+        ).toLowerCase();
+        if (
+          contentType.includes("text/html") ||
+          (contentType.includes("html") && raw.trimStart().startsWith("<"))
+        ) {
+          this.lastFailure = "offline";
+          return await this.getStatus();
+        }
         throw new ResponseProblem("invalid");
       }
       if (typeof result.token !== "string")

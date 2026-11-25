@@ -175,6 +175,10 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const costParam = searchParams.get("costo");
   const costFilterExtended: "all" | "with" | "without" =
     costParam === "sin" ? "without" : costParam === "con" ? "with" : "all";
+  const costCatalogKey = useMemo(
+    () => data.products.map((product) => product.id).join("\0"),
+    [data.products],
+  );
   useEffect(() => {
     if (!canViewCosts) return;
     let current = true;
@@ -196,7 +200,7 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
     return () => {
       current = false;
     };
-  }, [canViewCosts, costReload, data.products, data.currentUser.id]);
+  }, [canViewCosts, costReload, costCatalogKey, data.currentUser.id]);
   const [categoryQuery, setCategoryQuery] = useState("");
   const [comboQuery, setComboQuery] = useState("");
   const [tab, setTab] = useState<
@@ -391,9 +395,20 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   const catalogScrollRef = useRef<HTMLDivElement>(null);
   const [catalogScrollTop, setCatalogScrollTop] = useState(0);
   const [virtualViewportHeight, setVirtualViewportHeight] = useState(620);
-  const heights = useMemo(() => new Map<string, number>(), [data.products]);
+  const heightsRef = useRef(new Map<string, number>());
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const observedContainerRef = useRef<HTMLElement | null>(null);
+  const observedRowsRef = useRef<Set<Element>>(new Set());
   const [measurement, setMeasurement] = useState(0);
   const atBottom = useRef(false);
+  useEffect(() => {
+    const heights = heightsRef.current;
+    if (heights.size <= data.products.length * 2 + 200) return;
+    const liveIds = new Set(data.products.map((product) => product.id));
+    for (const id of heights.keys()) {
+      if (!liveIds.has(id)) heights.delete(id);
+    }
+  }, [data.products]);
   const virtualRows = useMemo(() => {
     const rows: Array<{ product: ProductDto; group: CatalogProductGroup; isVariant: boolean }> = [];
     for (const group of productGroups) {
@@ -406,33 +421,81 @@ export function CatalogPage({ data }: { data: BootstrapDto }) {
   }, [productGroups, expansionOverrides]);
   // Only measured rows depart from the default estimate. Changing the height of one
   // wrapped row must not rescale thousands of unseen rows (or move the scrollbar).
-  const offsets = useMemo(() => catalogOffsets(virtualRows, heights), [virtualRows, heights, measurement]);
+  const offsets = useMemo(() => catalogOffsets(virtualRows, heightsRef.current), [virtualRows, measurement]);
   const { start: virtualStart, end: virtualEnd, top: virtualTop, bottom: virtualBottom } =
     catalogWindow(offsets, catalogScrollTop, virtualViewportHeight);
   useLayoutEffect(() => {
-    const el = catalogScrollRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(entries => {
+    if (tab !== "PRODUCTS" || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const el = catalogScrollRef.current;
+      const heights = heightsRef.current;
       let changed = false;
       for (const entry of entries) {
         if (entry.target === el) {
-          setVirtualViewportHeight(Math.max(1, el.clientHeight));
+          const nextViewport = Math.max(1, el.clientHeight);
+          setVirtualViewportHeight((prev) => (prev === nextViewport ? prev : nextViewport));
         } else {
           const row = entry.target as HTMLTableRowElement;
           const id = row.dataset.productId;
-          const height = row.getBoundingClientRect().height;
-          if (id && height > 0 && heights.get(id) !== height) {
-            heights.set(id, height);
+          if (!id) continue;
+          const boxHeight = entry.borderBoxSize?.[0]?.blockSize;
+          const nextHeight =
+            boxHeight && boxHeight > 0
+              ? boxHeight
+              : entry.contentRect.height > 0
+                ? entry.contentRect.height
+                : row.getBoundingClientRect().height;
+          if (nextHeight > 0 && Math.abs((heights.get(id) ?? 0) - nextHeight) >= 1) {
+            heights.set(id, nextHeight);
             changed = true;
           }
         }
       }
-      if (changed) setMeasurement(n => n + 1);
+      if (changed) setMeasurement((n) => n + 1);
     });
-    observer.observe(el);
-    el.querySelectorAll("tr[data-virtual-row]").forEach(row => observer.observe(row));
-    return () => observer.disconnect();
-  }, [tab, heights, virtualRows, virtualStart, virtualEnd]);
+    resizeObserverRef.current = observer;
+    return () => {
+      observer.disconnect();
+      resizeObserverRef.current = null;
+      observedContainerRef.current = null;
+      observedRowsRef.current.clear();
+    };
+  }, [tab]);
+  useLayoutEffect(() => {
+    if (tab !== "PRODUCTS") return;
+    const observer = resizeObserverRef.current;
+    if (!observer) return;
+    const el = catalogScrollRef.current;
+    if (observedContainerRef.current && observedContainerRef.current !== el) {
+      observer.unobserve(observedContainerRef.current);
+      observedContainerRef.current = null;
+    }
+    if (el && observedContainerRef.current !== el) {
+      observer.observe(el);
+      observedContainerRef.current = el;
+      const nextViewport = Math.max(1, el.clientHeight);
+      setVirtualViewportHeight((prev) => (prev === nextViewport ? prev : nextViewport));
+    }
+    const observedRows = observedRowsRef.current;
+    if (!el) {
+      for (const row of observedRows) observer.unobserve(row);
+      observedRows.clear();
+      return;
+    }
+    const mountedRows = new Set(el.querySelectorAll("tr[data-virtual-row]"));
+    for (const row of observedRows) {
+      if (!mountedRows.has(row)) {
+        observer.unobserve(row);
+        observedRows.delete(row);
+      }
+    }
+    for (const row of mountedRows) {
+      if (!observedRows.has(row)) {
+        observer.observe(row);
+        observedRows.add(row);
+      }
+    }
+  }, [tab, virtualRows, virtualStart, virtualEnd]);
   useLayoutEffect(() => {
     const el = catalogScrollRef.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
@@ -1996,6 +2059,22 @@ function CategoryTable({
   onCreate(): void;
   onCreateProduct(category: CategoryDto): void;
 }) {
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, { active: number; total: number }>();
+    for (const product of products) {
+      const entry = counts.get(product.categoryId);
+      if (entry) {
+        entry.total += 1;
+        if (product.active) entry.active += 1;
+      } else {
+        counts.set(product.categoryId, {
+          active: product.active ? 1 : 0,
+          total: 1,
+        });
+      }
+    }
+    return counts;
+  }, [products]);
   const rows = categories
     .filter((category) =>
       category.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
@@ -2031,19 +2110,15 @@ function CategoryTable({
             </thead>
             <tbody>
               {rows.map((category) => {
-                const list = products.filter(
-                  (product) => product.categoryId === category.id,
-                );
+                const counts = categoryCounts.get(category.id);
                 return (
                   <tr key={category.id}>
                     <td>{category.sortOrder}</td>
                     <td className="font-bold text-slate-900">
                       {category.name}
                     </td>
-                    <td className="text-right">
-                      {list.filter((product) => product.active).length}
-                    </td>
-                    <td className="text-right">{list.length}</td>
+                    <td className="text-right">{counts?.active ?? 0}</td>
+                    <td className="text-right">{counts?.total ?? 0}</td>
                     <td>
                       <Badge
                         tone={

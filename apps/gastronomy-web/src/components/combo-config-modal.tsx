@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   CategoryDto,
   ComboDefinitionDto,
@@ -11,7 +11,157 @@ import type {
 import { assertComboDefinition, calculateBookPrice } from "@gastronomy/domain";
 import { Button, Field, Input, Modal, Select } from "@gastronomy/ui";
 import { useApiMutation } from "../api";
-import { formatMoney, humanError, parsePriceInput } from "../lib";
+import { formatMoney, humanError, normalizeSearch, parsePriceInput } from "../lib";
+
+const SLOT_SEARCH_THRESHOLD = 30;
+const SLOT_VISIBLE_LIMIT = 80;
+
+type ComboCandidate = {
+  product: ProductDto;
+  searchText: string;
+};
+
+const ComboSlotSection = memo(function ComboSlotSection({
+  slot,
+  index,
+  candidates,
+  disabled,
+  onRename,
+  onChangeQuantity,
+  onRemove,
+  onToggleProduct,
+}: {
+  slot: ComboDefinitionDto["slots"][number];
+  index: number;
+  candidates: readonly ComboCandidate[];
+  disabled: boolean;
+  onRename: (slotId: string, name: string) => void;
+  onChangeQuantity: (slotId: string, quantity: number) => void;
+  onRemove: (slotId: string) => void;
+  onToggleProduct: (slotId: string, productId: string, checked: boolean) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [unselectedLimit, setUnselectedLimit] = useState(SLOT_VISIBLE_LIMIT);
+  const selectedIds = useMemo(() => new Set(slot.productIds), [slot.productIds]);
+  const normalizedQuery = normalizeSearch(query);
+
+  const { visibleItems, shownMatchingCount, totalMatchingCount, hasMore } = useMemo(() => {
+    if (!normalizedQuery && candidates.length <= SLOT_VISIBLE_LIMIT) {
+      return {
+        visibleItems: candidates,
+        shownMatchingCount: candidates.length,
+        totalMatchingCount: candidates.length,
+        hasMore: false,
+      };
+    }
+    const selected: ComboCandidate[] = [];
+    const matchingUnselected: ComboCandidate[] = [];
+    let selectedMatchingCount = 0;
+    for (const entry of candidates) {
+      const isSelected = selectedIds.has(entry.product.id);
+      const matches = !normalizedQuery || entry.searchText.includes(normalizedQuery);
+      if (isSelected) {
+        selected.push(entry);
+        if (matches) selectedMatchingCount += 1;
+      } else if (matches) {
+        matchingUnselected.push(entry);
+      }
+    }
+    const shownUnselected = matchingUnselected.slice(0, unselectedLimit);
+    return {
+      visibleItems: [...selected, ...shownUnselected],
+      shownMatchingCount: selectedMatchingCount + shownUnselected.length,
+      totalMatchingCount: selectedMatchingCount + matchingUnselected.length,
+      hasMore: matchingUnselected.length > shownUnselected.length,
+    };
+  }, [candidates, normalizedQuery, selectedIds, unselectedLimit]);
+
+  return (
+    <section className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+      <div className="grid grid-cols-[1fr_90px_auto] items-end gap-2">
+        <Field label={`Opción ${index + 1}`}>
+          <Input
+            disabled={disabled}
+            aria-label={`Nombre de opción ${index + 1}`}
+            maxLength={80}
+            value={slot.name}
+            onChange={(event) => onRename(slot.id, event.target.value)}
+          />
+        </Field>
+        <Field label="Cantidad">
+          <Input
+            disabled={disabled}
+            aria-label={`Cantidad de opción ${index + 1}`}
+            type="number"
+            min={1}
+            max={99}
+            step={1}
+            value={slot.quantity}
+            onChange={(event) => onChangeQuantity(slot.id, Number(event.target.value))}
+          />
+        </Field>
+        <Button
+          variant="secondary"
+          disabled={disabled}
+          onClick={() => onRemove(slot.id)}
+        >
+          Quitar
+        </Button>
+      </div>
+      {candidates.length > SLOT_SEARCH_THRESHOLD && (
+        <Input
+          disabled={disabled}
+          aria-label={`Buscar producto para opción ${index + 1}`}
+          placeholder="Buscar producto para esta opción…"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setUnselectedLimit(SLOT_VISIBLE_LIMIT);
+          }}
+        />
+      )}
+      <div className="grid grid-cols-2 gap-1">
+        {visibleItems.map((candidate) => (
+          <label
+            key={candidate.product.id}
+            className={`flex items-center gap-2 rounded-lg bg-white px-2 py-1.5 text-xs ${disabled ? "opacity-60" : ""}`}
+          >
+            <input
+              disabled={disabled}
+              type="checkbox"
+              checked={selectedIds.has(candidate.product.id)}
+              onChange={(event) =>
+                onToggleProduct(slot.id, candidate.product.id, event.target.checked)
+              }
+            />
+            {candidate.product.name}
+          </label>
+        ))}
+      </div>
+      {hasMore && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+          <span>
+            Mostrando {shownMatchingCount} de {totalMatchingCount} coincidencias — filtrá para buscar otros
+          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-7 px-2 text-xs"
+            disabled={disabled}
+            onClick={() => setUnselectedLimit((limit) => limit + SLOT_VISIBLE_LIMIT)}
+          >
+            Ver más
+          </Button>
+        </div>
+      )}
+      {normalizedQuery && totalMatchingCount === 0 && (
+        <p className="text-xs text-slate-500">
+          Sin coincidencias para esa búsqueda.
+        </p>
+      )}
+    </section>
+  );
+});
 
 export function ComboConfigModal({
   open,
@@ -90,16 +240,87 @@ export function ComboConfigModal({
     setError(null);
     submissionRef.current = null;
   }, [open, productId]);
-  if (!open) return null;
-  const candidates = products.filter(
-    (candidate) =>
-      candidate.id !== product?.id &&
-      !candidate.comboDefinition &&
-      candidate.active &&
-      categories.some(
-        (category) => category.id === candidate.categoryId && category.active,
-      ),
+
+  const activeCategoryIds = useMemo(
+    () => new Set(categories.filter((category) => category.active).map((category) => category.id)),
+    [categories],
   );
+  const candidates = useMemo<ComboCandidate[]>(() => {
+    if (!open) return [];
+    const list: ComboCandidate[] = [];
+    for (const candidate of products) {
+      if (
+        candidate.id !== productId &&
+        !candidate.comboDefinition &&
+        candidate.active &&
+        activeCategoryIds.has(candidate.categoryId)
+      ) {
+        list.push({
+          product: candidate,
+          searchText: normalizeSearch(`${candidate.name} ${candidate.code ?? ""}`),
+        });
+      }
+    }
+    return list;
+  }, [open, products, productId, activeCategoryIds]);
+  const eligibleIds = useMemo(
+    () => new Set(candidates.map((candidate) => candidate.product.id)),
+    [candidates],
+  );
+  const edit = useCallback(
+    (
+      update: (
+        current: ComboDefinitionDto["slots"],
+      ) => ComboDefinitionDto["slots"],
+    ) => {
+      setSlots((current) => update(current));
+      setError(null);
+    },
+    [],
+  );
+  const renameSlot = useCallback(
+    (slotId: string, slotName: string) =>
+      edit((old) =>
+        old.map((entry) =>
+          entry.id === slotId ? { ...entry, name: slotName } : entry,
+        ),
+      ),
+    [edit],
+  );
+  const changeSlotQuantity = useCallback(
+    (slotId: string, quantity: number) =>
+      edit((old) =>
+        old.map((entry) =>
+          entry.id === slotId ? { ...entry, quantity } : entry,
+        ),
+      ),
+    [edit],
+  );
+  const removeSlot = useCallback(
+    (slotId: string) =>
+      edit((old) => old.filter((entry) => entry.id !== slotId)),
+    [edit],
+  );
+  const toggleSlotProduct = useCallback(
+    (slotId: string, targetProductId: string, checked: boolean) =>
+      edit((old) =>
+        old.map((entry) =>
+          entry.id === slotId
+            ? {
+                ...entry,
+                productIds: checked
+                  ? entry.productIds.includes(targetProductId)
+                    ? entry.productIds
+                    : [...entry.productIds, targetProductId]
+                  : entry.productIds.filter((id) => id !== targetProductId),
+              }
+            : entry,
+        ),
+      ),
+    [edit],
+  );
+
+  if (!open) return null;
   const derivedPricePreview = (amountText: string, book: PriceBookDto) => {
     if (!amountText.trim()) return "—";
     const amount = parsePriceInput(amountText);
@@ -148,7 +369,6 @@ export function ComboConfigModal({
         setError(humanError(validationError));
         return;
       }
-      const eligibleIds = new Set(candidates.map((candidate) => candidate.id));
       if (
         definition.slots.some((slot) =>
           slot.productIds.some((id) => !eligibleIds.has(id)),
@@ -230,14 +450,6 @@ export function ComboConfigModal({
       };
     request.input.idempotencyKey = submissionRef.current.idempotencyKey;
     mutation.mutate(request);
-  };
-  const edit = (
-    update: (
-      current: ComboDefinitionDto["slots"],
-    ) => ComboDefinitionDto["slots"],
-  ) => {
-    setSlots((current) => update(current));
-    setError(null);
   };
   const authorized = Boolean(reason.trim() && /^\d{4,8}$/.test(pin));
   const createFieldsIncomplete =
@@ -328,90 +540,17 @@ export function ComboConfigModal({
           </p>
         )}
         {slots.map((slot, index) => (
-          <section
+          <ComboSlotSection
             key={slot.id}
-            className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3"
-          >
-            <div className="grid grid-cols-[1fr_90px_auto] items-end gap-2">
-              <Field label={`Opción ${index + 1}`}>
-                <Input
-                  disabled={mutation.isPending}
-                  aria-label={`Nombre de opción ${index + 1}`}
-                  maxLength={80}
-                  value={slot.name}
-                  onChange={(event) =>
-                    edit((old) =>
-                      old.map((entry) =>
-                        entry.id === slot.id
-                          ? { ...entry, name: event.target.value }
-                          : entry,
-                      ),
-                    )
-                  }
-                />
-              </Field>
-              <Field label="Cantidad">
-                <Input
-                  disabled={mutation.isPending}
-                  aria-label={`Cantidad de opción ${index + 1}`}
-                  type="number"
-                  min={1}
-                  max={99}
-                  step={1}
-                  value={slot.quantity}
-                  onChange={(event) =>
-                    edit((old) =>
-                      old.map((entry) =>
-                        entry.id === slot.id
-                          ? { ...entry, quantity: Number(event.target.value) }
-                          : entry,
-                      ),
-                    )
-                  }
-                />
-              </Field>
-              <Button
-                variant="secondary"
-                disabled={mutation.isPending}
-                onClick={() =>
-                  edit((old) => old.filter((entry) => entry.id !== slot.id))
-                }
-              >
-                Quitar
-              </Button>
-            </div>
-            <div className="grid grid-cols-2 gap-1">
-              {candidates.map((candidate) => (
-                <label
-                  key={candidate.id}
-                  className={`flex items-center gap-2 rounded-lg bg-white px-2 py-1.5 text-xs ${mutation.isPending ? "opacity-60" : ""}`}
-                >
-                  <input
-                    disabled={mutation.isPending}
-                    type="checkbox"
-                    checked={slot.productIds.includes(candidate.id)}
-                    onChange={(event) =>
-                      edit((old) =>
-                        old.map((entry) =>
-                          entry.id === slot.id
-                            ? {
-                                ...entry,
-                                productIds: event.target.checked
-                                  ? [...entry.productIds, candidate.id]
-                                  : entry.productIds.filter(
-                                      (id) => id !== candidate.id,
-                                    ),
-                              }
-                            : entry,
-                        ),
-                      )
-                    }
-                  />
-                  {candidate.name}
-                </label>
-              ))}
-            </div>
-          </section>
+            slot={slot}
+            index={index}
+            candidates={candidates}
+            disabled={mutation.isPending}
+            onRename={renameSlot}
+            onChangeQuantity={changeSlotQuantity}
+            onRemove={removeSlot}
+            onToggleProduct={toggleSlotProduct}
+          />
         ))}
         {slots.length < 12 && (
           <Button
