@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { gzipSync } from "node:zlib";
 import {
   parseWebOrderRecord,
