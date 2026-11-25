@@ -8,6 +8,7 @@ import {
   createWhatsAppUrl,
   parseWebCatalogSnapshot,
   WebOrderValidationError,
+  type WebCatalogSnapshot,
   type WebOrderRecord,
   type CreateWebOrderResult,
 } from "@gastronomy/web-orders";
@@ -35,6 +36,10 @@ const digest = (text: string) =>
 export class OrdersStore {
   readonly db: DatabaseSync;
   readonly scopes = new Map<string, AuthScope>();
+  private readonly catalogCache = new Map<
+    string,
+    { revision: number; updatedAt: string; snapshot: WebCatalogSnapshot }
+  >();
   constructor(dbPath: string, stores: StoreConfig[]) {
     this.db = new DatabaseSync(dbPath);
     const version = Number(
@@ -393,6 +398,7 @@ export class OrdersStore {
   }
   publishCatalog(storeId: string, value: unknown): { revision: number } {
     const snapshot = parseWebCatalogSnapshot(value);
+    const updatedAt = new Date().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const old = this.db
@@ -407,11 +413,12 @@ export class OrdersStore {
           storeId,
           JSON.stringify(snapshot),
           revision,
-          new Date().toISOString(),
+          updatedAt,
         );
       const visibleRefs=JSON.stringify(snapshot.products.map(product=>product.productRef));
       this.db.prepare("UPDATE tenant_product_photos SET is_visible=CASE WHEN product_ref IN (SELECT value FROM json_each(?)) THEN 1 ELSE 0 END WHERE store_id=?").run(visibleRefs,storeId);
       this.db.exec("COMMIT");
+      this.catalogCache.set(storeId, { revision, updatedAt, snapshot });
       return { revision };
     } catch (error) {
       try {
@@ -429,19 +436,48 @@ export class OrdersStore {
         updatedAt: string;
       }
     | undefined {
+    const meta = this.db
+      .prepare(
+        "SELECT revision,updated_at FROM web_catalogs WHERE store_id=?",
+      )
+      .get(storeId) as { revision: number; updated_at: string } | undefined;
+    if (!meta) {
+      this.catalogCache.delete(storeId);
+      return undefined;
+    }
+    const cached = this.catalogCache.get(storeId);
+    if (
+      cached &&
+      cached.revision === meta.revision &&
+      cached.updatedAt === meta.updated_at
+    ) {
+      return {
+        snapshot: cached.snapshot,
+        revision: cached.revision,
+        updatedAt: cached.updatedAt,
+      };
+    }
     const row = this.db
       .prepare(
         "SELECT snapshot,revision,updated_at FROM web_catalogs WHERE store_id=?",
       )
       .get(storeId) as
       { snapshot: string; revision: number; updated_at: string } | undefined;
-    return row
-      ? {
-          snapshot: parseWebCatalogSnapshot(JSON.parse(row.snapshot)),
-          revision: row.revision,
-          updatedAt: row.updated_at,
-        }
-      : undefined;
+    if (!row) {
+      this.catalogCache.delete(storeId);
+      return undefined;
+    }
+    const snapshot = parseWebCatalogSnapshot(JSON.parse(row.snapshot));
+    this.catalogCache.set(storeId, {
+      revision: row.revision,
+      updatedAt: row.updated_at,
+      snapshot,
+    });
+    return {
+      snapshot,
+      revision: row.revision,
+      updatedAt: row.updated_at,
+    };
   }
   private record(row: Row): WebOrderRecord {
     return {
@@ -619,6 +655,7 @@ export class OrdersStore {
     return row ? this.record(row) : undefined;
   }
   close(): void {
+    this.catalogCache.clear();
     this.db.close();
   }
 }

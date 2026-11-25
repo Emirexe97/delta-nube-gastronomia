@@ -10,6 +10,7 @@ import { OrdersStore } from "./store.js";
 import { loadStores, validateStores, type StoreConfig } from "./config.js";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import { verifyWebSiteTicket, verifyWaiterTicket } from "@gastronomy/web-orders/provision";
 import { createTenantStorefront } from "./tenant-storefront.js";
 import { WaiterRelay } from "./waiter-relay.js";
@@ -62,6 +63,10 @@ async function readJson(
     req.resume();
     error(413, "too_large");
   }
+  const contentEncoding =
+    typeof req.headers["content-encoding"] === "string"
+      ? req.headers["content-encoding"].trim().toLowerCase()
+      : "";
   // Avoid for-await's automatic stream destruction on an oversized body: the
   // caller must still be able to send a deterministic HTTP 413 before closing.
   return new Promise((resolveBody, reject) => {
@@ -95,9 +100,24 @@ async function readJson(
       cleanup();
       try {
         if (!size) throw new Error();
-        resolveBody(
-          JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown,
-        );
+        let raw = Buffer.concat(chunks);
+        if (contentEncoding === "gzip") {
+          try {
+            raw = gunzipSync(raw, { maxOutputLength: maxBytes });
+          } catch (err) {
+            if ((err as { code?: unknown })?.code === "ERR_BUFFER_TOO_LARGE") {
+              reject(
+                Object.assign(new Error("too_large"), {
+                  status: 413,
+                  code: "too_large",
+                }),
+              );
+              return;
+            }
+            throw err;
+          }
+        }
+        resolveBody(JSON.parse(raw.toString("utf8")) as unknown);
       } catch {
         reject(Object.assign(new Error("bad_request"), { status: 400 }));
       }
@@ -539,12 +559,12 @@ export function createOrdersServer(options: OrdersServerOptions): {
       else res.destroy();
     });
   });
-  server.requestTimeout = 10_000;
+  server.requestTimeout = 25_000;
   server.headersTimeout = 5_000;
   server.keepAliveTimeout = 5_000;
   server.maxConnections = 1_000;
   server.on("connection", (socket) =>
-    socket.setTimeout(15_000, () => socket.destroy()),
+    socket.setTimeout(30_000, () => socket.destroy()),
   );
   let closing: Promise<void> | undefined;
   const close = () => {

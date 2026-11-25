@@ -525,6 +525,9 @@ export const waiterHtml = String.raw`<!doctype html>
               ...opts,
               headers: { ...headers, ...opts.headers },
               cache: 'no-store',
+              ...(!opts.signal && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+                ? { signal: AbortSignal.timeout(12000) }
+                : {}),
             });
             let data = {};
             try {

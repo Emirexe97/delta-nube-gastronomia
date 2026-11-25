@@ -396,6 +396,9 @@ ${storefrontLayoutCss}
           const response = await fetch(catalogUrl, {
             headers: { accept: "application/json" },
             cache: "no-store",
+            ...(typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+              ? { signal: AbortSignal.timeout(12000) }
+              : {}),
           });
           if (!response.ok) throw Error("No se pudo actualizar la carta.");
           const envelope = await response.json();
@@ -595,6 +598,9 @@ ${storefrontLayoutCss}
               headers: { "content-type": "application/json", "idempotency-key": operation.key },
               body: operation.serialized,
               cache: "no-store",
+              ...(typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+                ? { signal: AbortSignal.timeout(12000) }
+                : {}),
             });
             let data = {};
             try {

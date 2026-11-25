@@ -1,3 +1,4 @@
+import { gzipSync } from "node:zlib";
 import {
   parseWebOrderRecord,
   parseWebOrderSubmission,
@@ -59,12 +60,26 @@ export class WebOrdersClient {
     expectedStoreId?: string,
     requirePublishedCatalog = false,
     expectedSiteId?: string,
+    options: { timeoutMs?: number; gzip?: boolean } = {},
   ): Promise<unknown> {
+    const timeoutMs = options.timeoutMs ?? 10_000;
+    let payload: BodyInit | undefined;
+    let useGzip = false;
+    if (body !== undefined) {
+      const jsonText = JSON.stringify(body);
+      if (options.gzip === true && Buffer.byteLength(jsonText, "utf8") > 1024) {
+        payload = new Uint8Array(gzipSync(Buffer.from(jsonText, "utf8")));
+        useGzip = true;
+      } else {
+        payload = jsonText;
+      }
+    }
     const response = await fetch(new URL(path, this.baseUrl), {
       method,
       headers: {
         authorization: `Bearer ${this.token}`,
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
+        ...(useGzip ? { "content-encoding": "gzip" } : {}),
         ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
         ...(expectedStoreId ? { "x-expected-store-id": expectedStoreId } : {}),
         ...(this.installationId
@@ -75,9 +90,9 @@ export class WebOrdersClient {
           : {}),
         ...(expectedSiteId ? { "x-expected-site-id": expectedSiteId } : {}),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: payload,
       redirect: "error",
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {
       let errorText = "";
@@ -173,13 +188,38 @@ export class WebOrdersClient {
   ): Promise<{ revision: number }> {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(expectedStoreId))
       throw new WebOrderValidationError("Store ID inválido");
-    const data = (await this.request(
-      "v1/web-catalog",
-      "PUT",
-      parseWebCatalogSnapshot(snapshot),
-      undefined,
-      expectedStoreId,
-    )) as Record<string, unknown>;
+    const validated = parseWebCatalogSnapshot(snapshot);
+    let data: Record<string, unknown>;
+    try {
+      data = (await this.request(
+        "v1/web-catalog",
+        "PUT",
+        validated,
+        undefined,
+        expectedStoreId,
+        false,
+        undefined,
+        { timeoutMs: 25_000, gzip: true },
+      )) as Record<string, unknown>;
+    } catch (error) {
+      if (
+        error instanceof WebOrdersHttpError &&
+        (error.status === 415 || error.status === 400)
+      ) {
+        data = (await this.request(
+          "v1/web-catalog",
+          "PUT",
+          validated,
+          undefined,
+          expectedStoreId,
+          false,
+          undefined,
+          { timeoutMs: 25_000, gzip: false },
+        )) as Record<string, unknown>;
+      } else {
+        throw error;
+      }
+    }
     if (!Number.isSafeInteger(data?.revision) || Number(data.revision) < 1)
       throw new WebOrderValidationError("Versión de catálogo inválida");
     return { revision: Number(data.revision) };
